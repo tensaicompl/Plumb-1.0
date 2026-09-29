@@ -1,6 +1,26 @@
-node_modules/
-.env
-.env.local
-dist/
-build/
+# OS / IDE
 .DS_Store
+.idea/
+.vscode/
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+ui/dist/
+
+# Local runtime data
+*.sqlite
+*.sqlite3
+*.db
+.env
+.env.*
+!.env.example
+
+# Generated / temporary
+coverage/
+playwright-report/
+test-results/
+.tmp/

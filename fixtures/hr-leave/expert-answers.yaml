@@ -1,0 +1,12 @@
+answers:
+- ambiguity: half_day
+  value:
+    decimal: '0.5'
+    unit: working_day
+- ambiguity: holiday_inside_period
+  value:
+    holiday_consumes_working_day: false
+    calendar_ref: cal:PL-Office
+- ambiguity: inclusive_end
+  value:
+    inclusive_end: true

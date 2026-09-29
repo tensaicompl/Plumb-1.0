@@ -1,0 +1,788 @@
+scenarios:
+- id: SCN-001
+  title: Create draft request
+  kind: acceptance
+  requirements:
+  - HR-001
+  operation: CreateLeaveRequest
+  given: &id001
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+  inputs:
+    leave_type: Annual
+    start: '2027-02-01'
+    end: '2027-02-02'
+  then:
+    status: Draft
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-002
+  title: Submit valid annual request
+  kind: acceptance
+  requirements:
+  - HR-002
+  - HR-009
+  operation: SubmitLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Draft
+  inputs:
+    leave_type: Annual
+    start: '2027-02-01'
+    end: '2027-02-02'
+  then:
+    status: Submitted
+    event: LeaveSubmitted
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-003
+  title: Reject inverted dates
+  kind: acceptance
+  requirements:
+  - HR-003
+  operation: SubmitLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Draft
+  inputs:
+    start: '2027-02-03'
+    end: '2027-02-01'
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-004
+  title: Inclusive same-day duration
+  kind: boundary
+  requirements:
+  - HR-004
+  operation: CalculateLeaveDuration
+  given: *id001
+  inputs:
+    start: '2027-02-01'
+    end: '2027-02-01'
+  then:
+    working_days: '1.0'
+  expected_pre_answers: undecidable
+  expected_post_answers: pass
+- id: SCN-005
+  title: Inclusive two-day duration
+  kind: boundary
+  requirements:
+  - HR-004
+  operation: CalculateLeaveDuration
+  given: *id001
+  inputs:
+    start: '2027-02-01'
+    end: '2027-02-02'
+  then:
+    working_days: '2.0'
+  expected_pre_answers: undecidable
+  expected_post_answers: pass
+- id: SCN-006
+  title: Weekend excluded
+  kind: boundary
+  requirements:
+  - HR-005
+  operation: CalculateLeaveDuration
+  given: *id001
+  inputs:
+    start: '2027-02-05'
+    end: '2027-02-08'
+  then:
+    working_days: '2.0'
+  expected_pre_answers: undecidable
+  expected_post_answers: pass
+- id: SCN-007
+  title: Holiday inside period excluded
+  kind: boundary
+  requirements:
+  - HR-006
+  operation: CalculateLeaveDuration
+  given: *id001
+  inputs:
+    start: '2027-01-05'
+    end: '2027-01-07'
+  then:
+    working_days: '2.0'
+  expected_pre_answers: undecidable
+  expected_post_answers: pass
+- id: SCN-008
+  title: Half day consumes 0.5
+  kind: boundary
+  requirements:
+  - HR-007
+  operation: CalculateLeaveDuration
+  given: *id001
+  inputs:
+    start: '2027-02-01'
+    end: '2027-02-01'
+    half_day: true
+  then:
+    working_days: '0.5'
+  expected_pre_answers: undecidable
+  expected_post_answers: pass
+- id: SCN-009
+  title: Enough balance permits submit
+  kind: acceptance
+  requirements:
+  - HR-008
+  operation: CheckLeaveBalance
+  given: *id001
+  inputs:
+    requested: '2.0'
+  then:
+    outcome: success
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-010
+  title: Insufficient balance blocks submit
+  kind: failure
+  requirements:
+  - HR-008
+  operation: CheckLeaveBalance
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '1.0'
+  inputs:
+    requested: '2.0'
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-011
+  title: Submitted requires decision
+  kind: acceptance
+  requirements:
+  - HR-010
+  operation: GetLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs: {}
+  then:
+    status: Submitted
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-012
+  title: Direct manager approves
+  kind: acceptance
+  requirements:
+  - HR-011
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+  then:
+    status: Approved
+    event: LeaveApproved
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-013
+  title: Non-manager cannot approve
+  kind: failure
+  requirements:
+  - HR-011
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M999
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-014
+  title: Direct manager rejects with reason
+  kind: acceptance
+  requirements:
+  - HR-012
+  operation: RejectLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+    reason: Coverage
+  then:
+    status: Rejected
+    event: LeaveRejected
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-015
+  title: Reject without reason fails
+  kind: failure
+  requirements:
+  - HR-012
+  operation: RejectLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+    reason: ''
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-016
+  title: Self approval forbidden
+  kind: failure
+  requirements:
+  - HR-013
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: E100
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-017
+  title: Contractor annual leave ineligible
+  kind: failure
+  requirements:
+  - HR-014
+  operation: SubmitLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Contractor
+    annual_balance: '20.0'
+  inputs:
+    leave_type: Annual
+    start: '2027-02-01'
+    end: '2027-02-01'
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-018
+  title: Contractor unpaid leave allowed
+  kind: acceptance
+  requirements:
+  - HR-014
+  operation: SubmitLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Contractor
+    annual_balance: '20.0'
+  inputs:
+    leave_type: Unpaid
+    start: '2027-02-01'
+    end: '2027-02-01'
+  then:
+    status: Submitted
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-019
+  title: Approve deducts balance
+  kind: acceptance
+  requirements:
+  - HR-015
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+    requested_days: '2.0'
+  inputs:
+    actor: M200
+  then:
+    status: Approved
+    annual_balance: '18.0'
+    event: LeaveBalanceChanged
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-020
+  title: Reject leaves balance unchanged
+  kind: acceptance
+  requirements:
+  - HR-016
+  operation: RejectLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+    requested_days: '2.0'
+  inputs:
+    actor: M200
+    reason: Coverage
+  then:
+    status: Rejected
+    annual_balance: '20.0'
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-021
+  title: Withdraw submitted request
+  kind: acceptance
+  requirements:
+  - HR-017
+  - HR-018
+  operation: WithdrawLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs: {}
+  then:
+    status: Withdrawn
+    event: LeaveWithdrawn
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-022
+  title: Cannot withdraw approved request
+  kind: failure
+  requirements:
+  - HR-017
+  operation: WithdrawLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Approved
+  inputs: {}
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-023
+  title: Cancel future approved request
+  kind: acceptance
+  requirements:
+  - HR-019
+  - HR-021
+  operation: CancelLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Approved
+    today: '2027-01-20'
+    start: '2027-02-01'
+  inputs: {}
+  then:
+    status: Cancelled
+    event: LeaveCancelled
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-024
+  title: Cannot cancel after leave starts
+  kind: failure
+  requirements:
+  - HR-019
+  operation: CancelLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Approved
+    today: '2027-02-02'
+    start: '2027-02-01'
+  inputs: {}
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-025
+  title: Cancellation restores annual balance
+  kind: acceptance
+  requirements:
+  - HR-020
+  operation: CancelLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '18.0'
+    status: Approved
+    requested_days: '2.0'
+    today: '2027-01-20'
+    start: '2027-02-01'
+  inputs: {}
+  then:
+    annual_balance: '20.0'
+    event: LeaveBalanceChanged
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-026
+  title: Approval records manager and time
+  kind: acceptance
+  requirements:
+  - HR-022
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+    now: '2027-01-20T10:00:00+01:00'
+  then:
+    approval_record:
+      actor: M200
+      timestamp: '2027-01-20T10:00:00+01:00'
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-027
+  title: Rejection records manager and time
+  kind: acceptance
+  requirements:
+  - HR-022
+  operation: RejectLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+    reason: Coverage
+    now: '2027-01-20T10:00:00+01:00'
+  then:
+    approval_record:
+      actor: M200
+      timestamp: '2027-01-20T10:00:00+01:00'
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-028
+  title: Approval notification emitted
+  kind: acceptance
+  requirements:
+  - HR-023
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+  then:
+    event: LeaveApproved
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-029
+  title: Rejection notification emitted
+  kind: acceptance
+  requirements:
+  - HR-024
+  operation: RejectLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+    reason: Coverage
+  then:
+    event: LeaveRejected
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-030
+  title: Employee views own request
+  kind: acceptance
+  requirements:
+  - HR-025
+  operation: GetLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    request_employee: E100
+  inputs:
+    actor: E100
+  then:
+    outcome: success
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-031
+  title: Employee cannot view another employee request
+  kind: failure
+  requirements:
+  - HR-025
+  operation: GetLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    request_employee: E101
+  inputs:
+    actor: E100
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-032
+  title: Manager views direct report requests
+  kind: acceptance
+  requirements:
+  - HR-026
+  operation: ListManagerLeaveRequests
+  given: *id001
+  inputs:
+    actor: M200
+    employee: E100
+  then:
+    outcome: success
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-033
+  title: Manager cannot view non-report requests
+  kind: failure
+  requirements:
+  - HR-026
+  operation: ListManagerLeaveRequests
+  given: *id001
+  inputs:
+    actor: M200
+    employee: E999
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-034
+  title: Balance never negative exact boundary
+  kind: boundary
+  requirements:
+  - HR-027
+  operation: ReserveLeaveBalance
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '2.0'
+  inputs:
+    requested: '2.0'
+  then:
+    annual_balance: '0.0'
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-035
+  title: Balance negative attempt blocked
+  kind: failure
+  requirements:
+  - HR-027
+  operation: ReserveLeaveBalance
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '1.0'
+  inputs:
+    requested: '2.0'
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-036
+  title: Overlapping approved request blocked
+  kind: failure
+  requirements:
+  - HR-028
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+    existing_approved:
+    - 2027-02-01/2027-02-03
+    requested_period: 2027-02-02/2027-02-04
+  inputs:
+    actor: M200
+  then:
+    outcome: business_failure
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-037
+  title: Adjacent non-overlap allowed
+  kind: acceptance
+  requirements:
+  - HR-028
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+    existing_approved:
+    - 2027-02-01/2027-02-03
+    requested_period: 2027-02-04/2027-02-05
+  inputs:
+    actor: M200
+  then:
+    status: Approved
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-038
+  title: Business timestamp timezone
+  kind: acceptance
+  requirements:
+  - HR-029
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+    now: '2027-01-20T10:00:00+01:00'
+  then:
+    timestamp_zone: Europe/Warsaw
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-039
+  title: Submission quality requirement has verification obligation
+  kind: quality
+  requirements:
+  - HR-030
+  operation: SubmitLeaveRequest
+  given: *id001
+  inputs:
+    start: '2027-02-01'
+    end: '2027-02-01'
+  then:
+    verification_kind: analysis
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-040
+  title: Approval retention requirement non-scenario verification
+  kind: quality
+  requirements:
+  - HR-031
+  operation: GetLeaveRequest
+  given: *id001
+  inputs: {}
+  then:
+    verification_kind: inspection
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-041
+  title: Approval creates audit record
+  kind: acceptance
+  requirements:
+  - HR-032
+  operation: ApproveLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+  then:
+    audit_action: approve
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-042
+  title: Rejection creates audit record
+  kind: acceptance
+  requirements:
+  - HR-032
+  operation: RejectLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs:
+    actor: M200
+    reason: Coverage
+  then:
+    audit_action: reject
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-043
+  title: Withdrawal creates audit record
+  kind: acceptance
+  requirements:
+  - HR-032
+  operation: WithdrawLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Submitted
+  inputs: {}
+  then:
+    audit_action: withdraw
+  expected_pre_answers: pass
+  expected_post_answers: pass
+- id: SCN-044
+  title: Cancellation creates audit record
+  kind: acceptance
+  requirements:
+  - HR-032
+  operation: CancelLeaveRequest
+  given:
+    employee: E100
+    manager: M200
+    contract: Employee
+    annual_balance: '20.0'
+    status: Approved
+    today: '2027-01-20'
+    start: '2027-02-01'
+  inputs: {}
+  then:
+    audit_action: cancel
+  expected_pre_answers: pass
+  expected_post_answers: pass

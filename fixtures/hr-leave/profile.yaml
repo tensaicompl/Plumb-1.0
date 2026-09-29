@@ -1,0 +1,19 @@
+profile_id: profile:plumb-software-2026.1
+lint_thresholds:
+  default_precision_min: 0.85
+required_nfr_categories:
+- performance_efficiency
+- security
+- reliability
+default_data_classes:
+  email: pii
+  dob: pii
+  salary: financial
+  iban: financial
+default_retention:
+  confidential: 365
+  financial: 1825
+question_round_size: 15
+novelty_min: 0.35
+duplicate_jaccard: 0.8
+similarity_threshold: 0.82

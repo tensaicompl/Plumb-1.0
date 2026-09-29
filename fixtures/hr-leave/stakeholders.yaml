@@ -1,0 +1,34 @@
+stakeholders:
+- id: stakeholder:employee
+  name: Employee
+  roles:
+  - business
+- id: stakeholder:manager
+  name: Manager
+  roles:
+  - business
+- id: stakeholder:hr
+  name: HR Policy Owner
+  roles:
+  - business
+  - analyst
+- id: stakeholder:architect
+  name: Solution Architect
+  roles:
+  - architect
+- id: stakeholder:auditor
+  name: Auditor
+  roles:
+  - auditor
+routing:
+  calendar:
+  - stakeholder:hr
+  rounding:
+  - stakeholder:hr
+  formula:
+  - stakeholder:hr
+  authorization:
+  - stakeholder:hr
+  - stakeholder:architect
+  default:
+  - stakeholder:hr

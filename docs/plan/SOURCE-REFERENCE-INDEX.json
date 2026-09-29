@@ -1,0 +1,2427 @@
+{
+  "version": "1.0",
+  "rule": "Task source_refs contain only IDs from this file. Each ID resolves to exactly one checksummed local file and a machine-verifiable locator.",
+  "references": [
+    {
+      "id": "SRCREF-5608A0663D",
+      "file": "config/profiles/plumb-software-2026.1-rules.yaml",
+      "locator": {
+        "kind": "whole_file"
+      },
+      "display": "config/profiles/plumb-software-2026.1-rules.yaml entire file"
+    },
+    {
+      "id": "SRCREF-0DA654DB72",
+      "file": "config/profiles/plumb-software-2026.1-rules.yaml",
+      "locator": {
+        "kind": "yaml_filter",
+        "path": "rules[].gate",
+        "equals": "F1"
+      },
+      "display": "config/profiles/plumb-software-2026.1-rules.yaml rules where gate=F1"
+    },
+    {
+      "id": "SRCREF-E51F20A226",
+      "file": "config/profiles/plumb-software-2026.1-rules.yaml",
+      "locator": {
+        "kind": "yaml_filter",
+        "path": "rules[].gate",
+        "equals": "F2"
+      },
+      "display": "config/profiles/plumb-software-2026.1-rules.yaml rules where gate=F2"
+    },
+    {
+      "id": "SRCREF-F9131DF9AF",
+      "file": "config/profiles/plumb-software-2026.1-rules.yaml",
+      "locator": {
+        "kind": "yaml_filter",
+        "path": "rules[].gate",
+        "equals": "F3"
+      },
+      "display": "config/profiles/plumb-software-2026.1-rules.yaml rules where gate=F3"
+    },
+    {
+      "id": "SRCREF-2AC9336C3C",
+      "file": "config/profiles/plumb-software-2026.1-rules.yaml",
+      "locator": {
+        "kind": "yaml_filter",
+        "path": "rules[].gate",
+        "equals": "F4"
+      },
+      "display": "config/profiles/plumb-software-2026.1-rules.yaml rules where gate=F4"
+    },
+    {
+      "id": "SRCREF-D0FDFF3BDE",
+      "file": "config/profiles/plumb-software-2026.1-rules.yaml",
+      "locator": {
+        "kind": "yaml_filter",
+        "path": "rules[].gate",
+        "equals": "I0"
+      },
+      "display": "config/profiles/plumb-software-2026.1-rules.yaml rules where gate=I0"
+    },
+    {
+      "id": "SRCREF-0765F7CC1C",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "10"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §10"
+    },
+    {
+      "id": "SRCREF-D91B3DB99E",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "20"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §20"
+    },
+    {
+      "id": "SRCREF-5D455D80AE",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "21"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §21"
+    },
+    {
+      "id": "SRCREF-7DDD53DC7B",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "22"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §22"
+    },
+    {
+      "id": "SRCREF-006359FAE9",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "23"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §23"
+    },
+    {
+      "id": "SRCREF-440BF23BDA",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "24"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §24"
+    },
+    {
+      "id": "SRCREF-7CA117913F",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5.4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §5.4"
+    },
+    {
+      "id": "SRCREF-BC2B9CB618",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "6"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §6"
+    },
+    {
+      "id": "SRCREF-B0F74B9142",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "7"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §7"
+    },
+    {
+      "id": "SRCREF-B696289B78",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1",
+              "2",
+              "3",
+              "4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§1-4"
+    },
+    {
+      "id": "SRCREF-316C9E60F0",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "11",
+              "12",
+              "13",
+              "14",
+              "15",
+              "16",
+              "17",
+              "18"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "32"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§11-18,32"
+    },
+    {
+      "id": "SRCREF-BC01A56530",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "4.2"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "28"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§3,4.2,28"
+    },
+    {
+      "id": "SRCREF-25544DD485",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "4.3",
+              "4.4"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "19",
+              "20"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§3,4.3-4.4,19-20"
+    },
+    {
+      "id": "SRCREF-96D5EDE97F",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "5.4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§3,5.4"
+    },
+    {
+      "id": "SRCREF-563DAF2FEF",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "7"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§3,7"
+    },
+    {
+      "id": "SRCREF-C85B1E19E9",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "4.1"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "30"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§4.1,30"
+    },
+    {
+      "id": "SRCREF-D32DB0990A",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "4.1"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "5.8"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "21"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§4.1,5.8,21"
+    },
+    {
+      "id": "SRCREF-D078477292",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5.6"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "22"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§5.6,22"
+    },
+    {
+      "id": "SRCREF-FFC4E55C45",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "10"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §10"
+    },
+    {
+      "id": "SRCREF-FFF9705B50",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "15.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §15.1"
+    },
+    {
+      "id": "SRCREF-A37A8FF581",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "15.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §15.3"
+    },
+    {
+      "id": "SRCREF-A0B54B112C",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "19"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §19"
+    },
+    {
+      "id": "SRCREF-51C477D0D0",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §2"
+    },
+    {
+      "id": "SRCREF-4C3A2D5489",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "20"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §20"
+    },
+    {
+      "id": "SRCREF-6581F3212C",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "26"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §26"
+    },
+    {
+      "id": "SRCREF-96AA517C73",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §5.3"
+    },
+    {
+      "id": "SRCREF-7E54F3404D",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "6.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §6.2"
+    },
+    {
+      "id": "SRCREF-AE75140DD6",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "6.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §6.3"
+    },
+    {
+      "id": "SRCREF-860566BE13",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "6.4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §6.4"
+    },
+    {
+      "id": "SRCREF-F6F023A36E",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "7"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §7"
+    },
+    {
+      "id": "SRCREF-91B589D90C",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "7.5"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §7.5"
+    },
+    {
+      "id": "SRCREF-C0AC034159",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "8"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §8"
+    },
+    {
+      "id": "SRCREF-B79FB10635",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "9.10"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §9.10"
+    },
+    {
+      "id": "SRCREF-23F6E29DAE",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "17",
+              "18"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§17-18"
+    },
+    {
+      "id": "SRCREF-2A709879EB",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "2",
+              "3",
+              "4"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "16"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§2-4,16"
+    },
+    {
+      "id": "SRCREF-A384F23134",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "26",
+              "27"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§26-27"
+    },
+    {
+      "id": "SRCREF-02DFDD2B29",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "18"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "19"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§3,18,19"
+    },
+    {
+      "id": "SRCREF-1B777C546D",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.1"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§3.1,4"
+    },
+    {
+      "id": "SRCREF-7EC2A38F66",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5",
+              "6",
+              "7",
+              "8",
+              "9",
+              "10",
+              "11",
+              "12",
+              "13",
+              "14",
+              "15",
+              "16"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "19"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "24"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§5-16,19,24"
+    },
+    {
+      "id": "SRCREF-F3C31C7BB3",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5.1",
+              "5.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§5.1-5.2"
+    },
+    {
+      "id": "SRCREF-48F010D7D1",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "8.8",
+              "8.9",
+              "8.10"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§8.8-8.10"
+    },
+    {
+      "id": "SRCREF-64C0217743",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "9.1",
+              "9.2",
+              "9.3"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "17.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§9.1-9.3,17.3"
+    },
+    {
+      "id": "SRCREF-21ED0F2039",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "9.4",
+              "9.5"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§9.4-9.5"
+    },
+    {
+      "id": "SRCREF-9175A495B9",
+      "file": "docs/architecture/PLUMB-METAMODEL-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "9.7",
+              "9.8",
+              "9.9"
+            ]
+          }
+        ]
+      },
+      "display": "docs/architecture/PLUMB-METAMODEL-v3.md §§9.7-9.9"
+    },
+    {
+      "id": "SRCREF-9C906A7B51",
+      "file": "docs/plan/PLUMB-IMPLEMENTATION-PLAN-v3.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1",
+              "2",
+              "3",
+              "4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-IMPLEMENTATION-PLAN-v3.md §§1-4"
+    },
+    {
+      "id": "SRCREF-48A9B980DD",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "10"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §10"
+    },
+    {
+      "id": "SRCREF-EFAC302AFF",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "12"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §12"
+    },
+    {
+      "id": "SRCREF-43093678EA",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "2"
+            ],
+            "contains": [
+              "PlumbExpr"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §2 PlumbExpr"
+    },
+    {
+      "id": "SRCREF-AD0A0F5D57",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.10"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §3.10"
+    },
+    {
+      "id": "SRCREF-B87594D03C",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.11"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §3.11"
+    },
+    {
+      "id": "SRCREF-A18636D6DA",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.12"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §3.12"
+    },
+    {
+      "id": "SRCREF-8A575EA9B2",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §3.3"
+    },
+    {
+      "id": "SRCREF-5FE2D971AC",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.6"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §3.6"
+    },
+    {
+      "id": "SRCREF-3CF65C8502",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.8"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §3.8"
+    },
+    {
+      "id": "SRCREF-AED4772768",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "4"
+            ],
+            "contains": [
+              "Artifact store"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §4 Artifact store"
+    },
+    {
+      "id": "SRCREF-856494881E",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "4"
+            ],
+            "contains": [
+              "Impact seed graph"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §4 Impact seed graph"
+    },
+    {
+      "id": "SRCREF-2992F375D9",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §5"
+    },
+    {
+      "id": "SRCREF-340600AFE6",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "6"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §6"
+    },
+    {
+      "id": "SRCREF-76F0A59202",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.3"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §§3.3,4"
+    },
+    {
+      "id": "SRCREF-ED9C3A0EA2",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.4"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "11"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §§3.4,11"
+    },
+    {
+      "id": "SRCREF-BBA84CFE16",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "3.6",
+              "3.7"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §§3.6-3.7"
+    },
+    {
+      "id": "SRCREF-481C103B3C",
+      "file": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "7",
+              "8",
+              "9",
+              "10",
+              "11",
+              "12",
+              "13"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/PLUMB-v2-to-v3-IMPLEMENTATION-DELTA.md §§7-13"
+    },
+    {
+      "id": "SRCREF-ACB4876C07",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1"
+            ],
+            "contains": [
+              "Determinism"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §1 Determinism"
+    },
+    {
+      "id": "SRCREF-94287B9738",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "4.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §4.1"
+    },
+    {
+      "id": "SRCREF-EE99C074D0",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5"
+            ]
+          },
+          {
+            "kind": "contains",
+            "phrases": [
+              "Questions",
+              "Proposals",
+              "Sessions",
+              "Scenarios",
+              "Stages"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §5 Questions/Proposals/Sessions/Scenarios/Stages"
+    },
+    {
+      "id": "SRCREF-E08AB8CE58",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5"
+            ],
+            "contains": [
+              "conventions"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §5 conventions"
+    },
+    {
+      "id": "SRCREF-52BF75EEBC",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M1.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M1.1"
+    },
+    {
+      "id": "SRCREF-40D69B8FBA",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M1.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M1.2"
+    },
+    {
+      "id": "SRCREF-775B925F0C",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M1.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M1.3"
+    },
+    {
+      "id": "SRCREF-BB7E8B02A9",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M1.4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M1.4"
+    },
+    {
+      "id": "SRCREF-1EFC3F56F4",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M11.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M11.2"
+    },
+    {
+      "id": "SRCREF-35F1EE7D59",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M12.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M12.1"
+    },
+    {
+      "id": "SRCREF-5BCC6696BB",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M13.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M13.1"
+    },
+    {
+      "id": "SRCREF-DC2572BD78",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M13.2",
+              "M13.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M13.2-M13.3"
+    },
+    {
+      "id": "SRCREF-FB7BC75809",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M14.1",
+              "M14.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M14.1-M14.2"
+    },
+    {
+      "id": "SRCREF-EE31682F6E",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M2.1",
+              "M2.2",
+              "M2.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M2.1-M2.3"
+    },
+    {
+      "id": "SRCREF-7B43AD5876",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M3.1",
+              "M3.2",
+              "M3.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M3.1-M3.3"
+    },
+    {
+      "id": "SRCREF-15D96DDAA9",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M4.1",
+              "M4.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M4.1-M4.2"
+    },
+    {
+      "id": "SRCREF-B04CD24E97",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M4.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M4.2"
+    },
+    {
+      "id": "SRCREF-E208E34574",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M4.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M4.3"
+    },
+    {
+      "id": "SRCREF-C900B2AE78",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M5.2",
+              "M5.3",
+              "M5.4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M5.2-M5.4"
+    },
+    {
+      "id": "SRCREF-E6CF46B968",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M6.1",
+              "M6.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M6.1-M6.2"
+    },
+    {
+      "id": "SRCREF-2DA111CE63",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M6.4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M6.4"
+    },
+    {
+      "id": "SRCREF-02E317763F",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M7.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M7.1"
+    },
+    {
+      "id": "SRCREF-674B81DA6A",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M7.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M7.2"
+    },
+    {
+      "id": "SRCREF-A95FED2B41",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M7.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M7.3"
+    },
+    {
+      "id": "SRCREF-8FF7BA8981",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M8.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M8.1"
+    },
+    {
+      "id": "SRCREF-838C22696F",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M8.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M8.3"
+    },
+    {
+      "id": "SRCREF-08F3AED210",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M9.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M9.3"
+    },
+    {
+      "id": "SRCREF-B1A87347A8",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M9.4"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §7:M9.4"
+    },
+    {
+      "id": "SRCREF-0C6AD6DAFA",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U1"
+    },
+    {
+      "id": "SRCREF-10AF56ADEE",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U1.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U1.3"
+    },
+    {
+      "id": "SRCREF-FBD9DC478A",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U10"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U10"
+    },
+    {
+      "id": "SRCREF-E16E014AC5",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U11.1",
+              "U11.2",
+              "U11.3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U11.1-U11.3"
+    },
+    {
+      "id": "SRCREF-3CE600A754",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U2",
+              "U3"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U2-U3"
+    },
+    {
+      "id": "SRCREF-50924A0118",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U4",
+              "U5"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U4-U5"
+    },
+    {
+      "id": "SRCREF-CC24FC894A",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U6"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U6"
+    },
+    {
+      "id": "SRCREF-174DD5C7FE",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U7"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U7"
+    },
+    {
+      "id": "SRCREF-49008E6B37",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U8"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U8"
+    },
+    {
+      "id": "SRCREF-A59FD84DEF",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U9"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §8:U9"
+    },
+    {
+      "id": "SRCREF-4C965A435B",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1"
+            ],
+            "contains": [
+              "Import formats"
+            ]
+          },
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M1.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§1 Import formats,7:M1.1"
+    },
+    {
+      "id": "SRCREF-E40232A0FE",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1"
+            ],
+            "contains": [
+              "Interpreter"
+            ]
+          },
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M9.1",
+              "M9.2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§1 Interpreter,7:M9.1-M9.2"
+    },
+    {
+      "id": "SRCREF-C1A6FDDD20",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1"
+            ],
+            "contains": [
+              "Quality bar"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "10"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§1 Quality bar,10"
+    },
+    {
+      "id": "SRCREF-25A1B72D82",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1"
+            ],
+            "contains": [
+              "UI stack"
+            ]
+          },
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U0"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§1 UI stack,8:U0"
+    },
+    {
+      "id": "SRCREF-E772EBFE16",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1",
+              "2",
+              "3"
+            ]
+          },
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M0.1"
+            ]
+          },
+          {
+            "kind": "section_and_tokens",
+            "section": "8",
+            "tokens": [
+              "U0.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§1-3,7:M0.1,8:U0.1"
+    },
+    {
+      "id": "SRCREF-509798A4E2",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "11"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "14"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§11,14"
+    },
+    {
+      "id": "SRCREF-723A7B45BB",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5"
+            ]
+          },
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M11.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§5,7:M11.1"
+    },
+    {
+      "id": "SRCREF-D23EBEA264",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "6"
+            ],
+            "contains": [
+              "plumb-expr"
+            ]
+          },
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M5.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§6 plumb-expr,7:M5.1"
+    },
+    {
+      "id": "SRCREF-D47B4005C2",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M0.3"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "11"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§7:M0.3,11"
+    },
+    {
+      "id": "SRCREF-397E123D2C",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M1.3"
+            ]
+          },
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M2.1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§7:M1.3,7:M2.1"
+    },
+    {
+      "id": "SRCREF-027DE8227D",
+      "file": "docs/plan/merged-implementation-plan-v2.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "section_and_tokens",
+            "section": "7",
+            "tokens": [
+              "M10.3"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "12"
+            ]
+          }
+        ]
+      },
+      "display": "docs/plan/merged-implementation-plan-v2.md §§7:M10.3,12"
+    },
+    {
+      "id": "SRCREF-97536C2180",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "contains",
+        "phrases": [
+          "PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED"
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md F1 duplicate rule"
+    },
+    {
+      "id": "SRCREF-482A7F2096",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "contains",
+        "phrases": [
+          "RBAC.F2.PERMISSION.CONCRETE",
+          "RBAC.F2.ROLE.HIERARCHY_ACYCLIC"
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md RBAC F2 rules"
+    },
+    {
+      "id": "SRCREF-62FBC0BA0F",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1"
+            ]
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §1"
+    },
+    {
+      "id": "SRCREF-AD9DA89616",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "2"
+            ]
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §2"
+    },
+    {
+      "id": "SRCREF-62B2049AEA",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "6"
+            ]
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §6"
+    },
+    {
+      "id": "SRCREF-273CB17B27",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "heading_token",
+            "token": "F1"
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §F1"
+    },
+    {
+      "id": "SRCREF-0E7CBD4996",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "heading_token",
+            "token": "F2"
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §F2"
+    },
+    {
+      "id": "SRCREF-040CACC2B1",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "heading_token",
+            "token": "F3"
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §F3"
+    },
+    {
+      "id": "SRCREF-441E1C9F5A",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "heading_token",
+            "token": "F4"
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §F4"
+    },
+    {
+      "id": "SRCREF-EAF71A2D01",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "heading_token",
+            "token": "I0"
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §I0"
+    },
+    {
+      "id": "SRCREF-0B1179FD2E",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "1",
+              "2",
+              "3",
+              "4"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "7",
+              "8"
+            ]
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §§1-4,7-8"
+    },
+    {
+      "id": "SRCREF-FF7208E4F2",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "2"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "5"
+            ]
+          },
+          {
+            "kind": "sections",
+            "sections": [
+              "7"
+            ]
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §§2,5,7"
+    },
+    {
+      "id": "SRCREF-003999438A",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "2.3"
+            ]
+          },
+          {
+            "kind": "heading_token",
+            "token": "F3"
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §§2.3,F3"
+    },
+    {
+      "id": "SRCREF-4800CCFA7A",
+      "file": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md",
+      "locator": {
+        "kind": "composite",
+        "components": [
+          {
+            "kind": "sections",
+            "sections": [
+              "5",
+              "6"
+            ]
+          }
+        ]
+      },
+      "display": "docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §§5-6"
+    },
+    {
+      "id": "SRCREF-205C5CCA29",
+      "file": "fixtures/hr-leave/README.md",
+      "locator": {
+        "kind": "whole_file"
+      },
+      "display": "fixtures/hr-leave/README.md"
+    },
+    {
+      "id": "SRCREF-34CA4A60BC",
+      "file": "fixtures/hr-leave/fixture-contract.yaml",
+      "locator": {
+        "kind": "whole_file"
+      },
+      "display": "fixtures/hr-leave/fixture-contract.yaml"
+    }
+  ]
+}

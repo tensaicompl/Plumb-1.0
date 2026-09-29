@@ -1,0 +1,1950 @@
+profile_id: profile:plumb-software-2026.1
+profile_version: 2026.1-draft.1
+metamodel: 3.0-draft.1
+status: implementation draft
+rule_classes:
+  external_standard: Rule operationalizes a recognized standard concept. Unless clause-level coverage has been independently
+    verified, Plumb claims alignment/compatibility, not full standard compliance.
+  external_interop: Rule validates an interchange format/model against an external specification or a controlled subset.
+  plumb_core: Normative Plumb semantic invariant or gate rule.
+  profile_policy: Optional rule enabled by industry/company profile.
+  organization_policy: Customer-specific rule pack.
+result_states:
+- PASS
+- FAIL
+- WARN
+- NOT_APPLICABLE
+- WAIVED
+- ERROR
+standards:
+  ISO29148:
+    standard: ISO/IEC/IEEE 29148
+    version: '2018'
+    role: semantic_alignment
+    note: Current published requirements-engineering standard; successor DIS under development.
+  ISO25010:
+    standard: ISO/IEC 25010
+    version: '2023'
+    role: taxonomy
+    note: Product quality model with nine characteristics.
+  ISO42010:
+    standard: ISO/IEC/IEEE 42010
+    version: '2022'
+    role: semantic_alignment
+    note: Architecture-description concepts and conformance targets.
+  ISO12207:
+    standard: ISO/IEC/IEEE 12207
+    version: '2026'
+    role: lifecycle_alignment
+    note: Software life-cycle process framework.
+  ISO15289:
+    standard: ISO/IEC/IEEE 15289
+    version: '2019'
+    role: information_item_alignment
+    note: Life-cycle information items; current edition confirmed 2025 and under revision.
+  ISO29119-2:
+    standard: ISO/IEC/IEEE 29119-2
+    version: '2021'
+    role: test_process_alignment
+    note: Software test processes.
+  BPMN:
+    standard: OMG BPMN
+    version: 2.0.2
+    role: interchange
+    note: Process-model interchange and familiar notation.
+  DMN:
+    standard: OMG DMN
+    version: '1.6'
+    role: interchange
+    note: Decision-model and decision-table interchange.
+  SYSML:
+    standard: OMG SysML
+    version: '2.0'
+    role: interchange
+    note: Systems-model interoperability, not Plumb core semantics.
+  PPMN:
+    standard: OMG PPMN
+    version: '1.0'
+    role: interchange
+    note: Pedigree/provenance interoperability.
+  RBAC:
+    standard: INCITS 359
+    version: '2012'
+    role: semantic_alignment
+    note: 'RBAC reference-model concepts: users, roles, permissions, operations, objects.'
+  OPENAPI:
+    standard: OpenAPI Specification
+    version: 3.2.1
+    role: interchange
+    note: HTTP API description.
+  ASYNCAPI:
+    standard: AsyncAPI Specification
+    version: 3.0.0
+    role: interchange
+    note: Message-driven API description.
+  ARAZZO:
+    standard: Arazzo Specification
+    version: 1.1.0
+    role: interchange
+    note: API workflow description.
+  JSONSCHEMA:
+    standard: JSON Schema
+    version: 2020-12
+    role: interchange
+    note: Schema validation baseline where applicable.
+gates:
+- id: I0
+  purpose: Evidence corpus is reproducible and addressable.
+  rule_ids:
+  - PLUMB.I0.SOURCE.CONTENT_ADDRESSED
+  - PLUMB.I0.EVIDENCE.LOCATABLE
+  - PLUMB.I0.EVIDENCE.HASH_MATCH
+  - PLUMB.I0.SOURCE.PARSE_STATUS
+  - PPMN.I0.PROVENANCE.AGENT_IDENTIFIED
+  - PLUMB.I0.BASELINE.HASHABLE
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: F1
+  purpose: Requirements are grounded, interpretable and free of unresolved blocking quality defects.
+  rule_ids:
+  - ISO29148.F1.REQ.STATEMENT_PRESENT
+  - PLUMB.F1.REQ.GROUNDED
+  - ISO29148.F1.REQ.LINEAGE
+  - PLUMB.F1.REQ.TYPE_KNOWN
+  - PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED
+  - PLUMB.F1.REQ.NO_CONTRADICTION
+  - PLUMB.F1.REQ.TERMS_RESOLVED
+  - PLUMB.F1.REQ.MODALITY_EXPLICIT
+  - PLUMB.F1.REQ.CRITERIA_FOR_BEHAVIOR
+  - PLUMB.F1.REQ.QUALITY_FINDINGS_CLEAR
+  - PLUMB.F1.REQ.SUPERSEDED_EXCLUDED
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: F2
+  purpose: Functional/domain/authorization semantics are internally coherent.
+  rule_ids:
+  - PLUMB.F2.DOMAIN.ATTRIBUTE_OWNER
+  - PLUMB.F2.DOMAIN.RELATION_TYPED
+  - PLUMB.F2.STATE.TRANSITION_COMPLETE
+  - PLUMB.F2.STATE.REACHABILITY
+  - PLUMB.F2.OPERATION.PERFORMER
+  - PLUMB.F2.OPERATION.IO_TYPED
+  - PLUMB.F2.CALC.TYPECHECK
+  - PLUMB.F2.CALC.NO_CYCLE
+  - PLUMB.F2.TIME.CALENDAR_DEFINED
+  - DMN.F2.TABLE.NO_OVERLAP
+  - DMN.F2.TABLE.COVERAGE
+  - BPMN.F2.PROCESS.START_END
+  - BPMN.F2.PROCESS.REACHABLE
+  - PLUMB.F2.PROCESS.TASK_RESOLVES
+  - PLUMB.F2.PROCESS.GATEWAY_BALANCED
+  - PLUMB.F2.EVENT.PAYLOAD_TYPED
+  - PLUMB.F2.EVENT.PRODUCER
+  - PLUMB.F2.EVENT.CONSUMER
+  - RBAC.F2.PERMISSION.CONCRETE
+  - RBAC.F2.ROLE.HIERARCHY_ACYCLIC
+  - PLUMB.F2.ROLE.SEPARATION
+  - PLUMB.F2.SOD.NO_VIOLATION
+  - PLUMB.F2.INVARIANT.EXPRESSIBLE
+  - PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: F3
+  purpose: Blocking ambiguities and semantic decisions are governed and resolved.
+  rule_ids:
+  - PLUMB.F3.QUESTION.NO_BLOCKING_OPEN
+  - PLUMB.F3.DECISION.PATCH_APPLIED
+  - PLUMB.F3.DECISION.EVIDENCE
+  - PLUMB.F3.ASSUMPTION.OWNER
+  - PLUMB.F3.ASSUMPTION.NOT_EXPIRED
+  - PLUMB.F3.WAIVER.DECISION
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: F4
+  purpose: Functional behavior is executable or otherwise verifiable without invented semantics.
+  rule_ids:
+  - PLUMB.F4.FUNCTION.VERIFICATION_LINK
+  - PLUMB.F4.SCENARIO.FOR_EXECUTABLE_BEHAVIOR
+  - PLUMB.F4.SCENARIO.GROUNDED
+  - PLUMB.F4.SCENARIO.TYPED
+  - PLUMB.F4.RUN.NO_BLOCKING_UNDECIDABLE
+  - PLUMB.F4.RUN.TRACE_COMPLETE
+  - PLUMB.F4.ASSUMPTIONS.VISIBLE
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: Q1
+  purpose: Architecture-driving quality requirements are measurable.
+  rule_ids:
+  - ISO25010.Q1.CHARACTERISTIC
+  - PLUMB.Q1.SCENARIO.STIMULUS
+  - PLUMB.Q1.SCENARIO.ENVIRONMENT
+  - PLUMB.Q1.SCENARIO.TARGET
+  - PLUMB.Q1.SCENARIO.MEASURE
+  - PLUMB.Q1.SCENARIO.THRESHOLD
+  - PLUMB.Q1.QUALITY.NO_CONFLICT
+  - PLUMB.Q1.QUALITY.PRIORITY
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: A1
+  purpose: Architecture scope, stakeholders, concerns, drivers and constraints are complete enough to design against.
+  rule_ids:
+  - ISO42010.A1.SYSTEM_OF_INTEREST
+  - ISO42010.A1.STAKEHOLDERS
+  - ISO42010.A1.CONCERNS
+  - ISO42010.A1.CONCERNS.ADDRESSED
+  - PLUMB.A1.DRIVER.FUNCTIONAL
+  - PLUMB.A1.DRIVER.QUALITY
+  - PLUMB.A1.DRIVER.CONSTRAINTS
+  - PLUMB.A1.DRIVER.NO_CONFLICT
+  - PLUMB.A1.EXTERNAL_SYSTEMS
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: A2
+  purpose: Software responsibilities, data and interfaces are allocated to architecture elements.
+  rule_ids:
+  - PLUMB.A2.OPERATION.ALLOCATED
+  - PLUMB.A2.PROCESS.RESPONSIBILITY
+  - PLUMB.A2.DATA.OWNERSHIP
+  - PLUMB.A2.INTERFACE.OWNERSHIP
+  - PLUMB.A2.COMPONENT.JUSTIFIED
+  - PLUMB.A2.NO_ORPHAN_DEPENDENCY
+  - PLUMB.A2.ALLOCATION.NO_CONTRADICTION
+  - PLUMB.A2.CRITICAL_SINGLE_OWNER
+  - ISO42010.A2.VIEWS.DEFINED
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: A3
+  purpose: Cross-boundary technical contracts are defined, valid and traceable.
+  rule_ids:
+  - PLUMB.A3.BOUNDARY.CONTRACT
+  - OPENAPI.A3.DOCUMENT.VALID
+  - PLUMB.A3.API.TRACE
+  - PLUMB.A3.API.OPERATION_ID
+  - PLUMB.A3.API.SCHEMA
+  - PLUMB.A3.API.FAILURE
+  - ASYNCAPI.A3.DOCUMENT.VALID
+  - PLUMB.A3.EVENT.CHANNEL
+  - PLUMB.A3.EVENT.PRODUCER_CONSUMER
+  - PLUMB.A3.MESSAGE.SCHEMA
+  - ARAZZO.A3.WORKFLOW.VALID
+  - PLUMB.A3.WORKFLOW.TRACE
+  - PLUMB.A3.CONTRACT.VERSION_POLICY
+  - PLUMB.A3.SECURITY.AUTHZ_TRACE
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: A4
+  purpose: Accepted architecture and technology choices are justified against drivers and tradeoffs.
+  rule_ids:
+  - ISO42010.A4.VIEW.VIEWPOINT
+  - PLUMB.A4.CANDIDATE.UNIQUE_ACCEPTED
+  - PLUMB.A4.DECISION.DRIVER
+  - PLUMB.A4.DECISION.ALTERNATIVES
+  - PLUMB.A4.DECISION.RATIONALE
+  - PLUMB.A4.DECISION.CONSEQUENCES
+  - PLUMB.A4.QUALITY.RESPONSE
+  - PLUMB.A4.TECH.SELECTION
+  - PLUMB.A4.ARCH.NO_BLOCKING_FINDING
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: D1
+  purpose: Accepted scope is decomposed into governed implementation slices with workable dependency ordering.
+  rule_ids:
+  - PLUMB.D1.SLICE.UPSTREAM
+  - PLUMB.D1.SLICE.ARCH_SCOPE
+  - PLUMB.D1.SLICE.CONTRACT_SCOPE
+  - PLUMB.D1.SLICE.DEPENDENCY_DAG
+  - PLUMB.D1.SCOPE.COVERAGE
+  - PLUMB.D1.NO_ORPHAN_SLICE
+  - PLUMB.D1.TASK.CONTRACT
+  - ISO12207.D1.LIFECYCLE.OWNERSHIP
+  - ISO15289.D1.INFO.ITEMS
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: D2
+  purpose: Every in-scope obligation has an explicit verification plan and downstream evidence path.
+  rule_ids:
+  - ISO29148.D2.REQ.VERIFICATION_METHOD
+  - PLUMB.D2.OBLIGATION.TYPED
+  - PLUMB.D2.OBLIGATION.CRITERIA
+  - PLUMB.D2.OBLIGATION.OWNER
+  - PLUMB.D2.OBLIGATION.IMPLEMENTATION
+  - ISO29119.D2.TEST.PROCESS_CONTEXT
+  - PLUMB.D2.COVERAGE.TYPED
+  - PLUMB.D2.NO_UNCOVERED_BLOCKER
+  - PLUMB.D2.SLICE.DOWNSTREAM
+  - PLUMB.D2.SECURITY.VERIFICATION
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+- id: C1
+  purpose: The implementation has current evidence that it conforms to the accepted specification and architecture.
+  rule_ids:
+  - PLUMB.C1.CODE.BINDING
+  - PLUMB.C1.RECEIPT.CURRENT_SPEC
+  - PLUMB.C1.RECEIPT.CURRENT_CODE
+  - PLUMB.C1.RECEIPT.TEST_REV
+  - PLUMB.C1.RECEIPT.ENV
+  - PLUMB.C1.STALE.NOT_COUNTED
+  - PLUMB.C1.CONTRACT.NO_DRIFT
+  - PLUMB.C1.ARCH.NO_DRIFT
+  - PLUMB.C1.TASK.MUST_NOT
+  - PLUMB.C1.OBLIGATION.ALL_CURRENT
+  - PLUMB.C1.NO_BLOCKING_DRIFT
+  pass_algorithm: PASS if every applicable blocker rule is PASS, or WAIVED only where waiver_policy permits and the active
+    profile allows waiver. Error/warn findings do not block unless promoted by the active profile. NOT_APPLICABLE does not
+    affect pass. EXTERNAL conformance claims may impose stricter non-waivable rules.
+rules:
+- id: PLUMB.I0.SOURCE.CONTENT_ADDRESSED
+  gate: I0
+  title: Every source artifact is content-addressed
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each SourceArtifact has a stable content_hash over the stored source bytes or normalized connector snapshot.
+  pass_condition: No in-scope SourceArtifact lacks content_hash or stored content/snapshot.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.I0.EVIDENCE.LOCATABLE
+  gate: I0
+  title: Evidence fragments are locatable
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every EvidenceFragment resolves to an existing SourceArtifact and a valid locator/range.
+  pass_condition: Every EvidenceFragment resolves to an existing SourceArtifact and a valid locator/range.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.I0.EVIDENCE.HASH_MATCH
+  gate: I0
+  title: Evidence fragment hashes match extracted content
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Re-reading the fragment locator yields the same content_hash after canonical text extraction.
+  pass_condition: Re-reading the fragment locator yields the same content_hash after canonical text extraction.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.I0.SOURCE.PARSE_STATUS
+  gate: I0
+  title: Required sources are parseable enough for evidence extraction
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: SourceArtifact is included in the active gate scope.
+  check: Source parse_status is complete or partial-with-explicit-unparsed-regions; fatal parse failures are absent.
+  pass_condition: Source parse_status is complete or partial-with-explicit-unparsed-regions; fatal parse failures are absent.
+  waiver_policy: decision_required
+  remediation: Repair/import with another adapter or explicitly exclude the source from scope by ResolutionDecision.
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PPMN.I0.PROVENANCE.AGENT_IDENTIFIED
+  gate: I0
+  title: Provenance-producing agent is identified
+  severity: error
+  rule_class: external_interop
+  applies_when: A derivation, import or human action created semantic output.
+  check: DerivationRecord references a known Agent and activity kind.
+  pass_condition: DerivationRecord references a known Agent and activity kind.
+  waiver_policy: profile_allow
+  standard_reference:
+    standard: OMG PPMN
+    version: '1.0'
+    role: interchange
+    note: Pedigree/provenance interoperability.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.I0.BASELINE.HASHABLE
+  gate: I0
+  title: Evidence baseline is reproducibly hashable
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Evidence hash can be recomputed from scoped sources and equals the baseline evidence_hash.
+  pass_condition: Evidence hash can be recomputed from scoped sources and equals the baseline evidence_hash.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO29148.F1.REQ.STATEMENT_PRESENT
+  gate: F1
+  title: Accepted requirements have an explicit statement
+  severity: blocker
+  rule_class: external_standard
+  applies_when: Requirement status = Accepted.
+  check: Requirement.statement is non-empty after normalization.
+  pass_condition: Requirement.statement is non-empty after normalization.
+  waiver_policy: forbidden
+  standard_reference:
+    standard: ISO/IEC/IEEE 29148
+    version: '2018'
+    role: semantic_alignment
+    note: Current published requirements-engineering standard; successor DIS under development.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F1.REQ.GROUNDED
+  gate: F1
+  title: Accepted requirements are grounded in evidence or explicit human origin
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: At least one evidenced_by/derived_from path reaches EvidenceFragment, or the requirement carries an explicit human-origin
+    ResolutionDecision.
+  pass_condition: At least one evidenced_by/derived_from path reaches EvidenceFragment, or the requirement carries an explicit
+    human-origin ResolutionDecision.
+  waiver_policy: decision_required
+  remediation: Attach source evidence or record the requirement as an explicit human-origin decision.
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO29148.F1.REQ.LINEAGE
+  gate: F1
+  title: Requirements have intent lineage
+  severity: error
+  rule_class: external_standard
+  applies_when: Requirement is not a root stakeholder need.
+  check: Requirement addresses/refines/decomposes from at least one Goal, Need, Concern, parent Requirement, or explicit origin
+    decision.
+  pass_condition: Requirement addresses/refines/decomposes from at least one Goal, Need, Concern, parent Requirement, or explicit
+    origin decision.
+  waiver_policy: profile_allow
+  standard_reference:
+    standard: ISO/IEC/IEEE 29148
+    version: '2018'
+    role: semantic_alignment
+    note: Current published requirements-engineering standard; successor DIS under development.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F1.REQ.TYPE_KNOWN
+  gate: F1
+  title: Requirement kind and level are known
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: requirement_kind and level are set to registered values.
+  pass_condition: requirement_kind and level are set to registered values.
+  waiver_policy: decision_required
+  remediation: Classify as functional, quality, interface, constraint, data, security, etc., and set stakeholder/system/software/interface
+    level.
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED
+  gate: F1
+  title: Accepted requirement set has no unresolved semantic duplicates
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: No open blocking duplicate finding links two accepted requirements with equivalent obligation semantics.
+  pass_condition: No open blocking duplicate finding links two accepted requirements with equivalent obligation semantics.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F1.REQ.NO_CONTRADICTION
+  gate: F1
+  title: Accepted requirements have no unresolved blocking contradiction
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: No open blocking conflict finding exists between accepted requirements in the same scope.
+  pass_condition: No open blocking conflict finding exists between accepted requirements in the same scope.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F1.REQ.TERMS_RESOLVED
+  gate: F1
+  title: Requirement terms needed for interpretation resolve to concepts
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: All terms classified as semantic dependencies resolve to accepted Term/Concept nodes or are explicitly declared external
+    identifiers.
+  pass_condition: All terms classified as semantic dependencies resolve to accepted Term/Concept nodes or are explicitly declared
+    external identifiers.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F1.REQ.MODALITY_EXPLICIT
+  gate: F1
+  title: Normative requirement modality is explicit
+  severity: error
+  rule_class: plumb_core
+  applies_when: Requirement expresses an obligation, prohibition or option.
+  check: Requirement obligation strength is classified and contradictions in modality are absent.
+  pass_condition: Requirement obligation strength is classified and contradictions in modality are absent.
+  waiver_policy: profile_allow
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F1.REQ.CRITERIA_FOR_BEHAVIOR
+  gate: F1
+  title: Behavioral requirements have acceptance criteria or executable semantics
+  severity: error
+  rule_class: plumb_core
+  applies_when: Requirement kind is functional/interface/security behavior and is in implementation scope.
+  check: Requirement has AcceptanceCriterion, specified_by links, or an explicit deferred-verification decision.
+  pass_condition: Requirement has AcceptanceCriterion, specified_by links, or an explicit deferred-verification decision.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F1.REQ.QUALITY_FINDINGS_CLEAR
+  gate: F1
+  title: No unresolved high-severity requirement-quality findings
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: All requirement-quality findings marked blocker/error by active profile are resolved or validly waived.
+  pass_condition: All requirement-quality findings marked blocker/error by active profile are resolved or validly waived.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F1.REQ.SUPERSEDED_EXCLUDED
+  gate: F1
+  title: Superseded requirements do not count as active obligations
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Superseded requirements are excluded from gate scope, coverage denominators and generated contracts.
+  pass_condition: Superseded requirements are excluded from gate scope, coverage denominators and generated contracts.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.DOMAIN.ATTRIBUTE_OWNER
+  gate: F2
+  title: Every attribute has exactly one owning entity in the core profile
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each accepted Attribute has exactly one incoming has_attribute from an accepted Entity.
+  pass_condition: Each accepted Attribute has exactly one incoming has_attribute from an accepted Entity.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.DOMAIN.RELATION_TYPED
+  gate: F2
+  title: Domain relationships have known endpoints and cardinality when semantically required
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Relationship endpoints exist and any required cardinality/optionality constraints are resolved.
+  pass_condition: Relationship endpoints exist and any required cardinality/optionality constraints are resolved.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.STATE.TRANSITION_COMPLETE
+  gate: F2
+  title: State transitions are complete
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each Transition has source state, target state and exactly one trigger via Operation/Event.
+  pass_condition: Each Transition has source state, target state and exactly one trigger via Operation/Event.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.STATE.REACHABILITY
+  gate: F2
+  title: State models have no unreachable accepted states
+  severity: error
+  rule_class: plumb_core
+  applies_when: Entity/process declares a state machine with an initial state.
+  check: Every accepted non-terminal state is reachable from an initial state unless explicitly marked externally-entered.
+  pass_condition: Every accepted non-terminal state is reachable from an initial state unless explicitly marked externally-entered.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.OPERATION.PERFORMER
+  gate: F2
+  title: Executable operations have a performer or owning system
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each operation requiring execution has performed_by Actor/BusinessRole or an explicit owning system/component placeholder.
+  pass_condition: Each operation requiring execution has performed_by Actor/BusinessRole or an explicit owning system/component
+    placeholder.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.OPERATION.IO_TYPED
+  gate: F2
+  title: Operation inputs, reads, writes and outputs reference typed domain elements
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: All referenced entities/attributes/messages exist and type constraints resolve.
+  pass_condition: All referenced entities/attributes/messages exist and type constraints resolve.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.CALC.TYPECHECK
+  gate: F2
+  title: Calculations type-check
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every accepted Calculation parses and type-checks under PlumbExpr.
+  pass_condition: Every accepted Calculation parses and type-checks under PlumbExpr.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.CALC.NO_CYCLE
+  gate: F2
+  title: Calculation dependency cycles are resolved
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Calculation dependency graph is acyclic unless an explicitly supported fixed-point construct is used.
+  pass_condition: Calculation dependency graph is acyclic unless an explicitly supported fixed-point construct is used.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.TIME.CALENDAR_DEFINED
+  gate: F2
+  title: Business-time expressions have calendar/timezone semantics
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Calculation/rule uses working days, local dates, holidays or business-time boundaries.
+  check: A Calendar and timezone/boundary convention are linked.
+  pass_condition: A Calendar and timezone/boundary convention are linked.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: DMN.F2.TABLE.NO_OVERLAP
+  gate: F2
+  title: Deterministic decision tables have no illegal overlap
+  severity: blocker
+  rule_class: external_interop
+  applies_when: DecisionTable is executable and its hit policy does not permit overlapping matches.
+  check: Static/solver analysis finds no overlapping rule cells.
+  pass_condition: Static/solver analysis finds no overlapping rule cells.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: OMG DMN
+    version: '1.6'
+    role: interchange
+    note: Decision-model and decision-table interchange.
+    mapping_strength: subset
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: DMN.F2.TABLE.COVERAGE
+  gate: F2
+  title: Required decision domains are covered
+  severity: error
+  rule_class: external_interop
+  applies_when: DecisionTable is executable and profile requires total decision semantics.
+  check: Enumerated/boolean/interval domains are complete or a default/else rule is explicit.
+  pass_condition: Enumerated/boolean/interval domains are complete or a default/else rule is explicit.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: OMG DMN
+    version: '1.6'
+    role: interchange
+    note: Decision-model and decision-table interchange.
+    mapping_strength: subset
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: BPMN.F2.PROCESS.START_END
+  gate: F2
+  title: Executable process has valid entry and completion semantics
+  severity: blocker
+  rule_class: external_interop
+  applies_when: Process is executable/in-scope.
+  check: At least one start/trigger exists and every reachable terminal path ends in an outcome/end node.
+  pass_condition: At least one start/trigger exists and every reachable terminal path ends in an outcome/end node.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: OMG BPMN
+    version: 2.0.2
+    role: interchange
+    note: Process-model interchange and familiar notation.
+    mapping_strength: subset
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: BPMN.F2.PROCESS.REACHABLE
+  gate: F2
+  title: Process contains no unreachable executable node
+  severity: blocker
+  rule_class: external_interop
+  applies_when: Process is executable/in-scope.
+  check: All accepted executable ProcessNodes are reachable from a start/trigger.
+  pass_condition: All accepted executable ProcessNodes are reachable from a start/trigger.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: OMG BPMN
+    version: 2.0.2
+    role: interchange
+    note: Process-model interchange and familiar notation.
+    mapping_strength: subset
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.PROCESS.TASK_RESOLVES
+  gate: F2
+  title: Executable process tasks resolve to operations or explicit human activities
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each executable task references Operation, or is marked non-system human activity with responsibility and outcome
+    semantics.
+  pass_condition: Each executable task references Operation, or is marked non-system human activity with responsibility and
+    outcome semantics.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.PROCESS.GATEWAY_BALANCED
+  gate: F2
+  title: Parallel semantics are structurally resolvable
+  severity: error
+  rule_class: plumb_core
+  applies_when: Process contains parallel split/join semantics.
+  check: Parallel branches have compatible join/termination semantics; no branch can deadlock solely due to model structure.
+  pass_condition: Parallel branches have compatible join/termination semantics; no branch can deadlock solely due to model
+    structure.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.EVENT.PAYLOAD_TYPED
+  gate: F2
+  title: Events have typed payload semantics
+  severity: error
+  rule_class: plumb_core
+  applies_when: Event carries business data.
+  check: Each payload field maps to Attribute/DataSchema with resolved types.
+  pass_condition: Each payload field maps to Attribute/DataSchema with resolved types.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.EVENT.PRODUCER
+  gate: F2
+  title: Consumed internal events have a producer
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Event is internal and consumed by an in-scope process/operation.
+  check: At least one in-scope Operation/ProcessNode produces the event, or source is declared external.
+  pass_condition: At least one in-scope Operation/ProcessNode produces the event, or source is declared external.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.EVENT.CONSUMER
+  gate: F2
+  title: Produced material events have a consumer or explicit terminal purpose
+  severity: error
+  rule_class: plumb_core
+  applies_when: Event is produced and classified material/integration-relevant.
+  check: Event has at least one consumer/subscriber or is explicitly terminal/audit-only.
+  pass_condition: Event has at least one consumer/subscriber or is explicitly terminal/audit-only.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: RBAC.F2.PERMISSION.CONCRETE
+  gate: F2
+  title: Permissions resolve to operations and resource scope
+  severity: blocker
+  rule_class: external_standard
+  applies_when: Permission status = Accepted.
+  check: Permission permits at least one concrete Operation and has exactly one ResourceScope.
+  pass_condition: Permission permits at least one concrete Operation and has exactly one ResourceScope.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: INCITS 359
+    version: '2012'
+    role: semantic_alignment
+    note: 'RBAC reference-model concepts: users, roles, permissions, operations, objects.'
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: RBAC.F2.ROLE.HIERARCHY_ACYCLIC
+  gate: F2
+  title: Security-role hierarchy is acyclic
+  severity: blocker
+  rule_class: external_standard
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: inherits_role graph has no cycle.
+  pass_condition: inherits_role graph has no cycle.
+  waiver_policy: forbidden
+  standard_reference:
+    standard: INCITS 359
+    version: '2012'
+    role: semantic_alignment
+    note: 'RBAC reference-model concepts: users, roles, permissions, operations, objects.'
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.ROLE.SEPARATION
+  gate: F2
+  title: Business roles and security roles remain semantically distinct
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: No node is simultaneously typed BusinessRole and SecurityRole; mappings are explicit edges.
+  pass_condition: No node is simultaneously typed BusinessRole and SecurityRole; mappings are explicit edges.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.SOD.NO_VIOLATION
+  gate: F2
+  title: Blocking separation-of-duty constraints are satisfiable
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Security-sensitive operations have SeparationConstraint.
+  check: No accepted role assignment grants a forbidden combination without explicit profile-authorized exception.
+  pass_condition: No accepted role assignment grants a forbidden combination without explicit profile-authorized exception.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.INVARIANT.EXPRESSIBLE
+  gate: F2
+  title: Accepted invariants are executable or explicitly non-executable
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Invariant has a valid PlumbExpr AST or a declared manual/formal verification method.
+  pass_condition: Invariant has a valid PlumbExpr AST or a declared manual/formal verification method.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER
+  gate: F2
+  title: No unresolved blocking functional-semantic finding remains
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Active F2 rule registry contains no unresolved blocker finding.
+  pass_condition: Active F2 rule registry contains no unresolved blocker finding.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F3.QUESTION.NO_BLOCKING_OPEN
+  gate: F3
+  title: No blocking functional question remains open
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: All Question nodes with blocking=true in functional scope are Answered/Closed/Superseded.
+  pass_condition: All Question nodes with blocking=true in functional scope are Answered/Closed/Superseded.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F3.DECISION.PATCH_APPLIED
+  gate: F3
+  title: Accepted resolution decisions are reflected in the graph
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each Accepted ResolutionDecision has a replayable SemanticPatch whose resulting semantic effects are present at current
+    baseline.
+  pass_condition: Each Accepted ResolutionDecision has a replayable SemanticPatch whose resulting semantic effects are present
+    at current baseline.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F3.DECISION.EVIDENCE
+  gate: F3
+  title: Material decisions retain rationale and provenance
+  severity: error
+  rule_class: plumb_core
+  applies_when: ResolutionDecision changes a blocking semantic ambiguity.
+  check: Decision records actor, timestamp, answer, target question/finding and rationale/evidence as required by profile.
+  pass_condition: Decision records actor, timestamp, answer, target question/finding and rationale/evidence as required by
+    profile.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F3.ASSUMPTION.OWNER
+  gate: F3
+  title: Assumptions have owner and expiry/review policy
+  severity: error
+  rule_class: plumb_core
+  applies_when: Assumption affects a blocking or architecture-driving semantic element.
+  check: owner is set and expires/review_at is set or profile explicitly marks assumption permanent.
+  pass_condition: owner is set and expires/review_at is set or profile explicitly marks assumption permanent.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F3.ASSUMPTION.NOT_EXPIRED
+  gate: F3
+  title: Expired assumptions do not silently satisfy gates
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: No active blocking assumption is beyond expiry/review date without renewed ResolutionDecision.
+  pass_condition: No active blocking assumption is beyond expiry/review date without renewed ResolutionDecision.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F3.WAIVER.DECISION
+  gate: F3
+  title: Blocking waivers have explicit governance
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: A blocker/error is marked Waived.
+  check: Waiver references ResolutionDecision, owner, rationale, scope and review/expiry if required.
+  pass_condition: Waiver references ResolutionDecision, owner, rationale, scope and review/expiry if required.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F4.FUNCTION.VERIFICATION_LINK
+  gate: F4
+  title: In-scope functional obligations have a verification obligation
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Requirement/Operation is functional and implementation-scoped.
+  check: At least one verified_by link reaches an accepted VerificationObligation.
+  pass_condition: At least one verified_by link reaches an accepted VerificationObligation.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F4.SCENARIO.FOR_EXECUTABLE_BEHAVIOR
+  gate: F4
+  title: Executable business behavior has representative scenarios
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Operation/Process/Rule participates in deterministic executable business behavior.
+  check: At least one accepted Scenario covers normal behavior and each blocking outcome/boundary class required by profile.
+  pass_condition: At least one accepted Scenario covers normal behavior and each blocking outcome/boundary class required
+    by profile.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F4.SCENARIO.GROUNDED
+  gate: F4
+  title: Scenarios trace to obligations
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each accepted Scenario references Requirement/AcceptanceCriterion/Rule/Transition from which it is derived.
+  pass_condition: Each accepted Scenario references Requirement/AcceptanceCriterion/Rule/Transition from which it is derived.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F4.SCENARIO.TYPED
+  gate: F4
+  title: Scenario Given/When/Then values are type-valid
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: All scenario fixtures satisfy entity types, units, enum domains and operation inputs.
+  pass_condition: All scenario fixtures satisfy entity types, units, enum domains and operation inputs.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F4.RUN.NO_BLOCKING_UNDECIDABLE
+  gate: F4
+  title: Blocking executable scenarios are decidable
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Latest current ScenarioRun for every blocking executable scenario is Pass or an accepted expected-failure case; none
+    is Undecidable.
+  pass_condition: Latest current ScenarioRun for every blocking executable scenario is Pass or an accepted expected-failure
+    case; none is Undecidable.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F4.RUN.TRACE_COMPLETE
+  gate: F4
+  title: Scenario execution produces semantic trace
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: ScenarioRun records operation/rule/calculation/transition steps sufficient to explain the result.
+  pass_condition: ScenarioRun records operation/rule/calculation/transition steps sufficient to explain the result.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.F4.ASSUMPTIONS.VISIBLE
+  gate: F4
+  title: Assumptions affecting execution are visible in gate output
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Gate report lists every active assumption reachable from covered obligations.
+  pass_condition: Gate report lists every active assumption reachable from covered obligations.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO25010.Q1.CHARACTERISTIC
+  gate: Q1
+  title: Quality requirements map to a recognized quality characteristic
+  severity: blocker
+  rule_class: external_standard
+  applies_when: Requirement kind = quality, or QualityScenario is architecture-driving.
+  check: QualityScenario has exactly one characterized_by QualityCharacteristic from active taxonomy or approved extension.
+  pass_condition: QualityScenario has exactly one characterized_by QualityCharacteristic from active taxonomy or approved
+    extension.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC 25010
+    version: '2023'
+    role: taxonomy
+    note: Product quality model with nine characteristics.
+    mapping_strength: taxonomy
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.Q1.SCENARIO.STIMULUS
+  gate: Q1
+  title: Quality scenario identifies stimulus
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Architecture-driving QualityScenario.stimulus is populated.
+  pass_condition: Architecture-driving QualityScenario.stimulus is populated.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.Q1.SCENARIO.ENVIRONMENT
+  gate: Q1
+  title: Quality scenario identifies operating environment/condition
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Architecture-driving QualityScenario.environment is explicit.
+  pass_condition: Architecture-driving QualityScenario.environment is explicit.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.Q1.SCENARIO.TARGET
+  gate: Q1
+  title: Quality scenario identifies affected artifact/scope
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: QualityScenario references at least one system/function/architecture target.
+  pass_condition: QualityScenario references at least one system/function/architecture target.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.Q1.SCENARIO.MEASURE
+  gate: Q1
+  title: Quality scenario is measurable
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: QualityScenario has exactly one measured_by Measure and a defined unit/scale where applicable.
+  pass_condition: QualityScenario has exactly one measured_by Measure and a defined unit/scale where applicable.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.Q1.SCENARIO.THRESHOLD
+  gate: Q1
+  title: Quality scenario has acceptance threshold
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Threshold/range/target semantics are explicit and type-compatible with the Measure.
+  pass_condition: Threshold/range/target semantics are explicit and type-compatible with the Measure.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.Q1.QUALITY.NO_CONFLICT
+  gate: Q1
+  title: Quality thresholds have no unresolved internal conflict
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: No two accepted quality obligations impose contradictory thresholds on the same scoped condition without precedence/decision.
+  pass_condition: No two accepted quality obligations impose contradictory thresholds on the same scoped condition without
+    precedence/decision.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.Q1.QUALITY.PRIORITY
+  gate: Q1
+  title: Architecture-driving quality scenarios have priority/criticality
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: criticality or priority is classified for all architecture-driving QualityScenarios.
+  pass_condition: criticality or priority is classified for all architecture-driving QualityScenarios.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO42010.A1.SYSTEM_OF_INTEREST
+  gate: A1
+  title: Architecture scope identifies the system/entity of interest
+  severity: blocker
+  rule_class: external_standard
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Exactly one primary SystemOfInterest is designated for the active architecture baseline or profile explicitly supports
+    a federation.
+  pass_condition: Exactly one primary SystemOfInterest is designated for the active architecture baseline or profile explicitly
+    supports a federation.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC/IEEE 42010
+    version: '2022'
+    role: semantic_alignment
+    note: Architecture-description concepts and conformance targets.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO42010.A1.STAKEHOLDERS
+  gate: A1
+  title: Relevant architecture stakeholders are identified
+  severity: blocker
+  rule_class: external_standard
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: ArchitectureDescription references at least one Stakeholder and all mandatory stakeholder classes in the active profile
+    are represented.
+  pass_condition: ArchitectureDescription references at least one Stakeholder and all mandatory stakeholder classes in the
+    active profile are represented.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC/IEEE 42010
+    version: '2022'
+    role: semantic_alignment
+    note: Architecture-description concepts and conformance targets.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO42010.A1.CONCERNS
+  gate: A1
+  title: Relevant architecture concerns are identified
+  severity: blocker
+  rule_class: external_standard
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Architecture-driving stakeholder concerns are accepted and linked to stakeholders.
+  pass_condition: Architecture-driving stakeholder concerns are accepted and linked to stakeholders.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC/IEEE 42010
+    version: '2022'
+    role: semantic_alignment
+    note: Architecture-description concepts and conformance targets.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO42010.A1.CONCERNS.ADDRESSED
+  gate: A1
+  title: Architecture concerns are addressed
+  severity: blocker
+  rule_class: external_standard
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every blocking Concern is addressed by at least one View, Requirement, QualityScenario, Constraint or ArchitectureDecision.
+  pass_condition: Every blocking Concern is addressed by at least one View, Requirement, QualityScenario, Constraint or ArchitectureDecision.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC/IEEE 42010
+    version: '2022'
+    role: semantic_alignment
+    note: Architecture-description concepts and conformance targets.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A1.DRIVER.FUNCTIONAL
+  gate: A1
+  title: Architecture-driving functional obligations are selected
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: All high-impact operations/processes/data responsibilities are marked as drivers or explicitly classified non-driving.
+  pass_condition: All high-impact operations/processes/data responsibilities are marked as drivers or explicitly classified
+    non-driving.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A1.DRIVER.QUALITY
+  gate: A1
+  title: Architecture-driving quality scenarios are selected
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: All blocking/critical QualityScenarios are linked via drives to candidate/decision analysis.
+  pass_condition: All blocking/critical QualityScenarios are linked via drives to candidate/decision analysis.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A1.DRIVER.CONSTRAINTS
+  gate: A1
+  title: Technical constraints are classified and scoped
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: 'Every in-scope Technical/Integration/Data/Security/Deployment constraint has scope and strength: mandatory/preferred/prohibited.'
+  pass_condition: 'Every in-scope Technical/Integration/Data/Security/Deployment constraint has scope and strength: mandatory/preferred/prohibited.'
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A1.DRIVER.NO_CONFLICT
+  gate: A1
+  title: Architecture drivers contain no unresolved blocker conflict
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: No open blocking conflict exists among mandatory constraints, critical quality thresholds and required functionality.
+  pass_condition: No open blocking conflict exists among mandatory constraints, critical quality thresholds and required functionality.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A1.EXTERNAL_SYSTEMS
+  gate: A1
+  title: Material external systems and boundaries are identified
+  severity: error
+  rule_class: plumb_core
+  applies_when: System exchanges data/control with external systems or actors.
+  check: ExternalSystem/Actor nodes and interaction responsibilities exist for all material boundary interactions.
+  pass_condition: ExternalSystem/Actor nodes and interaction responsibilities exist for all material boundary interactions.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A2.OPERATION.ALLOCATED
+  gate: A2
+  title: Implementation-scoped operations are allocated
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each implementation-scoped Operation has >=1 allocated_to accepted ArchitectureElement.
+  pass_condition: Each implementation-scoped Operation has >=1 allocated_to accepted ArchitectureElement.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A2.PROCESS.RESPONSIBILITY
+  gate: A2
+  title: Process/service responsibilities are allocated
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Process or ProcessNode implies software responsibility.
+  check: Software-executed responsibilities are allocated to an accepted ArchitectureElement.
+  pass_condition: Software-executed responsibilities are allocated to an accepted ArchitectureElement.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A2.DATA.OWNERSHIP
+  gate: A2
+  title: Persistent business data has ownership
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Entity/Attribute is persistent or authoritative.
+  check: At least one accepted Component/Container is designated owner/system-of-record and associated DataStore where relevant.
+  pass_condition: At least one accepted Component/Container is designated owner/system-of-record and associated DataStore
+    where relevant.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A2.INTERFACE.OWNERSHIP
+  gate: A2
+  title: Interfaces have owning architecture elements
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every accepted Interface/ApiContract/EventContract has at least one exposing/owning ArchitectureElement.
+  pass_condition: Every accepted Interface/ApiContract/EventContract has at least one exposing/owning ArchitectureElement.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A2.COMPONENT.JUSTIFIED
+  gate: A2
+  title: Architecture elements have upstream justification
+  severity: error
+  rule_class: plumb_core
+  applies_when: Component/Container is in accepted candidate.
+  check: At least one Requirement, Operation, QualityScenario, Constraint or ArchitectureDecision justifies the element.
+  pass_condition: At least one Requirement, Operation, QualityScenario, Constraint or ArchitectureDecision justifies the element.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A2.NO_ORPHAN_DEPENDENCY
+  gate: A2
+  title: Architecture dependencies reference accepted elements
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every depends_on edge connects accepted elements in the same candidate/baseline or explicitly external elements.
+  pass_condition: Every depends_on edge connects accepted elements in the same candidate/baseline or explicitly external elements.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A2.ALLOCATION.NO_CONTRADICTION
+  gate: A2
+  title: Allocations respect technical constraints
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: No allocated element violates a mandatory/prohibited scoped Constraint or accepted TechnologySelection.
+  pass_condition: No allocated element violates a mandatory/prohibited scoped Constraint or accepted TechnologySelection.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A2.CRITICAL_SINGLE_OWNER
+  gate: A2
+  title: Critical stateful responsibility has unambiguous ownership
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Responsibility is classified stateful/authoritative/critical.
+  check: Ownership is single or an explicit replication/coordination model is defined.
+  pass_condition: Ownership is single or an explicit replication/coordination model is defined.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO42010.A2.VIEWS.DEFINED
+  gate: A2
+  title: Required architecture views exist
+  severity: error
+  rule_class: external_standard
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every required Viewpoint in the active profile has at least one corresponding View for the accepted candidate.
+  pass_condition: Every required Viewpoint in the active profile has at least one corresponding View for the accepted candidate.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC/IEEE 42010
+    version: '2022'
+    role: semantic_alignment
+    note: Architecture-description concepts and conformance targets.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.BOUNDARY.CONTRACT
+  gate: A3
+  title: Every material software boundary interaction has a technical contract
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Cross-element synchronous/event interaction has Interface plus ApiContract/EventContract or an explicit non-API protocol
+    contract.
+  pass_condition: Cross-element synchronous/event interaction has Interface plus ApiContract/EventContract or an explicit
+    non-API protocol contract.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: OPENAPI.A3.DOCUMENT.VALID
+  gate: A3
+  title: HTTP API projections validate against declared OpenAPI version
+  severity: blocker
+  rule_class: external_interop
+  applies_when: ApiContract.protocol = HTTP and projection format = OpenAPI.
+  check: Generated/imported OpenAPI document passes official/schema-aware validator for the declared OAS version.
+  pass_condition: Generated/imported OpenAPI document passes official/schema-aware validator for the declared OAS version.
+  waiver_policy: forbidden
+  standard_reference:
+    standard: OpenAPI Specification
+    version: 3.2.1
+    role: interchange
+    note: HTTP API description.
+    mapping_strength: exact
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.API.TRACE
+  gate: A3
+  title: API operations trace to functional semantics
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each implementation-relevant ApiOperation has exposed_by/specifies trace to Operation/Requirement unless explicitly
+    infrastructure-only.
+  pass_condition: Each implementation-relevant ApiOperation has exposed_by/specifies trace to Operation/Requirement unless
+    explicitly infrastructure-only.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.API.OPERATION_ID
+  gate: A3
+  title: API operations have stable identifiers
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each ApiOperation has a stable operation_id unique within project contract namespace.
+  pass_condition: Each ApiOperation has a stable operation_id unique within project contract namespace.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.API.SCHEMA
+  gate: A3
+  title: API request/response data is schema-defined
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: ApiOperation carries structured request/response body or parameters.
+  check: Input/output schemas resolve to DataSchema and semantic domain types.
+  pass_condition: Input/output schemas resolve to DataSchema and semantic domain types.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.API.FAILURE
+  gate: A3
+  title: Material failure outcomes are represented in contracts
+  severity: error
+  rule_class: plumb_core
+  applies_when: Functional Operation defines blocking/material failure Outcome.
+  check: Technical contract exposes corresponding error/outcome semantics or explicit transport-independent mapping.
+  pass_condition: Technical contract exposes corresponding error/outcome semantics or explicit transport-independent mapping.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ASYNCAPI.A3.DOCUMENT.VALID
+  gate: A3
+  title: Event API projections validate against AsyncAPI 3.0
+  severity: blocker
+  rule_class: external_interop
+  applies_when: EventContract projects to AsyncAPI.
+  check: AsyncAPI document is syntactically/specification-valid for declared version.
+  pass_condition: AsyncAPI document is syntactically/specification-valid for declared version.
+  waiver_policy: forbidden
+  standard_reference:
+    standard: AsyncAPI Specification
+    version: 3.0.0
+    role: interchange
+    note: Message-driven API description.
+    mapping_strength: exact
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.EVENT.CHANNEL
+  gate: A3
+  title: Event operations reference channel and message
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each publish/subscribe technical interaction resolves to accepted Channel and Message.
+  pass_condition: Each publish/subscribe technical interaction resolves to accepted Channel and Message.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.EVENT.PRODUCER_CONSUMER
+  gate: A3
+  title: Material event contracts have producer and consumer semantics
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each material event/message has at least one publisher and subscriber or explicit external endpoint.
+  pass_condition: Each material event/message has at least one publisher and subscriber or explicit external endpoint.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.MESSAGE.SCHEMA
+  gate: A3
+  title: Message payloads are schema-defined
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Message has payload.
+  check: Payload maps to accepted DataSchema/domain attributes and version semantics.
+  pass_condition: Payload maps to accepted DataSchema/domain attributes and version semantics.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ARAZZO.A3.WORKFLOW.VALID
+  gate: A3
+  title: API workflow projection validates against Arazzo
+  severity: blocker
+  rule_class: external_interop
+  applies_when: TechnicalWorkflow projects to Arazzo.
+  check: Arazzo description is valid and references resolvable source descriptions/API operations.
+  pass_condition: Arazzo description is valid and references resolvable source descriptions/API operations.
+  waiver_policy: forbidden
+  standard_reference:
+    standard: Arazzo Specification
+    version: 1.1.0
+    role: interchange
+    note: API workflow description.
+    mapping_strength: exact
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.WORKFLOW.TRACE
+  gate: A3
+  title: Technical workflows trace to user/business outcomes
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: TechnicalWorkflow is not purely infrastructure maintenance.
+  check: Workflow links to Scenario/Process/Requirement outcome.
+  pass_condition: Workflow links to Scenario/Process/Requirement outcome.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.CONTRACT.VERSION_POLICY
+  gate: A3
+  title: Externally consumed contracts have version/change policy
+  severity: error
+  rule_class: plumb_core
+  applies_when: Contract is external/public/cross-team according to profile.
+  check: version identifier and compatibility/change policy are present.
+  pass_condition: version identifier and compatibility/change policy are present.
+  waiver_policy: profile_allow
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A3.SECURITY.AUTHZ_TRACE
+  gate: A3
+  title: Security-sensitive contract operations trace to authorization semantics
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: ApiOperation/Channel action is protected.
+  check: Contract operation traces to Permission/PolicyCondition or explicit external authorization policy.
+  pass_condition: Contract operation traces to Permission/PolicyCondition or explicit external authorization policy.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO42010.A4.VIEW.VIEWPOINT
+  gate: A4
+  title: Architecture views conform to declared viewpoints
+  severity: error
+  rule_class: external_standard
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each required View references one Viewpoint and satisfies that Viewpoint's required model kinds/concerns.
+  pass_condition: Each required View references one Viewpoint and satisfies that Viewpoint's required model kinds/concerns.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC/IEEE 42010
+    version: '2022'
+    role: semantic_alignment
+    note: Architecture-description concepts and conformance targets.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A4.CANDIDATE.UNIQUE_ACCEPTED
+  gate: A4
+  title: Exactly one architecture candidate is accepted per baseline
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: One and only one candidate is Accepted unless active profile explicitly allows multi-target accepted architectures.
+  pass_condition: One and only one candidate is Accepted unless active profile explicitly allows multi-target accepted architectures.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A4.DECISION.DRIVER
+  gate: A4
+  title: Accepted architecture decisions have drivers
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every accepted ArchitectureDecision has >=1 justified_by Requirement/QualityScenario/Constraint.
+  pass_condition: Every accepted ArchitectureDecision has >=1 justified_by Requirement/QualityScenario/Constraint.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A4.DECISION.ALTERNATIVES
+  gate: A4
+  title: Material architecture decisions record considered alternatives
+  severity: error
+  rule_class: plumb_core
+  applies_when: Decision materially affects architecture, technology, data, integration, deployment, security or quality.
+  check: At least two alternatives or an explicit reason why no meaningful alternative existed is recorded.
+  pass_condition: At least two alternatives or an explicit reason why no meaningful alternative existed is recorded.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A4.DECISION.RATIONALE
+  gate: A4
+  title: Accepted architecture decisions include rationale
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: rationale is non-empty and linked to drivers/tradeoffs.
+  pass_condition: rationale is non-empty and linked to drivers/tradeoffs.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A4.DECISION.CONSEQUENCES
+  gate: A4
+  title: Material decisions record consequences
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: positive/negative consequence set is non-empty for material decisions.
+  pass_condition: positive/negative consequence set is non-empty for material decisions.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A4.QUALITY.RESPONSE
+  gate: A4
+  title: Critical quality scenarios have architecture responses
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each critical QualityScenario links to ArchitectureDecision/element/tactic or explicit accepted risk.
+  pass_condition: Each critical QualityScenario links to ArchitectureDecision/element/tactic or explicit accepted risk.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A4.TECH.SELECTION
+  gate: A4
+  title: Selected technologies are scoped and justified
+  severity: error
+  rule_class: plumb_core
+  applies_when: TechnologySelection status = selected.
+  check: technology/version range/applies_to and justification/decision are present.
+  pass_condition: technology/version range/applies_to and justification/decision are present.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.A4.ARCH.NO_BLOCKING_FINDING
+  gate: A4
+  title: No unresolved blocking architecture finding remains
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: All A1-A4 blocker findings are resolved or permitted waivers are recorded.
+  pass_condition: All A1-A4 blocker findings are resolved or permitted waivers are recorded.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D1.SLICE.UPSTREAM
+  gate: D1
+  title: Implementation slices have upstream obligations
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each ImplementationSlice references >=1 Requirement/Operation/ArchitectureElement/Contract obligation.
+  pass_condition: Each ImplementationSlice references >=1 Requirement/Operation/ArchitectureElement/Contract obligation.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D1.SLICE.ARCH_SCOPE
+  gate: D1
+  title: Implementation slices identify architecture scope
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each implementation slice identifies affected Component/Module/Interface/DataStore or explicit reason for non-code
+    slice.
+  pass_condition: Each implementation slice identifies affected Component/Module/Interface/DataStore or explicit reason for
+    non-code slice.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D1.SLICE.CONTRACT_SCOPE
+  gate: D1
+  title: Interface-impacting slices identify affected contracts
+  severity: error
+  rule_class: plumb_core
+  applies_when: Slice changes cross-boundary behavior/data.
+  check: Affected ApiContract/EventContract/DataSchema references are present.
+  pass_condition: Affected ApiContract/EventContract/DataSchema references are present.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D1.SLICE.DEPENDENCY_DAG
+  gate: D1
+  title: Implementation dependency graph is acyclic
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: depends_on_slice graph is a DAG, or every cycle is covered by an accepted Migration strategy.
+  pass_condition: depends_on_slice graph is a DAG, or every cycle is covered by an accepted Migration strategy.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D1.SCOPE.COVERAGE
+  gate: D1
+  title: Accepted implementation scope is covered by slices
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every in-scope implementation obligation maps to >=1 ImplementationSlice.
+  pass_condition: Every in-scope implementation obligation maps to >=1 ImplementationSlice.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D1.NO_ORPHAN_SLICE
+  gate: D1
+  title: No implementation slice exists without engineering justification
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every slice has upstream obligation and accepted owner/planning status.
+  pass_condition: Every slice has upstream obligation and accepted owner/planning status.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D1.TASK.CONTRACT
+  gate: D1
+  title: Agent/developer-facing tasks have explicit task contracts
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Slice is delegated to autonomous/semi-autonomous coding or cross-team implementation.
+  check: TaskContract defines must, must_not, allowed_changes, forbidden_changes and completion criteria.
+  pass_condition: TaskContract defines must, must_not, allowed_changes, forbidden_changes and completion criteria.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO12207.D1.LIFECYCLE.OWNERSHIP
+  gate: D1
+  title: Delivery work has lifecycle responsibility
+  severity: error
+  rule_class: external_standard
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every active WorkPackage/Slice has responsible owner/role and lifecycle state.
+  pass_condition: Every active WorkPackage/Slice has responsible owner/role and lifecycle state.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC/IEEE 12207
+    version: '2026'
+    role: lifecycle_alignment
+    note: Software life-cycle process framework.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO15289.D1.INFO.ITEMS
+  gate: D1
+  title: Required lifecycle information outputs are identified
+  severity: warn
+  rule_class: external_standard
+  applies_when: Active profile requires human-readable lifecycle information items.
+  check: Required generated/projected information items are declared with owners and target formats.
+  pass_condition: Required generated/projected information items are declared with owners and target formats.
+  waiver_policy: profile_allow
+  standard_reference:
+    standard: ISO/IEC/IEEE 15289
+    version: '2019'
+    role: information_item_alignment
+    note: Life-cycle information items; current edition confirmed 2025 and under revision.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO29148.D2.REQ.VERIFICATION_METHOD
+  gate: D2
+  title: In-scope verifiable requirements have a verification method
+  severity: blocker
+  rule_class: external_standard
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every in-scope Requirement classified verifiable has >=1 accepted VerificationObligation with method.
+  pass_condition: Every in-scope Requirement classified verifiable has >=1 accepted VerificationObligation with method.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC/IEEE 29148
+    version: '2018'
+    role: semantic_alignment
+    note: Current published requirements-engineering standard; successor DIS under development.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D2.OBLIGATION.TYPED
+  gate: D2
+  title: Verification obligations use an explicit method
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: method is one of test, scenario, analysis, inspection, review, demonstration, formal_check, architecture_check, security_check,
+    or registered extension.
+  pass_condition: method is one of test, scenario, analysis, inspection, review, demonstration, formal_check, architecture_check,
+    security_check, or registered extension.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D2.OBLIGATION.CRITERIA
+  gate: D2
+  title: Verification obligations have success criteria
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each obligation defines expected result/pass condition or references AcceptanceCriterion/QualityScenario threshold.
+  pass_condition: Each obligation defines expected result/pass condition or references AcceptanceCriterion/QualityScenario
+    threshold.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D2.OBLIGATION.OWNER
+  gate: D2
+  title: Verification obligations have responsibility
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: owner/responsible role is assigned.
+  pass_condition: owner/responsible role is assigned.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D2.OBLIGATION.IMPLEMENTATION
+  gate: D2
+  title: Blocking verification obligations have a planned implementation
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each blocking VerificationObligation has implemented_as TestCase/Scenario/ArchitectureCheck or explicit manual verification
+    plan.
+  pass_condition: Each blocking VerificationObligation has implemented_as TestCase/Scenario/ArchitectureCheck or explicit
+    manual verification plan.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: ISO29119.D2.TEST.PROCESS_CONTEXT
+  gate: D2
+  title: Executable tests have governing test context
+  severity: error
+  rule_class: external_standard
+  applies_when: VerificationObligation.method = test or scenario and is release-blocking.
+  check: Test/Scenario has environment/context, responsibility and expected outcome metadata sufficient for controlled execution.
+  pass_condition: Test/Scenario has environment/context, responsibility and expected outcome metadata sufficient for controlled
+    execution.
+  waiver_policy: decision_required
+  standard_reference:
+    standard: ISO/IEC/IEEE 29119-2
+    version: '2021'
+    role: test_process_alignment
+    note: Software test processes.
+    mapping_strength: compatible
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D2.COVERAGE.TYPED
+  gate: D2
+  title: Coverage is computed from semantic relations
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: CoverageRecord derives solely from verified_by/implemented_as/trace relations, not name similarity.
+  pass_condition: CoverageRecord derives solely from verified_by/implemented_as/trace relations, not name similarity.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D2.NO_UNCOVERED_BLOCKER
+  gate: D2
+  title: No blocking obligation lacks a verification plan
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Coverage report shows zero uncovered blocker obligations.
+  pass_condition: Coverage report shows zero uncovered blocker obligations.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D2.SLICE.DOWNSTREAM
+  gate: D2
+  title: Implementation slices have downstream verification
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every implementation slice has >=1 verification obligation covering its changed obligations.
+  pass_condition: Every implementation slice has >=1 verification obligation covering its changed obligations.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.D2.SECURITY.VERIFICATION
+  gate: D2
+  title: Security-sensitive permissions/contracts have security verification
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Operation/contract is marked security-sensitive.
+  check: At least one security_check/test obligation covers authorization/authentication/policy semantics.
+  pass_condition: At least one security_check/test obligation covers authorization/authentication/policy semantics.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.CODE.BINDING
+  gate: C1
+  title: Implemented semantic elements bind to code/artifacts
+  severity: error
+  rule_class: plumb_core
+  applies_when: Obligation is marked implemented.
+  check: CodeBinding identifies repository/artifact and revision/path/symbol as supported by binding type.
+  pass_condition: CodeBinding identifies repository/artifact and revision/path/symbol as supported by binding type.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.RECEIPT.CURRENT_SPEC
+  gate: C1
+  title: Verification evidence matches current specification
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Each receipt used for gate satisfaction binds the current semantic_hash or a proven unaffected ancestor baseline.
+  pass_condition: Each receipt used for gate satisfaction binds the current semantic_hash or a proven unaffected ancestor
+    baseline.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.RECEIPT.CURRENT_CODE
+  gate: C1
+  title: Verification evidence matches current code revision
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Receipt binds the code revision under evaluation; later relevant changes mark it stale.
+  pass_condition: Receipt binds the code revision under evaluation; later relevant changes mark it stale.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.RECEIPT.TEST_REV
+  gate: C1
+  title: Verification receipts bind test/check revision
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: TestReceipt includes test/check definition revision/hash.
+  pass_condition: TestReceipt includes test/check definition revision/hash.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.RECEIPT.ENV
+  gate: C1
+  title: Verification receipts identify environment
+  severity: error
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Execution environment/profile is recorded for automated/manual evidence where environment can affect result.
+  pass_condition: Execution environment/profile is recorded for automated/manual evidence where environment can affect result.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.STALE.NOT_COUNTED
+  gate: C1
+  title: Stale evidence cannot satisfy current obligations
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: No CoverageRecord counts TestReceipt with staleness=true or invalid dependency fingerprint.
+  pass_condition: No CoverageRecord counts TestReceipt with staleness=true or invalid dependency fingerprint.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.CONTRACT.NO_DRIFT
+  gate: C1
+  title: Implemented technical contracts do not drift from accepted contract
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Generated/observed implementation contract is available.
+  check: Semantic diff contains no unapproved breaking/material change against accepted Api/Event/Data contracts.
+  pass_condition: Semantic diff contains no unapproved breaking/material change against accepted Api/Event/Data contracts.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.ARCH.NO_DRIFT
+  gate: C1
+  title: Implementation does not violate accepted architecture allocation/constraints
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: ArchitectureCheck finds no blocking unapproved dependency, ownership, technology or deployment drift.
+  pass_condition: ArchitectureCheck finds no blocking unapproved dependency, ownership, technology or deployment drift.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.TASK.MUST_NOT
+  gate: C1
+  title: Task-contract prohibitions were respected
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: Implementation performed under TaskContract.
+  check: No changed artifact violates must_not/forbidden_changes unless superseded by ResolutionDecision.
+  pass_condition: No changed artifact violates must_not/forbidden_changes unless superseded by ResolutionDecision.
+  waiver_policy: forbidden
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.OBLIGATION.ALL_CURRENT
+  gate: C1
+  title: All release-blocking verification obligations have current passing evidence
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: Every release-blocking obligation is satisfied by current acceptable evidence with no unresolved blocker finding.
+  pass_condition: Every release-blocking obligation is satisfied by current acceptable evidence with no unresolved blocker
+    finding.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open
+- id: PLUMB.C1.NO_BLOCKING_DRIFT
+  gate: C1
+  title: No unresolved blocking drift/conformance finding remains
+  severity: blocker
+  rule_class: plumb_core
+  applies_when: All in-scope accepted elements of the relevant type.
+  check: All C1 blocker findings are resolved or deployment is stopped.
+  pass_condition: All C1 blocker findings are resolved or deployment is stopped.
+  waiver_policy: decision_required
+  evaluation: deterministic
+  finding_status_on_fail: Open

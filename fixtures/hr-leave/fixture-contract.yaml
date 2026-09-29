@@ -1,0 +1,622 @@
+fixture_id: hr-leave-v3-pilot-1
+requirements:
+- id: HR-001
+  kind: functional
+  statement: The system shall allow an employee to create a draft leave request.
+- id: HR-002
+  kind: functional
+  statement: A leave request shall identify the employee, leave type, start date, and end date.
+- id: HR-003
+  kind: functional
+  statement: The system shall reject a leave request whose start date is after its end date.
+- id: HR-004
+  kind: functional
+  statement: The system shall calculate the requested leave duration in working days from the start date to the end date.
+- id: HR-005
+  kind: functional
+  statement: The system shall exclude Saturdays and Sundays from requested leave duration.
+- id: HR-006
+  kind: functional
+  statement: The system shall exclude public holidays from requested leave duration.
+- id: HR-007
+  kind: functional
+  statement: The system shall support a half-day leave request.
+- id: HR-008
+  kind: functional
+  statement: The system shall prevent submission when the employee has insufficient annual-leave balance for the requested annual leave.
+- id: HR-009
+  kind: functional
+  statement: Submitting a valid leave request shall change its status from Draft to Submitted.
+- id: HR-010
+  kind: functional
+  statement: A submitted leave request shall require a manager decision before it can become Approved or Rejected.
+- id: HR-011
+  kind: functional
+  statement: A manager shall be allowed to approve leave requests for employees who report directly to that manager.
+- id: HR-012
+  kind: functional
+  statement: A manager shall be allowed to reject leave requests for employees who report directly to that manager and shall record a rejection reason.
+- id: HR-013
+  kind: security
+  statement: An employee shall not approve or reject that employee's own leave request.
+- id: HR-014
+  kind: functional
+  statement: A contractor shall not be eligible for paid annual leave.
+- id: HR-015
+  kind: functional
+  statement: Approving annual leave shall deduct the approved leave duration from the employee's annual-leave balance.
+- id: HR-016
+  kind: functional
+  statement: Rejecting a leave request shall not change the employee's leave balance.
+- id: HR-017
+  kind: functional
+  statement: An employee shall be allowed to withdraw a Submitted leave request before a manager decision.
+- id: HR-018
+  kind: functional
+  statement: Withdrawing a leave request shall change its status to Withdrawn.
+- id: HR-019
+  kind: functional
+  statement: An employee shall be allowed to cancel an Approved leave request before the leave start date.
+- id: HR-020
+  kind: functional
+  statement: Cancelling an Approved annual-leave request shall restore the deducted annual-leave balance.
+- id: HR-021
+  kind: functional
+  statement: Cancelling a leave request shall change its status to Cancelled.
+- id: HR-022
+  kind: functional
+  statement: An approval or rejection shall record the deciding manager and decision timestamp.
+- id: HR-023
+  kind: functional
+  statement: The system shall notify the employee when a leave request is Approved.
+- id: HR-024
+  kind: functional
+  statement: The system shall notify the employee when a leave request is Rejected.
+- id: HR-025
+  kind: functional
+  statement: An employee shall be able to view that employee's own leave requests.
+- id: HR-026
+  kind: functional
+  statement: A manager shall be able to view leave requests of employees who report directly to that manager.
+- id: HR-027
+  kind: functional
+  statement: The employee's annual-leave balance shall never be negative.
+- id: HR-028
+  kind: functional
+  statement: The system shall prevent overlapping Approved leave requests for the same employee.
+- id: HR-029
+  kind: constraint
+  statement: Business timestamps shall use the Europe/Warsaw time zone.
+- id: HR-030
+  kind: quality
+  statement: The leave-request submission operation should complete within 2 seconds under normal office load.
+- id: HR-031
+  kind: operational
+  statement: Approval records shall be retained for five years.
+- id: HR-032
+  kind: functional
+  statement: The system shall create an audit record for every approval, rejection, withdrawal, and cancellation decision.
+expected_counts:
+  requirements: 32
+  entities: 9
+  operations: 13
+  processes: 6
+  invariants: 5
+  calculations: 2
+  rules: 3
+  events: 6
+  scenarios: 44
+entities:
+- Employee
+- LeaveRequest
+- LeaveBalance
+- EmploymentContract
+- ManagerAssignment
+- LeaveType
+- ApprovalRecord
+- Department
+- AuditRecord
+operations:
+- CreateLeaveRequest
+- SubmitLeaveRequest
+- ApproveLeaveRequest
+- RejectLeaveRequest
+- WithdrawLeaveRequest
+- CancelLeaveRequest
+- GetLeaveRequest
+- ListEmployeeLeaveRequests
+- ListManagerLeaveRequests
+- CalculateLeaveDuration
+- CheckLeaveBalance
+- ReserveLeaveBalance
+- RestoreLeaveBalance
+processes:
+- CreateAndSubmitLeave
+- ManagerApproval
+- ManagerRejection
+- WithdrawSubmittedLeave
+- CancelApprovedLeave
+- UpdateLeaveBalance
+invariants:
+- LeaveRequest.start_date <= LeaveRequest.end_date
+- LeaveBalance.remaining_days >= 0
+- LeaveRequest.status == Approved -> exists(ApprovalRecord)
+- ApproveLeaveRequest.actor != LeaveRequest.employee and direct_manager(actor, employee)
+- no_overlap(Approved LeaveRequest for same employee)
+calculations:
+  RequestedWorkingDays: working_days([start_date,end_date], calendar, inclusive_end) * day_fraction
+  AnnualBalanceDelta: if leave_type == Annual then RequestedWorkingDays else 0
+rules:
+  AnnualLeaveEligibility: Employee contract is eligible for Annual; Contractor is not.
+  ManagerDecisionAuthorization: Only the employee's direct manager may approve/reject; self-decision forbidden.
+  OverlapRule: A request may not become Approved when it overlaps another Approved request for the same employee.
+events:
+- LeaveSubmitted
+- LeaveApproved
+- LeaveRejected
+- LeaveWithdrawn
+- LeaveCancelled
+- LeaveBalanceChanged
+states:
+- Draft
+- Submitted
+- Approved
+- Rejected
+- Withdrawn
+- Cancelled
+calendar:
+  id: cal:PL-Office
+  region: PL
+  time_zone: Europe/Warsaw
+  weekend:
+  - Saturday
+  - Sunday
+  test_holidays:
+  - '2027-01-01'
+  - '2027-01-06'
+  - '2027-05-03'
+  - '2027-11-11'
+  - '2027-12-25'
+  - '2027-12-26'
+ambiguities:
+  half_day:
+    requirement: HR-007
+    question: What fraction of one working day does a half-day leave request consume?
+    expert_answer:
+      value: '0.5'
+      unit: working_day
+  holiday_inside_period:
+    requirements:
+    - HR-004
+    - HR-006
+    question: When a public holiday falls between the leave start and end dates, does it consume leave balance?
+    expert_answer: No. A configured public holiday consumes 0 working days.
+  inclusive_end:
+    requirement: HR-004
+    question: Is the leave end date included when calculating requested working days?
+    expert_answer: Yes. Both start date and end date are included.
+critical_relations:
+- - Employee
+  - has_attribute
+  - employee_id
+- - LeaveRequest
+  - performed_by
+  - Employee
+- - ApproveLeaveRequest
+  - performed_by
+  - ManagerBusinessRole
+- - ApproveLeaveRequest
+  - governed_by
+  - ManagerDecisionAuthorization
+- - ApproveLeaveRequest
+  - uses_calculation
+  - AnnualBalanceDelta
+- - SubmitLeaveRequest
+  - uses_calculation
+  - RequestedWorkingDays
+entity_specs:
+  Employee:
+    attributes:
+      employee_id:
+        type: String
+        nullable: false
+      name:
+        type: String
+        nullable: false
+      email:
+        type: String
+        nullable: false
+        data_class: pii
+      department_id:
+        type: String
+        nullable: false
+  LeaveRequest:
+    attributes:
+      request_id:
+        type: String
+        nullable: false
+      employee_id:
+        type: String
+        nullable: false
+      leave_type:
+        type: Enum
+        values:
+        - Annual
+        - Unpaid
+        - Sick
+        nullable: false
+      start_date:
+        type: Date
+        nullable: false
+      end_date:
+        type: Date
+        nullable: false
+      day_fraction:
+        type: Decimal(2)
+        nullable: false
+        default: '1.0'
+      status:
+        type: Enum
+        values:
+        - Draft
+        - Submitted
+        - Approved
+        - Rejected
+        - Withdrawn
+        - Cancelled
+        nullable: false
+      rejection_reason:
+        type: String
+        nullable: true
+      created_at:
+        type: DateTime
+        nullable: false
+  LeaveBalance:
+    attributes:
+      employee_id:
+        type: String
+        nullable: false
+      year:
+        type: Int
+        nullable: false
+      remaining_days:
+        type: Decimal(2)
+        nullable: false
+        unit: working_day
+  EmploymentContract:
+    attributes:
+      employee_id:
+        type: String
+        nullable: false
+      contract_type:
+        type: Enum
+        values:
+        - Employee
+        - Contractor
+        nullable: false
+  ManagerAssignment:
+    attributes:
+      employee_id:
+        type: String
+        nullable: false
+      manager_id:
+        type: String
+        nullable: false
+  LeaveType:
+    attributes:
+      code:
+        type: Enum
+        values:
+        - Annual
+        - Unpaid
+        - Sick
+        nullable: false
+      deducts_annual_balance:
+        type: Bool
+        nullable: false
+  ApprovalRecord:
+    attributes:
+      request_id:
+        type: String
+        nullable: false
+      manager_id:
+        type: String
+        nullable: false
+      decision:
+        type: Enum
+        values:
+        - Approved
+        - Rejected
+        nullable: false
+      reason:
+        type: String
+        nullable: true
+      decided_at:
+        type: DateTime
+        nullable: false
+  Department:
+    attributes:
+      department_id:
+        type: String
+        nullable: false
+      name:
+        type: String
+        nullable: false
+  AuditRecord:
+    attributes:
+      request_id:
+        type: String
+        nullable: false
+      actor_id:
+        type: String
+        nullable: false
+      action:
+        type: Enum
+        values:
+        - approve
+        - reject
+        - withdraw
+        - cancel
+        nullable: false
+      at:
+        type: DateTime
+        nullable: false
+relationship_specs:
+- from: Employee
+  to: LeaveRequest
+  name: requests
+  card_from: '1'
+  card_to: 0..*
+- from: Employee
+  to: LeaveBalance
+  name: balance
+  card_from: '1'
+  card_to: 1..*
+- from: Employee
+  to: EmploymentContract
+  name: contract
+  card_from: '1'
+  card_to: '1'
+- from: Employee
+  to: ManagerAssignment
+  name: manager_assignment
+  card_from: '1'
+  card_to: '1'
+- from: LeaveRequest
+  to: ApprovalRecord
+  name: decision_record
+  card_from: '1'
+  card_to: 0..1
+- from: Department
+  to: Employee
+  name: members
+  card_from: '1'
+  card_to: 0..*
+- from: LeaveRequest
+  to: AuditRecord
+  name: audit_records
+  card_from: '1'
+  card_to: 0..*
+operation_specs:
+  CreateLeaveRequest:
+    kind: command
+    performer: EmployeeRole
+    reads: []
+    writes:
+    - LeaveRequest
+    outcomes:
+    - Created
+    - ValidationFailed
+  SubmitLeaveRequest:
+    kind: command
+    performer: EmployeeRole
+    reads:
+    - LeaveRequest
+    - EmploymentContract
+    - LeaveBalance
+    - LeaveType
+    writes:
+    - LeaveRequest
+    outcomes:
+    - Submitted
+    - ValidationFailed
+    - InsufficientBalance
+    - IneligibleContract
+    events:
+    - LeaveSubmitted
+  ApproveLeaveRequest:
+    kind: command
+    performer: ManagerRole
+    reads:
+    - LeaveRequest
+    - ManagerAssignment
+    - EmploymentContract
+    - LeaveBalance
+    - LeaveType
+    writes:
+    - LeaveRequest
+    - ApprovalRecord
+    - LeaveBalance
+    - AuditRecord
+    outcomes:
+    - Approved
+    - Unauthorized
+    - OverlapDetected
+    events:
+    - LeaveApproved
+    - LeaveBalanceChanged
+  RejectLeaveRequest:
+    kind: command
+    performer: ManagerRole
+    reads:
+    - LeaveRequest
+    - ManagerAssignment
+    writes:
+    - LeaveRequest
+    - ApprovalRecord
+    - AuditRecord
+    outcomes:
+    - Rejected
+    - Unauthorized
+    - ReasonRequired
+    events:
+    - LeaveRejected
+  WithdrawLeaveRequest:
+    kind: command
+    performer: EmployeeRole
+    reads:
+    - LeaveRequest
+    writes:
+    - LeaveRequest
+    - AuditRecord
+    outcomes:
+    - Withdrawn
+    - InvalidState
+    events:
+    - LeaveWithdrawn
+  CancelLeaveRequest:
+    kind: command
+    performer: EmployeeRole
+    reads:
+    - LeaveRequest
+    - LeaveBalance
+    - LeaveType
+    writes:
+    - LeaveRequest
+    - LeaveBalance
+    - AuditRecord
+    outcomes:
+    - Cancelled
+    - InvalidState
+    - LeaveAlreadyStarted
+    events:
+    - LeaveCancelled
+    - LeaveBalanceChanged
+  GetLeaveRequest:
+    kind: query
+    performer: EmployeeRole
+    reads:
+    - LeaveRequest
+    - ManagerAssignment
+    writes: []
+    outcomes:
+    - Found
+    - Unauthorized
+    - NotFound
+  ListEmployeeLeaveRequests:
+    kind: query
+    performer: EmployeeRole
+    reads:
+    - LeaveRequest
+    writes: []
+    outcomes:
+    - Success
+  ListManagerLeaveRequests:
+    kind: query
+    performer: ManagerRole
+    reads:
+    - LeaveRequest
+    - ManagerAssignment
+    writes: []
+    outcomes:
+    - Success
+    - Unauthorized
+  CalculateLeaveDuration:
+    kind: query
+    performer: SystemActor
+    reads:
+    - LeaveRequest
+    writes: []
+    outcomes:
+    - Calculated
+  CheckLeaveBalance:
+    kind: query
+    performer: SystemActor
+    reads:
+    - LeaveBalance
+    - LeaveType
+    - EmploymentContract
+    writes: []
+    outcomes:
+    - Sufficient
+    - Insufficient
+    - Ineligible
+  ReserveLeaveBalance:
+    kind: command
+    performer: SystemActor
+    reads:
+    - LeaveBalance
+    writes:
+    - LeaveBalance
+    outcomes:
+    - Reserved
+    - Insufficient
+  RestoreLeaveBalance:
+    kind: command
+    performer: SystemActor
+    reads:
+    - LeaveBalance
+    writes:
+    - LeaveBalance
+    outcomes:
+    - Restored
+process_specs:
+  CreateAndSubmitLeave:
+  - CreateLeaveRequest
+  - CalculateLeaveDuration
+  - CheckLeaveBalance
+  - SubmitLeaveRequest
+  ManagerApproval:
+  - ApproveLeaveRequest
+  - ReserveLeaveBalance
+  ManagerRejection:
+  - RejectLeaveRequest
+  WithdrawSubmittedLeave:
+  - WithdrawLeaveRequest
+  CancelApprovedLeave:
+  - CancelLeaveRequest
+  - RestoreLeaveBalance
+  UpdateLeaveBalance:
+  - ReserveLeaveBalance
+  - RestoreLeaveBalance
+role_specs:
+  business_roles:
+  - EmployeeRole
+  - ManagerRole
+  - HRPolicyOwner
+  security_roles:
+  - EmployeeUser
+  - ManagerUser
+  permissions:
+  - role: EmployeeUser
+    operation: CreateLeaveRequest
+    scope: owned
+  - role: EmployeeUser
+    operation: SubmitLeaveRequest
+    scope: owned
+  - role: EmployeeUser
+    operation: WithdrawLeaveRequest
+    scope: owned
+  - role: EmployeeUser
+    operation: CancelLeaveRequest
+    scope: owned
+  - role: EmployeeUser
+    operation: GetLeaveRequest
+    scope: owned
+  - role: EmployeeUser
+    operation: ListEmployeeLeaveRequests
+    scope: owned
+  - role: ManagerUser
+    operation: ApproveLeaveRequest
+    scope: direct_reports
+  - role: ManagerUser
+    operation: RejectLeaveRequest
+    scope: direct_reports
+  - role: ManagerUser
+    operation: ListManagerLeaveRequests
+    scope: direct_reports
+accepted_post_answer_semantics:
+  half_day_fraction: '0.5'
+  inclusive_end: true
+  holiday_consumes_working_day: false
+  calendar_ref: cal:PL-Office

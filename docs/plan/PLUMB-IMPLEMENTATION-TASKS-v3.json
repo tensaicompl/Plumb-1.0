@@ -1,0 +1,2919 @@
+{
+  "plan_version": "3.0-draft.1",
+  "release": "pilot-v3-foundation",
+  "execution_rule": "Execute exactly one ready task at a time in listed order. Only tasks whose scope is allowed by EXECUTION-SCOPE.yaml may execute.",
+  "tasks": [
+    {
+      "id": "P0.1",
+      "title": "Verify specification pack and execution scope",
+      "phase": "P0",
+      "scope": "NOW",
+      "depends_on": [],
+      "files": [],
+      "steps": [
+        "Run sha256sum -c docs/plan/SUPPORTING-DOCS.sha256.",
+        "Run python3 scripts/verify-plan-contract.py.",
+        "Read CLAUDE.md, this plan, EXECUTION-SCOPE.yaml, SOURCE-REFERENCE-INDEX.yaml, and the complete task manifest before modifying source code.",
+        "Confirm execution_scope.release equals pilot-v3-foundation and allowed_scope contains NOW only.",
+        "If either preflight command fails, a required document is missing, a source reference cannot be resolved, or scope differs, create docs/blockers/P0.1.md using the blocker template and stop."
+      ],
+      "tests": [
+        "Both preflight commands must exit 0."
+      ],
+      "acceptance": [
+        "All required documents exist, every checksum passes, every task dependency/reference/write-allowlist invariant passes, fixture counts match the contract, and execution scope is exactly pilot-v3-foundation/NOW."
+      ],
+      "source_refs": [
+        "SRCREF-9C906A7B51",
+        "SRCREF-481C103B3C"
+      ],
+      "forbidden": [
+        "Do not modify supporting documents during preflight.",
+        "Do not create source crates before preflight passes."
+      ],
+      "commands": [
+        "sha256sum -c docs/plan/SUPPORTING-DOCS.sha256",
+        "python3 scripts/verify-plan-contract.py"
+      ],
+      "commit_message": "P0.1: Verify specification pack and execution scope"
+    },
+    {
+      "id": "P0.2",
+      "title": "Create Rust and UI workspace skeleton",
+      "phase": "P0",
+      "scope": "NOW",
+      "depends_on": [
+        "P0.1"
+      ],
+      "files": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "Makefile",
+        ".gitignore",
+        ".github/workflows/ci.yml",
+        "crates/plumb-core/Cargo.toml",
+        "crates/plumb-core/src/lib.rs",
+        "crates/plumb-artifacts/Cargo.toml",
+        "crates/plumb-artifacts/src/lib.rs",
+        "crates/plumb-psg/Cargo.toml",
+        "crates/plumb-psg/src/lib.rs",
+        "crates/plumb-patch/Cargo.toml",
+        "crates/plumb-patch/src/lib.rs",
+        "crates/plumb-store/Cargo.toml",
+        "crates/plumb-store/src/lib.rs",
+        "crates/plumb-validation/Cargo.toml",
+        "crates/plumb-validation/src/lib.rs",
+        "crates/plumb-inference/Cargo.toml",
+        "crates/plumb-inference/src/lib.rs",
+        "crates/plumb-compiler/Cargo.toml",
+        "crates/plumb-compiler/src/lib.rs",
+        "crates/plumb-import/Cargo.toml",
+        "crates/plumb-import/src/lib.rs",
+        "crates/plumb-lint/Cargo.toml",
+        "crates/plumb-lint/src/lib.rs",
+        "crates/plumb-expr/Cargo.toml",
+        "crates/plumb-expr/src/lib.rs",
+        "crates/plumb-functional/Cargo.toml",
+        "crates/plumb-functional/src/lib.rs",
+        "crates/plumb-sim/Cargo.toml",
+        "crates/plumb-sim/src/lib.rs",
+        "crates/plumb-intake/Cargo.toml",
+        "crates/plumb-intake/src/lib.rs",
+        "crates/plumb-session/Cargo.toml",
+        "crates/plumb-session/src/lib.rs",
+        "crates/plumb-api/Cargo.toml",
+        "crates/plumb-api/src/lib.rs",
+        "crates/plumb-cli/Cargo.toml",
+        "crates/plumb-cli/src/main.rs",
+        "ui/package.json",
+        "ui/tsconfig.json",
+        "ui/vite.config.ts",
+        "ui/src/main.tsx",
+        ".node-version"
+      ],
+      "steps": [
+        "Create the workspace members exactly as listed in the target repository layout in this plan.",
+        "Write rust-toolchain.toml exactly as: [toolchain] channel=\"1.98.1\", profile=\"minimal\", components=[\"rustfmt\",\"clippy\",\"llvm-tools-preview\"].",
+        "Write .node-version containing exactly `24.21.0` followed by one newline.",
+        "Set ui/package.json `engines` exactly to {\"node\":\"24.21.0\",\"npm\":\"11.19.0\"} and `packageManager` exactly to \"npm@11.19.0\".",
+        "Copy the exact [workspace.dependencies] and crate dependency matrix from this plan into Cargo.toml files; crate Cargo.toml files must use workspace = true and may not alter versions/features.",
+        "Install exactly the UI runtime and development package names listed in this plan with npm and commit ui/package-lock.json. Do not add any other package.",
+        "Create Makefile targets check, test, cov, mutants, openapi, ui-check, e2e, all.",
+        "Create CI on ubuntu-24.04 using actions/checkout@v4 and actions/setup-node@v4 with node-version 24.21.0; install npm@11.19.0; install Rust 1.98.1 with rustfmt, clippy, llvm-tools-preview.",
+        "CI installs cargo-llvm-cov exactly 0.9.1 and cargo-mutants exactly 27.1.0 using cargo install --version ... --locked.",
+        "If local node --version is not v24.21.0 or npm --version is not 11.19.0, stop with BLOCKED-ENVIRONMENT rather than using a different version."
+      ],
+      "tests": [
+        "cargo check --workspace",
+        "cargo test --workspace",
+        "cd ui && npm install --package-lock-only && npm ci && npm run typecheck"
+      ],
+      "acceptance": [
+        "rustc --version starts with `rustc 1.98.1`; node --version equals `v24.21.0`; npm --version equals `11.19.0`.",
+        "Workspace compiles with empty crates; Cargo.lock and ui/package-lock.json are committed; CI workflow uses the exact pinned toolchain and runner."
+      ],
+      "source_refs": [
+        "SRCREF-E772EBFE16",
+        "SRCREF-340600AFE6"
+      ],
+      "forbidden": [
+        "Do not add a crate not listed in this task.",
+        "Do not add a dependency outside the Allowed Dependency Set."
+      ],
+      "commands": [
+        "rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --component llvm-tools-preview",
+        "rustc --version",
+        "node --version",
+        "npm --version",
+        "cargo check --workspace",
+        "cargo test --workspace",
+        "cd ui && npm install react react-dom @tanstack/react-router @tanstack/react-query zustand @radix-ui/react-dialog @radix-ui/react-dropdown-menu @radix-ui/react-tabs @radix-ui/react-tooltip @radix-ui/react-popover @radix-ui/react-select @radix-ui/react-checkbox @radix-ui/react-radio-group @radix-ui/react-toast tailwindcss @tailwindcss/vite elkjs openapi-fetch date-fns zod",
+        "cd ui && npm install --save-dev typescript vite vitest jsdom @types/react @types/react-dom @types/node @testing-library/react @testing-library/user-event msw openapi-typescript @stoplight/prism-cli playwright @axe-core/playwright eslint typescript-eslint eslint-plugin-jsx-a11y eslint-plugin-react-hooks prettier",
+        "cd ui && npm run typecheck"
+      ],
+      "commit_message": "P0.2: Create Rust and UI workspace skeleton"
+    },
+    {
+      "id": "F0.1",
+      "title": "Implement core IDs, clock, canonical JSON and hashes",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "P0.2"
+      ],
+      "files": [
+        "crates/plumb-core/src/lib.rs",
+        "crates/plumb-core/src/id.rs",
+        "crates/plumb-core/src/clock.rs",
+        "crates/plumb-core/src/canonical.rs",
+        "crates/plumb-core/src/hash.rs",
+        "crates/plumb-core/src/error.rs",
+        "crates/plumb-core/tests/canonical.rs",
+        "crates/plumb-core/tests/hash.rs"
+      ],
+      "steps": [
+        "Implement Id as a validated String newtype and Hash as a sha256-prefixed String newtype.",
+        "Implement Clock trait, SystemClock, and FixedClock.",
+        "Implement canonical JSON using RFC 8785 JCS through the explicitly allowed serde_jcs dependency.",
+        "Implement sha256 hashing over canonical bytes.",
+        "Do not include timestamps, layout metadata, or audit metadata in semantic hash input; the exact semantic envelope is defined by the metamodel.",
+        "Add deterministic property tests that map insertion order does not affect canonical output or hash."
+      ],
+      "tests": [
+        "cargo test -p plumb-core"
+      ],
+      "acceptance": [
+        "Canonical output is byte-identical for semantically identical map insertion orders and all tests pass."
+      ],
+      "source_refs": [
+        "SRCREF-1B777C546D",
+        "SRCREF-C85B1E19E9",
+        "SRCREF-ACB4876C07"
+      ],
+      "forbidden": [
+        "Do not write a custom approximate JCS serializer.",
+        "Do not use wall-clock time directly outside SystemClock."
+      ],
+      "commands": [
+        "cargo test -p plumb-core",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.1: Implement core IDs, clock, canonical JSON and hashes"
+    },
+    {
+      "id": "F0.2",
+      "title": "Implement content-addressed artifact model and SQLite artifact store",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.1"
+      ],
+      "files": [
+        "crates/plumb-artifacts/src/lib.rs",
+        "crates/plumb-artifacts/src/model.rs",
+        "crates/plumb-artifacts/src/store.rs",
+        "crates/plumb-artifacts/src/sqlite.rs",
+        "crates/plumb-artifacts/tests/store.rs"
+      ],
+      "steps": [
+        "Implement ArtifactKind exactly for source-original, source-extracted, evidence-manifest, inference-request, inference-response, validated-inference, external-validation, projection, proposal, patch, diff, impact-report, gate-report, conformance-report, scenario-trace, test-receipt, architecture-check.",
+        "Artifact identity is sha256 of stored bytes; duplicate put returns the existing hash.",
+        "Create SQLite table artifacts(hash TEXT PRIMARY KEY, kind TEXT NOT NULL, media_type TEXT NOT NULL, bytes BLOB NOT NULL, created_at TEXT NOT NULL).",
+        "Artifact bytes are immutable; no update method is permitted.",
+        "Provide put/get/exists and transaction-safe duplicate insertion."
+      ],
+      "tests": [
+        "cargo test -p plumb-artifacts"
+      ],
+      "acceptance": [
+        "Putting identical bytes twice returns the same hash and stores one row; differing bytes return differing hashes."
+      ],
+      "source_refs": [
+        "SRCREF-440BF23BDA",
+        "SRCREF-AED4772768"
+      ],
+      "forbidden": [
+        "Do not store mutable semantic state in the artifact table."
+      ],
+      "commands": [
+        "cargo test -p plumb-artifacts",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.2: Implement content-addressed artifact model and SQLite artifact store"
+    },
+    {
+      "id": "F0.3",
+      "title": "Implement PSG base envelope and typed status/standards structures",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.2"
+      ],
+      "files": [
+        "crates/plumb-psg/src/lib.rs",
+        "crates/plumb-psg/src/status.rs",
+        "crates/plumb-psg/src/standards.rs",
+        "crates/plumb-psg/src/node.rs",
+        "crates/plumb-psg/src/edge.rs",
+        "crates/plumb-psg/src/audit.rs",
+        "crates/plumb-psg/tests/serde.rs"
+      ],
+      "steps": [
+        "Implement ElementStatus exactly: Proposed, Accepted, Rejected, Superseded, Deprecated, Suspect.",
+        "Implement StandardMapping, MappingRole and MappingStrength exactly from the metamodel.",
+        "Implement Node and Edge envelopes with immutable id, revision, status, evidence refs, derivation refs, standards, tags, extensions and audit metadata.",
+        "Extensions require a namespace-qualified key containing one colon.",
+        "Do not add a universal confidence field to Node or Edge."
+      ],
+      "tests": [
+        "cargo test -p plumb-psg serde"
+      ],
+      "acceptance": [
+        "All base structures round-trip through JSON and reject an extension key without a namespace."
+      ],
+      "source_refs": [
+        "SRCREF-2A709879EB"
+      ],
+      "forbidden": [
+        "Do not implement core semantics as kind:String plus arbitrary props.",
+        "Do not add fields absent from the metamodel without a blocking spec issue."
+      ],
+      "commands": [
+        "cargo test -p plumb-psg serde",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.3: Implement PSG base envelope and typed status/standards structures"
+    },
+    {
+      "id": "F0.4",
+      "title": "Implement complete NodePayload semantic enum",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.3"
+      ],
+      "files": [
+        "crates/plumb-psg/src/payload.rs",
+        "crates/plumb-psg/tests/payload_roundtrip.rs"
+      ],
+      "steps": [
+        "Implement every core NodePayload variant defined by the metamodel namespaces: evidence/provenance, governance, intent/requirements, vocabulary/domain, functional behavior, authorization, quality, architecture, technical contracts, delivery, verification, standards profile and view model.",
+        "Field names, required/optional status, and enums must follow the metamodel sections defining each type.",
+        "Use serde tagged representation type/data as specified by metamodel §24.",
+        "When the prose definition and skeleton disagree, do not choose; create docs/blockers/F0.4.md identifying both conflicting passages and stop."
+      ],
+      "tests": [
+        "cargo test -p plumb-psg payload_roundtrip"
+      ],
+      "acceptance": [
+        "One golden round-trip fixture exists for every NodePayload variant and all required-field omission tests fail deserialization or validation as intended."
+      ],
+      "source_refs": [
+        "SRCREF-7EC2A38F66"
+      ],
+      "forbidden": [
+        "Do not omit a metamodel variant because it is post-pilot; post-pilot types must exist even when no service uses them yet."
+      ],
+      "commands": [
+        "cargo test -p plumb-psg payload_roundtrip",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.4: Implement complete NodePayload semantic enum"
+    },
+    {
+      "id": "F0.5",
+      "title": "Implement RelationKind and typed relation registry",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.4"
+      ],
+      "files": [
+        "crates/plumb-psg/src/relations.rs",
+        "crates/plumb-psg/src/registry.rs",
+        "crates/plumb-psg/tests/relations.rs"
+      ],
+      "steps": [
+        "Implement the closed core relation vocabulary exactly from metamodel §17.",
+        "For each relation register allowed source NodePayload types, allowed target types, cardinality constraints and graph constraints.",
+        "Support namespaced extension relations separately; core code must reject an unknown unqualified relation.",
+        "Validate acyclicity for supersedes, refines/decomposes_to where mandated, inherits_role, and depends_on_slice."
+      ],
+      "tests": [
+        "cargo test -p plumb-psg relations"
+      ],
+      "acceptance": [
+        "Every relation listed in metamodel §17 has a registry entry; invalid source/target pairs are rejected; required acyclic relations reject cycles."
+      ],
+      "source_refs": [
+        "SRCREF-23F6E29DAE"
+      ],
+      "forbidden": [
+        "Do not infer relation compatibility from type names."
+      ],
+      "commands": [
+        "cargo test -p plumb-psg relations",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.5: Implement RelationKind and typed relation registry"
+    },
+    {
+      "id": "F0.6",
+      "title": "Implement Graph, typed indexes and semantic/evidence hashes",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.5"
+      ],
+      "files": [
+        "crates/plumb-psg/src/graph.rs",
+        "crates/plumb-psg/src/hash.rs",
+        "crates/plumb-psg/tests/graph.rs"
+      ],
+      "steps": [
+        "Implement BTreeMap-backed node and edge storage.",
+        "Maintain indexes by payload type, relation kind, outgoing node and incoming node.",
+        "Graph validation calls node schema validation, relation registry validation and mandatory core invariants applicable without gate context.",
+        "Implement semantic_hash over accepted semantic nodes/edges plus accepted semantic decisions/constraints using exclusions defined by metamodel §3.1.",
+        "Implement evidence_hash over source artifacts/evidence identity.",
+        "View/layout data must not influence semantic_hash."
+      ],
+      "tests": [
+        "cargo test -p plumb-psg graph"
+      ],
+      "acceptance": [
+        "Graph hash is stable across insertion order; changing audit timestamp or view position does not change semantic_hash; changing an accepted requirement statement does."
+      ],
+      "source_refs": [
+        "SRCREF-02DFDD2B29"
+      ],
+      "forbidden": [
+        "Do not hash transient compile jobs or cached inference text into semantic_hash."
+      ],
+      "commands": [
+        "cargo test -p plumb-psg graph",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.6: Implement Graph, typed indexes and semantic/evidence hashes"
+    },
+    {
+      "id": "F0.7",
+      "title": "Implement serializable SemanticPatch AST and deterministic apply/diff",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.6"
+      ],
+      "files": [
+        "crates/plumb-patch/src/lib.rs",
+        "crates/plumb-patch/src/model.rs",
+        "crates/plumb-patch/src/apply.rs",
+        "crates/plumb-patch/src/diff.rs",
+        "crates/plumb-patch/tests/patch.rs"
+      ],
+      "steps": [
+        "Implement AddNode, RemoveNode, ReplacePayload, SetStatus, AddEdge, RemoveEdge, MergeNodes, Supersede, AttachEvidence, AttachStandardMapping and Compound exactly as metamodel §20.",
+        "Every destructive operation carries the expected current semantic hash or expected element hash required by the metamodel.",
+        "Apply patches to an immutable Graph input and return GraphDelta plus new Graph.",
+        "Provide deterministic structured diff sorted by element ID and operation order.",
+        "Implement inverse only for patch operations where an exact inverse is derivable from the patch input; do not fabricate an inverse."
+      ],
+      "tests": [
+        "cargo test -p plumb-patch"
+      ],
+      "acceptance": [
+        "All patch variants serialize/deserialize; apply is deterministic; property tests cover applicable apply/invert round trips."
+      ],
+      "source_refs": [
+        "SRCREF-4C3A2D5489",
+        "SRCREF-76F0A59202"
+      ],
+      "forbidden": [
+        "Do not use Box<dyn Patch>.",
+        "Do not mutate Graph in place."
+      ],
+      "commands": [
+        "cargo test -p plumb-patch",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.7: Implement serializable SemanticPatch AST and deterministic apply/diff"
+    },
+    {
+      "id": "F0.8",
+      "title": "Implement immutable revision store, branch heads and CAS commit",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.7"
+      ],
+      "files": [
+        "crates/plumb-store/src/lib.rs",
+        "crates/plumb-store/src/schema.rs",
+        "crates/plumb-store/src/sqlite.rs",
+        "crates/plumb-store/src/revisions.rs",
+        "crates/plumb-store/src/branches.rs",
+        "crates/plumb-store/tests/revisions.rs"
+      ],
+      "steps": [
+        "Create SQLite tables graph_revisions, revision_nodes, revision_edges, branch_heads and ledger_events using the exact schema block in this plan.",
+        "A GraphRevision is immutable and stores global numeric version, parent revision, semantic_hash, evidence_hash, profile_ref, rule_pack_hash, patch artifact ref, decision refs, creator and timestamp.",
+        "Assign version 1 to the initial revision and max(version)+1 to each successful new revision inside the same SQLite transaction.",
+        "Set revision ID to `rev:<version>:<first16-semantic-hash-hex>`.",
+        "Implement create_initial_revision, load_revision, head, create_branch, commit(branch, expected_head, patch), and move_head for explicit restore.",
+        "commit must be one SQLite transaction and fail with STALE_BASE when expected_head differs.",
+        "Persist full graph snapshot per revision for the pilot; do not introduce delta storage."
+      ],
+      "tests": [
+        "cargo test -p plumb-store revisions"
+      ],
+      "acceptance": [
+        "Concurrent commits against the same expected head allow exactly one success; restore is implemented by branch-head movement and does not delete history."
+      ],
+      "source_refs": [
+        "SRCREF-D32DB0990A",
+        "SRCREF-BBA84CFE16"
+      ],
+      "forbidden": [
+        "Do not overwrite an existing revision.",
+        "Do not silently rebase a stale patch."
+      ],
+      "commands": [
+        "cargo test -p plumb-store revisions",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.8: Implement immutable revision store, branch heads and CAS commit"
+    },
+    {
+      "id": "F0.9",
+      "title": "Implement provenance DerivationRecord and inference artifact contracts",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.8"
+      ],
+      "files": [
+        "crates/plumb-inference/src/lib.rs",
+        "crates/plumb-inference/src/model.rs",
+        "crates/plumb-inference/src/provider.rs",
+        "crates/plumb-inference/src/null.rs",
+        "crates/plumb-inference/src/mock.rs",
+        "crates/plumb-inference/tests/artifacts.rs"
+      ],
+      "steps": [
+        "Implement Agent, DerivationRecord, InferenceRequest and InferenceArtifact fields exactly from metamodel §5 and compiler architecture §4.3-4.4.",
+        "InferenceRequest ID is deterministic from canonical request content.",
+        "NullProvider always returns a typed provider-disabled error.",
+        "MockProvider returns only artifacts supplied explicitly by a test fixture keyed by request hash.",
+        "A live provider interface returns an InferenceArtifact and has no access to GraphStore or branch commits."
+      ],
+      "tests": [
+        "cargo test -p plumb-inference"
+      ],
+      "acceptance": [
+        "Request hashes are deterministic; replaying a MockProvider fixture produces the same validated_output_hash."
+      ],
+      "source_refs": [
+        "SRCREF-96AA517C73",
+        "SRCREF-25544DD485"
+      ],
+      "forbidden": [
+        "Do not permit provider code to mutate PSG.",
+        "Do not call a live network provider in tests."
+      ],
+      "commands": [
+        "cargo test -p plumb-inference",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.9: Implement provenance DerivationRecord and inference artifact contracts"
+    },
+    {
+      "id": "F0.10",
+      "title": "Implement compiler stage plan/evaluate contract and compile-run records",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.9"
+      ],
+      "files": [
+        "crates/plumb-compiler/src/lib.rs",
+        "crates/plumb-compiler/src/stage.rs",
+        "crates/plumb-compiler/src/context.rs",
+        "crates/plumb-compiler/src/run.rs",
+        "crates/plumb-compiler/tests/stage.rs"
+      ],
+      "steps": [
+        "Implement CompilerStage::plan and CompilerStage::evaluate exactly as compiler architecture §28.",
+        "Implement StagePlan, StageEvaluation and CompileRun.",
+        "plan and evaluate receive no network/client dependency and must be deterministic for equal inputs/artifacts.",
+        "Artifact acquisition is represented by requests returned in StagePlan and executed by orchestration code outside the trait.",
+        "Persist compile-run metadata as an artifact; do not make operational timestamps part of semantic output hash."
+      ],
+      "tests": [
+        "cargo test -p plumb-compiler"
+      ],
+      "acceptance": [
+        "A fixture stage returns identical plan/evaluation bytes for repeated equal inputs and cannot access an InferenceProvider through the stage trait."
+      ],
+      "source_refs": [
+        "SRCREF-BC01A56530"
+      ],
+      "forbidden": [
+        "Do not add complete_json or HTTP calls to CompilerStage."
+      ],
+      "commands": [
+        "cargo test -p plumb-compiler",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.10: Implement compiler stage plan/evaluate contract and compile-run records"
+    },
+    {
+      "id": "F0.11",
+      "title": "Implement impact seed and dirty-set reachability",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.10"
+      ],
+      "files": [
+        "crates/plumb-patch/src/impact.rs",
+        "crates/plumb-patch/tests/impact.rs"
+      ],
+      "steps": [
+        "For each GraphDelta compute ChangedSet containing touched node and edge IDs.",
+        "Compute DirtySet through typed graph relations that participate in semantic dependency: derived_from, specified_by, constrained_by, satisfied_by, reads, writes, governed_by, uses_calculation, allocated_to, exposed_by, implemented_by, verified_by and implemented_as.",
+        "Return affected projections and affected gate namespaces as symbolic sets; full C1 evidence staleness remains post-pilot.",
+        "Traversal order must be deterministic."
+      ],
+      "tests": [
+        "cargo test -p plumb-patch impact"
+      ],
+      "acceptance": [
+        "Changing a calculation marks dependent operations and scenarios dirty; changing only view metadata marks no semantic element dirty."
+      ],
+      "source_refs": [
+        "SRCREF-D078477292",
+        "SRCREF-856494881E"
+      ],
+      "forbidden": [
+        "Do not use name similarity for impact propagation."
+      ],
+      "commands": [
+        "cargo test -p plumb-patch impact",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.11: Implement impact seed and dirty-set reachability"
+    },
+    {
+      "id": "F0.12",
+      "title": "Implement standards profile loader and validation rule metadata",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.11"
+      ],
+      "files": [
+        "crates/plumb-validation/src/lib.rs",
+        "crates/plumb-validation/src/model.rs",
+        "crates/plumb-validation/src/profile.rs",
+        "crates/plumb-validation/src/registry.rs",
+        "crates/plumb-validation/tests/profile.rs"
+      ],
+      "steps": [
+        "Load profile metadata from the supplied YAML without modifying that YAML.",
+        "Implement RuleClass, RuleResultState, Severity, WaiverPolicy, GateId and StandardRef.",
+        "At startup validate that the YAML contains exactly the 133 rule IDs from the supplied file and unique IDs.",
+        "For NOW scope register evaluator functions only for gates I0, F1, F2, F3 and F4; metadata for later gates must still load.",
+        "A missing evaluator for a NOW rule is startup error; a missing evaluator for a later gate returns NOT_IMPLEMENTED if that gate is explicitly requested."
+      ],
+      "tests": [
+        "cargo test -p plumb-validation profile"
+      ],
+      "acceptance": [
+        "All 133 metadata rules load; exactly 54 NOW gate rules require evaluators; duplicate rule IDs fail profile loading."
+      ],
+      "source_refs": [
+        "SRCREF-0B1179FD2E",
+        "SRCREF-5608A0663D"
+      ],
+      "forbidden": [
+        "Do not rewrite rule IDs or severities in code.",
+        "Do not duplicate rule metadata in Rust constants when it can be loaded from YAML."
+      ],
+      "commands": [
+        "cargo test -p plumb-validation profile",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.12: Implement standards profile loader and validation rule metadata"
+    },
+    {
+      "id": "F0.13",
+      "title": "Implement deterministic gate evaluator, findings and waivers",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.12"
+      ],
+      "files": [
+        "crates/plumb-validation/src/evaluator.rs",
+        "crates/plumb-validation/src/finding.rs",
+        "crates/plumb-validation/src/waiver.rs",
+        "crates/plumb-validation/tests/evaluator.rs"
+      ],
+      "steps": [
+        "Implement rule result states PASS, FAIL, WARN, NOT_APPLICABLE, WAIVED, ERROR.",
+        "Finding key is sha256(rule_id || sorted(target_ids) || semantic_condition_key).",
+        "Gate passes only under rulebook §2 semantics.",
+        "WAIVED requires rule waiver policy plus an accepted ResolutionDecision reference; forbidden waivers fail.",
+        "GateReport includes baseline semantic_hash, profile ID/hash, rule-pack hash, individual rule results and waiver list.",
+        "Evaluation is pure; external validation artifacts are inputs, never executed inside evaluator."
+      ],
+      "tests": [
+        "cargo test -p plumb-validation evaluator"
+      ],
+      "acceptance": [
+        "Repeated gate evaluation over equal graph/profile/artifacts is byte-identical except explicitly excluded operational timestamp fields."
+      ],
+      "source_refs": [
+        "SRCREF-FF7208E4F2"
+      ],
+      "forbidden": [
+        "Do not let readiness scores influence gate result."
+      ],
+      "commands": [
+        "cargo test -p plumb-validation evaluator",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.13: Implement deterministic gate evaluator, findings and waivers"
+    },
+    {
+      "id": "F0.14",
+      "title": "Implement functional.yaml v2 compatibility projection from PSG",
+      "phase": "Foundation",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.13"
+      ],
+      "files": [
+        "crates/plumb-functional/src/lib.rs",
+        "crates/plumb-functional/src/model.rs",
+        "crates/plumb-functional/src/project.rs",
+        "crates/plumb-functional/tests/golden.rs",
+        "schemas/functional-v2.schema.json",
+        "docs/formats.md"
+      ],
+      "steps": [
+        "Implement the v2 functional.yaml shape exactly as v2 plan §4.1 as an output projection only.",
+        "Map PSG Actor/BusinessRole/SecurityRole/Permission to the legacy actor/role representation without losing PSG truth; any lossy mapping must be documented in projection metadata and never written back automatically.",
+        "Map QualityScenario to legacy NFR fields only where an exact legacy field exists; omit unsupported quality scenarios from the legacy NFR bag and list them in projection warnings.",
+        "Validate the projection against schemas/functional-v2.schema.json.",
+        "Projection metadata records source semantic_hash, profile_hash, projection version and content hash."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional golden"
+      ],
+      "acceptance": [
+        "Golden HR projection is deterministic and validates; modifying UI layout does not change projection content."
+      ],
+      "source_refs": [
+        "SRCREF-94287B9738",
+        "SRCREF-A384F23134",
+        "SRCREF-ED9C3A0EA2"
+      ],
+      "forbidden": [
+        "Do not treat functional.yaml as canonical input state."
+      ],
+      "commands": [
+        "cargo test -p plumb-functional golden",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "F0.14: Implement functional.yaml v2 compatibility projection from PSG"
+    },
+    {
+      "id": "S0.1",
+      "title": "Implement Markdown and plain-text source import",
+      "phase": "S0",
+      "scope": "NOW",
+      "depends_on": [
+        "F0.14"
+      ],
+      "files": [
+        "crates/plumb-import/src/lib.rs",
+        "crates/plumb-import/src/source.rs",
+        "crates/plumb-import/src/md.rs",
+        "crates/plumb-import/src/text.rs",
+        "crates/plumb-import/tests/md_text.rs"
+      ],
+      "steps": [
+        "Import bytes into SourceArtifact with source_kind, display_name, content_hash and media_type.",
+        "Decode UTF-8; reject invalid UTF-8 for .md/.txt with E_SOURCE_ENCODING. Normalize CRLF and CR to LF; do not trim internal whitespace.",
+        "Create a content-addressed source-extracted artifact from the normalized UTF-8 text.",
+        "Markdown heading fragment: one ATX heading matching `^#{1,6}[ \\t]+(.+?)\\s*$`; fragment includes the full normalized source line.",
+        "Markdown unordered-list fragment: one line matching `^[ \\t]*[-+*][ \\t]+(.+)$`; ordered-list fragment: one line matching `^[ \\t]*[0-9]+[.)][ \\t]+(.+)$`.",
+        "Markdown table fragment: a contiguous pipe-delimited block is a table only when its second nonblank line matches a GFM delimiter row whose cells match `^:?-{3,}:?$`; emit one EvidenceFragment per subsequent data row and include header cells in fragment metadata.",
+        "Paragraph fragment: maximal contiguous nonblank lines not already classified as heading/list/table; preserve embedded newlines.",
+        "Plain-text import emits paragraph fragments using the same paragraph rule and ordered/unordered list recognition; it has no heading or table inference.",
+        "TextRange start/end are zero-based UTF-8 byte offsets into normalized extracted text with end exclusive; slicing those bytes must equal the exact fragment text."
+      ],
+      "tests": [
+        "cargo test -p plumb-import md_text"
+      ],
+      "acceptance": [
+        "All classification regexes above are covered by tests; fragment ranges round-trip exactly; no other Markdown construct receives a special fragment kind in NOW scope."
+      ],
+      "source_refs": [
+        "SRCREF-52BF75EEBC",
+        "SRCREF-F3C31C7BB3",
+        "SRCREF-BC2B9CB618"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-import md_text",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S0.1: Implement Markdown and plain-text source import"
+    },
+    {
+      "id": "S0.2",
+      "title": "Implement deterministic minimal DOCX importer",
+      "phase": "S0",
+      "scope": "NOW",
+      "depends_on": [
+        "S0.1"
+      ],
+      "files": [
+        "crates/plumb-import/src/docx.rs",
+        "crates/plumb-import/tests/docx.rs"
+      ],
+      "steps": [
+        "Implement DOCX parsing over zip/XML for paragraphs, headings, numbered lists, bulleted lists and tables with row/header extraction.",
+        "Use only zip and quick-xml from the allowed dependency set.",
+        "Preserve extracted-text order; merged cells must resolve deterministically.",
+        "Unsupported DOCX content becomes a parse warning with source locator; it must not be silently dropped when it contains visible text.",
+        "Use the bundled read-only fixtures/hr-leave/requirements.docx as one acceptance input; do not edit it."
+      ],
+      "tests": [
+        "cargo test -p plumb-import docx"
+      ],
+      "acceptance": [
+        "The HR DOCX extracts the expected ordered text and tables; unsupported visible text creates a warning."
+      ],
+      "source_refs": [
+        "SRCREF-4C965A435B",
+        "SRCREF-BC2B9CB618"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-import docx",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S0.2: Implement deterministic minimal DOCX importer"
+    },
+    {
+      "id": "S0.3",
+      "title": "Implement evidence manifest and I0 evaluator functions",
+      "phase": "S0",
+      "scope": "NOW",
+      "depends_on": [
+        "S0.2"
+      ],
+      "files": [
+        "crates/plumb-import/src/manifest.rs",
+        "crates/plumb-validation/src/rules/i0.rs",
+        "crates/plumb-validation/src/rules/mod.rs",
+        "crates/plumb-validation/tests/i0.rs"
+      ],
+      "steps": [
+        "Implement all six I0 rules from the supplied rule YAML and rulebook without changing IDs, severity or waiver policy.",
+        "Evidence manifest lists source artifact refs, extracted artifact refs, fragment refs and hashes in sorted order.",
+        "PPMN.I0.PROVENANCE.AGENT_IDENTIFIED passes only when every derivation-producing action identifies an Agent.",
+        "PLUMB.I0.BASELINE.HASHABLE validates reproducible evidence_hash."
+      ],
+      "tests": [
+        "cargo test -p plumb-validation i0",
+        "cargo test -p plumb-import manifest"
+      ],
+      "acceptance": [
+        "All six I0 rule fixtures cover PASS and FAIL; HR source corpus passes I0."
+      ],
+      "source_refs": [
+        "SRCREF-EAF71A2D01",
+        "SRCREF-D0FDFF3BDE"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-validation i0",
+        "cargo test -p plumb-import manifest",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S0.3: Implement evidence manifest and I0 evaluator functions"
+    },
+    {
+      "id": "S0.4",
+      "title": "Implement segmentation request/artifact pipeline and deterministic fallback",
+      "phase": "S0",
+      "scope": "NOW",
+      "depends_on": [
+        "S0.3"
+      ],
+      "files": [
+        "crates/plumb-import/src/segment.rs",
+        "crates/plumb-import/src/fallback.rs",
+        "crates/plumb-import/tests/segment.rs",
+        "prompts/s1-segment-requirements.md",
+        "schemas/inference/s1-segmentation.schema.json"
+      ],
+      "steps": [
+        "Create an InferenceRequest for semantic segmentation anchored only to EvidenceFragment IDs and extracted text.",
+        "Validate inference output against the JSON schema before evaluate uses it.",
+        "Implement deterministic fallback: one candidate per list item or sentence containing shall, must, should or can.",
+        "Post-check fragment coverage, overlap and locator validity; unassigned text is explicitly classified non-requirement and flagged.",
+        "A failed or absent inference artifact uses fallback; this operational fallback must be recorded in DerivationRecord."
+      ],
+      "tests": [
+        "cargo test -p plumb-import segment"
+      ],
+      "acceptance": [
+        "Mock artifact path and fallback path produce valid, non-overlapping candidates; a gap produces the declared intake uncovered error."
+      ],
+      "source_refs": [
+        "SRCREF-40D69B8FBA",
+        "SRCREF-563DAF2FEF"
+      ],
+      "forbidden": [
+        "Do not call an LLM from segment evaluation.",
+        "Do not create a requirement without an EvidenceFragment reference."
+      ],
+      "commands": [
+        "cargo test -p plumb-import segment",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S0.4: Implement segmentation request/artifact pipeline and deterministic fallback"
+    },
+    {
+      "id": "S1.1",
+      "title": "Implement Requirement, Need, Goal, Concern and Constraint compilation",
+      "phase": "S1",
+      "scope": "NOW",
+      "depends_on": [
+        "S0.4"
+      ],
+      "files": [
+        "crates/plumb-functional/src/requirements.rs",
+        "crates/plumb-functional/src/intent.rs",
+        "crates/plumb-functional/tests/requirements.rs",
+        "prompts/s1-classify-requirement.md",
+        "schemas/inference/s1-requirement-classification.schema.json"
+      ],
+      "steps": [
+        "Compile candidate requirement statements into Proposed Requirement nodes with evidence.",
+        "Use deterministic modality extraction for shall, should, may and shall not; any other normative interpretation is a proposal requiring human confirmation.",
+        "Classification inference may propose requirement_kind and level but evaluate rejects values outside metamodel enums.",
+        "Create optional Need/Goal/Concern/Constraint proposals only when they contain evidence refs.",
+        "Requirement IDs are deterministic from project namespace plus stable evidence fragment key; re-import of unchanged evidence preserves IDs."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional requirements"
+      ],
+      "acceptance": [
+        "Re-import preserves IDs; classification outside enum is rejected; no accepted requirement lacks evidence or explicit human-origin derivation."
+      ],
+      "source_refs": [
+        "SRCREF-F6F023A36E",
+        "SRCREF-775B925F0C",
+        "SRCREF-B0F74B9142"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional requirements",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S1.1: Implement Requirement, Need, Goal, Concern and Constraint compilation"
+    },
+    {
+      "id": "S1.2",
+      "title": "Implement EARS normalization as non-authoritative proposal",
+      "phase": "S1",
+      "scope": "NOW",
+      "depends_on": [
+        "S1.1"
+      ],
+      "files": [
+        "crates/plumb-functional/src/ears.rs",
+        "crates/plumb-functional/tests/ears.rs",
+        "prompts/s1-ears.md",
+        "schemas/inference/s1-ears.schema.json"
+      ],
+      "steps": [
+        "Store original requirement statement unchanged.",
+        "EARS-form normalized text is a Proposal that references the original requirement and evidence.",
+        "Accepting an EARS proposal uses SemanticPatch ReplacePayload and records ResolutionDecision when meaning changes materially.",
+        "Reject an EARS output that introduces an actor, trigger, condition, response or numeric constraint not grounded in evidence or already accepted PSG semantics."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional ears"
+      ],
+      "acceptance": [
+        "A crafted inference that invents a numeric threshold is rejected; original text remains retrievable after accepted normalization."
+      ],
+      "source_refs": [
+        "SRCREF-397E123D2C",
+        "SRCREF-91B589D90C"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional ears",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S1.2: Implement EARS normalization as non-authoritative proposal"
+    },
+    {
+      "id": "S1.3",
+      "title": "Implement duplicate detection and supersession proposals",
+      "phase": "S1",
+      "scope": "NOW",
+      "depends_on": [
+        "S1.2"
+      ],
+      "files": [
+        "crates/plumb-functional/src/duplicates.rs",
+        "crates/plumb-functional/tests/duplicates.rs"
+      ],
+      "steps": [
+        "Implement normalized Jaccard duplicate score using the threshold from profile configuration.",
+        "Return duplicate/near-duplicate findings and merge/supersede proposals; never auto-merge accepted requirements.",
+        "Use MergeNodes only when the two requirements assert the same active obligation and neither is identified as a later replacement; preserve evidence from both.",
+        "Use Supersede only when evidence or an explicit human decision identifies one requirement as replacing the other; preserve both nodes and the supersedes relation."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional duplicates"
+      ],
+      "acceptance": [
+        "Exact duplicate fixture is detected deterministically; accepting merge preserves all evidence references."
+      ],
+      "source_refs": [
+        "SRCREF-BB7E8B02A9",
+        "SRCREF-97536C2180"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional duplicates",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S1.3: Implement duplicate detection and supersession proposals"
+    },
+    {
+      "id": "S1.4",
+      "title": "Implement deterministic requirement lint pack and corpus benchmark",
+      "phase": "S1",
+      "scope": "NOW",
+      "depends_on": [
+        "S1.3"
+      ],
+      "files": [
+        "crates/plumb-lint/src/lib.rs",
+        "crates/plumb-lint/src/rules.rs",
+        "crates/plumb-lint/src/benchmark.rs",
+        "crates/plumb-lint/tests/rules.rs",
+        "fixtures/lint-corpus/corpus.jsonl",
+        "fixtures/lint-corpus/baseline.json"
+      ],
+      "steps": [
+        "Implement the 15 pilot lint rules listed in v2 M2.1 with stable IDs.",
+        "Each lint result references exact EvidenceFragment range.",
+        "Benchmark precision/recall per rule; if measured precision is below 0.85, effective severity is warn through configuration, not code mutation.",
+        "Regression test fails if precision drops by more than 0.03 from baseline."
+      ],
+      "tests": [
+        "cargo test -p plumb-lint"
+      ],
+      "acceptance": [
+        "All 15 rule fixtures pass and the 200-sentence corpus baseline is committed with annotator agreement metadata."
+      ],
+      "source_refs": [
+        "SRCREF-EE31682F6E"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-lint",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S1.4: Implement deterministic requirement lint pack and corpus benchmark"
+    },
+    {
+      "id": "S1.5",
+      "title": "Implement vocabulary normalization and typed concept proposals",
+      "phase": "S1",
+      "scope": "NOW",
+      "depends_on": [
+        "S1.4"
+      ],
+      "files": [
+        "crates/plumb-functional/src/vocabulary.rs",
+        "crates/plumb-functional/tests/vocabulary.rs",
+        "prompts/s1-vocabulary.md",
+        "schemas/inference/s1-vocabulary.schema.json"
+      ],
+      "steps": [
+        "Implement NFKC, case normalization, determiner stripping and the explicit singularization exception table stored in crates/plumb-functional/src/vocabulary_exceptions.rs.",
+        "Generate Term candidates with frequency and co-occurrence.",
+        "Inference may propose Concept kind only from object_type, fact_type, value_type, role, other.",
+        "Conflicting type proposals create findings; they do not overwrite accepted concepts."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional vocabulary"
+      ],
+      "acceptance": [
+        "Vocabulary output is deterministic and HR reference typing reaches the v2 target where fixture labels exist."
+      ],
+      "source_refs": [
+        "SRCREF-7B43AD5876",
+        "SRCREF-C0AC034159"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional vocabulary",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S1.5: Implement vocabulary normalization and typed concept proposals"
+    },
+    {
+      "id": "S1.6",
+      "title": "Implement all F1 validation rules",
+      "phase": "S1",
+      "scope": "NOW",
+      "depends_on": [
+        "S1.5"
+      ],
+      "files": [
+        "crates/plumb-validation/src/rules/f1.rs",
+        "crates/plumb-validation/tests/f1.rs"
+      ],
+      "steps": [
+        "Implement all eleven F1 evaluators from the supplied rule YAML and rulebook.",
+        "Each evaluator returns target IDs and deterministic semantic_condition_key.",
+        "Rules classified external_standard use the supplied metadata only; code must not claim clause-level compliance.",
+        "F1 gate result must include unresolved lint blockers, vocabulary blockers, duplicates and contradictions."
+      ],
+      "tests": [
+        "cargo test -p plumb-validation f1"
+      ],
+      "acceptance": [
+        "All eleven F1 rules have PASS and FAIL fixtures; HR requirements baseline reaches F1 only after required fixture resolutions."
+      ],
+      "source_refs": [
+        "SRCREF-273CB17B27",
+        "SRCREF-0DA654DB72"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-validation f1",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S1.6: Implement all F1 validation rules"
+    },
+    {
+      "id": "S2.1",
+      "title": "Implement entity, attribute and domain-relationship proposals",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S1.6"
+      ],
+      "files": [
+        "crates/plumb-functional/src/domain.rs",
+        "crates/plumb-functional/tests/domain.rs",
+        "prompts/s2-domain.md",
+        "schemas/inference/s2-domain.schema.json"
+      ],
+      "steps": [
+        "Inference proposals are closed to accepted vocabulary Concept IDs; unknown terms are rejected and returned as findings.",
+        "Attributes require owning Entity, value_type and nullable.",
+        "DomainRelationship cardinality is populated only when stated or later human-resolved; inference cannot silently choose missing cardinality.",
+        "Consolidation produces MergeNodes proposals, never direct mutation."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional domain"
+      ],
+      "acceptance": [
+        "Unknown vocabulary is rejected; accepted attribute has exactly one owner; HR entity survival meets the v2 fixture target."
+      ],
+      "source_refs": [
+        "SRCREF-15D96DDAA9",
+        "SRCREF-C0AC034159"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional domain",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.1: Implement entity, attribute and domain-relationship proposals"
+    },
+    {
+      "id": "S2.2",
+      "title": "Implement states, transitions and invariants",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.1"
+      ],
+      "files": [
+        "crates/plumb-functional/src/state.rs",
+        "crates/plumb-functional/src/invariant.rs",
+        "crates/plumb-functional/tests/state.rs"
+      ],
+      "steps": [
+        "Create State and Transition proposals from lifecycle evidence.",
+        "Transition requires stateful_ref, from_state, to_state and trigger_ref; missing trigger is a finding/question.",
+        "Invariant expressions are PlumbExpr proposals and cannot become Accepted until parse/typecheck succeeds.",
+        "No lifecycle state is inferred solely from capitalization or field names."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional state"
+      ],
+      "acceptance": [
+        "State graph rejects missing endpoints/trigger; HR state fixture validates."
+      ],
+      "source_refs": [
+        "SRCREF-B04CD24E97",
+        "SRCREF-48F010D7D1"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional state",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.2: Implement states, transitions and invariants"
+    },
+    {
+      "id": "S2.3",
+      "title": "Implement data classification dictionary proposals",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.2"
+      ],
+      "files": [
+        "crates/plumb-functional/src/data_class.rs",
+        "crates/plumb-functional/tests/data_class.rs"
+      ],
+      "steps": [
+        "Implement explicit deterministic dictionary entries for the v2 pilot examples including email, dob, salary and iban.",
+        "Dictionary hit creates proposed classification with deterministic derivation.",
+        "Unknown classification may be proposed by inference only through a separate proposal; absence remains unknown rather than defaulting to none."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional data_class"
+      ],
+      "acceptance": [
+        "Known dictionary values classify deterministically; unknown values remain unresolved until accepted proposal/decision."
+      ],
+      "source_refs": [
+        "SRCREF-E208E34574"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional data_class",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.3: Implement data classification dictionary proposals"
+    },
+    {
+      "id": "S2.4",
+      "title": "Implement PlumbExpr grammar and typed AST",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.3"
+      ],
+      "files": [
+        "crates/plumb-expr/src/lib.rs",
+        "crates/plumb-expr/src/grammar.pest",
+        "crates/plumb-expr/src/ast.rs",
+        "crates/plumb-expr/src/types.rs",
+        "crates/plumb-expr/src/parser.rs",
+        "crates/plumb-expr/tests/parser.rs"
+      ],
+      "steps": [
+        "Implement literals, dotted identifiers, arithmetic, comparisons, boolean operators, calls, in and lists exactly as v2 M5.1.",
+        "Implement Ty variants exactly as inherited v2 type contract unless contradicted by metamodel; preserve Decimal precision, Date, DateTime, Duration, Quantity, Enum, Ref and List.",
+        "Parser never executes code and exposes no scripting escape."
+      ],
+      "tests": [
+        "cargo test -p plumb-expr parser"
+      ],
+      "acceptance": [
+        "Parse/unparse property tests pass and precedence table is covered."
+      ],
+      "source_refs": [
+        "SRCREF-D23EBEA264",
+        "SRCREF-43093678EA"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-expr parser",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.4: Implement PlumbExpr grammar and typed AST"
+    },
+    {
+      "id": "S2.5",
+      "title": "Implement PlumbExpr type checker, evaluator and calendars",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.4"
+      ],
+      "files": [
+        "crates/plumb-expr/src/typecheck.rs",
+        "crates/plumb-expr/src/eval.rs",
+        "crates/plumb-expr/src/calendar.rs",
+        "crates/plumb-expr/src/render.rs",
+        "crates/plumb-expr/tests/eval.rs"
+      ],
+      "steps": [
+        "Implement same-unit add/subtract, scalar multiply/divide, date/duration, enum membership and Ref navigation.",
+        "Implement decimal evaluation with rust_decimal.",
+        "Implement half-up, half-even, floor, ceil and to-step rounding.",
+        "Implement working_days(period, calendar, inclusive), days_between and aggregates using injected CalendarProvider.",
+        "Do not implement as_of(version) in NOW scope.",
+        "Implement deterministic plain-English example renderer."
+      ],
+      "tests": [
+        "cargo test -p plumb-expr eval"
+      ],
+      "acceptance": [
+        "All v2 rounding, holiday, weekend and inclusive/exclusive fixtures pass; well-typed property-generated expressions do not produce type errors."
+      ],
+      "source_refs": [
+        "SRCREF-C900B2AE78"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-expr eval",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.5: Implement PlumbExpr type checker, evaluator and calendars"
+    },
+    {
+      "id": "S2.6",
+      "title": "Implement calculations and decision tables",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.5"
+      ],
+      "files": [
+        "crates/plumb-functional/src/calculation.rs",
+        "crates/plumb-functional/src/decision_table.rs",
+        "crates/plumb-functional/tests/calculation.rs",
+        "crates/plumb-functional/tests/decision_table.rs",
+        "prompts/s2-calculation.md",
+        "schemas/inference/s2-calculation.schema.json"
+      ],
+      "steps": [
+        "Calculation inference returns PlumbExpr proposal plus target/result metadata; evaluate typechecks before proposal can be accepted.",
+        "Detect undefined input, unit mismatch and calculation cycles deterministically.",
+        "DecisionTable implements typed input/output columns, rows, default and hit policy.",
+        "Implement overlap and completeness checks for boolean/enumeration domains and analyzable numeric intervals."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional calculation",
+        "cargo test -p plumb-functional decision_table"
+      ],
+      "acceptance": [
+        "HR half-day/holiday/inclusive-end fixtures raise the expected gap family; complete/incomplete/overlap table fixtures pass."
+      ],
+      "source_refs": [
+        "SRCREF-E6CF46B968",
+        "SRCREF-9175A495B9"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional calculation",
+        "cargo test -p plumb-functional decision_table",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.6: Implement calculations and decision tables"
+    },
+    {
+      "id": "S2.7",
+      "title": "Implement operations, outcomes, events and read/write semantics",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.6"
+      ],
+      "files": [
+        "crates/plumb-functional/src/operation.rs",
+        "crates/plumb-functional/src/event.rs",
+        "crates/plumb-functional/tests/operation.rs"
+      ],
+      "steps": [
+        "Compile Operation kind command/query, inputs/outputs, preconditions and postconditions.",
+        "Represent reads, writes, produces, consumes, governed_by and uses_calculation only as typed PSG relations.",
+        "Failure outcomes are Outcome nodes; event payload references typed DataSchema or domain attributes as permitted by metamodel.",
+        "Derive read/write candidate sets from accepted criteria, invariants, calculations and rules; human acceptance is required when derivation is not purely structural."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional operation"
+      ],
+      "acceptance": [
+        "HR ApproveLeaveRequest read-set includes the v2 required attributes after fixture decisions; invalid untyped references are rejected."
+      ],
+      "source_refs": [
+        "SRCREF-2DA111CE63",
+        "SRCREF-64C0217743"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional operation",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.7: Implement operations, outcomes, events and read/write semantics"
+    },
+    {
+      "id": "S2.8",
+      "title": "Implement separate business-role and security authorization semantics",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.7"
+      ],
+      "files": [
+        "crates/plumb-functional/src/authorization.rs",
+        "crates/plumb-functional/tests/authorization.rs"
+      ],
+      "steps": [
+        "Implement Principal, SecurityRole, Permission, ResourceScope, PolicyCondition and SeparationConstraint using metamodel fields.",
+        "Keep Actor and BusinessRole in domain semantics; no type alias or shared enum may collapse BusinessRole and SecurityRole.",
+        "Permission must resolve through typed relations to operation and resource scope.",
+        "Implement role-hierarchy cycle detection and static separation-of-duty validation."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional authorization"
+      ],
+      "acceptance": [
+        "BusinessRole and SecurityRole serialize to distinct NodePayload variants; hierarchy cycles and SOD violations are detected."
+      ],
+      "source_refs": [
+        "SRCREF-FFC4E55C45",
+        "SRCREF-3CF65C8502",
+        "SRCREF-482A7F2096"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional authorization",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.8: Implement separate business-role and security authorization semantics"
+    },
+    {
+      "id": "S2.9",
+      "title": "Implement process model and safe process proposals",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.8"
+      ],
+      "files": [
+        "crates/plumb-functional/src/process.rs",
+        "crates/plumb-functional/tests/process.rs",
+        "prompts/s2-process.md",
+        "schemas/inference/s2-process.schema.json"
+      ],
+      "steps": [
+        "Implement Process and ProcessNode controlled kinds from metamodel §9.5.",
+        "Validate one or more start semantics as allowed by profile, reachable end semantics, executable task resolution, exclusive conditions and balanced parallel split/join.",
+        "Build sequence proposals from explicit pre/postconditions, events, accepted state transitions and explicit source evidence.",
+        "Requirement document order may be attached only as weak evidence metadata and must never create an accepted next relation without human confirmation.",
+        "Mermaid import/export is deferred until the UI/process projection task."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional process"
+      ],
+      "acceptance": [
+        "A fixture that differs only in requirement paragraph order produces no accepted process-order change; unreachable node and unbalanced parallel fixtures fail validation."
+      ],
+      "source_refs": [
+        "SRCREF-21ED0F2039",
+        "SRCREF-B87594D03C",
+        "SRCREF-8FF7BA8981"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional process",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.9: Implement process model and safe process proposals"
+    },
+    {
+      "id": "S2.10",
+      "title": "Implement all F2 validation rules",
+      "phase": "S2",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.9"
+      ],
+      "files": [
+        "crates/plumb-validation/src/rules/f2.rs",
+        "crates/plumb-validation/tests/f2.rs"
+      ],
+      "steps": [
+        "Implement all twenty-four F2 evaluators exactly from the supplied rule YAML and rulebook.",
+        "Each evaluator uses typed PSG relations; no evaluator infers coverage from matching names.",
+        "BPMN/DMN/RBAC-labeled rules are semantic subset checks, not claims of full external-format conformance.",
+        "PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER fails when another open blocker in the functional/domain/security family exists."
+      ],
+      "tests": [
+        "cargo test -p plumb-validation f2"
+      ],
+      "acceptance": [
+        "All twenty-four rules have PASS/FAIL fixtures; HR functional reference reaches F2 after expert-answer patches."
+      ],
+      "source_refs": [
+        "SRCREF-0E7CBD4996",
+        "SRCREF-E51F20A226"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-validation f2",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S2.10: Implement all F2 validation rules"
+    },
+    {
+      "id": "S3.1",
+      "title": "Implement deterministic Question generation and routing",
+      "phase": "S3",
+      "scope": "NOW",
+      "depends_on": [
+        "S2.10"
+      ],
+      "files": [
+        "crates/plumb-functional/src/question.rs",
+        "crates/plumb-functional/src/question_templates.rs",
+        "crates/plumb-functional/tests/question.rs"
+      ],
+      "steps": [
+        "Implement QuestionKind set from metamodel §6.2.",
+        "Map each NOW finding code that can be resolved by a question to an explicit template and answer schema.",
+        "Suppress duplicates by template ID plus canonical slot values.",
+        "Priority equals severity weight multiplied by typed dependency blast-radius count using the impact engine.",
+        "Route using stakeholders.yaml; unresolved routing goes to analyst role, not an invented stakeholder."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional question"
+      ],
+      "acceptance": [
+        "HR round-1 question set and order are deterministic; an unmapped stakeholder never becomes a fabricated person."
+      ],
+      "source_refs": [
+        "SRCREF-02E317763F",
+        "SRCREF-7E54F3404D"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional question",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S3.1: Implement deterministic Question generation and routing"
+    },
+    {
+      "id": "S3.2",
+      "title": "Implement question rounds",
+      "phase": "S3",
+      "scope": "NOW",
+      "depends_on": [
+        "S3.1"
+      ],
+      "files": [
+        "crates/plumb-functional/src/round.rs",
+        "crates/plumb-functional/tests/round.rs"
+      ],
+      "steps": [
+        "Compose at most profile.question_round_size questions per stakeholder.",
+        "Sort blocking before non-blocking, then descending priority, then stable question ID.",
+        "Group by affected entity when grouping does not violate ordering.",
+        "A question already answered, superseded or stale is excluded."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional round"
+      ],
+      "acceptance": [
+        "Round size never exceeds 15 under the default profile and output is deterministic."
+      ],
+      "source_refs": [
+        "SRCREF-674B81DA6A"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional round",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S3.2: Implement question rounds"
+    },
+    {
+      "id": "S3.3",
+      "title": "Implement ResolutionDecision and answer-to-patch application",
+      "phase": "S3",
+      "scope": "NOW",
+      "depends_on": [
+        "S3.2"
+      ],
+      "files": [
+        "crates/plumb-functional/src/resolution.rs",
+        "crates/plumb-functional/tests/resolution.rs"
+      ],
+      "steps": [
+        "Every accepted answer creates ResolutionDecision with question/proposal reference, answer, actor, timestamp, rationale when required and patch artifact ref.",
+        "Implement explicit answer mappers for cardinality, state/transition, outcome, actor allowance, permission, unit, precision, rounding, formula, rule cell, calendar and attribute type.",
+        "Patch preview is generated before commit.",
+        "Superseding a prior decision applies a new explicit patch based on current graph; it does not rely on opaque object inversion."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional resolution"
+      ],
+      "acceptance": [
+        "Applying expert-answers.yaml only through answer mappers resolves expected blockers; every graph change has a serialized patch artifact and decision reference."
+      ],
+      "source_refs": [
+        "SRCREF-AE75140DD6",
+        "SRCREF-A95FED2B41",
+        "SRCREF-8A575EA9B2"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional resolution",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S3.3: Implement ResolutionDecision and answer-to-patch application"
+    },
+    {
+      "id": "S3.4",
+      "title": "Implement assumptions and governed waivers",
+      "phase": "S3",
+      "scope": "NOW",
+      "depends_on": [
+        "S3.3"
+      ],
+      "files": [
+        "crates/plumb-functional/src/assumption.rs",
+        "crates/plumb-validation/src/waiver.rs",
+        "crates/plumb-functional/tests/assumption.rs"
+      ],
+      "steps": [
+        "Assumption requires statement, owner_ref and status; expiry/review is required when it is used to satisfy a blocking gate condition.",
+        "Expired assumptions become findings using injected Clock.",
+        "A waiver is represented by ResolutionDecision and may only satisfy a rule if the YAML waiver_policy permits it.",
+        "Forbidden waiver attempts return validation error and do not change gate result."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional assumption",
+        "cargo test -p plumb-validation waiver"
+      ],
+      "acceptance": [
+        "Expired assumption and forbidden waiver fixtures fail as specified."
+      ],
+      "source_refs": [
+        "SRCREF-860566BE13",
+        "SRCREF-003999438A"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional assumption",
+        "cargo test -p plumb-validation waiver",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S3.4: Implement assumptions and governed waivers"
+    },
+    {
+      "id": "S3.5",
+      "title": "Implement all F3 validation rules",
+      "phase": "S3",
+      "scope": "NOW",
+      "depends_on": [
+        "S3.4"
+      ],
+      "files": [
+        "crates/plumb-validation/src/rules/f3.rs",
+        "crates/plumb-validation/tests/f3.rs"
+      ],
+      "steps": [
+        "Implement all six F3 evaluators exactly from the supplied rule YAML and rulebook."
+      ],
+      "tests": [
+        "cargo test -p plumb-validation f3"
+      ],
+      "acceptance": [
+        "All six F3 rules have PASS/FAIL fixtures and the HR fixture passes after expert answers."
+      ],
+      "source_refs": [
+        "SRCREF-040CACC2B1",
+        "SRCREF-F9131DF9AF"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-validation f3",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S3.5: Implement all F3 validation rules"
+    },
+    {
+      "id": "S4.1",
+      "title": "Implement Scenario model and deterministic scenario derivation",
+      "phase": "S4",
+      "scope": "NOW",
+      "depends_on": [
+        "S3.5"
+      ],
+      "files": [
+        "crates/plumb-functional/src/scenario.rs",
+        "crates/plumb-functional/tests/scenario.rs",
+        "prompts/s4-scenario.md",
+        "schemas/inference/s4-scenario.schema.json"
+      ],
+      "steps": [
+        "Implement Scenario fields/kinds exactly from metamodel §9.10.",
+        "Derive rule-row, state-transition and boundary scenario skeletons deterministically from accepted semantics.",
+        "Inference may fill realistic values only within accepted enums, units, ranges and types.",
+        "Every scenario carries requirement_refs or derived_from_refs sufficient to trace its obligation.",
+        "Inference-created expected outcomes require HUMAN_CONFIRM."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional scenario"
+      ],
+      "acceptance": [
+        "0.5-day and holiday boundary skeletons are derived deterministically; invalid generated values are rejected."
+      ],
+      "source_refs": [
+        "SRCREF-B79FB10635",
+        "SRCREF-838C22696F",
+        "SRCREF-0765F7CC1C"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional scenario",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S4.1: Implement Scenario model and deterministic scenario derivation"
+    },
+    {
+      "id": "S4.2",
+      "title": "Implement pure functional interpreter materialization and execution",
+      "phase": "S4",
+      "scope": "NOW",
+      "depends_on": [
+        "S4.1"
+      ],
+      "files": [
+        "crates/plumb-sim/src/lib.rs",
+        "crates/plumb-sim/src/model.rs",
+        "crates/plumb-sim/src/materialize.rs",
+        "crates/plumb-sim/src/execute.rs",
+        "crates/plumb-sim/tests/execute.rs"
+      ],
+      "steps": [
+        "Implement pure run(model, scenario) returning Pass, Fail{diff} or Undecidable{missing} with semantic trace.",
+        "Materialize Given state from typed scenario values.",
+        "Execute actor authorization, preconditions, decision tables, calculations, invariants, writes, state transitions and events.",
+        "Missing semantic values return Undecidable and name the missing element IDs; never substitute defaults unless they are accepted assumptions in PSG."
+      ],
+      "tests": [
+        "cargo test -p plumb-sim execute"
+      ],
+      "acceptance": [
+        "Pre-answer HR half-day, holiday and inclusive-end cases are Undecidable for the expected missing elements; no network/I/O occurs in run()."
+      ],
+      "source_refs": [
+        "SRCREF-E40232A0FE",
+        "SRCREF-0765F7CC1C"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-sim execute",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S4.2: Implement pure functional interpreter materialization and execution"
+    },
+    {
+      "id": "S4.3",
+      "title": "Implement Then comparison and scenario traces",
+      "phase": "S4",
+      "scope": "NOW",
+      "depends_on": [
+        "S4.2"
+      ],
+      "files": [
+        "crates/plumb-sim/src/compare.rs",
+        "crates/plumb-sim/src/trace.rs",
+        "crates/plumb-sim/tests/compare.rs"
+      ],
+      "steps": [
+        "Compare expected states, values, outcomes and events using typed equality/unit semantics.",
+        "Structured diff includes semantic element ID, expected value and actual value.",
+        "Trace contains ordered business-semantic steps, rule/calculation references and event emissions.",
+        "Persist trace as scenario-trace artifact outside the pure run() boundary."
+      ],
+      "tests": [
+        "cargo test -p plumb-sim compare"
+      ],
+      "acceptance": [
+        "Fail fixtures produce stable structured diffs; trace ordering is deterministic."
+      ],
+      "source_refs": [
+        "SRCREF-08F3AED210",
+        "SRCREF-A37A8FF581"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-sim compare",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S4.3: Implement Then comparison and scenario traces"
+    },
+    {
+      "id": "S4.4",
+      "title": "Implement dirty-set scenario re-execution and scenario findings",
+      "phase": "S4",
+      "scope": "NOW",
+      "depends_on": [
+        "S4.3"
+      ],
+      "files": [
+        "crates/plumb-sim/src/incremental.rs",
+        "crates/plumb-sim/tests/incremental.rs"
+      ],
+      "steps": [
+        "Select scenarios for re-execution only when DirtySet reaches a referenced requirement, operation, rule, calculation, state/transition, event or permission.",
+        "Emit stable findings for scenario fail and blocking undecidable using deterministic finding keys.",
+        "A view-only change reruns zero scenarios."
+      ],
+      "tests": [
+        "cargo test -p plumb-sim incremental"
+      ],
+      "acceptance": [
+        "Changing LeaveBalance calculation reruns dependent leave scenarios; unrelated glossary/view change does not."
+      ],
+      "source_refs": [
+        "SRCREF-B1A87347A8",
+        "SRCREF-7DDD53DC7B"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-sim incremental",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S4.4: Implement dirty-set scenario re-execution and scenario findings"
+    },
+    {
+      "id": "S4.5",
+      "title": "Implement minimal VerificationObligation model for F4 applicability",
+      "phase": "S4",
+      "scope": "NOW",
+      "depends_on": [
+        "S4.4"
+      ],
+      "files": [
+        "crates/plumb-functional/src/verification.rs",
+        "crates/plumb-functional/tests/verification.rs"
+      ],
+      "steps": [
+        "Expose VerificationObligation and verification_kind types already present in NodePayload.",
+        "For NOW scope generate obligations only as deterministic/proposed links required to express F4 applicability; do not implement D2 planning.",
+        "Functional executable behavior may map to scenario obligation; non-executable requirements may map to analysis, inspection, review, demonstration, formal_check, architecture_check or security_check only through explicit human/profile decision.",
+        "Do not generate TestCase automatically in NOW scope."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional verification"
+      ],
+      "acceptance": [
+        "A quality/documentation requirement can be F4-verifiable without a fake executable scenario; executable operation requirement receives scenario linkage."
+      ],
+      "source_refs": [
+        "SRCREF-FFF9705B50",
+        "SRCREF-441E1C9F5A",
+        "SRCREF-AD0A0F5D57"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional verification",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S4.5: Implement minimal VerificationObligation model for F4 applicability"
+    },
+    {
+      "id": "S4.6",
+      "title": "Implement all F4 validation rules",
+      "phase": "S4",
+      "scope": "NOW",
+      "depends_on": [
+        "S4.5"
+      ],
+      "files": [
+        "crates/plumb-validation/src/rules/f4.rs",
+        "crates/plumb-validation/tests/f4.rs"
+      ],
+      "steps": [
+        "Implement all seven F4 evaluators exactly from the supplied rule YAML and rulebook.",
+        "Do not use the v2 universal every-requirement scenario rule.",
+        "RUN.NO_BLOCKING_UNDECIDABLE considers only blocking executable scenarios under current profile."
+      ],
+      "tests": [
+        "cargo test -p plumb-validation f4"
+      ],
+      "acceptance": [
+        "All seven F4 rules have PASS/FAIL fixtures; HR fixture passes F4 after expert answers and required scenario confirmation."
+      ],
+      "source_refs": [
+        "SRCREF-441E1C9F5A",
+        "SRCREF-2AC9336C3C",
+        "SRCREF-AD0A0F5D57"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-validation f4",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S4.6: Implement all F4 validation rules"
+    },
+    {
+      "id": "S4.7",
+      "title": "Implement functional pilot projections and reports",
+      "phase": "S4",
+      "scope": "NOW",
+      "depends_on": [
+        "S4.6"
+      ],
+      "files": [
+        "crates/plumb-functional/src/report.rs",
+        "crates/plumb-functional/src/projections.rs",
+        "crates/plumb-functional/tests/projections.rs"
+      ],
+      "steps": [
+        "Generate functional.yaml, glossary.md, scenarios.yaml, decisions.jsonl, model-report.md and gate-report JSON from PSG.",
+        "Each machine projection records or accompanies source semantic_hash and projection content hash.",
+        "Sort all projected collections deterministically.",
+        "Readiness may be reported as advisory only and cannot alter gate result."
+      ],
+      "tests": [
+        "cargo test -p plumb-functional projections"
+      ],
+      "acceptance": [
+        "Golden outputs are byte-identical on repeated runs and every gate report remains independent from readiness."
+      ],
+      "source_refs": [
+        "SRCREF-027DE8227D",
+        "SRCREF-6581F3212C",
+        "SRCREF-A18636D6DA"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-functional projections",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "S4.7: Implement functional pilot projections and reports"
+    },
+    {
+      "id": "X1.1",
+      "title": "Implement Anthropic InferenceProvider behind llm feature",
+      "phase": "CrossCutting",
+      "scope": "NOW",
+      "depends_on": [
+        "S4.7"
+      ],
+      "files": [
+        "crates/plumb-inference/src/anthropic.rs",
+        "crates/plumb-inference/src/provider.rs",
+        "crates/plumb-inference/tests/provider_contract.rs",
+        "scripts/manual-llm-smoke.sh"
+      ],
+      "steps": [
+        "Add Anthropic provider under Cargo feature llm using reqwest.",
+        "Provider accepts only InferenceRequest and returns InferenceArtifact; caller supplies JSON schema/prompt artifacts.",
+        "Record provider, model, parameters, raw_response_hash and validated_output_hash.",
+        "No live provider test runs in CI; manual smoke script requires ANTHROPIC_API_KEY and exits with a clear error when absent.",
+        "Provider/model string is configuration, not hard-coded semantic truth."
+      ],
+      "tests": [
+        "cargo test -p plumb-inference --no-default-features",
+        "cargo test -p plumb-inference --features llm"
+      ],
+      "acceptance": [
+        "Mock/Null contract tests pass; feature-off build has no network dependency path; manual script is documented."
+      ],
+      "source_refs": [
+        "SRCREF-35F1EE7D59",
+        "SRCREF-D91B3DB99E"
+      ],
+      "forbidden": [
+        "Do not let AnthropicProvider access store/graph.",
+        "Do not make Anthropic the only possible trait implementation."
+      ],
+      "commands": [
+        "cargo test -p plumb-inference --no-default-features",
+        "cargo test -p plumb-inference --features llm",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "X1.1: Implement Anthropic InferenceProvider behind llm feature"
+    },
+    {
+      "id": "X1.2",
+      "title": "Implement lexical BM25 retrieval index",
+      "phase": "CrossCutting",
+      "scope": "NOW",
+      "depends_on": [
+        "X1.1"
+      ],
+      "files": [
+        "crates/plumb-intake/src/lib.rs",
+        "crates/plumb-intake/src/bm25.rs",
+        "crates/plumb-intake/src/index.rs",
+        "crates/plumb-intake/tests/bm25.rs"
+      ],
+      "steps": [
+        "Index requirement statements, domain concepts, rules, calculations, scenarios and evidence text.",
+        "Implement deterministic lexical BM25 in Rust; no external search dependency.",
+        "Incremental update must produce identical ranking to full rebuild for equal corpus.",
+        "EmbeddingProvider path is deferred; retain extension interface only if already defined in v2-compatible API."
+      ],
+      "tests": [
+        "cargo test -p plumb-intake bm25"
+      ],
+      "acceptance": [
+        "Top-k is deterministic and incremental index equals rebuild."
+      ],
+      "source_refs": [
+        "SRCREF-5BCC6696BB"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-intake bm25",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "X1.2: Implement lexical BM25 retrieval index"
+    },
+    {
+      "id": "X1.3",
+      "title": "Implement patch-centric intake gate",
+      "phase": "CrossCutting",
+      "scope": "NOW",
+      "depends_on": [
+        "X1.2"
+      ],
+      "files": [
+        "crates/plumb-intake/src/intake.rs",
+        "crates/plumb-intake/src/report.rs",
+        "crates/plumb-intake/tests/intake.rs"
+      ],
+      "steps": [
+        "Input is Proposal containing SemanticPatch plus evidence/derivation refs.",
+        "Resolve terms, covered/equivalent semantics, duplicate candidates, refinements, contradictions and novelty.",
+        "Conflict checks reuse validation/typed graph logic; do not implement a second independent conflict engine.",
+        "Return IntakeReport and requires_reason; intake never commits a patch.",
+        "A proposal flagged requires_reason cannot be accepted without recorded ResolutionDecision rationale."
+      ],
+      "tests": [
+        "cargo test -p plumb-intake intake"
+      ],
+      "acceptance": [
+        "Existing requirement proposal reports self coverage; conflicting proposal reuses the same semantic finding as direct validation; no commit occurs inside intake."
+      ],
+      "source_refs": [
+        "SRCREF-DC2572BD78",
+        "SRCREF-7CA117913F"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-intake intake",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "X1.3: Implement patch-centric intake gate"
+    },
+    {
+      "id": "X1.4",
+      "title": "Implement transcript-as-source session pipeline",
+      "phase": "CrossCutting",
+      "scope": "NOW",
+      "depends_on": [
+        "X1.3"
+      ],
+      "files": [
+        "crates/plumb-session/src/lib.rs",
+        "crates/plumb-session/src/model.rs",
+        "crates/plumb-session/src/turn.rs",
+        "crates/plumb-session/tests/turn.rs"
+      ],
+      "steps": [
+        "Persist each user/assistant turn as SourceArtifact/EvidenceFragment of kind transcript.",
+        "Turn pipeline is retrieve -> build bounded context -> create InferenceRequest -> acquire persisted artifact -> validate proposals -> intake -> display.",
+        "Session may ask only an existing open Question ID; an invented question ID is rejected.",
+        "Every proposal from a turn must cite the user-turn EvidenceFragment or accepted PSG evidence.",
+        "Session has no direct graph-write method."
+      ],
+      "tests": [
+        "cargo test -p plumb-session"
+      ],
+      "acceptance": [
+        "Proposal without user-turn/evidence ref is rejected; invented question ID is rejected; context ordering is deterministic."
+      ],
+      "source_refs": [
+        "SRCREF-FB7BC75809",
+        "SRCREF-96D5EDE97F"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-session",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "X1.4: Implement transcript-as-source session pipeline"
+    },
+    {
+      "id": "X1.5",
+      "title": "Implement asynchronous stage job base-revision protection",
+      "phase": "CrossCutting",
+      "scope": "NOW",
+      "depends_on": [
+        "X1.4"
+      ],
+      "files": [
+        "crates/plumb-compiler/src/job.rs",
+        "crates/plumb-compiler/tests/job.rs"
+      ],
+      "steps": [
+        "Job captures base_revision, base_semantic_hash, stage, scope, profile_hash and config_hash.",
+        "Completed proposal is STALE when current branch head differs from base_revision.",
+        "Stale output may be re-evaluated against current head but must never be directly committed.",
+        "Expose deterministic job status model: queued, acquiring, evaluating, ready, stale, failed, committed."
+      ],
+      "tests": [
+        "cargo test -p plumb-compiler job"
+      ],
+      "acceptance": [
+        "A simulated concurrent branch update marks earlier job stale and prevents commit."
+      ],
+      "source_refs": [
+        "SRCREF-5D455D80AE",
+        "SRCREF-5FE2D971AC"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-compiler job",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "X1.5: Implement asynchronous stage job base-revision protection"
+    },
+    {
+      "id": "A0.1",
+      "title": "Generate pilot OpenAPI contract with v3 overrides",
+      "phase": "Platform",
+      "scope": "NOW",
+      "depends_on": [
+        "X1.5"
+      ],
+      "files": [
+        "crates/plumb-api/src/lib.rs",
+        "crates/plumb-api/src/openapi.rs",
+        "api/modeller.openapi.json",
+        "docs/api.md",
+        "crates/plumb-api/tests/openapi.rs"
+      ],
+      "steps": [
+        "Implement every P and P-R endpoint listed in v2 plan §5 as a utoipa contract/stub, except apply the explicit v3 overrides in this plan.",
+        "For each request/response schema, use an HR fixture example when fixture-contract.yaml supplies an object of that semantic type; choose the lexicographically smallest stable ID when multiple fixture objects qualify.",
+        "If no HR object qualifies, generate the example recursively from the OpenAPI schema with this exact rule: enum -> lexicographically first serialized enum value; boolean -> true; integer -> schema minimum else 1; number -> schema minimum else 1.0; string/date -> `2026-01-15`; string/date-time -> `2026-01-15T12:00:00Z`; other string -> `example`; array -> one generated item; object -> all required properties only, in lexicographic property-name order; oneOf/anyOf -> branch with lexicographically smallest RFC-8785 canonical schema JSON; nullable is ignored when a non-null branch exists.",
+        "Generated examples must validate against the generated schema. If a format/pattern/constraint makes the deterministic fallback invalid and no HR example exists, stop A0.1 with BLOCKED-TEST-CONTRACT naming the endpoint/schema; do not invent a value.",
+        "GET /api/model/version response is {version, hash, revision, semantic_hash, evidence_hash}; version/hash are compatibility aliases of revision/semantic_hash.",
+        "GET /api/gates returns I0, F1, F2, F3, F4 in this order; later gates are omitted in NOW scope.",
+        "Every write request requires If-Match containing current semantic_hash; 412 response includes current revision and semantic_hash.",
+        "Job responses include base_revision and stale status."
+      ],
+      "tests": [
+        "cargo test -p plumb-api openapi"
+      ],
+      "acceptance": [
+        "OpenAPI is generated from Rust, committed, contains all v2 P/P-R endpoints with overrides, and examples round-trip."
+      ],
+      "source_refs": [
+        "SRCREF-723A7B45BB",
+        "SRCREF-48A9B980DD"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-api openapi",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "A0.1: Generate pilot OpenAPI contract with v3 overrides"
+    },
+    {
+      "id": "A0.2",
+      "title": "Implement source, requirement, model and gate HTTP handlers",
+      "phase": "Platform",
+      "scope": "NOW",
+      "depends_on": [
+        "A0.1"
+      ],
+      "files": [
+        "crates/plumb-api/src/state.rs",
+        "crates/plumb-api/src/error.rs",
+        "crates/plumb-api/src/routes/meta.rs",
+        "crates/plumb-api/src/routes/sources.rs",
+        "crates/plumb-api/src/routes/requirements.rs",
+        "crates/plumb-api/src/routes/model.rs",
+        "crates/plumb-api/src/routes/gates.rs",
+        "crates/plumb-api/src/routes/mod.rs",
+        "crates/plumb-api/tests/http_core.rs"
+      ],
+      "steps": [
+        "Back handlers with branch head/revision store and typed PSG.",
+        "All writes create Proposal/SemanticPatch then pass intake and CAS commit; no handler mutates Graph directly.",
+        "Errors use {code,message,details}.",
+        "List pagination uses {items,next_cursor}; a non-null cursor is lowercase hex of UTF-8 RFC-8785 canonical JSON exactly `{\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}`; a cursor bound to a different semantic_hash returns HTTP 409/E_CURSOR_BASELINE_CHANGED.",
+        "GET reads return ETag equal to semantic_hash."
+      ],
+      "tests": [
+        "cargo test -p plumb-api http_core"
+      ],
+      "acceptance": [
+        "Wrong If-Match returns 412; pagination returns next_cursor; no handler bypasses patch commit path in tests."
+      ],
+      "source_refs": [
+        "SRCREF-E08AB8CE58",
+        "SRCREF-48A9B980DD"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-api http_core",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "A0.2: Implement source, requirement, model and gate HTTP handlers"
+    },
+    {
+      "id": "A0.3",
+      "title": "Implement questions, proposals, sessions, scenarios and jobs HTTP handlers",
+      "phase": "Platform",
+      "scope": "NOW",
+      "depends_on": [
+        "A0.2"
+      ],
+      "files": [
+        "crates/plumb-api/src/routes/questions.rs",
+        "crates/plumb-api/src/routes/proposals.rs",
+        "crates/plumb-api/src/routes/sessions.rs",
+        "crates/plumb-api/src/routes/scenarios.rs",
+        "crates/plumb-api/src/routes/jobs.rs",
+        "crates/plumb-api/tests/http_workflow.rs"
+      ],
+      "steps": [
+        "Implement endpoint behavior exactly from v2 §5 through PSG-backed services.",
+        "Question answer returns proposal_id, intake and patch_preview before commit action.",
+        "Proposal accept/link/merge/supersede/create/reject uses intake result and ResolutionDecision semantics.",
+        "Scenario run returns pass/fail/undecidable with trace reference.",
+        "Jobs expose stale state and never auto-commit stale proposals."
+      ],
+      "tests": [
+        "cargo test -p plumb-api http_workflow"
+      ],
+      "acceptance": [
+        "End-to-end HTTP test answers one question, previews patch, accepts proposal, advances revision and rejects stale If-Match."
+      ],
+      "source_refs": [
+        "SRCREF-EE99C074D0"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-api http_workflow",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "A0.3: Implement questions, proposals, sessions, scenarios and jobs HTTP handlers"
+    },
+    {
+      "id": "A0.4",
+      "title": "Implement CLI commands over the same application services",
+      "phase": "Platform",
+      "scope": "NOW",
+      "depends_on": [
+        "A0.3"
+      ],
+      "files": [
+        "crates/plumb-cli/src/main.rs",
+        "crates/plumb-cli/src/commands.rs",
+        "crates/plumb-cli/tests/cli.rs"
+      ],
+      "steps": [
+        "Implement import, lint, vocab, extract, consolidate, calc, rules, analyse, questions, rounds, apply, flows, scenarios, run, ready, export, report, serve and log-effort.",
+        "Every command supports --json where output exists.",
+        "Exit codes: 0 success, 2 gate failed, 1 operational/spec error.",
+        "CLI calls the same services as HTTP handlers and cannot bypass intake/patch/revision semantics."
+      ],
+      "tests": [
+        "cargo test -p plumb-cli"
+      ],
+      "acceptance": [
+        "assert_cmd tests cover success, gate failure and operational error exit codes."
+      ],
+      "source_refs": [
+        "SRCREF-1EFC3F56F4"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test -p plumb-cli",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "A0.4: Implement CLI commands over the same application services"
+    },
+    {
+      "id": "U0.1",
+      "title": "Scaffold strict React UI and generated API client",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "A0.1"
+      ],
+      "files": [
+        "ui/package.json",
+        "ui/package-lock.json",
+        "ui/tsconfig.json",
+        "ui/vite.config.ts",
+        "ui/eslint.config.js",
+        "ui/playwright.config.ts",
+        "ui/src/main.tsx",
+        "ui/src/app/router.tsx",
+        "ui/src/api/client.ts",
+        "ui/src/api/schema.d.ts",
+        "ui/src/test/msw.ts",
+        "ui/src/i18n/en.json",
+        "ui/src/i18n/pl.json"
+      ],
+      "steps": [
+        "Use React 19, TypeScript strict, Vite, TanStack Router/Query, Zustand view-state only, Radix, Tailwind, ELK.js, openapi-fetch, openapi-typescript, MSW, Playwright, axe and the v2 dependency set.",
+        "Generate schema.d.ts from api/modeller.openapi.json; never hand-edit it.",
+        "Configure hard-coded JSX string lint except test files and i18n infrastructure.",
+        "Set package.json scripts exactly to: \"typecheck\": \"tsc --noEmit\"; \"lint\": \"eslint .\"; \"test\": \"vitest run\"; \"e2e\": \"playwright test\"; \"api:generate\": \"openapi-typescript ../api/modeller.openapi.json -o src/api/schema.d.ts\"; \"api:check\": \"openapi-typescript ../api/modeller.openapi.json -o /tmp/plumb-schema.d.ts && cmp -s /tmp/plumb-schema.d.ts src/api/schema.d.ts\"."
+      ],
+      "tests": [
+        "cd ui && npm ci && npm run api:generate && npm run api:check && npm run typecheck && npm run lint && npm run test"
+      ],
+      "acceptance": [
+        "Generated client has no drift and UI checks pass."
+      ],
+      "source_refs": [
+        "SRCREF-25A1B72D82"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm ci && npm run api:generate && npm run api:check && npm run typecheck && npm run lint && npm run test",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U0.1: Scaffold strict React UI and generated API client"
+    },
+    {
+      "id": "U1.1",
+      "title": "Implement application shell, role gating and event/version hooks",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "U0.1",
+        "A0.2"
+      ],
+      "files": [
+        "ui/src/app/AppShell.tsx",
+        "ui/src/app/nav.ts",
+        "ui/src/app/auth.ts",
+        "ui/src/api/useVersionedMutation.ts",
+        "ui/src/api/useEvents.ts",
+        "ui/src/features/home/HomePage.tsx",
+        "ui/src/features/home/HomePage.test.tsx"
+      ],
+      "steps": [
+        "Implement v2 pilot navigation exactly, with Gates showing I0-F4.",
+        "Local auth uses GET /api/me; server roles are authoritative.",
+        "useVersionedMutation sends If-Match from latest model semantic_hash and handles 412 by invalidating queries and showing ConflictDialog.",
+        "useEvents invalidates affected query keys on WebSocket event; it never applies semantic state from event payload directly."
+      ],
+      "tests": [
+        "cd ui && npm run test -- HomePage"
+      ],
+      "acceptance": [
+        "Shell renders fixture home and wrong-version mutation surfaces conflict without retrying write automatically."
+      ],
+      "source_refs": [
+        "SRCREF-0C6AD6DAFA"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm run test -- HomePage",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U1.1: Implement application shell, role gating and event/version hooks"
+    },
+    {
+      "id": "U1.2",
+      "title": "Implement shared proposal, provenance, findings, diff and typed-answer components",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "U1.1"
+      ],
+      "files": [
+        "ui/src/components/ProposalReviewBar.tsx",
+        "ui/src/components/ProvenanceDrawer.tsx",
+        "ui/src/components/FindingsPanel.tsx",
+        "ui/src/components/DiffViewer.tsx",
+        "ui/src/components/TypedAnswerControl.tsx",
+        "ui/src/components/ConflictDialog.tsx",
+        "ui/src/components/GateBadge.tsx",
+        "ui/src/components/DiagramFrame.tsx",
+        "ui/src/components/shared.test.tsx"
+      ],
+      "steps": [
+        "Implement behaviors inherited from v2 U1.3.",
+        "ProposalReviewBar displays intake status and cannot enable create/accept when server says reason required and rationale is empty.",
+        "ProvenanceDrawer distinguishes evidence, deterministic derivation, human resolution and LLM inference artifact.",
+        "GateBadge displays PASS/FAIL/WARN/WAIVED/ERROR without converting to readiness score.",
+        "DiagramFrame keeps layout state separate from semantic mutation callbacks."
+      ],
+      "tests": [
+        "cd ui && npm run test -- shared"
+      ],
+      "acceptance": [
+        "All shared behavior tests pass including reason enforcement and gate-state display."
+      ],
+      "source_refs": [
+        "SRCREF-10AF56ADEE",
+        "SRCREF-AD9DA89616"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm run test -- shared",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U1.2: Implement shared proposal, provenance, findings, diff and typed-answer components"
+    },
+    {
+      "id": "U2.1",
+      "title": "Implement Requirements and Glossary views",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "U1.2",
+        "A0.2"
+      ],
+      "files": [
+        "ui/src/features/requirements/RequirementsPage.tsx",
+        "ui/src/features/requirements/RequirementDetail.tsx",
+        "ui/src/features/requirements/requirements.test.tsx",
+        "ui/src/features/glossary/GlossaryPage.tsx",
+        "ui/src/features/glossary/glossary.test.tsx"
+      ],
+      "steps": [
+        "Implement v2 U2 and U3 behaviors.",
+        "Requirement detail shows source evidence/provenance, lint findings, original text and EARS proposal separately.",
+        "Every write uses generated API client and versioned mutation hook.",
+        "Glossary merge displays resulting semantic diff before commit."
+      ],
+      "tests": [
+        "cd ui && npm run test -- requirements glossary"
+      ],
+      "acceptance": [
+        "Requirement actions send If-Match; source evidence is visible; glossary merge requires diff confirmation."
+      ],
+      "source_refs": [
+        "SRCREF-3CE600A754"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm run test -- requirements glossary",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U2.1: Implement Requirements and Glossary views"
+    },
+    {
+      "id": "U2.2",
+      "title": "Implement Sentences/semantic proposal review and Questions views",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "U2.1",
+        "A0.3"
+      ],
+      "files": [
+        "ui/src/features/sentences/SentencesPage.tsx",
+        "ui/src/features/sentences/sentences.test.tsx",
+        "ui/src/features/questions/QuestionsPage.tsx",
+        "ui/src/features/questions/questions.test.tsx"
+      ],
+      "steps": [
+        "Implement v2 U4/U5 semantics.",
+        "Inline answer creates server proposal and shows patch preview before acceptance.",
+        "Bulk accept may call one proposal/action per semantic item but must advance ETag after each successful commit; stop on first 412.",
+        "Question round manager never permits more than profile max."
+      ],
+      "tests": [
+        "cd ui && npm run test -- sentences questions"
+      ],
+      "acceptance": [
+        "Inline answer path produces decision/proposal preview; bulk accept stops on version conflict."
+      ],
+      "source_refs": [
+        "SRCREF-50924A0118"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm run test -- sentences questions",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U2.2: Implement Sentences/semantic proposal review and Questions views"
+    },
+    {
+      "id": "U2.3",
+      "title": "Implement chat session view",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "U2.2",
+        "A0.3"
+      ],
+      "files": [
+        "ui/src/features/sessions/SessionPanel.tsx",
+        "ui/src/features/sessions/ProposalCard.tsx",
+        "ui/src/features/sessions/session.test.tsx"
+      ],
+      "steps": [
+        "Implement project/scoped side panel.",
+        "Render proposal intake results and engine Question IDs.",
+        "Do not render a model-generated free-form question as an engine question unless API returns an existing question_id.",
+        "All commit actions use proposal endpoints, not direct model endpoints."
+      ],
+      "tests": [
+        "cd ui && npm run test -- session"
+      ],
+      "acceptance": [
+        "Invented question fixture is displayed only as assistant text, not actionable typed question; proposal commit path uses proposal endpoint."
+      ],
+      "source_refs": [
+        "SRCREF-CC24FC894A",
+        "SRCREF-7CA117913F"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm run test -- session",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U2.3: Implement chat session view"
+    },
+    {
+      "id": "U2.4",
+      "title": "Implement process swimlane view and semantic step edits",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "U2.3"
+      ],
+      "files": [
+        "ui/src/features/processes/ProcessesPage.tsx",
+        "ui/src/features/processes/ProcessDiagram.tsx",
+        "ui/src/features/processes/processes.test.tsx"
+      ],
+      "steps": [
+        "Render lanes, steps, branches, events, triggers and outcomes using ELK layout.",
+        "Support add existing operation, reorder and move lane only.",
+        "A move/reorder action sends a semantic process patch proposal; visual drag coordinates alone stay local view metadata.",
+        "Do not implement branch editing or BPMN import in NOW scope.",
+        "SVG export is view projection only."
+      ],
+      "tests": [
+        "cd ui && npm run test -- processes"
+      ],
+      "acceptance": [
+        "Layout is deterministic for equal data; visual position change alone sends no semantic mutation; semantic move does."
+      ],
+      "source_refs": [
+        "SRCREF-174DD5C7FE",
+        "SRCREF-A0B54B112C",
+        "SRCREF-006359FAE9"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm run test -- processes",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U2.4: Implement process swimlane view and semantic step edits"
+    },
+    {
+      "id": "U2.5",
+      "title": "Implement Scenarios view and business-semantic traces",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "U2.4",
+        "A0.3"
+      ],
+      "files": [
+        "ui/src/features/scenarios/ScenariosPage.tsx",
+        "ui/src/features/scenarios/ScenarioTrace.tsx",
+        "ui/src/features/scenarios/scenarios.test.tsx"
+      ],
+      "steps": [
+        "Render given/when/then, confirmation status, run status and trace.",
+        "Correction creates proposal; it does not edit accepted scenario locally.",
+        "Bulk confirmation is limited to derived scenarios returned as confirmable by API.",
+        "Undecidable trace displays missing semantic element IDs/names."
+      ],
+      "tests": [
+        "cd ui && npm run test -- scenarios"
+      ],
+      "acceptance": [
+        "Correction path uses proposal; undecidable fixture names missing element."
+      ],
+      "source_refs": [
+        "SRCREF-49008E6B37"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm run test -- scenarios",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U2.5: Implement Scenarios view and business-semantic traces"
+    },
+    {
+      "id": "U2.6",
+      "title": "Implement Findings, Entities, Rules and Calculations analyst views",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "U2.5",
+        "A0.2"
+      ],
+      "files": [
+        "ui/src/features/findings/FindingsPage.tsx",
+        "ui/src/features/entities/EntitiesPage.tsx",
+        "ui/src/features/rules/RulesPage.tsx",
+        "ui/src/features/calculations/CalculationsPage.tsx",
+        "ui/src/features/analyst/analyst.test.tsx"
+      ],
+      "steps": [
+        "Implement v2 U9 NOW/P-R behaviors.",
+        "Entities view is read-only ER plus CRUD matrix in NOW scope.",
+        "Rules view exposes uncovered/overlap findings and explicit cell-fill proposal.",
+        "Calculations show worked example read-only; no free-form formula editor in NOW scope.",
+        "Findings view distinguishes rule_class external_standard, external_interoperability, plumb_core and profile/organization."
+      ],
+      "tests": [
+        "cd ui && npm run test -- analyst"
+      ],
+      "acceptance": [
+        "All four views render fixture data and rule-class distinction is visible."
+      ],
+      "source_refs": [
+        "SRCREF-A59FD84DEF",
+        "SRCREF-62FBC0BA0F"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm run test -- analyst",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U2.6: Implement Findings, Entities, Rules and Calculations analyst views"
+    },
+    {
+      "id": "U2.7",
+      "title": "Implement Gates and Decisions views",
+      "phase": "UI",
+      "scope": "NOW",
+      "depends_on": [
+        "U2.6"
+      ],
+      "files": [
+        "ui/src/features/gates/GatesPage.tsx",
+        "ui/src/features/decisions/DecisionsPage.tsx",
+        "ui/src/features/gates/gates.test.tsx",
+        "ui/src/features/decisions/decisions.test.tsx"
+      ],
+      "steps": [
+        "Gates page displays I0-F4 and individual rule results/waivers from GateReport.",
+        "Do not display a single 'ISO compliant' badge.",
+        "Decisions log distinguishes ResolutionDecision from architecture/business decision types even when only ResolutionDecision exists in pilot data.",
+        "Readiness may appear only as advisory secondary data labeled uncalibrated when present."
+      ],
+      "tests": [
+        "cd ui && npm run test -- gates decisions"
+      ],
+      "acceptance": [
+        "A failed blocker remains visually failed even with high readiness; waived rule remains distinct from pass."
+      ],
+      "source_refs": [
+        "SRCREF-4800CCFA7A",
+        "SRCREF-FBD9DC478A"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cd ui && npm run test -- gates decisions",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "U2.7: Implement Gates and Decisions views"
+    },
+    {
+      "id": "E0.1",
+      "title": "Generate derived HR reference artifacts from the authoritative fixture contract",
+      "phase": "E2E",
+      "scope": "NOW",
+      "depends_on": [
+        "A0.4",
+        "U2.7"
+      ],
+      "files": [
+        "tests/support/hr_fixture.rs",
+        "fixtures/hr-leave/reference-psg.yaml",
+        "fixtures/hr-leave/reference-functional.yaml",
+        "fixtures/hr-leave/inference-fixtures.jsonl"
+      ],
+      "steps": [
+        "Treat fixtures/hr-leave/README.md, requirements.md, requirements.docx, fixture-contract.yaml, scenarios.yaml, expert-answers.yaml, stakeholders.yaml and profile.yaml as immutable authoritative fixture inputs.",
+        "Implement tests/support/hr_fixture.rs to construct the reference accepted PSG deterministically from fixture-contract.yaml and the metamodel; use sorted IDs and exact values from the contract.",
+        "The builder must leave the three ambiguity answers unresolved in the pre-answer graph and apply them only by passing each expert answer to the S3.3 answer application service, producing a ResolutionDecision and SemanticPatch that commit through the F0.8 CAS revision path.",
+        "Generate reference-psg.yaml from the post-answer accepted graph and reference-functional.yaml through the functional projection implementation.",
+        "Generate MockProvider inference-fixtures.jsonl by computing actual InferenceRequest hashes and attaching proposal outputs derived only from fixture-contract.yaml. Mock outputs must not introduce facts absent from the contract.",
+        "Assert the expected_counts block exactly: 32 requirements, 9 entities, 13 operations, 6 processes, 5 invariants, 2 calculations, 3 rules, 6 events, 44 scenarios."
+      ],
+      "tests": [
+        "cargo test --workspace hr_leave_fixture"
+      ],
+      "acceptance": [
+        "Derived reference artifacts reproduce the fixture contract exactly and do not mutate authoritative fixture inputs.",
+        "The three ambiguity values appear only after expert answers are applied through ResolutionDecision patches."
+      ],
+      "source_refs": [
+        "SRCREF-205C5CCA29",
+        "SRCREF-34CA4A60BC",
+        "SRCREF-D47B4005C2",
+        "SRCREF-EFAC302AFF"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test --workspace hr_leave_fixture",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "E0.1: Create HR leave pilot fixtures on PSG and compatibility formats"
+    },
+    {
+      "id": "E0.2",
+      "title": "Implement backend end-to-end pilot test",
+      "phase": "E2E",
+      "scope": "NOW",
+      "depends_on": [
+        "E0.1"
+      ],
+      "files": [
+        "tests/e2e_hr.rs"
+      ],
+      "steps": [
+        "Execute import -> I0 -> F1 -> vocabulary/domain -> F2 -> question rounds -> expert answers -> F3 -> scenario derivation/run -> F4 -> export using application services/CLI only.",
+        "Verify half-day, holiday and inclusive-end ambiguities are Undecidable before answers and resolved only through question answer patches.",
+        "Verify one conflicting session proposal is rejected through intake.",
+        "Verify every semantic revision has a serialized patch artifact and every LLM-origin proposal has persisted inference artifact.",
+        "Verify replay with stored artifacts reproduces identical final semantic_hash without live LLM calls."
+      ],
+      "tests": [
+        "cargo test --test e2e_hr"
+      ],
+      "acceptance": [
+        "The complete backend pilot reaches F4 and deterministic replay final semantic_hash matches original."
+      ],
+      "source_refs": [
+        "SRCREF-509798A4E2",
+        "SRCREF-EFAC302AFF",
+        "SRCREF-B696289B78"
+      ],
+      "forbidden": [],
+      "commands": [
+        "cargo test --test e2e_hr",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "E0.2: Implement backend end-to-end pilot test"
+    },
+    {
+      "id": "E0.3",
+      "title": "Implement Playwright pilot workflow against real backend",
+      "phase": "E2E",
+      "scope": "NOW",
+      "depends_on": [
+        "E0.2"
+      ],
+      "files": [
+        "ui/e2e/pilot.spec.ts",
+        "scripts/run-pilot-e2e.sh"
+      ],
+      "steps": [
+        "Start seeded real backend with MockProvider fixture artifacts.",
+        "Drive UI import -> requirements -> sentences/proposals -> questions -> conflicting chat proposal rejection -> process semantic move -> scenarios -> gates -> export.",
+        "Assert visible state only; do not inspect application internals from Playwright.",
+        "Run axe on every navigated route and keyboard-only path through the core workflow."
+      ],
+      "tests": [
+        "make e2e"
+      ],
+      "acceptance": [
+        "Playwright workflow passes with zero serious axe violations and no direct network mocks."
+      ],
+      "source_refs": [
+        "SRCREF-E16E014AC5"
+      ],
+      "forbidden": [],
+      "commands": [
+        "make e2e",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint"
+      ],
+      "commit_message": "E0.3: Implement Playwright pilot workflow against real backend"
+    },
+    {
+      "id": "E0.4",
+      "title": "Enforce coverage, mutation and no-placeholder quality bar",
+      "phase": "E2E",
+      "scope": "NOW",
+      "depends_on": [
+        "E0.3"
+      ],
+      "files": [
+        "Makefile",
+        ".github/workflows/ci.yml",
+        "scripts/check-placeholders.sh"
+      ],
+      "steps": [
+        "Configure cargo llvm-cov thresholds: >=85% for plumb-psg, plumb-patch, plumb-validation, plumb-expr, plumb-sim, plumb-intake; >=70% other Rust crates.",
+        "Configure cargo-mutants >=80% caught for validation NOW rules, PlumbExpr evaluator, interpreter and intake.",
+        "UI Vitest >=80% for src/features and src/components.",
+        "check-placeholders.sh fails on TODO, FIXME, unimplemented!, todo!, panic!(\"TODO\") and placeholder text in production source; allowlist only generated files and docs.",
+        "CI runs make all."
+      ],
+      "tests": [
+        "make all"
+      ],
+      "acceptance": [
+        "All thresholds pass and production source contains no unapproved placeholder implementation."
+      ],
+      "source_refs": [
+        "SRCREF-C1A6FDDD20"
+      ],
+      "forbidden": [],
+      "commands": [
+        "make all"
+      ],
+      "commit_message": "E0.4: Enforce coverage, mutation and no-placeholder quality bar"
+    },
+    {
+      "id": "E0.5",
+      "title": "Produce pilot build and standards-alignment report",
+      "phase": "E2E",
+      "scope": "NOW",
+      "depends_on": [
+        "E0.4"
+      ],
+      "files": [
+        "docs/status.md",
+        "docs/pilot/BUILD-REPORT.md",
+        "docs/pilot/STANDARDS-ALIGNMENT-REPORT.md"
+      ],
+      "steps": [
+        "BUILD-REPORT records exact git commit, semantic fixture hash, evidence hash, rule-pack hash, test commands and results.",
+        "STANDARDS-ALIGNMENT-REPORT reports Plumb Profile Conformant, Standards Aligned, Interchange Valid and Organization Policy Conformant as separate assertions exactly as rulebook §6.",
+        "For NOW scope, Interchange Valid may report only formats actually validated; it must not claim BPMN/DMN/OpenAPI semantic completeness beyond implemented validators.",
+        "List every waiver separately."
+      ],
+      "tests": [
+        "make all"
+      ],
+      "acceptance": [
+        "Reports contain no unsupported 'ISO compliant' claim and all hashes identify the tested baseline."
+      ],
+      "source_refs": [
+        "SRCREF-62B2049AEA",
+        "SRCREF-51C477D0D0"
+      ],
+      "forbidden": [],
+      "commands": [
+        "make all"
+      ],
+      "commit_message": "E0.5: Produce pilot build and standards-alignment report"
+    },
+    {
+      "id": "POST.0",
+      "title": "Post-pilot boundary marker; do not execute under NOW scope",
+      "phase": "PostPilot",
+      "scope": "LATER",
+      "depends_on": [
+        "E0.5"
+      ],
+      "files": [
+        "docs/plan/POST-PILOT-SCOPE.md"
+      ],
+      "steps": [
+        "Create a document that points to compiler stages S5-S12 and gates Q1-C1 as post-pilot work.",
+        "Do not implement architecture generation, contract compilation, delivery slicing, code binding or C1 in pilot-v3-foundation scope."
+      ],
+      "tests": [
+        "No code tests."
+      ],
+      "acceptance": [
+        "Document exists and contains only scope references, no implementation code."
+      ],
+      "source_refs": [
+        "SRCREF-316C9E60F0",
+        "SRCREF-2992F375D9"
+      ],
+      "forbidden": [
+        "Do not create post-pilot crates or production code."
+      ],
+      "commands": [],
+      "commit_message": "POST.0: Post-pilot boundary marker; do not execute under NOW scope"
+    }
+  ]
+}

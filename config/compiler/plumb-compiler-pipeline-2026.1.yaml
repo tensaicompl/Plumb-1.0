@@ -1,0 +1,151 @@
+profile: profile:plumb-software-2026.1
+compiler_version: 3.0-draft.1
+canonical_model: PSG
+stages:
+- id: S0
+  name: Evidence Intake
+  gate: I0
+  ai: optional
+  human: source authority only
+  outputs:
+  - SourceArtifact
+  - EvidenceFragment
+  - EvidenceManifest
+- id: S1
+  name: Intent / Requirement Compiler
+  gate: F1
+  ai: proposal
+  human: material interpretation/conflict
+  outputs:
+  - Need
+  - Goal
+  - Concern
+  - Requirement
+  - AcceptanceCriterion
+  - Constraint
+  - Term
+- id: S2
+  name: Functional Semantic Compiler
+  gate: F2
+  ai: proposal
+  human: unresolved semantics
+  outputs:
+  - Entity
+  - Attribute
+  - Operation
+  - Process
+  - Rule
+  - DecisionTable
+  - Calculation
+  - State
+  - Transition
+  - Permission
+- id: S3
+  name: Resolution Compiler
+  gate: F3
+  ai: explanation only
+  human: primary
+  outputs:
+  - Question
+  - ResolutionDecision
+  - SemanticPatch
+- id: S4
+  name: Functional Proof Compiler
+  gate: F4
+  ai: scenario proposals
+  human: expected-behavior confirmation
+  outputs:
+  - Scenario
+  - ScenarioRun
+  - CoverageRecord
+- id: S5
+  name: Quality Compiler
+  gate: Q1
+  ai: proposal
+  human: threshold/trade-off
+  outputs:
+  - QualityScenario
+  - Measure
+- id: S6
+  name: Architecture Driver Compiler
+  gate: A1
+  ai: proposal
+  human: scope/constraints
+  outputs:
+  - ArchitectureDescription
+  - Viewpoint
+  - ArchitectureDriverSet
+- id: S7
+  name: Architecture Allocation Compiler
+  gate: A2
+  ai: candidate generation
+  human: architecture selection
+  outputs:
+  - ArchitectureCandidate
+  - Component
+  - Interface
+  - DataStore
+  - TechnologySelection
+- id: S8
+  name: Technical Contract Compiler
+  gate: A3
+  ai: contract proposal
+  human: external contract decisions
+  outputs:
+  - ApiContract
+  - ApiOperation
+  - EventContract
+  - Channel
+  - Message
+  - TechnicalWorkflow
+- id: S9
+  name: Architecture Justification Compiler
+  gate: A4
+  ai: trade-off narrative
+  human: architecture decisions
+  outputs:
+  - ArchitectureDecision
+  - ADR projection
+- id: S10
+  name: Delivery Compiler
+  gate: D1
+  ai: slice proposal
+  human: planning/ownership
+  outputs:
+  - ImplementationSlice
+  - TaskContract
+  - WorkPackage
+- id: S11
+  name: Verification Compiler
+  gate: D2
+  ai: test/procedure proposal
+  human: verification strategy
+  outputs:
+  - VerificationObligation
+  - TestCase
+  - ArchitectureCheck
+- id: S12
+  name: Conformance Compiler
+  gate: C1
+  ai: none required
+  human: waiver/risk acceptance
+  outputs:
+  - CodeBinding
+  - TestReceipt
+  - CoverageRecord
+  - ConformanceReport
+mutation_authority:
+  AUTO_DERIVATION: deterministic derivation from accepted semantics only
+  AUTO_NON_SEMANTIC: does not add engineering truth
+  HUMAN_CONFIRM: semantic interpretation proposal
+  HUMAN_DECISION: material ambiguity, architecture, technology, threshold, waiver
+  PROFILE_POLICY: customer profile decides
+replay_inputs:
+- accepted_graph_revision
+- compiler_version
+- profile_hash
+- rule_pack_hash
+- config_hash
+- persisted_inference_artifacts
+- persisted_validation_artifacts
+- accepted_human_decisions

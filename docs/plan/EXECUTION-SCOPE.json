@@ -1,0 +1,32 @@
+{
+  "release": "pilot-v3-foundation",
+  "plan_version": "3.0-draft.1",
+  "allowed_scope": [
+    "NOW"
+  ],
+  "forbidden_scope": [
+    "LATER"
+  ],
+  "branch": "main",
+  "rule_gates_in_scope": [
+    "I0",
+    "F1",
+    "F2",
+    "F3",
+    "F4"
+  ],
+  "post_pilot_gates_not_in_scope": [
+    "Q1",
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "D1",
+    "D2",
+    "C1"
+  ],
+  "notes": [
+    "Types required by the v3 metamodel are created now even when their services are post-pilot.",
+    "Do not implement post-pilot production behavior unless this file is changed by a human and checksums are regenerated."
+  ]
+}
