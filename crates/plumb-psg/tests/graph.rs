@@ -1485,4 +1485,121 @@ mod graph_contract {
             plumb_core::HashKind::Generic
         );
     }
+
+    // ------------------------------------------------------------------ participation helpers (Hotfix 016)
+
+    #[test]
+    fn participation_helpers_match_semantic_projection_membership() {
+        let vo = node(
+            "verify:a",
+            "Accepted",
+            "VerificationObligation",
+            json!({"name": "V", "verification_kind": "test"}),
+        );
+        let tc = node(
+            "test:a",
+            "Accepted",
+            "TestCase",
+            json!({"name": "T", "steps": [], "expected": []}),
+        );
+        let ac = node(
+            "check:a",
+            "Accepted",
+            "ArchitectureCheck",
+            json!({"rule_code": "R", "architecture_hash": H1, "result": "pass", "affected_refs": []}),
+        );
+        let g = graph(
+            vec![
+                requirement(
+                    "req:a",
+                    "Accepted",
+                    "Employees shall submit leave requests.",
+                ),
+                requirement(
+                    "req:b",
+                    "Proposed",
+                    "Managers shall approve leave requests.",
+                ),
+                constraint("con:eu", "Accepted"),
+                vo,
+                tc,
+                ac,
+            ],
+            vec![
+                edge("rel:a-eu", "Accepted", "constrained_by", "req:a", "con:eu"),
+                edge("rel:b-eu", "Proposed", "constrained_by", "req:b", "con:eu"),
+                edge(
+                    "rel:impl1",
+                    "Accepted",
+                    "implemented_as",
+                    "verify:a",
+                    "test:a",
+                ),
+                edge(
+                    "rel:impl2",
+                    "Accepted",
+                    "implemented_as",
+                    "verify:a",
+                    "check:a",
+                ),
+            ],
+        )
+        .unwrap();
+        let projection = semantic_projection(&g);
+        let projected = |key: &str| -> BTreeSet<String> {
+            projection[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let helper_nodes: BTreeSet<String> = g
+            .nodes()
+            .values()
+            .filter(|n| node_contributes_to_semantic_hash(n))
+            .map(|n| n.id.to_string())
+            .collect();
+        let helper_edges: BTreeSet<String> = g
+            .edges()
+            .values()
+            .filter(|e| edge_contributes_to_semantic_hash(&g, e))
+            .map(|e| e.id.to_string())
+            .collect();
+        assert_eq!(projected("nodes"), helper_nodes);
+        assert_eq!(projected("edges"), helper_edges);
+
+        let n = |s: &str| g.node(&id(s)).unwrap();
+        let e = |s: &str| g.edge(&id(s)).unwrap();
+        assert!(
+            node_contributes_to_semantic_hash(n("req:a")),
+            "baseline semantic node"
+        );
+        assert!(
+            !node_contributes_to_semantic_hash(n("req:b")),
+            "Proposed node"
+        );
+        assert!(
+            !node_contributes_to_semantic_hash(n("check:a")),
+            "excluded type"
+        );
+        assert!(
+            edge_contributes_to_semantic_hash(&g, e("rel:a-eu")),
+            "baseline semantic edge"
+        );
+        assert!(
+            edge_contributes_to_semantic_hash(&g, e("rel:impl1")),
+            "to TestCase"
+        );
+        assert!(
+            !edge_contributes_to_semantic_hash(&g, e("rel:impl2")),
+            "to excluded endpoint"
+        );
+        assert!(
+            !edge_contributes_to_semantic_hash(&g, e("rel:b-eu")),
+            "Proposed edge"
+        );
+        assert!(contributes_to_semantic_hash(NodeType::Requirement));
+        assert!(!contributes_to_semantic_hash(NodeType::ArchitectureCheck));
+    }
 }

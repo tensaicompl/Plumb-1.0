@@ -36,13 +36,16 @@ pub fn contributes_to_semantic_hash(node_type: NodeType) -> bool {
     !SEMANTIC_HASH_EXCLUDED_NODE_TYPES.contains(&node_type)
 }
 
-fn node_contributes(node: &Node) -> bool {
+/// Whether `node` is part of the `semantic_hash` projection: baseline-participating and of a
+/// contributing node type. This is the exact rule `semantic_projection` uses.
+pub fn node_contributes_to_semantic_hash(node: &Node) -> bool {
     is_baseline(node.status) && contributes_to_semantic_hash(node.payload.node_type())
 }
 
-/// An edge contributes when it is baseline-participating and both endpoint node types
-/// contribute (no separate relation-exclusion list).
-fn edge_contributes(graph: &Graph, edge: &Edge) -> bool {
+/// Whether `edge` is part of the `semantic_hash` projection of `graph`: baseline-participating
+/// with both endpoint node types contributing (no separate relation-exclusion list). This is
+/// the exact rule `semantic_projection` uses.
+pub fn edge_contributes_to_semantic_hash(graph: &Graph, edge: &Edge) -> bool {
     let endpoint_contributes = |id| {
         graph
             .node(id)
@@ -149,13 +152,13 @@ pub fn semantic_projection(graph: &Graph) -> Value {
     let nodes: Vec<Value> = graph
         .nodes()
         .values()
-        .filter(|n| node_contributes(n))
+        .filter(|n| node_contributes_to_semantic_hash(n))
         .map(node_projection)
         .collect();
     let edges: Vec<Value> = graph
         .edges()
         .values()
-        .filter(|e| edge_contributes(graph, e))
+        .filter(|e| edge_contributes_to_semantic_hash(graph, e))
         .map(edge_projection)
         .collect();
     json!({

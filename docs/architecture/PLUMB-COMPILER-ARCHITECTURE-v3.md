@@ -47,6 +47,8 @@ S11 Verification Compiler              -> D2
 S12 Conformance Compiler               -> C1
 ```
 
+Gate identifiers are the `plumb-core` `GateId` values `I0`, `F1`, `F2`, `F3`, `F4`, `Q1`, `A1`, `A2`, `A3`, `A4`, `D1`, `D2`, `C1`, in this dependency-chain order.
+
 Gates are proof obligations over accepted PSG state. A stage can be executed before its predecessor gate passes for diagnostic purposes, but a formal accepted baseline cannot claim a later gate while a mandatory predecessor remains unproven.
 
 ---
@@ -1327,17 +1329,33 @@ The job, not the `Proposal`, owns `base_revision`, `base_semantic_hash`, `stage`
 
 A full project compile must be possible, but routine editing must be incremental.
 
-Every accepted `SemanticPatch` produces:
+In the pilot every accepted `SemanticPatch` produces an `ImpactReport` computed from the base graph, the result graph and the exact `GraphDelta` of the commit (`CommitResult.delta`):
 
 ```text
 ChangedSet
 DirtySet
-StaleEvidenceSet
 AffectedProjectionSet
-AffectedGateRuleSet
+AffectedGateNamespaceSet
 ```
 
-Example:
+`StaleEvidenceSet` (C1/proof staleness) and per-rule affected sets are later work; the pilot works at gate-namespace granularity and exact rules are resolved later through the validation registry.
+
+**Input check.** The delta's base and result semantic hashes must equal those of the two graphs, both graphs have the same project and profile, and the delta's added/removed/modified node and edge sets must equal those recomputed from base-vs-result persisted equality.
+
+**ChangedSet** holds, among the delta's added/removed/modified elements (never the broader touched sets), every added or removed element and every modified element whose element hash (metamodel §20.1) changed. Revision, audit, derivation and View `layout_ref`/`style_ref`-only changes are excluded; status, payload, evidence, standards, tags, extensions and edge semantic fields count, for every node type including types excluded from `semantic_hash`.
+
+**DirtySet.** A changed element is directly dirty when it is baseline-participating in the base or the result graph; elements that are Proposed/Rejected in both stay only in ChangedSet. Directly dirty changed edges form `DirtySet.edge_ids` and add their base and result endpoints to the node seeds, whatever their relation. From the seeds, impact follows the union of the base and result graphs' baseline-participating arcs of exactly these relations, from changed dependency to affected dependent, never in reverse:
+
+| Relation | Impact direction |
+|---|---|
+| `derived_from`, `constrained_by`, `reads`, `writes`, `governed_by`, `uses_calculation` | `to` → `from` |
+| `specified_by`, `satisfied_by`, `allocated_to`, `exposed_by`, `implemented_by`, `verified_by`, `implemented_as` | `from` → `to` |
+
+Removed elements keep their base type, status and topology; added elements use the result graph. Traversal is deterministic, terminates on cycles and never filters by `semantic_hash` participation.
+
+**AffectedProjectionSet** is empty for an empty DirtySet; otherwise `markdown` and `standards-conformance-report` are always affected, a dirty `Extension` node affects all 15 projection kinds, and each dirty node affects the projection families of its node type (implementation plan task F0.11 lists the exact mapping). **AffectedGateNamespaceSet** maps each dirty node's type to exactly one earliest owning gate and marks that gate and every later gate in `GateId::ALL`; all 86 node types are mapped exactly once.
+
+Illustrative long-term example (including post-pilot staleness):
 
 ```text
 Change:
@@ -1647,7 +1665,7 @@ Rules:
 
 - **Scope** serializes as `{"kind":"project"}` or `{"kind":"elements","refs":[...]}`; element refs are non-empty, sorted and unique, and each must be an existing node or edge ID of the graph. Scope is never inferred by name matching.
 - **CompileContext** has no timestamp. `input_semantic_hash` is Semantic; `profile_hash` and `rule_pack_hash` are generic; `compiler_version` is non-empty without surrounding whitespace or control characters; `config` is a JSON object whose canonical content hash is `config_hash()`. It is constructed from a loaded revision so revision, semantic hash, profile and rule-pack metadata cannot drift, and it must match the graph's semantic hash and profile ID. No clock or environment is read.
-- **PlannedArtifact** has no timestamp (a pure PLAN cannot manufacture one); its media type is non-empty without control characters and its content hash is the generic SHA-256 of its bytes. Acquisition persists it later with an explicit timestamp.
+- **PlannedArtifact** has no timestamp (a pure PLAN cannot manufacture one); its media type is non-empty without control characters and its content hash is the generic SHA-256 of its bytes. Acquisition persists it later with an explicit timestamp. Its `bytes` serialize in serde's ordinary JSON byte-array form (`"bytes":[0,1,2,255]`); that is the fixed pilot wire form.
 - **ExternalValidationRequest** rejects unknown fields; `validator` matches `^[a-z][a-z0-9._-]*$`; `task_kind` follows the `InferenceRequest` text rule; `input_artifact_refs` are generic, sorted and unique; `config` is a JSON object; `id` is the generic SHA-256 of the canonical `{validator, task_kind, input_artifact_refs, config}` and is verified on deserialization.
 - **ExternalValidationArtifact** rejects unknown fields; its hashes are generic, `validated_output_hash` is the content hash of `validated_output`, and against its request `request_hash == request.id` and `validator == request.validator`. It is the replayable validator result supplied to EVALUATE.
 - **ArtifactInput** is an artifact without `created_at`: its generic hash equals the SHA-256 of its bytes and its media type is non-empty without control characters. Converting a stored artifact drops the timestamp, so acquisition time is unobservable to evaluation.

@@ -968,7 +968,9 @@ tasks:
     validate_for_graph(graph) also requires graph.semantic_hash() == input_semantic_hash and graph.profile_id() == profile_ref. No clock or
     environment read.'
   - 'PlannedArtifact { kind: ArtifactKind, media_type: String, bytes: Vec<u8> } has no timestamp; media_type is non-empty without control characters;
-    content_hash() is the Generic SHA-256 of the exact bytes. Later acquisition persists it with an explicitly supplied timestamp.'
+    content_hash() is the Generic SHA-256 of the exact bytes. Later acquisition persists it with an explicitly supplied timestamp. Its bytes
+    use serde''s ordinary JSON byte-array form ("bytes":[0,1,2,255]), the fixed pilot StagePlan wire representation; changing it (for example
+    to base64) requires a plan revision.'
   - 'ExternalValidationRequest { id: Hash, validator: String, task_kind: String, input_artifact_refs: Vec<Hash>, config: CanonicalJson } rejects
     unknown fields; validator matches ^[a-z][a-z0-9._-]*$; task_kind follows the InferenceRequest text rule; input_artifact_refs are Generic,
     sorted and unique; config is a JSON object. id is the Generic SHA-256 of the RFC 8785 canonical JSON of exactly {validator, task_kind, input_artifact_refs,
@@ -1052,30 +1054,97 @@ tasks:
   depends_on:
   - F0.10
   files:
+  - crates/plumb-patch/src/lib.rs
   - crates/plumb-patch/src/impact.rs
   - crates/plumb-patch/tests/impact.rs
   steps:
-  - For each GraphDelta — the exact delta produced by F0.7 apply_patch and surfaced through plumb_store::CommitResult.delta — compute ChangedSet
-    containing touched node and edge IDs. Never reapply the PatchSet or diff revision snapshots to recover it. No ImpactSet exists inside
-    StageEvaluation or Proposal; an impact preview may later be computed by applying a proposal to a candidate graph and using the resulting
-    GraphDelta, but it is never canonical Proposal content.
-  - 'Compute DirtySet through typed graph relations that participate in semantic dependency: derived_from, specified_by, constrained_by, satisfied_by,
-    reads, writes, governed_by, uses_calculation, allocated_to, exposed_by, implemented_by, verified_by and implemented_as.'
-  - Return affected projections and affected gate namespaces as symbolic sets; full C1 evidence staleness remains post-pilot.
-  - Traversal order must be deterministic.
+  - 'Implement compute_impact(base: &Graph, result: &Graph, delta: &GraphDelta) -> Result<ImpactReport, ImpactError> in plumb-patch and export
+    it from lib.rs. The code must not reference plumb-store, CommitResult, GraphRevision, SqliteRevisionStore or RevisionId, and no dependency
+    is added to plumb-patch; orchestration passes CommitResult.delta after a commit. Never reapply the PatchSet. No ImpactSet exists inside
+    StageEvaluation or Proposal; an impact preview may later be computed from a candidate graph''s GraphDelta but is never canonical Proposal
+    content.'
+  - 'Validate the inputs first: delta.base_semantic_hash == base.semantic_hash(), delta.result_semantic_hash == result.semantic_hash(), equal
+    project_id and profile_id, and the added/removed/modified node and edge sets recomputed from base-vs-result persisted equality equal the
+    delta''s sets (touched sets and ordinals are not reconstructed). ImpactError distinguishes at least Core, BaseHashMismatch, ResultHashMismatch,
+    ProjectMismatch, ProfileMismatch, DeltaGraphMismatch, MissingBaseElement and MissingResultElement.'
+  - 'ChangedSet { node_ids: BTreeSet<Id>, edge_ids: BTreeSet<Id> } contains, from the delta''s added/removed/modified candidates only (never
+    touched_*), every added or removed element and every modified element whose node_element_hash / edge_element_hash differs between base
+    and result. Revision, audit, derivation and View layout_ref/style_ref-only changes therefore do not enter it; status, payload, evidence,
+    standards, tags, extensions and edge semantic fields do, for every NodeType including those excluded from semantic_hash.'
+  - 'DirtySet { node_ids: BTreeSet<Id>, edge_ids: BTreeSet<Id> }: a changed node or edge is directly dirty when it is baseline-participating
+    in base OR result (so Proposed->Accepted, Accepted->Rejected, removals and additions of baseline elements count, while elements non-baseline
+    in both graphs stay only in ChangedSet). edge_ids is exactly the directly dirty changed edges. Every directly dirty changed edge adds
+    its base and result endpoints to the node seeds, whatever its relation. Removed nodes use the base graph and added nodes the result graph
+    for type, status and topology.'
+  - 'Traverse from the dirty node seeds over the deterministic union of dependency arcs from base AND result, using only edges that are baseline-participating
+    in the graph they come from, and only these 13 relations with exactly these impact directions (changed dependency -> affected dependent):
+    derived_from TO->FROM; specified_by FROM->TO; constrained_by TO->FROM; satisfied_by FROM->TO; reads TO->FROM; writes TO->FROM; governed_by
+    TO->FROM; uses_calculation TO->FROM; allocated_to FROM->TO; exposed_by FROM->TO; implemented_by FROM->TO; verified_by FROM->TO; implemented_as
+    FROM->TO. Never follow them in reverse, never use other relations, never filter by semantic_hash participation, and never add traversed
+    edges to DirtySet. Use ordered structures and a visited set so cycles terminate and results are deterministic.'
+  - 'ProjectionKind is a closed enum of exactly 15 values with wire strings functional.yaml, requirements.yaml, architecture.yaml, openapi,
+    asyncapi, arazzo, bpmn, dmn, adrs, implementation-plan, task-contracts, verification-matrix, standards-conformance-report, markdown, diagrams
+    (ALL, as_str, unknown rejected). AffectedProjectionSet { projections: BTreeSet<ProjectionKind> } is empty for an empty DirtySet; otherwise
+    markdown and standards-conformance-report are always included, a dirty Extension node includes all 15, and each dirty node adds the families
+    of its NodeType: requirements.yaml <- Stakeholder, Concern, Goal, Need, Requirement, AcceptanceCriterion, Constraint, Term, Concept, Finding,
+    Question, ResolutionDecision, Assumption; functional.yaml <- Requirement, AcceptanceCriterion, Constraint, Term, Concept, Actor, BusinessRole,
+    Entity, Attribute, DomainRelationship, State, Transition, Invariant, Operation, Outcome, Event, Process, ProcessNode, Rule, DecisionTable,
+    Calculation, Calendar, Scenario, Principal, SecurityRole, Permission, ResourceScope, PolicyCondition, SeparationConstraint, QualityCharacteristic,
+    Measure, QualityScenario; architecture.yaml <- SystemOfInterest, ArchitectureDescription, ArchitectureCandidate, Viewpoint, View, ModelKind,
+    SoftwareSystem, Container, Component, Module, Interface, DataStore, ExternalSystem, DeploymentNode, RuntimeEnvironment, NetworkZone, ArchitectureDecision,
+    Technology, TechnologySelection, ApiContract, ApiOperation, EventContract, Channel, Message, DataSchema, TechnicalWorkflow; openapi <-
+    ApiContract, ApiOperation, DataSchema; asyncapi <- EventContract, Channel, Message, DataSchema; arazzo <- TechnicalWorkflow, ApiOperation;
+    bpmn <- Process, ProcessNode, Operation, Event, Actor, BusinessRole; dmn <- Rule, DecisionTable, Calculation; adrs <- ArchitectureDecision,
+    Technology, TechnologySelection; implementation-plan <- Capability, ImplementationSlice, WorkPackage, Migration, Release; task-contracts
+    <- ImplementationSlice, WorkPackage, TaskContract; verification-matrix <- Scenario, VerificationObligation, TestCase, ScenarioRun, TestExecution,
+    TestReceipt, ArchitectureCheck, CoverageRecord, CodeBinding; diagrams <- Entity, DomainRelationship, State, Transition, Process, ProcessNode,
+    Operation, Event, SystemOfInterest, ArchitectureDescription, ArchitectureCandidate, Viewpoint, View, SoftwareSystem, Container, Component,
+    Module, Interface, DataStore, ExternalSystem, DeploymentNode, RuntimeEnvironment, NetworkZone, ApiOperation, Channel, Message.'
+  - 'AffectedGateNamespaceSet { gates: BTreeSet<GateId> } uses plumb_core::GateId. Each dirty node''s NodeType (from result if present, else
+    base) maps to exactly one earliest owning gate, and that gate plus every later gate in GateId::ALL is affected: I0: SourceArtifact, EvidenceFragment,
+    DerivationRecord, Agent, Finding, StandardsProfile, Extension; F1: Stakeholder, Concern, Goal, Need, Requirement, AcceptanceCriterion,
+    Constraint, Term, Concept; F2: Actor, BusinessRole, Entity, Attribute, DomainRelationship, State, Transition, Invariant, Operation, Outcome,
+    Event, Process, ProcessNode, Rule, DecisionTable, Calculation, Calendar, Principal, SecurityRole, Permission, ResourceScope, PolicyCondition,
+    SeparationConstraint; F3: Question, ResolutionDecision, Assumption; F4: Scenario, ScenarioRun; Q1: QualityCharacteristic, Measure, QualityScenario;
+    A2: SystemOfInterest, ArchitectureDescription, ArchitectureCandidate, Viewpoint, View, ModelKind, SoftwareSystem, Container, Component,
+    Module, Interface, DataStore, ExternalSystem, DeploymentNode, RuntimeEnvironment, NetworkZone, Technology, TechnologySelection; A3: ApiContract,
+    ApiOperation, EventContract, Channel, Message, DataSchema, TechnicalWorkflow; A4: ArchitectureDecision; D1: Capability, ImplementationSlice,
+    WorkPackage, TaskContract, Migration, Release; D2: VerificationObligation, TestCase; C1: TestExecution, TestReceipt, CodeBinding, ArchitectureCheck,
+    CoverageRecord. All 86 NodeTypes appear exactly once; A1 has no owned type and is reached by downstream expansion. No per-rule filtering
+    happens before F0.12/F0.13.'
+  - 'ImpactReport { changed: ChangedSet, dirty: DirtySet, affected_projections: AffectedProjectionSet, affected_gates: AffectedGateNamespaceSet
+    } has a deterministic serde form and no timestamp, branch or revision ID, stale evidence, readiness score or confidence. StaleEvidenceSet
+    and per-rule AffectedGateRuleSet are deferred (C1 staleness, F0.12/F0.13).'
+  - 'Tests in crates/plumb-patch/tests/impact.rs (inside a module whose name contains impact) cover at minimum: every ChangedSet rule (added/removed/modified
+    nodes and edges, audit/derivation/View layout-only exclusion, semantic View change, Proposed changes, modify-then-restore, delta mismatch);
+    every DirtySet status case (Accepted, Suspect, Superseded, Deprecated, Proposed/Rejected in both, boundary crossings, changed-edge endpoints,
+    Proposed edge, removed node); the direction of each of the 13 relations and non-propagation in reverse; Calculation <-uses_calculation-
+    Operation -verified_by-> VerificationObligation -implemented_as-> Scenario dirtying all four; base-only and result-only arcs; Proposed/Rejected
+    dependency edges; has_attribute not traversed but its change dirtying its endpoints; cycles, repeated byte-identical reports and insertion-order
+    independence; the projection mappings for Requirement, Process, DecisionTable, ApiOperation, Message, ArchitectureDecision, ImplementationSlice,
+    VerificationObligation, Extension, empty and View-only; gate expansion for one type per owning gate and the all-86 mapping check; a hand-written
+    golden ImpactReport JSON; and the source/dependency guard.'
   tests:
   - cargo test -p plumb-patch impact
+  - cargo test -p plumb-patch
+  - cargo test --workspace
   acceptance:
-  - Changing a calculation marks dependent operations and scenarios dirty; changing only view metadata marks no semantic element dirty.
+  - Changing a calculation marks dependent operations, their verification obligations and scenarios dirty; changing only view layout/style
+    or audit/derivation metadata leaves ChangedSet, DirtySet, affected projections and affected gates empty; impact follows exactly the 13
+    directed relations over baseline arcs of both revisions; the ImpactReport is deterministic and matches a hand-written golden fixture;
+    plumb-patch does not depend on plumb-store.
   source_refs:
   - SRCREF-D078477292
   - SRCREF-856494881E
   forbidden:
   - Do not use name similarity for impact propagation.
+  - Do not use GraphDelta.touched_* as ChangedSet, reapply the PatchSet, follow impact relations in reverse or depend on plumb-store.
   commands:
   - cargo test -p plumb-patch impact
+  - cargo test -p plumb-patch
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test --workspace
   commit_message: 'F0.11: Implement impact seed and dirty-set reachability'
 - id: F0.12
   title: Implement standards profile loader and validation rule metadata
@@ -1091,7 +1160,9 @@ tasks:
   - crates/plumb-validation/tests/profile.rs
   steps:
   - Load profile metadata from the supplied YAML without modifying that YAML.
-  - Implement RuleClass, RuleResultState, Severity, WaiverPolicy, GateId and StandardRef.
+  - A missing evaluator for a NOW rule is a startup/registry validation error; explicitly requesting a later gate whose evaluator is not
+    registered returns the typed registry error ValidationError::GateNotImplemented(GateId), which is an evaluator-availability error,
+    not a rule result.
   - At startup validate that the YAML contains exactly the 133 rule IDs from the supplied file and unique IDs.
   - For NOW scope register evaluator functions only for gates I0, F1, F2, F3 and F4; metadata for later gates must still load.
   - A missing evaluator for a NOW rule is startup error; a missing evaluator for a later gate returns NOT_IMPLEMENTED if that gate is explicitly
