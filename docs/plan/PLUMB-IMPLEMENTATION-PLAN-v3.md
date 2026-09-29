@@ -815,8 +815,10 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-patch/src/impact.rs`
 - `crates/plumb-patch/src/lib.rs`
 - `crates/plumb-patch/src/model.rs`
+- `crates/plumb-patch/src/proposal.rs`
 - `crates/plumb-patch/tests/impact.rs`
 - `crates/plumb-patch/tests/patch.rs`
+- `crates/plumb-patch/tests/proposal.rs`
 - `crates/plumb-psg/Cargo.toml`
 - `crates/plumb-psg/src/audit.rs`
 - `crates/plumb-psg/src/edge.rs`
@@ -1864,11 +1866,21 @@ cargo test --workspace
 
 **Required actions**
 
-1. Implement CompilerStage::plan and CompilerStage::evaluate exactly as compiler architecture §28; CompilerStage::id() returns plumb_core::StageId.
-2. Implement StagePlan, StageEvaluation and CompileRun. CompileRun uses exactly the compiler architecture §4.2 types: id: Hash (Generic, deterministic from the canonical run content excluding id), stage: StageId, input_revision: plumb_store::RevisionId, input_semantic_hash (Semantic), profile_ref: Id, profile_hash, rule_pack_hash, config_hash and output_hash (Generic), inference_artifacts, validation_artifacts and output_proposal_refs: Vec<Hash> (Generic artifact refs) and output_finding_refs: Vec<Id>.
-3. plan and evaluate receive no network/client dependency and must be deterministic for equal inputs/artifacts.
-4. Artifact acquisition is represented by requests returned in StagePlan and executed by orchestration code outside the trait.
-5. Persist compile-run metadata as an ArtifactKind::CompileRun artifact with media type application/json; do not make operational timestamps part of semantic output hash.
+1. Implement exactly the compiler architecture §28 boundary: pub trait CompilerStage { fn id(&self) -> StageId; fn plan(&self, graph: &Graph, ctx: &CompileContext) -> Result<StagePlan, CompilerError>; fn evaluate(&self, graph: &Graph, ctx: &CompileContext, plan: &StagePlan, artifacts: &ArtifactSet) -> Result<StageEvaluation, CompilerError>; }. PLAN is pure: it receives no ArtifactStore, provider, validator, clock, network client or previously loaded artifact bytes and deterministically describes the required artifacts; acquisition/reuse orchestration outside the trait satisfies them; EVALUATE receives the exact acquired ArtifactSet. The trait exposes no InferenceProvider, ArtifactStore, SqliteArtifactStore, SqliteRevisionStore, BranchName, Clock, reqwest/HTTP/network client or commit capability.
+2. CompilerError is typed and distinguishes at least Core, Artifact, InvalidContext, InvalidScope, InvalidPlannedArtifact, InvalidExternalValidationRequest, InvalidExternalValidationArtifact, InvalidArtifactInput, InvalidArtifactSet, InvalidStagePlan, InvalidStageEvaluation and InvalidCompileRun, plus StageFailure { stage: StageId, code: String, message: String } for stage-specific operational/domain failures; contract validation errors are never collapsed into StageFailure.
+3. Scope is Project or Elements { refs: Vec<Id> }, serialized {"kind":"project"} or {"kind":"elements","refs":[...]}. Elements refs are non-empty, sorted and unique; the constructor sorts; serde requires canonical order and rejects duplicates; validation against a Graph requires every ref to be an existing Node or Edge ID. No name matching.
+4. CompileContext { input_revision: RevisionId, input_semantic_hash: Hash (Semantic), profile_ref: Id, profile_hash: Hash (Generic), rule_pack_hash: Hash (Generic), compiler_version: String, config: CanonicalJson } has no timestamp. compiler_version is non-empty without leading/trailing whitespace or control characters; config is a JSON object; config_hash() is the Generic canonical content hash of config. A constructor from plumb_store::LoadedRevision (or GraphRevision + Graph) copies input_revision, input_semantic_hash, profile_ref, profile_hash and rule_pack_hash; validate_for_graph(graph) also requires graph.semantic_hash() == input_semantic_hash and graph.profile_id() == profile_ref. No clock or environment read.
+5. PlannedArtifact { kind: ArtifactKind, media_type: String, bytes: Vec<u8> } has no timestamp; media_type is non-empty without control characters; content_hash() is the Generic SHA-256 of the exact bytes. Later acquisition persists it with an explicitly supplied timestamp.
+6. ExternalValidationRequest { id: Hash, validator: String, task_kind: String, input_artifact_refs: Vec<Hash>, config: CanonicalJson } rejects unknown fields; validator matches ^[a-z][a-z0-9._-]*$; task_kind follows the InferenceRequest text rule; input_artifact_refs are Generic, sorted and unique; config is a JSON object. id is the Generic SHA-256 of the RFC 8785 canonical JSON of exactly {validator, task_kind, input_artifact_refs, config}. Provide new (sorts refs, computes id), validate, identity_projection and recompute_id; deserialization requires canonical order and verifies id.
+7. ExternalValidationArtifact { request_hash: Hash, validator: String, validated_output: CanonicalJson, validated_output_hash: Hash } rejects unknown fields; request_hash and validated_output_hash are Generic; validator follows the same grammar; validated_output_hash == validated_output.content_hash(); against a request request_hash == request.id and validator == request.validator. It is persisted as external-validation / application/json / canonical full JSON. No external validator executable is implemented.
+8. ArtifactInput { hash: Hash, kind: ArtifactKind, media_type: String, bytes: Vec<u8> } has no created_at; hash is Generic and equals the SHA-256 of the exact bytes; media_type is non-empty without control characters. Conversion from &plumb_artifacts::Artifact deliberately drops created_at, so acquisition time is unobservable to evaluation.
+9. ArtifactSet { deterministic_artifacts, inference_artifacts, validation_artifacts: Vec<ArtifactInput> }: each list is sorted by hash and unique, and hashes are unique across the whole set; inference inputs are validated-inference / application/json and validation inputs are external-validation / application/json; the constructor sorts; serde input must already be canonical. ArtifactSet::validate_for_plan(plan) requires a one-to-one match: exactly one deterministic input with the same hash, kind, media type and bytes per PlannedArtifact; exactly one validated-inference input per InferenceRequest whose bytes are the canonical InferenceArtifact JSON that validates for that request; exactly one external-validation input per ExternalValidationRequest whose bytes are the canonical ExternalValidationArtifact JSON that validates for it; no extra inputs.
+10. StagePlan { scope: Scope, deterministic_artifacts: Vec<PlannedArtifact>, inference_requests: Vec<InferenceRequest>, external_validation_requests: Vec<ExternalValidationRequest> } is ordered by content hash, request id and request id respectively, rejects duplicates, is sorted by its constructor and requires canonical order in serde. StagePlan::validate(stage, graph) requires a valid scope, every InferenceRequest.stage == stage and all nested contracts valid. No timestamps, provider clients or store handles.
+11. StageEvaluation { derivation_patch_set: Option<PatchSet>, proposals: Vec<Proposal> } uses plumb_patch::Proposal and contains no Findings, Questions, ImpactSet or IntakeReport (deterministic Findings/Questions are PSG nodes inside the derivation PatchSet; proposed ones are inside Proposal PatchSets; impact comes from F0.11; intake is later). Validation requires derivation_patch_set.base_semantic_hash == ctx.input_semantic_hash, and for every proposal proposal.stage == the stage, proposal.patch_set.base_semantic_hash == ctx.input_semantic_hash and proposal.validate(); proposals are sorted by id and unique (the constructor sorts). Evaluation never applies or commits its patches.
+12. CompileRun (compiler architecture §4.2) { id, stage, input_revision, input_semantic_hash, profile_ref, profile_hash, rule_pack_hash, compiler_version, config_hash, deterministic_artifacts, inference_artifacts, validation_artifacts, output_derivation_patch_ref: Option<Hash>, output_proposal_refs, output_hash } has no timestamp and no Finding/Question arrays. Hash kinds: input_semantic_hash Semantic, every other hash and artifact ref Generic; every ref vector sorted and unique. CompileRun::new(stage, ctx, artifacts, evaluation) copies the context metadata, computes config_hash, copies the input refs from the exact ArtifactSet hashes, sets output_derivation_patch_ref = sha256(canonical PatchSet) when present, output_proposal_refs = sorted sha256(canonical Proposal), output_hash = sha256(canonical StageEvaluation) and id = Generic SHA-256 of the canonical run excluding only id. Provide identity_projection, recompute_id and validate; deserialization rejects unknown fields and verifies id. No ArtifactStore or clock is read.
+13. PersistedCompileRun { run: CompileRun, run_artifact_ref: Hash } and persist_compile_run<S: ArtifactStore>(store, run, evaluation, created_at) validate the run and evaluation and require output_hash and every output ref to equal the values recomputed from the evaluation before writing; then persist the derivation PatchSet (patch / application/json), every Proposal (proposal / application/json) and the CompileRun (compile-run / application/json) as canonical JSON with the caller-supplied created_at, checking that the stored hashes equal the refs in the run. This is never part of the graph-commit transaction: an immutable artifact persisted before a later failure may remain, retry is idempotent and no accepted PSG state changes. run.id (identity projection without id) and run_artifact_ref (complete run including id) are distinct.
+14. Scope, CompileContext, StagePlan, ArtifactInput, ArtifactSet, ExternalValidationRequest, ExternalValidationArtifact, StageEvaluation, Proposal and CompileRun contain no timestamp; the only timestamp is the created_at passed to artifact persistence, and changing it changes no ArtifactInput, StageEvaluation, CompileRun, run id or output_hash.
+15. Tests in crates/plumb-compiler/tests/stage.rs cover at minimum: Scope wire forms, sorting, duplicates, empty and unsorted rejection and graph resolution of node and edge refs; CompileContext from LoadedRevision, semantic/profile mismatch, object config, fixed config hash and compiler_version rules; fixed ExternalValidationRequest JSON and ID, identity changes, ref sorting and rejection rules, fixed ExternalValidationArtifact JSON and its checks; ArtifactInput created_at dropping, hash/bytes and hash-kind rules; ArtifactSet categories, global uniqueness, sorting and exact plan matching (missing, extra, wrong inference or validation result, complete set accepted); fixed canonical StagePlan JSON, ordering, duplicates and stage mismatch; fixed canonical StageEvaluation, base/stage checks, proposal sorting and duplicates; a test-only fixture CompilerStage proving byte-identical plans and evaluations for equal inputs and independence from Artifact.created_at; fixed golden output_hash, CompileRun id, derivation patch ref, proposal refs and run artifact ref with exact CompileRun JSON and every change/rejection rule; compile-run persistence kinds, media types, bytes, reload, idempotent retry and created_at independence; and source-level capability checks of the CompilerStage trait.
 
 **Commands**
 
@@ -1876,15 +1888,17 @@ cargo test --workspace
 cargo test -p plumb-compiler
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 **Tests**
 
 - `cargo test -p plumb-compiler`
+- `cargo test --workspace`
 
 **Acceptance**
 
-- A fixture stage returns identical plan/evaluation bytes for repeated equal inputs and cannot access an InferenceProvider through the stage trait.
+- A fixture stage returns byte-identical plan and evaluation bytes for repeated equal inputs, independent of artifact acquisition timestamps, and cannot access an InferenceProvider, ArtifactStore, revision store, clock, network client or commit through the stage trait; ArtifactSet matches its StagePlan one-to-one; CompileRun and its artifacts are deterministic with fixed golden hashes and contain no timestamps or duplicate Finding/Question/Impact/Intake truth.
 
 **Supporting references**
 
@@ -1893,6 +1907,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 **Task-specific prohibitions**
 
 - Do not add complete_json or HTTP calls to CompilerStage.
+- Do not put timestamps, provider clients or store handles in stage contracts, and do not add Finding, Question, ImpactSet or IntakeReport copies to StageEvaluation, Proposal or CompileRun.
+- Do not couple compile-run artifact persistence to the graph-commit transaction.
 
 
 ### `F0.11` — Implement impact seed and dirty-set reachability
@@ -1909,7 +1925,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Required actions**
 
-1. For each GraphDelta — the exact delta produced by F0.7 apply_patch and surfaced through plumb_store::CommitResult.delta — compute ChangedSet containing touched node and edge IDs. Never reapply the PatchSet or diff revision snapshots to recover it.
+1. For each GraphDelta — the exact delta produced by F0.7 apply_patch and surfaced through plumb_store::CommitResult.delta — compute ChangedSet containing touched node and edge IDs. Never reapply the PatchSet or diff revision snapshots to recover it. No ImpactSet exists inside StageEvaluation or Proposal; an impact preview may later be computed by applying a proposal to a candidate graph and using the resulting GraphDelta, but it is never canonical Proposal content.
 2. Compute DirtySet through typed graph relations that participate in semantic dependency: derived_from, specified_by, constrained_by, satisfied_by, reads, writes, governed_by, uses_calculation, allocated_to, exposed_by, implemented_by, verified_by and implemented_as.
 3. Return affected projections and affected gate namespaces as symbolic sets; full C1 evidence staleness remains post-pilot.
 4. Traversal order must be deterministic.
@@ -3581,7 +3597,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Required actions**
 
-1. Input is Proposal containing SemanticPatch plus evidence/derivation refs.
+1. Input is plumb_patch::Proposal (compiler architecture §4.5: a PatchSet plus evidence/derivation refs, materiality, acceptance policy and advisory confidence). Intake returns a separate IntakeReport against a specific current Graph and never mutates the Proposal or embeds the report in it; re-running intake against another baseline may produce a different IntakeReport for the same immutable Proposal.
 2. Resolve terms, covered/equivalent semantics, duplicate candidates, refinements, contradictions and novelty.
 3. Conflict checks reuse validation/typed graph logic; do not implement a second independent conflict engine.
 4. Return IntakeReport and requires_reason; intake never commits a patch.
@@ -3667,7 +3683,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Required actions**
 
-1. Job captures base_revision, base_semantic_hash, stage, scope, profile_hash and config_hash.
+1. Job captures base_revision, base_semantic_hash, stage, scope, profile_hash and config_hash; Proposal does not duplicate base_revision. Staleness is decided from the job's captured revision/head state plus the normal PatchSet semantic CAS.
 2. Completed proposal is STALE when current branch head differs from base_revision.
 3. Stale output may be re-evaluated against current head but must never be directly committed.
 4. Expose deterministic job status model: queued, acquiring, evaluating, ready, stale, failed, committed.

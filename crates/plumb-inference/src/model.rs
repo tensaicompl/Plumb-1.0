@@ -413,7 +413,7 @@ impl ProviderExecution {
 
 /// Artifact-store references of one persisted acquisition bundle; all generic hashes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "PersistedInferenceRefsFields")]
 pub struct PersistedInferenceRefs {
     /// Hash of the canonical complete `InferenceRequest` (not required to equal `request.id`).
     pub request_artifact_ref: Hash,
@@ -428,6 +428,28 @@ impl PersistedInferenceRefs {
         require_generic("request_artifact_ref", &self.request_artifact_ref)?;
         require_generic("raw_response_ref", &self.raw_response_ref)?;
         require_generic("validated_inference_ref", &self.validated_inference_ref)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedInferenceRefsFields {
+    request_artifact_ref: Hash,
+    raw_response_ref: Hash,
+    validated_inference_ref: Hash,
+}
+
+impl TryFrom<PersistedInferenceRefsFields> for PersistedInferenceRefs {
+    type Error = InferenceError;
+
+    fn try_from(f: PersistedInferenceRefsFields) -> Result<Self, Self::Error> {
+        let refs = PersistedInferenceRefs {
+            request_artifact_ref: f.request_artifact_ref,
+            raw_response_ref: f.raw_response_ref,
+            validated_inference_ref: f.validated_inference_ref,
+        };
+        refs.validate()?;
+        Ok(refs)
     }
 }
 

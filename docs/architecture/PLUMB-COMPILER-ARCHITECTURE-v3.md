@@ -63,22 +63,24 @@ PLAN -> ACQUIRE ARTIFACTS -> EVALUATE -> COMMIT
 
 ### 3.1 PLAN
 
-Pure and deterministic.
+Pure and deterministic: `plan(graph, context)`.
 
 Input:
 
 - accepted graph revision
-- active standards/profile version
-- stage configuration
-- known persisted inference/validation artifacts
+- active standards/profile version (in `CompileContext`)
+- stage configuration (in `CompileContext`)
 
-Output:
+PLAN receives no artifact store, provider, validator or previously loaded artifact bytes. It deterministically describes which artifacts are required.
 
-- deterministic derivations available immediately
+Output (`StagePlan`, §28):
+
+- affected semantic scope
+- deterministic planned artifacts available immediately
 - required `InferenceRequest`s
 - required `ExternalValidationRequest`s
-- affected semantic scope
-- expected proposal classes
+
+Acquisition/reuse orchestration may satisfy those deterministic request identities from an existing content-addressed store instead of re-executing them.
 
 ### 3.2 ACQUIRE ARTIFACTS
 
@@ -102,19 +104,16 @@ Pure and deterministic.
 
 Input:
 
-- the original accepted graph revision
+- the original accepted graph revision and `CompileContext`
 - stage plan
-- persisted artifacts
+- the exact acquired `ArtifactSet` (§28), with no acquisition timestamps
 
-Output:
+Output (`StageEvaluation`, §28):
 
-- deterministic semantic patches
-- semantic proposals
-- findings
-- questions
-- gate evaluation
-- impact set
-- projections that can be regenerated
+- an optional deterministic derivation `PatchSet`
+- semantic `Proposal`s (§4.5)
+
+Deterministic findings and questions are PSG `Finding`/`Question` nodes created by the derivation `PatchSet`; proposed ones are contained in proposal patch sets. Impact is derived later from the committed `GraphDelta` (§5.6), gate evaluation belongs to the gate service, and intake assesses proposals afterwards (§5.4); none of these is duplicated in stage output.
 
 ### 3.4 COMMIT
 
@@ -204,18 +203,20 @@ pub struct CompileRun {
     pub compiler_version: String,
     pub config_hash: Hash,
 
+    pub deterministic_artifacts: Vec<Hash>,
     pub inference_artifacts: Vec<Hash>,
     pub validation_artifacts: Vec<Hash>,
+
+    pub output_derivation_patch_ref: Option<Hash>,
     pub output_proposal_refs: Vec<Hash>,
-    pub output_finding_refs: Vec<Id>,
 
     pub output_hash: Hash,
 }
 ```
 
-`id` is a generic hash, deterministic from the canonical run content excluding `id` (no separate `RunId` type). `input_semantic_hash` is Semantic; `profile_hash`, `rule_pack_hash`, `config_hash`, `output_hash` and every artifact ref are generic `sha256:` hashes. `stage` is the `plumb-core` `StageId` (`S0`..`S12`); `input_revision` is the revision-store `RevisionId`, so `plumb-compiler` depends on `plumb-store`. At this boundary `ProfileRef` means `Id` and `ArtifactRef` means a generic `Hash`. Compile-run metadata is persisted as an artifact of kind `compile-run` with media type `application/json`.
+`input_semantic_hash` is Semantic; every other hash and artifact ref is a generic `sha256:` hash, and every ref vector is sorted and unique. The input metadata and `config_hash` (the canonical content hash of `CompileContext.config`) come from the `CompileContext`; the three input-artifact vectors are exactly the hashes of the `ArtifactSet` supplied to EVALUATE. `output_hash` is the generic SHA-256 of the RFC 8785 canonical `StageEvaluation`; `output_derivation_patch_ref` is the hash of the canonical derivation `PatchSet` (absent when there is none) and `output_proposal_refs` the sorted hashes of each canonical `Proposal`. `id` is the generic SHA-256 of the canonical run excluding only `id`, and deserialization verifies it. There are no finding or question arrays: findings and questions have one representation, as PSG nodes inside stage patch output.
 
-Operational timestamps are not part of the semantic hash.
+Operational timestamps are not part of the semantic hash, and a `CompileRun` contains none. It is persisted as a `compile-run` / `application/json` artifact together with its `patch` and `proposal` output artifacts, using a caller-supplied timestamp and outside the graph-commit transaction (an artifact stored before a later failure may remain; retry is idempotent; no accepted PSG state changes). The run artifact reference hashes the complete run including `id` and is distinct from `id`.
 
 ### 4.3 `InferenceRequest`
 
@@ -290,22 +291,30 @@ A user explicitly choosing "re-run with model" creates a **new compile run**, no
 
 ### 4.5 `Proposal`
 
+`Proposal` is owned by the semantic patch layer (`plumb-patch`):
+
 ```rust
 pub struct Proposal {
     pub id: Id,
     pub stage: StageId,
-    pub base_revision: RevisionId,
-    pub base_semantic_hash: Hash,
-    pub patches: Vec<SemanticPatch>,
-    pub evidence_refs: Vec<Id>,
-    pub derivation_refs: Vec<Id>,
-    pub materiality: Materiality,
+    pub patch_set: PatchSet,
+
+    pub evidence_refs: Vec<EvidenceRef>,
+    pub derivation_refs: Vec<DerivationRef>,
+
+    pub materiality: ProposalMateriality,
     pub acceptance_policy: AcceptancePolicy,
     pub confidence: Option<f32>,
-    pub impact: ImpactSet,
-    pub intake: IntakeReport,
 }
+
+pub enum ProposalMateriality { NonSemantic, Semantic, MaterialDecision }
 ```
+
+`ProposalMateriality` serializes as `non_semantic` (adds or changes no engineering claim), `semantic` (adds or changes engineering semantics without being a material decision) or `material_decision` (a material ambiguity, waiver, architecture/security/quality choice or comparable decision requiring governed human resolution). `AcceptancePolicy` serializes as exactly the uppercase names of §4.6. Acceptance policy is never inferred from materiality alone. Unknown values are rejected.
+
+The semantic base is `patch_set.base_semantic_hash`; there is no separate base field. `evidence_refs` and `derivation_refs` are sets: the constructor sorts them by ID and rejects duplicates, and deserialization requires canonical sorted order. `confidence`, when present, is finite and within `0.0..=1.0`; it is advisory metadata and never drives gates, intake, acceptance or readiness. The ID is `prop:<first 16 lowercase hex of the SHA-256 of the RFC 8785 canonical JSON of the complete proposal excluding only id>`; deserialization verifies it and rejects unknown fields.
+
+A proposal carries no job `base_revision` (job state, §21), no impact (derived from `GraphDelta`, §5.6) and no intake report (an assessment of the proposal against a specific graph, §5.4). Findings and questions it proposes are PSG nodes inside its `PatchSet`.
 
 ### 4.6 Acceptance policies
 
@@ -403,6 +412,8 @@ MCP
 external synchronization
 human answer
 ```
+
+Intake receives an immutable `Proposal` (§4.5) and returns a separate `IntakeReport` against a specific current graph. It never mutates the proposal or embeds the report in it; re-running intake against another baseline may produce a different report for the same proposal.
 
 Intake checks:
 
@@ -1306,6 +1317,8 @@ else:
 
 Never apply an async patch to a newer graph merely because its HTTP request started earlier.
 
+The job, not the `Proposal`, owns `base_revision`, `base_semantic_hash`, `stage`, `scope`, `profile_hash` and `config_hash`. Staleness is decided from the job's captured revision/head state plus the normal `PatchSet` semantic-hash precondition.
+
 `If-Match` remains correct for API writes, but internal jobs use the same compare-and-swap semantic rule.
 
 ---
@@ -1418,6 +1431,8 @@ compile-run
 ```
 
 These 18 kinds are the closed artifact-kind list.
+
+Compiler output conventions: an external-validation result is stored as `external-validation` / `application/json` holding the canonical `ExternalValidationArtifact`; a stage derivation patch as `patch`, a proposal as `proposal` and a compile run as `compile-run`, each `application/json` holding canonical JSON.
 
 Artifacts have identity independent of graph nodes.
 
@@ -1543,7 +1558,7 @@ This is a target architecture, not a requirement to rename all crates before the
 
 ## 28. Stage API
 
-Recommended high-level Rust interfaces:
+Normative Rust interfaces (`plumb-compiler`). PLAN and EVALUATE are pure contract boundaries: the trait exposes no inference provider, artifact store, revision store, branch, clock, HTTP/network client or commit capability, and a stage cannot acquire artifacts or commit a graph through it.
 
 ```rust
 pub trait CompilerStage {
@@ -1553,7 +1568,7 @@ pub trait CompilerStage {
         &self,
         graph: &Graph,
         ctx: &CompileContext,
-    ) -> Result<StagePlan>;
+    ) -> Result<StagePlan, CompilerError>;
 
     fn evaluate(
         &self,
@@ -1561,30 +1576,87 @@ pub trait CompilerStage {
         ctx: &CompileContext,
         plan: &StagePlan,
         artifacts: &ArtifactSet,
-    ) -> Result<StageEvaluation>;
+    ) -> Result<StageEvaluation, CompilerError>;
 }
 ```
 
 ```rust
+pub enum Scope {
+    Project,
+    Elements { refs: Vec<Id> },
+}
+
+pub struct CompileContext {
+    pub input_revision: RevisionId,
+    pub input_semantic_hash: Hash,
+    pub profile_ref: Id,
+    pub profile_hash: Hash,
+    pub rule_pack_hash: Hash,
+    pub compiler_version: String,
+    pub config: CanonicalJson,
+}
+
+pub struct PlannedArtifact {
+    pub kind: ArtifactKind,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+pub struct ExternalValidationRequest {
+    pub id: Hash,
+    pub validator: String,
+    pub task_kind: String,
+    pub input_artifact_refs: Vec<Hash>,
+    pub config: CanonicalJson,
+}
+
+pub struct ExternalValidationArtifact {
+    pub request_hash: Hash,
+    pub validator: String,
+    pub validated_output: CanonicalJson,
+    pub validated_output_hash: Hash,
+}
+
+pub struct ArtifactInput {
+    pub hash: Hash,
+    pub kind: ArtifactKind,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+pub struct ArtifactSet {
+    pub deterministic_artifacts: Vec<ArtifactInput>,
+    pub inference_artifacts: Vec<ArtifactInput>,
+    pub validation_artifacts: Vec<ArtifactInput>,
+}
+
 pub struct StagePlan {
     pub scope: Scope,
-    pub deterministic_artifacts: Vec<Artifact>,
+    pub deterministic_artifacts: Vec<PlannedArtifact>,
     pub inference_requests: Vec<InferenceRequest>,
     pub external_validation_requests: Vec<ExternalValidationRequest>,
 }
-```
 
-```rust
 pub struct StageEvaluation {
-    pub derivation_patches: Vec<SemanticPatch>,
+    pub derivation_patch_set: Option<PatchSet>,
     pub proposals: Vec<Proposal>,
-    pub findings: Vec<Finding>,
-    pub questions: Vec<Question>,
-    pub impact: ImpactSet,
 }
 ```
 
-`plan()` and `evaluate()` are pure for the same graph/context/artifacts.
+Rules:
+
+- **Scope** serializes as `{"kind":"project"}` or `{"kind":"elements","refs":[...]}`; element refs are non-empty, sorted and unique, and each must be an existing node or edge ID of the graph. Scope is never inferred by name matching.
+- **CompileContext** has no timestamp. `input_semantic_hash` is Semantic; `profile_hash` and `rule_pack_hash` are generic; `compiler_version` is non-empty without surrounding whitespace or control characters; `config` is a JSON object whose canonical content hash is `config_hash()`. It is constructed from a loaded revision so revision, semantic hash, profile and rule-pack metadata cannot drift, and it must match the graph's semantic hash and profile ID. No clock or environment is read.
+- **PlannedArtifact** has no timestamp (a pure PLAN cannot manufacture one); its media type is non-empty without control characters and its content hash is the generic SHA-256 of its bytes. Acquisition persists it later with an explicit timestamp.
+- **ExternalValidationRequest** rejects unknown fields; `validator` matches `^[a-z][a-z0-9._-]*$`; `task_kind` follows the `InferenceRequest` text rule; `input_artifact_refs` are generic, sorted and unique; `config` is a JSON object; `id` is the generic SHA-256 of the canonical `{validator, task_kind, input_artifact_refs, config}` and is verified on deserialization.
+- **ExternalValidationArtifact** rejects unknown fields; its hashes are generic, `validated_output_hash` is the content hash of `validated_output`, and against its request `request_hash == request.id` and `validator == request.validator`. It is the replayable validator result supplied to EVALUATE.
+- **ArtifactInput** is an artifact without `created_at`: its generic hash equals the SHA-256 of its bytes and its media type is non-empty without control characters. Converting a stored artifact drops the timestamp, so acquisition time is unobservable to evaluation.
+- **ArtifactSet** lists are each sorted by hash, and hashes are unique across the set. Inference inputs are `validated-inference` / `application/json`; validation inputs are `external-validation` / `application/json`. Against its `StagePlan` it matches one-to-one: one identical deterministic input per planned artifact, one canonical `InferenceArtifact` input valid for each inference request, one canonical `ExternalValidationArtifact` input valid for each validation request, and nothing extra.
+- **StagePlan** lists are ordered by content hash, request ID and request ID respectively, without duplicates; every inference request carries the stage's `StageId`. It contains no timestamps, provider clients or store handles.
+- **StageEvaluation** contains only the optional derivation `PatchSet` and the proposals, sorted by ID and unique. The derivation patch set and every proposal patch set have `base_semantic_hash == ctx.input_semantic_hash`, every proposal has the stage's `StageId` and validates. Evaluation never applies or commits its patches.
+- **CompilerError** distinguishes contract failures (`Core`, `Artifact`, `InvalidContext`, `InvalidScope`, `InvalidPlannedArtifact`, `InvalidExternalValidationRequest`, `InvalidExternalValidationArtifact`, `InvalidArtifactInput`, `InvalidArtifactSet`, `InvalidStagePlan`, `InvalidStageEvaluation`, `InvalidCompileRun`) from an explicit `StageFailure { stage, code, message }`.
+
+`plan()` and `evaluate()` are pure for the same graph/context/artifacts: equal inputs give byte-identical canonical `StagePlan` and `StageEvaluation`.
 
 ---
 

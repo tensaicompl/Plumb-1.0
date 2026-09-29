@@ -811,3 +811,37 @@ fn inference_crate_has_no_store_dependency_and_providers_no_capabilities() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------- Hotfix 015
+
+#[test]
+fn persisted_inference_refs_deserialization_enforces_generic_hashes() {
+    let wire = serde_json::to_value(persisted()).unwrap();
+    assert_eq!(
+        wire,
+        json!({
+            "request_artifact_ref": GOLDEN_REQUEST_REF,
+            "raw_response_ref": GOLDEN_RAW_HASH,
+            "validated_inference_ref": GOLDEN_VALIDATED_REF
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<PersistedInferenceRefs>(wire.clone()).unwrap(),
+        persisted()
+    );
+    for field in [
+        "request_artifact_ref",
+        "raw_response_ref",
+        "validated_inference_ref",
+    ] {
+        for prefix in ["psg:sha256:", "ev:sha256:"] {
+            let mut bad = wire.clone();
+            bad[field] = json!(format!("{prefix}{}", "a".repeat(64)));
+            let err = serde_json::from_value::<PersistedInferenceRefs>(bad).unwrap_err();
+            assert!(err.to_string().contains(field), "{field} {prefix}: {err}");
+        }
+    }
+    let mut extra = wire;
+    extra["request_id"] = json!(GOLDEN_REQUEST_ID);
+    assert!(serde_json::from_value::<PersistedInferenceRefs>(extra).is_err());
+}
