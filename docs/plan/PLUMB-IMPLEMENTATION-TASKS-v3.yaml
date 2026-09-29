@@ -87,13 +87,37 @@ tasks:
   - 'Write rust-toolchain.toml exactly as: [toolchain] channel="1.98.1", profile="minimal", components=["rustfmt","clippy","llvm-tools-preview"].'
   - Write .node-version containing exactly `24.21.0` followed by one newline.
   - Set ui/package.json `engines` exactly to {"node":"24.21.0","npm":"11.19.0"} and `packageManager` exactly to "npm@11.19.0".
+  - Set ui/package.json scripts at P0.2 exactly to {"typecheck":"tsc --noEmit"}. U0.1 later replaces/extends the scripts block with its fully
+    specified UI scripts.
   - Copy the exact [workspace.dependencies] and crate dependency matrix from this plan into Cargo.toml files; crate Cargo.toml files must use
     workspace = true and may not alter versions/features.
   - Install exactly the UI runtime and development package names listed in this plan with npm and commit ui/package-lock.json. Do not add any
     other package.
-  - Create Makefile targets check, test, cov, mutants, openapi, ui-check, e2e, all.
+  - 'Create Makefile targets with these exact P0.2 behaviors:
+
+
+    - check: run cargo check --workspace, then ui-check
+
+    - test: run cargo test --workspace
+
+    - ui-check: run cd ui && npm run typecheck
+
+    - cov: run cargo llvm-cov --workspace --summary-only
+
+    - mutants: run cargo mutants --workspace
+
+    - openapi: run test -f api/modeller.openapi.json
+
+    - e2e: run test -f tests/e2e_hr.rs
+
+    - all: depend on check and test
+
+
+    The openapi and e2e targets are deliberate readiness checks. They are expected to return failure until the later tasks responsible for those
+    artifacts create them. Do not put unfinished implementation markers or dummy commands into these targets.'
   - Create CI on ubuntu-24.04 using actions/checkout@v4 and actions/setup-node@v4 with node-version 24.21.0; install npm@11.19.0; install Rust
     1.98.1 with rustfmt, clippy, llvm-tools-preview.
+  - CI verifies the native C toolchain by running cc --version; the ubuntu-24.04 runner remains the pinned CI operating-system baseline.
   - CI installs cargo-llvm-cov exactly 0.9.1 and cargo-mutants exactly 27.1.0 using cargo install --version ... --locked.
   - If local node --version is not v24.21.0 or npm --version is not 11.19.0, stop with BLOCKED-ENVIRONMENT rather than using a different version.
   tests:
@@ -103,6 +127,7 @@ tasks:
   acceptance:
   - rustc --version starts with `rustc 1.98.1`; node --version equals `v24.21.0`; npm --version equals `11.19.0`.
   - Workspace compiles with empty crates; Cargo.lock and ui/package-lock.json are committed; CI workflow uses the exact pinned toolchain and runner.
+  - cc --version exits 0 and identifies an installed native C compiler.
   source_refs:
   - SRCREF-E772EBFE16
   - SRCREF-340600AFE6
@@ -114,6 +139,7 @@ tasks:
   - rustc --version
   - node --version
   - npm --version
+  - cc --version
   - cargo check --workspace
   - cargo test --workspace
   - cd ui && npm install react react-dom @tanstack/react-router @tanstack/react-query zustand @radix-ui/react-dialog @radix-ui/react-dropdown-menu

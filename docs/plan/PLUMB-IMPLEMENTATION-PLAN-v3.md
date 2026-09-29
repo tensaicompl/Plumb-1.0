@@ -151,6 +151,7 @@ The pilot build baseline is:
 - Rust edition `2021`.
 - Node.js `24.21.0` LTS.
 - npm `11.19.0`.
+- Native Linux build toolchain: a working C compiler/linker available through the command `cc`. On Debian/Ubuntu environments this requirement is satisfied by the `build-essential` package. P0.2 must verify `cc --version` succeeds before Cargo compilation. If `cc` is unavailable, the task is `BLOCKED-ENVIRONMENT`.
 - GitHub Actions runner `ubuntu-24.04`.
 
 Local execution with a different Node/npm version is not authorized. Claude creates a `BLOCKED-ENVIRONMENT` record instead of silently using another runtime. Rust is selected by the committed `rust-toolchain.toml`.
@@ -1041,12 +1042,25 @@ python3 scripts/verify-plan-contract.py
 2. Write rust-toolchain.toml exactly as: [toolchain] channel="1.98.1", profile="minimal", components=["rustfmt","clippy","llvm-tools-preview"].
 3. Write .node-version containing exactly `24.21.0` followed by one newline.
 4. Set ui/package.json `engines` exactly to {"node":"24.21.0","npm":"11.19.0"} and `packageManager` exactly to "npm@11.19.0".
-5. Copy the exact [workspace.dependencies] and crate dependency matrix from this plan into Cargo.toml files; crate Cargo.toml files must use workspace = true and may not alter versions/features.
-6. Install exactly the UI runtime and development package names listed in this plan with npm and commit ui/package-lock.json. Do not add any other package.
-7. Create Makefile targets check, test, cov, mutants, openapi, ui-check, e2e, all.
-8. Create CI on ubuntu-24.04 using actions/checkout@v4 and actions/setup-node@v4 with node-version 24.21.0; install npm@11.19.0; install Rust 1.98.1 with rustfmt, clippy, llvm-tools-preview.
-9. CI installs cargo-llvm-cov exactly 0.9.1 and cargo-mutants exactly 27.1.0 using cargo install --version ... --locked.
-10. If local node --version is not v24.21.0 or npm --version is not 11.19.0, stop with BLOCKED-ENVIRONMENT rather than using a different version.
+5. Set ui/package.json scripts at P0.2 exactly to {"typecheck":"tsc --noEmit"}. U0.1 later replaces/extends the scripts block with its fully specified UI scripts.
+6. Copy the exact [workspace.dependencies] and crate dependency matrix from this plan into Cargo.toml files; crate Cargo.toml files must use workspace = true and may not alter versions/features.
+7. Install exactly the UI runtime and development package names listed in this plan with npm and commit ui/package-lock.json. Do not add any other package.
+8. Create Makefile targets with these exact P0.2 behaviors:
+
+   - check: run cargo check --workspace, then ui-check
+   - test: run cargo test --workspace
+   - ui-check: run cd ui && npm run typecheck
+   - cov: run cargo llvm-cov --workspace --summary-only
+   - mutants: run cargo mutants --workspace
+   - openapi: run test -f api/modeller.openapi.json
+   - e2e: run test -f tests/e2e_hr.rs
+   - all: depend on check and test
+
+   The openapi and e2e targets are deliberate readiness checks. They are expected to return failure until the later tasks responsible for those artifacts create them. Do not put unfinished implementation markers or dummy commands into these targets.
+9. Create CI on ubuntu-24.04 using actions/checkout@v4 and actions/setup-node@v4 with node-version 24.21.0; install npm@11.19.0; install Rust 1.98.1 with rustfmt, clippy, llvm-tools-preview.
+10. CI verifies the native C toolchain by running cc --version; the ubuntu-24.04 runner remains the pinned CI operating-system baseline.
+11. CI installs cargo-llvm-cov exactly 0.9.1 and cargo-mutants exactly 27.1.0 using cargo install --version ... --locked.
+12. If local node --version is not v24.21.0 or npm --version is not 11.19.0, stop with BLOCKED-ENVIRONMENT rather than using a different version.
 
 **Commands**
 
@@ -1055,6 +1069,7 @@ rustup toolchain install 1.98.1 --profile minimal --component rustfmt --componen
 rustc --version
 node --version
 npm --version
+cc --version
 cargo check --workspace
 cargo test --workspace
 cd ui && npm install react react-dom @tanstack/react-router @tanstack/react-query zustand @radix-ui/react-dialog @radix-ui/react-dropdown-menu @radix-ui/react-tabs @radix-ui/react-tooltip @radix-ui/react-popover @radix-ui/react-select @radix-ui/react-checkbox @radix-ui/react-radio-group @radix-ui/react-toast tailwindcss @tailwindcss/vite elkjs openapi-fetch date-fns zod
@@ -1072,6 +1087,7 @@ cd ui && npm run typecheck
 
 - rustc --version starts with `rustc 1.98.1`; node --version equals `v24.21.0`; npm --version equals `11.19.0`.
 - Workspace compiles with empty crates; Cargo.lock and ui/package-lock.json are committed; CI workflow uses the exact pinned toolchain and runner.
+- cc --version exits 0 and identifies an installed native C compiler.
 
 **Supporting references**
 
@@ -4286,6 +4302,23 @@ When blocked:
 8. Do not commit an implementation pretending the task is complete.
 
 Environment failures that are demonstrably transient may be retried. Semantic/specification blockers may not be worked around.
+
+### Human-approved unblock procedure
+
+A task in blocked state may return to pending only after the blocking condition has been corrected or an authoritative human-approved specification hotfix has been applied.
+
+For an environment blocker:
+
+- retain `docs/blockers/<TASK_ID>.md` as historical evidence;
+- do not delete the blocker;
+- verify the required environment now satisfies the task contract;
+- change only that task from `blocked` to `pending`;
+- rerun both repository preflight commands;
+- execute the task again from the beginning;
+- if successful, mark it `done` and commit using the exact task commit message;
+- if it blocks again, update the existing blocker record and set it back to `blocked`.
+
+The unblock state change itself does not need a separate commit.
 
 ---
 

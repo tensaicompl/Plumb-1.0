@@ -27,3 +27,4 @@ Hard rules:
 - Stale async proposals cannot commit.
 - A failed blocker gate cannot be overridden by readiness.
 - If specs are missing/conflicting, write `docs/blockers/<TASK_ID>.md`, mark task blocked, and stop.
+- A `blocked` task returns to `pending` only after the blocking condition is corrected or a human-approved spec hotfix is applied. Keep the blocker file, verify the environment, set only that task to `pending`, rerun both preflight commands, and re-execute the task from the start; if it blocks again, update the existing blocker file and set it back to `blocked`. See plan §14 "Human-approved unblock procedure".
