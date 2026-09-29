@@ -599,34 +599,72 @@ pub enum RelationViolation {
     Cycle { kind: RelationKind, nodes: Vec<Id> },
 }
 
-/// Validates `edges` against the registry for the given node types: endpoint existence and
-/// types, `schema_for` roles, unconditional structural cardinality and acyclicity.
+fn sorted_edges<'a>(edges: impl IntoIterator<Item = &'a Edge>) -> Vec<&'a Edge> {
+    let mut edges: Vec<&Edge> = edges.into_iter().collect();
+    edges.sort_by(|a, b| a.id.cmp(&b.id));
+    edges
+}
+
+fn into_result(violations: Vec<RelationViolation>) -> Result<(), Vec<RelationViolation>> {
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations)
+    }
+}
+
+/// Relation *shape* validation, run over all persisted edges regardless of status: edge local
+/// validation, endpoint existence, source/target node types, same-node-type and `schema_for`
+/// role compatibility. Does not check cardinality or cycles.
 ///
-/// Violations are returned in a deterministic order (edge ID, then registry order).
-/// Extension relations are checked only for their local invariants and endpoint existence.
-pub fn validate_relations<'a>(
+/// Violations are returned in edge-ID order. Extension relations are checked only for their
+/// local invariants and endpoint existence.
+pub fn validate_relation_shapes<'a>(
     node_types: &BTreeMap<Id, NodeType>,
     edges: impl IntoIterator<Item = &'a Edge>,
 ) -> Result<(), Vec<RelationViolation>> {
-    let mut edges: Vec<&Edge> = edges.into_iter().collect();
-    edges.sort_by(|a, b| a.id.cmp(&b.id));
     let mut violations = Vec::new();
-
-    for edge in &edges {
+    for edge in sorted_edges(edges) {
         check_edge(node_types, edge, &mut violations);
     }
+    into_result(violations)
+}
+
+/// Relation *constraint* validation, run over the baseline-participating subset: unconditional
+/// structural cardinality and the core-acyclic relations. Assumes shapes were checked.
+///
+/// Violations are returned in registry order.
+pub fn validate_relation_constraints<'a>(
+    node_types: &BTreeMap<Id, NodeType>,
+    edges: impl IntoIterator<Item = &'a Edge>,
+) -> Result<(), Vec<RelationViolation>> {
+    let edges = sorted_edges(edges);
+    let mut violations = Vec::new();
     for def in RELATION_REGISTRY.iter() {
         check_cardinality(node_types, &edges, def, &mut violations);
         if def.cycle_policy == CyclePolicy::Acyclic {
             check_acyclic(&edges, &def.kind, &mut violations);
         }
     }
+    into_result(violations)
+}
 
-    if violations.is_empty() {
-        Ok(())
-    } else {
-        Err(violations)
-    }
+/// Convenience: [`validate_relation_shapes`] followed by [`validate_relation_constraints`]
+/// over one supplied set of node types and edges.
+pub fn validate_relations<'a>(
+    node_types: &BTreeMap<Id, NodeType>,
+    edges: impl IntoIterator<Item = &'a Edge>,
+) -> Result<(), Vec<RelationViolation>> {
+    let edges = sorted_edges(edges);
+    let mut violations = validate_relation_shapes(node_types, edges.iter().copied())
+        .err()
+        .unwrap_or_default();
+    violations.extend(
+        validate_relation_constraints(node_types, edges.iter().copied())
+            .err()
+            .unwrap_or_default(),
+    );
+    into_result(violations)
 }
 
 fn check_edge(

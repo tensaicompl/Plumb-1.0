@@ -1840,4 +1840,60 @@ mod payload_roundtrip {
             );
         }
     }
+
+    // ------------------------------------------------------------------ Hotfix 011 regressions
+
+    #[test]
+    fn node_collections_reject_exact_duplicates() {
+        let base = requirement_node();
+        for (field, value) in [
+            (
+                "evidence",
+                json!(["evd:0123456789abcdef", "evd:0123456789abcdef"]),
+            ),
+            (
+                "derivations",
+                json!(["drv:s1:classify-1", "drv:s1:classify-1"]),
+            ),
+            (
+                "standards",
+                json!([base["standards"][0].clone(), base["standards"][0].clone()]),
+            ),
+        ] {
+            let mut node = base.clone();
+            node[field] = value;
+            assert!(parse_node(node).is_err(), "duplicate {field} accepted");
+        }
+        let node = parse_node(base).unwrap();
+        let dup_evidence = Node {
+            evidence: vec![node.evidence[0].clone(), node.evidence[0].clone()],
+            ..node.clone()
+        };
+        assert!(matches!(
+            dup_evidence.validate(),
+            Err(NodeError::DuplicateEvidenceRef(_))
+        ));
+        let dup_derivations = Node {
+            derivations: vec![node.derivations[0].clone(), node.derivations[0].clone()],
+            ..node.clone()
+        };
+        assert!(matches!(
+            dup_derivations.validate(),
+            Err(NodeError::DuplicateDerivationRef(_))
+        ));
+        let dup_standards = Node {
+            standards: vec![node.standards[0].clone(), node.standards[0].clone()],
+            ..node.clone()
+        };
+        assert_eq!(
+            dup_standards.validate(),
+            Err(NodeError::DuplicateStandardMapping { index: 1 })
+        );
+        // Distinct entries remain valid.
+        let mut distinct = node.clone();
+        distinct.evidence.push(EvidenceRef::from(
+            Id::try_from("evd:fedcba9876543210".to_string()).unwrap(),
+        ));
+        assert_eq!(distinct.validate(), Ok(()));
+    }
 }

@@ -396,25 +396,24 @@
         "F0.5"
       ],
       "files": [
+        "crates/plumb-psg/src/lib.rs",
         "crates/plumb-psg/src/graph.rs",
         "crates/plumb-psg/src/hash.rs",
         "crates/plumb-psg/tests/graph.rs"
       ],
       "steps": [
-        "Implement BTreeMap-backed node and edge storage.",
-        "Maintain indexes by payload type, relation kind, outgoing node and incoming node.",
-        "Graph validation calls node schema validation, relation registry validation and mandatory core invariants applicable without gate context.",
-        "Implement semantic_hash over accepted semantic nodes/edges plus accepted semantic decisions/constraints using exclusions defined by metamodel §3.1.",
-        "Implement evidence_hash over source artifacts/evidence identity.",
-        "View/layout data must not influence semantic_hash.",
-        "The semantic_hash projection of a View payload omits the layout_ref and style_ref fields entirely (absent from the hash-input object, not serialized as null); changing only layout/style metadata must not change semantic_hash.",
-        "Exclude every node whose payload is DerivationRecord entirely from semantic_hash (it remains a persisted provenance node), and exclude the derivations reference vectors of nodes and edges; evidence references remain part of semantic_hash (plan §6.2)."
+        "Implement Graph with private BTreeMap-backed storage of project_id: Id, profile_id: Id, nodes: BTreeMap<Id, Node> and edges: BTreeMap<Id, Edge>, and private deterministic indexes NodeType -> BTreeSet<Id>, RelationKind -> BTreeSet<Id>, source node -> BTreeSet<edge Id> and target node -> BTreeSet<edge Id>. Indexes contain all persisted elements including Proposed and Rejected; status filtering belongs to semantic operations. No mutable map/index accessors; later tasks create a new validated Graph instead of mutating one.",
+        "Provide Graph::new(project_id, profile_id, nodes: Vec<Node>, edges: Vec<Edge>) -> Result<Graph, Vec<GraphViolation>>, Graph::validate(&self), project_id(), profile_id(), node(&Id), edge(&Id), nodes(), edges(), and read-only deterministic index lookups by NodeType, RelationKind, outgoing node and incoming node. Graph::new detects duplicate node IDs, duplicate edge IDs and node/edge ID collisions before building maps and never silently overwrites.",
+        "Graph validation performs, in order, and reports typed deterministic GraphViolations without stopping at the first (except when duplicate IDs make map construction impossible): (1) node local validation; (2) edge local validation; (3) global ID uniqueness; (4) relation shape validation for every edge regardless of status; (5) baseline edge endpoints must be baseline-participating; (6) EvidenceRef resolution to an existing EvidenceFragment, baseline-participating when the owner is; (7) DerivationRef resolution to an existing DerivationRecord, baseline-participating when the owner is; (8) EvidenceFragment.source_ref resolution to an existing SourceArtifact, baseline-participating when the fragment is; (9) SourceArtifact/EvidenceFragment content_hash must be HashKind::Generic; (10) SourceArtifact ID = src:<first16 hex of content_hash>; (11) EvidenceFragment ID = evd:<first16 hex of SHA-256(source_ref || \"|\" || RFC 8785 JSON of locator)>; (12) no two baseline-participating edges share a semantic relation key (metamodel §17.9); (13) baseline relation cardinality; (14) baseline relation cycles.",
+        "Implement semantic_hash and evidence_hash exactly per plan §6.2 (excluded node types, endpoint-based edge participation, exact node/edge projections with sorted evidence and normalized standards, View projection without layout_ref/style_ref, exact evidence projection), canonicalized with the plumb-core RFC 8785 primitive and hashed as HashKind::Semantic and HashKind::Evidence.",
+        "Tests live in crates/plumb-psg/tests/graph.rs inside a module whose name contains graph so that cargo test -p plumb-psg graph selects them; the unfiltered cargo test -p plumb-psg proves none is skipped. Tests cover at minimum:\n\n- Construction/IDs: duplicate node ID, duplicate edge ID and node/edge ID collision rejected; exact SourceArtifact and EvidenceFragment IDs accepted and mismatches rejected.\n- Status: Proposed or Rejected Attribute without has_attribute passes; Accepted, Suspect, Superseded and Deprecated Attributes participate; Proposed and Rejected edges do not count toward cardinality; a baseline edge to a Proposed or Rejected endpoint is rejected.\n- Relation shape: malformed Proposed and Rejected relations still fail type compatibility; every edge requires existing endpoints.\n- Evidence/provenance references: valid EvidenceRef/DerivationRef resolve; missing and wrong-type targets rejected; EvidenceFragment source must exist and be a SourceArtifact; baseline provenance refs cannot point to Proposed/Rejected provenance.\n- Duplicates: duplicate baseline ordinary relation rejected; duplicate schema_for with the same role rejected; schema_for with different valid roles accepted; duplicate extension relation with identical canonical properties rejected; distinct extension properties allowed; a Proposed duplicate of a baseline relation does not invalidate the baseline.\n- Symmetry: canonical conflicts_with accepted; reverse orientation and self conflicts rejected.\n- Indexes: NodeType, RelationKind, outgoing and incoming indexes exact, including Proposed/Rejected elements.\n- semantic_hash: insertion order, audit, revision, derivation refs, evidence-ref order, standards order, validator_rules order and View layout_ref/style_ref do not change it; a View semantic field, a changed accepted Requirement statement, Accepted -> Suspect, a changed attached evidence ref and a semantic edge change do; Proposed, Rejected, Finding, Question, ScenarioRun, TestExecution, TestReceipt, CodeBinding, ArchitectureCheck and CoverageRecord nodes and proof/evidence/provenance-only edges do not; a fixed golden semantic hash matches.\n- evidence_hash: insertion order, display_name, media_type, extracted_text, speaker and source_timestamp do not change it; content_hash, locator and source_ref do; Proposed and Rejected evidence nodes do not contribute; Accepted, Suspect, Superseded and Deprecated ones do; non-evidence nodes never contribute; a fixed golden evidence hash matches.\n\nGolden fixtures use fixed literal RFC 8785 canonical JSON inputs and hard-coded expected hash strings calculated independently from those literal bytes; expected JSON is never generated by serializing the implementation under test."
       ],
       "tests": [
-        "cargo test -p plumb-psg graph"
+        "cargo test -p plumb-psg graph",
+        "cargo test -p plumb-psg"
       ],
       "acceptance": [
-        "Graph hash is stable across insertion order; changing audit timestamp or view position does not change semantic_hash; changing an accepted requirement statement does. Changing only a View's layout_ref or style_ref does not change semantic_hash."
+        "Graph construction rejects duplicate and colliding IDs and validates every element, relation shape, baseline endpoint status, provenance reference, evidence source, evidence content-hash kind, deterministic source/evidence ID, baseline semantic-edge uniqueness, baseline cardinality and baseline acyclicity with deterministic typed violations; indexes are exact and include all persisted elements; semantic_hash and evidence_hash follow plan §6.2 exactly, are insertion-order independent, ignore non-semantic data (audit, revision, derivations, excluded node types, View layout/style) and match fixed golden hashes."
       ],
       "source_refs": [
         "SRCREF-02DFDD2B29"
@@ -424,6 +423,7 @@
       ],
       "commands": [
         "cargo test -p plumb-psg graph",
+        "cargo test -p plumb-psg",
         "cargo fmt --check",
         "cargo clippy --workspace --all-targets -- -D warnings"
       ],

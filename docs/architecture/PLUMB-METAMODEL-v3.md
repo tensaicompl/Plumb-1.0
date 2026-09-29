@@ -124,8 +124,8 @@ Plumb SHOULD use RFC 8785 JSON Canonicalization Scheme after applying Plumb-spec
 
 Three hashes are defined:
 
-- `semantic_hash` — accepted semantic nodes/edges, accepted decisions, and semantic constraints. Excludes timestamps, UI layout, transient jobs, cached inference text and other operational metadata.
-- `evidence_hash` — source artifacts and evidence-fragment identity.
+- `semantic_hash` — the baseline-participating specification semantics (§17.9; exact projection in implementation plan §6.2). Excludes timestamps, UI layout, transient jobs, cached inference text, other operational metadata, and the evidence, provenance, diagnostic and runtime/proof node types `SourceArtifact`, `EvidenceFragment`, `DerivationRecord`, `Agent`, `Finding`, `Question`, `ScenarioRun`, `TestExecution`, `TestReceipt`, `CodeBinding`, `ArchitectureCheck` and `CoverageRecord`.
+- `evidence_hash` — baseline-participating source-artifact and evidence-fragment identity (exact projection in implementation plan §6.2).
 - `view_hash` — one explicit view definition plus layout/style metadata.
 
 Hash strings are normative (implementation plan §6.3). One `Hash` type accepts exactly `sha256:<64 lowercase hex>` (generic/content/artifact/config/rule/output hash), `psg:sha256:<64 lowercase hex>` (PSG semantic hash) and `ev:sha256:<64 lowercase hex>` (evidence hash).
@@ -2140,6 +2140,28 @@ The Rust variant name never appears in JSON. Every core relation except `schema_
 
 **Directionality and cycles.** `conflicts_with` is `Symmetric`: one edge represents the unordered pair and no mirrored edge is required or created. Every other core relation is `Directed`. `supersedes`, `refines`, `decomposes_to`, `inherits_role` and `depends_on_slice` are `Acyclic` in the core profile (a future exception requires an explicit plan revision/profile mechanism); every other relation allows cycles unless a later semantic rule forbids them.
 
+### 17.9 Graph validity boundary (normative)
+
+**Baseline-participating statuses.** `Accepted`, `Suspect`, `Superseded` and `Deprecated` are *baseline-participating*: such elements participate in structural graph constraints (cardinality, cycles), in duplicate-semantic-edge checks, and are candidates for the semantic and evidence hash projections. `Proposed` and `Rejected` elements are still persisted graph elements and MUST still pass local Node/Edge validation, ID validation, endpoint existence, relation source/target type compatibility, relation-property compatibility and typed evidence/derivation reference resolution; they simply do not count toward baseline cardinalities, cycles, duplicate semantic relations or hashes.
+
+**Baseline edge endpoints.** An edge whose status is baseline-participating MUST have both endpoints baseline-participating. A `Proposed` edge may point to `Proposed` or baseline nodes; a `Rejected` edge need only point to existing, structurally valid nodes.
+
+**Shape versus constraints.** Relation *shape* validation (edge local validation, endpoint existence, source/target type, same-node-type, `schema_for` role) runs over all persisted edges regardless of status. Relation *constraint* validation (unconditional cardinality and the five core-acyclic relations) runs over the baseline-participating subset only.
+
+**Canonical `conflicts_with` orientation.** A `conflicts_with` edge MUST satisfy `from < to` by exact `Id` ordering, for every edge status. The reverse orientation and self-conflicts are invalid, so each unordered pair has exactly one stored representation.
+
+**Duplicate semantic edges.** A baseline graph MUST NOT contain two distinct baseline-participating edges with the same *semantic relation key*: `(kind, from, to)` for core relations (including canonically oriented `conflicts_with`); `(schema_for, from, to, role)` for `schema_for`; and `(extension key, from, to, RFC 8785 canonical properties JSON)` for extension relations. Edge id, revision, status, evidence, derivations, standards and audit are not part of the key. Proposed duplicates may coexist while under review.
+
+**Envelope collection uniqueness.** Within one node or edge, `evidence`, `derivations` and `standards` MUST NOT contain exact duplicates; local validation and deserialization reject them. Their persisted order is a presentation detail; the semantic hash projection normalizes it.
+
+**Provenance references.** Every `EvidenceRef` MUST resolve to an existing `EvidenceFragment` node and every `DerivationRef` to an existing `DerivationRecord` node; when the owning node/edge is baseline-participating, the referenced node MUST be baseline-participating too. Every `EvidenceFragment.source_ref` MUST resolve to an existing `SourceArtifact`, baseline-participating when the fragment is. `SourceArtifact.content_hash` and `EvidenceFragment.content_hash` MUST be generic `sha256:` hashes.
+
+**Deterministic evidence identity.** A `SourceArtifact` node ID MUST equal `src:<first 16 hex of its content_hash digest>`. An `EvidenceFragment` node ID MUST equal `evd:<first 16 hex of SHA-256(source_ref || "|" || RFC 8785 canonical JSON of locator)>`, concatenated as exact UTF-8 bytes using the stored `source_ref` string (implementation plan §6.1).
+
+**Global ID uniqueness.** A graph MUST reject duplicate node IDs, duplicate edge IDs and an ID used by both a node and an edge; construction never silently overwrites a duplicate.
+
+**Envelope evidence versus `evidenced_by`.** The envelope `evidence` vector is direct provenance attached to the node/edge itself; `evidenced_by` is a first-class typed graph assertion modeled independently when an explicit relation is required. They are not required to mirror each other and no `evidenced_by` edge is generated from the envelope vector. This is an explicit exception to canonical relation ownership (§17), because envelope evidence is provenance metadata, not a `NodePayload` semantic reference.
+
 ---
 
 ## 18. Mandatory semantic invariants
@@ -2179,7 +2201,7 @@ The following are Plumb invariants, independent of any external standard claim.
 ### 18.5 Authorization
 
 19. BusinessRole and SecurityRole MUST remain distinct types.
-20. Every Permission MUST resolve to one or more concrete operations and a resource scope.
+20. Every baseline-participating Permission MUST resolve to exactly one concrete Operation through `permits` and exactly one ResourceScope through `scoped_to`; `conditioned_by` remains optional (0..*).
 21. Static role inheritance MUST be acyclic.
 22. SeparationConstraint violations are blocking for security-sensitive gates unless explicitly waived.
 

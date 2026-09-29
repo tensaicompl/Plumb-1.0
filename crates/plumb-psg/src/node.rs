@@ -23,6 +23,15 @@ pub enum NodeError {
     /// The audit metadata violates its invariants.
     #[error("invalid audit metadata: {0}")]
     InvalidAudit(#[from] AuditMetaError),
+    /// The same evidence reference appears more than once.
+    #[error("duplicate evidence reference {0:?}")]
+    DuplicateEvidenceRef(EvidenceRef),
+    /// The same derivation reference appears more than once.
+    #[error("duplicate derivation reference {0:?}")]
+    DuplicateDerivationRef(DerivationRef),
+    /// The same standard mapping appears more than once (at `index`).
+    #[error("duplicate standard mapping at index {index}")]
+    DuplicateStandardMapping { index: usize },
     /// A payload that carries its own `id` disagrees with the node ID.
     #[error("{node_type:?} payload id {payload_id} does not match node id {node_id}")]
     PayloadIdMismatch {
@@ -58,6 +67,12 @@ impl Node {
             return Err(NodeError::ZeroRevision);
         }
         self.audit.validate()?;
+        check_unique_envelope_collections(&self.evidence, &self.derivations, &self.standards)
+            .map_err(|duplicate| match duplicate {
+                EnvelopeDuplicate::Evidence(r) => NodeError::DuplicateEvidenceRef(r),
+                EnvelopeDuplicate::Derivation(r) => NodeError::DuplicateDerivationRef(r),
+                EnvelopeDuplicate::Standard(index) => NodeError::DuplicateStandardMapping { index },
+            })?;
         let payload_id = match &self.payload {
             NodePayload::DerivationRecord(record) => Some(&record.id),
             NodePayload::StandardsProfile(profile) => Some(&profile.id),
@@ -72,6 +87,36 @@ impl Node {
             _ => Ok(()),
         }
     }
+}
+
+/// The first exact duplicate found in an envelope collection.
+pub(crate) enum EnvelopeDuplicate {
+    Evidence(EvidenceRef),
+    Derivation(DerivationRef),
+    Standard(usize),
+}
+
+/// Rejects exact duplicates in the envelope `evidence`, `derivations` and `standards` vectors.
+pub(crate) fn check_unique_envelope_collections(
+    evidence: &[EvidenceRef],
+    derivations: &[DerivationRef],
+    standards: &[StandardMapping],
+) -> Result<(), EnvelopeDuplicate> {
+    if let Some(i) = first_duplicate(evidence) {
+        return Err(EnvelopeDuplicate::Evidence(evidence[i].clone()));
+    }
+    if let Some(i) = first_duplicate(derivations) {
+        return Err(EnvelopeDuplicate::Derivation(derivations[i].clone()));
+    }
+    if let Some(index) = first_duplicate(standards) {
+        return Err(EnvelopeDuplicate::Standard(index));
+    }
+    Ok(())
+}
+
+/// Index of the first element equal to an earlier element.
+fn first_duplicate<T: PartialEq>(items: &[T]) -> Option<usize> {
+    (1..items.len()).find(|&i| items[..i].contains(&items[i]))
 }
 
 #[derive(Deserialize)]

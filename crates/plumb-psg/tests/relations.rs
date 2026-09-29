@@ -1603,4 +1603,133 @@ mod relations_contract {
             .collect()
         );
     }
+
+    // ------------------------------------------------------------------ Hotfix 011 regressions
+
+    #[test]
+    fn conflicts_with_requires_canonical_orientation() {
+        assert!(parse_edge(edge_json(
+            "rel:1",
+            "conflicts_with",
+            "req:a",
+            "req:b",
+            json!({})
+        ))
+        .is_ok());
+        for (from, to) in [("req:b", "req:a"), ("req:a", "req:a")] {
+            assert!(
+                parse_edge(edge_json("rel:1", "conflicts_with", from, to, json!({}))).is_err(),
+                "{from}->{to}"
+            );
+            let mut e = edge("rel:1", "conflicts_with", "req:a", "req:b");
+            e.from = id(from);
+            e.to = id(to);
+            assert_eq!(
+                e.validate(),
+                Err(EdgeError::NonCanonicalConflictOrientation {
+                    from: id(from),
+                    to: id(to)
+                })
+            );
+        }
+        // Other relations keep free orientation.
+        assert!(parse_edge(edge_json(
+            "rel:1",
+            "depends_on",
+            "container:b",
+            "container:a",
+            json!({})
+        ))
+        .is_ok());
+        assert!(parse_edge(edge_json("rel:1", "next", "pn:a", "pn:a", json!({}))).is_ok());
+    }
+
+    #[test]
+    fn edge_collections_reject_exact_duplicates() {
+        let mapping = json!({
+            "standard_id": "ISO/IEC 25010", "version": "2023", "concept": "performance",
+            "clause_ref": null, "mapping_role": "taxonomy", "mapping_strength": "compatible",
+            "validator_rules": []
+        });
+        for (field, value) in [
+            (
+                "evidence",
+                json!(["evd:0123456789abcdef", "evd:0123456789abcdef"]),
+            ),
+            ("derivations", json!(["drv:a:1", "drv:a:1"])),
+            ("standards", json!([mapping.clone(), mapping.clone()])),
+        ] {
+            let mut v = edge_json("rel:1", "reads", "op:a", "attr:a", json!({}));
+            v[field] = value;
+            assert!(parse_edge(v).is_err(), "duplicate {field} accepted");
+        }
+        let base = edge("rel:1", "reads", "op:a", "attr:a");
+        let dup_evidence = Edge {
+            evidence: vec![base.evidence[0].clone(), base.evidence[0].clone()],
+            ..base.clone()
+        };
+        assert!(matches!(
+            dup_evidence.validate(),
+            Err(EdgeError::DuplicateEvidenceRef(_))
+        ));
+        let dup_derivations = Edge {
+            derivations: vec![base.derivations[0].clone(), base.derivations[0].clone()],
+            ..base.clone()
+        };
+        assert!(matches!(
+            dup_derivations.validate(),
+            Err(EdgeError::DuplicateDerivationRef(_))
+        ));
+        let m: StandardMapping = serde_json::from_value(mapping).unwrap();
+        let dup_standards = Edge {
+            standards: vec![m.clone(), m],
+            ..base
+        };
+        assert_eq!(
+            dup_standards.validate(),
+            Err(EdgeError::DuplicateStandardMapping { index: 1 })
+        );
+    }
+
+    #[test]
+    fn shape_and_constraint_validation_are_separate() {
+        use plumb_psg::registry::{validate_relation_constraints, validate_relation_shapes};
+        // Shape error (wrong target type) plus a cardinality error (Attribute without owner).
+        let n = nodes(&[
+            ("op:a", N::Operation),
+            ("proc:x", N::Process),
+            ("attr:x", N::Attribute),
+        ]);
+        let e = [edge("rel:1", "reads", "op:a", "proc:x")];
+        let shapes = validate_relation_shapes(&n, &e).unwrap_err();
+        assert!(
+            shapes
+                .iter()
+                .all(|v| matches!(v, RelationViolation::TargetTypeNotAllowed { .. })),
+            "{shapes:?}"
+        );
+        let constraints = validate_relation_constraints(&n, &e).unwrap_err();
+        assert!(
+            constraints
+                .iter()
+                .all(|v| matches!(v, RelationViolation::IncomingCardinality { .. })),
+            "{constraints:?}"
+        );
+        let mut both = shapes.clone();
+        both.extend(constraints.clone());
+        assert_eq!(validate_relations(&n, &e).unwrap_err(), both);
+        // A cycle is a constraint, not a shape, violation.
+        let cyc = nodes(&[("req:a", N::Requirement), ("req:b", N::Requirement)]);
+        let cycle = [
+            edge("rel:1", "refines", "req:a", "req:b"),
+            edge("rel:2", "refines", "req:b", "req:a"),
+        ];
+        assert!(validate_relation_shapes(&cyc, &cycle).is_ok());
+        assert!(matches!(
+            validate_relation_constraints(&cyc, &cycle)
+                .unwrap_err()
+                .as_slice(),
+            [RelationViolation::Cycle { .. }]
+        ));
+    }
 }
