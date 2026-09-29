@@ -1,0 +1,20 @@
+[package]
+name = "plumb-sim"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+plumb-core = { path = "../plumb-core" }
+plumb-psg = { path = "../plumb-psg" }
+plumb-expr = { path = "../plumb-expr" }
+plumb-functional = { path = "../plumb-functional" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+insta = { workspace = true }
+
+[features]
+default = []

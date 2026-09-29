@@ -1,0 +1,17 @@
+[package]
+name = "plumb-lint"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+plumb-core = { path = "../plumb-core" }
+plumb-psg = { path = "../plumb-psg" }
+serde = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+
+[features]
+default = []

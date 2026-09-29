@@ -1,0 +1,21 @@
+[package]
+name = "plumb-inference"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+plumb-core = { path = "../plumb-core" }
+plumb-artifacts = { path = "../plumb-artifacts" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jsonschema = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+default = []
+anthropic = ["dep:reqwest"]

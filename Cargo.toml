@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/plumb-api",
+    "crates/plumb-artifacts",
+    "crates/plumb-cli",
+    "crates/plumb-compiler",
+    "crates/plumb-core",
+    "crates/plumb-expr",
+    "crates/plumb-functional",
+    "crates/plumb-import",
+    "crates/plumb-inference",
+    "crates/plumb-intake",
+    "crates/plumb-lint",
+    "crates/plumb-patch",
+    "crates/plumb-psg",
+    "crates/plumb-session",
+    "crates/plumb-sim",
+    "crates/plumb-store",
+    "crates/plumb-validation",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+serde_jcs = "0.1"
+jsonschema = { version = "0.18", default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
+petgraph = "0.6"
+rand = "0.8"
+rand_chacha = "0.3"
+pest = "2.7"
+pest_derive = "2.7"
+rust_decimal = { version = "1.36", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+unicode-normalization = "0.1"
+regex = "1.10"
+zip = "2.2"
+quick-xml = { version = "0.37", features = ["serialize"] }
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "signal", "sync", "fs"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "cors"] }
+utoipa = { version = "5.0", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
+clap = { version = "4.5", features = ["derive"] }
+sha2 = "0.10"
+hex = "0.4"
+ulid = { version = "1.1", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+[workspace.dependencies.insta]
+version = "1.41"
+features = ["yaml", "json"]
+
+[workspace.dependencies.proptest]
+version = "1.6"
+
+[workspace.dependencies.criterion]
+version = "0.5"
+
+[workspace.dependencies.assert_cmd]
+version = "2.0"
+
+[workspace.dependencies.predicates]
+version = "3.1"
+
+[workspace.dependencies.tempfile]
+version = "3.10"

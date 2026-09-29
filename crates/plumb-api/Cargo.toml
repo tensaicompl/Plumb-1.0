@@ -1,0 +1,34 @@
+[package]
+name = "plumb-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+plumb-core = { path = "../plumb-core" }
+plumb-artifacts = { path = "../plumb-artifacts" }
+plumb-psg = { path = "../plumb-psg" }
+plumb-patch = { path = "../plumb-patch" }
+plumb-store = { path = "../plumb-store" }
+plumb-validation = { path = "../plumb-validation" }
+plumb-inference = { path = "../plumb-inference" }
+plumb-compiler = { path = "../plumb-compiler" }
+plumb-import = { path = "../plumb-import" }
+plumb-functional = { path = "../plumb-functional" }
+plumb-sim = { path = "../plumb-sim" }
+plumb-intake = { path = "../plumb-intake" }
+plumb-session = { path = "../plumb-session" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+utoipa = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+default = []
+llm = ["plumb-inference/anthropic"]

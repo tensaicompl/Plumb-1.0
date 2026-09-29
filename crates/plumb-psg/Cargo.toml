@@ -1,0 +1,18 @@
+[package]
+name = "plumb-psg"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+plumb-core = { path = "../plumb-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+petgraph = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+insta = { workspace = true }
+
+[features]
+default = []

@@ -1,0 +1,20 @@
+[package]
+name = "plumb-expr"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+plumb-core = { path = "../plumb-core" }
+serde = { workspace = true }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+rust_decimal = { workspace = true }
+time = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+insta = { workspace = true }
+
+[features]
+default = []

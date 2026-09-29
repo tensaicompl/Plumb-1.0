@@ -4,7 +4,7 @@ tasks:
 - id: P0.1
   status: done
 - id: P0.2
-  status: pending
+  status: done
 - id: F0.1
   status: pending
 - id: F0.2

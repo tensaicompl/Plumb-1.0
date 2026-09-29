@@ -1,0 +1,31 @@
+[package]
+name = "plumb-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+plumb-core = { path = "../plumb-core" }
+plumb-store = { path = "../plumb-store" }
+plumb-validation = { path = "../plumb-validation" }
+plumb-inference = { path = "../plumb-inference" }
+plumb-compiler = { path = "../plumb-compiler" }
+plumb-import = { path = "../plumb-import" }
+plumb-functional = { path = "../plumb-functional" }
+plumb-sim = { path = "../plumb-sim" }
+plumb-intake = { path = "../plumb-intake" }
+plumb-session = { path = "../plumb-session" }
+plumb-api = { path = "../plumb-api" }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+default = []
+llm = ["plumb-inference/anthropic", "plumb-api/llm"]

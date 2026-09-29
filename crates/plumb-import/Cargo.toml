@@ -1,0 +1,24 @@
+[package]
+name = "plumb-import"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+plumb-core = { path = "../plumb-core" }
+plumb-artifacts = { path = "../plumb-artifacts" }
+plumb-psg = { path = "../plumb-psg" }
+plumb-inference = { path = "../plumb-inference" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+unicode-normalization = { workspace = true }
+zip = { workspace = true }
+quick-xml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+insta = { workspace = true }
+
+[features]
+default = []

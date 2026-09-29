@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+
+      - name: Install npm 11.19.0
+        run: npm install -g npm@11.19.0
+
+      - name: Install Rust 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --component llvm-tools-preview
+
+      - name: Verify toolchain
+        run: |
+          rustc --version
+          node --version
+          npm --version
+          cc --version
+
+      - name: Install cargo-llvm-cov and cargo-mutants
+        run: |
+          cargo install cargo-llvm-cov --version 0.9.1 --locked
+          cargo install cargo-mutants --version 27.1.0 --locked
+
+      - name: Install UI dependencies
+        run: cd ui && npm ci --strict-peer-deps --strict-allow-scripts
+
+      - name: Verify UI dependency graph
+        run: |
+          cd ui
+          npm ls --depth=0
+          npm audit --audit-level=high
+
+      - name: Check and test
+        run: make all

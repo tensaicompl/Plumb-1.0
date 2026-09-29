@@ -1,0 +1,19 @@
+[package]
+name = "plumb-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_jcs = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+time = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[features]
+default = []
