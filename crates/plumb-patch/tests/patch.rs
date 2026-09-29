@@ -1477,6 +1477,40 @@ mod patch_contract {
     }
 
     #[test]
+    fn reference_guard_inspects_json_values_not_object_keys() {
+        let mut keyed = requirement("req:keyed", "Proposed", "The system shall archive.");
+        keyed
+            .extensions
+            .insert(ext("acme:note"), json!({"ent:leave": "unrelated"}));
+        let base = graph(vec![entity("ent:leave", "Proposed"), keyed], vec![]);
+        let result = apply_ok(
+            &base,
+            SemanticPatch::RemoveNode {
+                target: pre_n(&base, "ent:leave"),
+            },
+        );
+        assert_eq!(result.delta.removed_nodes, ids(&["ent:leave"]));
+
+        let mut valued = requirement("req:valued", "Proposed", "The system shall archive.");
+        valued
+            .extensions
+            .insert(ext("acme:note"), json!({"target": "ent:leave"}));
+        let base = graph(vec![entity("ent:leave", "Proposed"), valued], vec![]);
+        assert_eq!(
+            apply_err(
+                &base,
+                SemanticPatch::RemoveNode {
+                    target: pre_n(&base, "ent:leave")
+                }
+            ),
+            PatchError::ReferencedElement {
+                removed: id("ent:leave"),
+                referenced_by: id("req:valued")
+            }
+        );
+    }
+
+    #[test]
     fn reference_replaced_by_prior_child_allows_deletion() {
         let mut typed = requirement("req:owner", "Proposed", "The system shall notify.");
         if let NodePayload::Requirement(r) = &mut typed.payload {

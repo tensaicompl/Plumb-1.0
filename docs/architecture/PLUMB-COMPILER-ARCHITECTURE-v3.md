@@ -141,19 +141,34 @@ Accepted patches produce a new immutable `GraphRevision`.
 ```rust
 pub struct GraphRevision {
     pub id: RevisionId,
+    pub version: u64,
     pub parent: Option<RevisionId>,
+
+    pub project_id: Id,
+    pub psg_schema_version: u32,
+
     pub semantic_hash: Hash,
     pub evidence_hash: Hash,
-    pub profile_ref: ProfileRef,
+
+    pub profile_ref: Id,
+    pub profile_hash: Hash,
     pub rule_pack_hash: Hash,
-    pub accepted_patch_ref: Option<ArtifactRef>,
+
+    pub accepted_patch_ref: Option<Hash>,
     pub decision_refs: Vec<Id>,
-    pub created_by: AgentRef,
+
+    pub created_by: Id,
     pub created_at: Timestamp,
 }
 ```
 
 A revision is immutable.
+
+`semantic_hash` is a Semantic (`psg:sha256:`) hash and `evidence_hash` an Evidence (`ev:sha256:`) hash of the revision's Graph; `profile_hash`, `rule_pack_hash` and `accepted_patch_ref` are generic `sha256:` hashes. `project_id` and `profile_ref` equal the Graph `project_id` and `profile_id`; `psg_schema_version` is the `PSG_SCHEMA_VERSION` under which the snapshot was written (implementation plan §6). `version` is a database-global positive counter (initial revision 1, then `MAX(version)+1`; branching never resets it). `RevisionId` is exactly `rev:<version>:<first 16 hex digits of the semantic_hash digest>`, with the version in canonical positive decimal. Because some persisted changes are excluded from `semantic_hash`, consecutive revisions may share a semantic hash; the version in `RevisionId` and branch-head CAS distinguish them.
+
+The initial revision fixes `project_id`, `profile_ref`, `profile_hash` and `rule_pack_hash` and has no parent and no `accepted_patch_ref`. Every revision created by a commit inherits those four values from its parent and records as `accepted_patch_ref` the artifact (kind `patch`, media type `application/json`) holding the RFC 8785 canonical JSON of the accepted `PatchSet`, written in the same transaction as the revision and the branch-head move. A `SemanticPatch` cannot change active profile metadata; profile switching requires a later explicit contract. The pilot stores one project per database.
+
+Actor identifiers: `AuditMeta.created_by`, `ResolutionDecision.decided_by` and `GraphRevision.created_by` are validated Plumb `Id`s. At this boundary `AgentRef` means a validated `Id`: no namespace prefix is mandatory, the ID need not resolve to a PSG `Agent` node, no actor node is created automatically and the store never uses it for authorization. Identity/provider/user-directory resolution belongs to provenance and application layers.
 
 `Timestamp` in these structures is the canonical Plumb timestamp defined by implementation plan §6.3: a UTC-normalized instant with nanosecond precision, serialized as RFC 3339 with uppercase `T`, uppercase `Z` and exactly nine fractional-second digits (for example `2026-09-29T12:34:56.123456789Z`); RFC 3339 input with a `T` or single-space separator and any numeric offset is converted to the equivalent UTC instant, surrounding whitespace is rejected, and instants whose UTC year is outside `0000..=9999` are rejected. `Hash` values use exactly the normative forms `sha256:`, `psg:sha256:` and `ev:sha256:` followed by 64 lowercase hex digits (implementation plan §6.3).
 
@@ -165,6 +180,8 @@ candidate:architecture-A
 candidate:architecture-B
 proposal:<id>
 ```
+
+Branch names (`BranchName`) are 1..=255 bytes, start with an ASCII alphanumeric character and otherwise contain only ASCII letters, digits and `.`, `_`, `:`, `/`, `-`. A branch head moves only by compare-and-swap against an expected head; explicit restore moves a head to an existing revision and never deletes or rewrites revisions.
 
 This gives Plumb snapshot restore without mutating history.
 

@@ -317,7 +317,7 @@ All other crates have `default = []` and no feature flag unless a later human-ap
 
 ## 6. Canonical persistence schema for the pilot
 
-The pilot uses one SQLite database. Initialization SHALL execute the following logical schema. Column types/names may not be renamed by the implementation.
+The pilot uses one SQLite database holding exactly one project. Initialization SHALL execute the following logical schema. Column types/names may not be renamed by the implementation.
 
 ```sql
 CREATE TABLE schema_meta (
@@ -334,23 +334,35 @@ CREATE TABLE artifacts (
 
 CREATE TABLE graph_revisions (
   id TEXT PRIMARY KEY,
-  version INTEGER NOT NULL UNIQUE,
+  version INTEGER NOT NULL UNIQUE CHECK (version > 0),
+
   parent_id TEXT NULL,
+
+  project_id TEXT NOT NULL,
+  psg_schema_version INTEGER NOT NULL CHECK (psg_schema_version > 0),
+
   semantic_hash TEXT NOT NULL,
   evidence_hash TEXT NOT NULL,
+
   profile_ref TEXT NOT NULL,
   profile_hash TEXT NOT NULL,
   rule_pack_hash TEXT NOT NULL,
+
   patch_artifact_hash TEXT NULL,
   decision_refs_json TEXT NOT NULL,
+
   created_by TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+
+  FOREIGN KEY (parent_id) REFERENCES graph_revisions(id),
+  FOREIGN KEY (patch_artifact_hash) REFERENCES artifacts(hash)
 );
 
 CREATE TABLE revision_nodes (
   revision_id TEXT NOT NULL,
   node_id TEXT NOT NULL,
   node_json TEXT NOT NULL,
+
   PRIMARY KEY (revision_id, node_id),
   FOREIGN KEY (revision_id) REFERENCES graph_revisions(id)
 );
@@ -359,6 +371,7 @@ CREATE TABLE revision_edges (
   revision_id TEXT NOT NULL,
   edge_id TEXT NOT NULL,
   edge_json TEXT NOT NULL,
+
   PRIMARY KEY (revision_id, edge_id),
   FOREIGN KEY (revision_id) REFERENCES graph_revisions(id)
 );
@@ -367,13 +380,16 @@ CREATE TABLE branch_heads (
   name TEXT PRIMARY KEY,
   revision_id TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+
   FOREIGN KEY (revision_id) REFERENCES graph_revisions(id)
 );
 
 CREATE TABLE ledger_events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   revision_id TEXT NULL,
-  event_json TEXT NOT NULL
+  event_json TEXT NOT NULL,
+
+  FOREIGN KEY (revision_id) REFERENCES graph_revisions(id)
 );
 ```
 
@@ -385,7 +401,17 @@ PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 ```
 
-The pilot stores a full node/edge snapshot per revision. Do not substitute delta storage.
+Every `plumb-store` connection additionally sets a SQLite busy timeout of 5 seconds, so concurrent writers serialize and a losing commit observes the moved branch head and returns `StaleBase` instead of surfacing `SQLITE_BUSY` under ordinary contention.
+
+The pilot stores a full node/edge snapshot per revision. Do not substitute delta storage. `node_json` / `edge_json` hold the exact RFC 8785 canonical JSON of each element.
+
+**Ownership.** From F0.8 onward `plumb-store` owns the SQLite connection used for graph/revision operations, `schema_meta`, the graph revision tables, `branch_heads`, `ledger_events` and the transaction boundaries of accepted commits. `plumb-artifacts` owns artifact semantics and its standalone `SqliteArtifactStore`; it also exposes `ensure_artifact_schema(&Connection)` and `put_artifact_in_transaction(&Transaction, kind, media_type, bytes, created_at)`, which apply exactly the F0.2 `put` rules inside a caller-owned transaction and never begin, commit or roll it back. `plumb-store` never embeds a separately opened `SqliteArtifactStore`: the accepted Patch artifact is inserted through `put_artifact_in_transaction` in the same transaction that writes the `GraphRevision` and moves the branch head.
+
+**Versions.** `STORE_SCHEMA_VERSION = 1` identifies the physical SQLite schema. `PSG_SCHEMA_VERSION = 1` identifies the persisted PSG interpretation/validation contract under which a snapshot was written. Any future change that makes an old Node/Edge snapshot serialize differently, or changes Graph validity, hash or ID interpretation such that stored snapshots may become invalid, MUST bump `PSG_SCHEMA_VERSION` and provide an explicit migration before such snapshots are loaded under the new semantics. The pilot implements no migration engine; unsupported versions fail explicitly.
+
+**Initialization.** `schema_meta` is owned only by `plumb-store` and holds exactly one row `version = STORE_SCHEMA_VERSION`. A database without `schema_meta` and without any of `graph_revisions`, `revision_nodes`, `revision_edges`, `branch_heads`, `ledger_events` is initialized to store schema v1 transactionally; an existing F0.2 `artifacts` table is permitted and preserved. A database with `schema_meta` must contain exactly one row whose version equals `STORE_SCHEMA_VERSION` (otherwise `UnsupportedStoreSchemaVersion`, without altering the database) and every v1 table (otherwise `CorruptStoreSchema`; missing tables are never recreated). Graph-store tables without `schema_meta` fail with `UnversionedStore`.
+
+**Ledger.** `ledger_events` is reserved persistence infrastructure. No LedgerEvent wire vocabulary exists yet, so no component writes event rows until one is specified.
 
 ---
 
@@ -1699,30 +1725,37 @@ cargo test --workspace
 
 **Required actions**
 
-1. Create SQLite tables graph_revisions, revision_nodes, revision_edges, branch_heads and ledger_events using the exact schema block in this plan.
-2. A GraphRevision is immutable and stores global numeric version, parent revision, semantic_hash, evidence_hash, profile_ref, rule_pack_hash, patch artifact ref, decision refs, creator and timestamp.
-3. Assign version 1 to the initial revision and max(version)+1 to each successful new revision inside the same SQLite transaction.
-4. Set revision ID to `rev:<version>:<first16-semantic-hash-hex>`.
-5. Implement create_initial_revision, load_revision, head, create_branch, commit(branch, expected_head, PatchSet), and move_head for explicit restore. commit checks branch-head CAS against expected_head, loads that head Graph, applies the PatchSet through F0.7 apply_patch, persists the exact serialized PatchSet as the accepted patch artifact, and commits the resulting validated GraphRevision atomically.
-6. commit must be one SQLite transaction and fail with STALE_BASE when expected_head differs.
-7. Persist full graph snapshot per revision for the pilot; do not introduce delta storage.
-8. Persist element revisions exactly as produced by F0.7 patch application (element-hash rule of metamodel §4.5); unchanged elements keep their element revision in the new GraphRevision.
+1. Ownership and connection (plan §6): plumb-store owns the SQLite connection for graph/revision operations, schema_meta, graph_revisions, revision_nodes, revision_edges, branch_heads, ledger_events and the transaction boundaries of accepted commits. Do not embed a separately opened SqliteArtifactStore; call plumb_artifacts::ensure_artifact_schema and plumb_artifacts::put_artifact_in_transaction on the store's own connection/transaction. Every connection enables PRAGMA foreign_keys = ON, journal_mode = WAL, synchronous = NORMAL and a 5 second busy timeout.
+2. Schema and versions: define STORE_SCHEMA_VERSION = 1 (physical SQLite schema) and PSG_SCHEMA_VERSION = 1 (persisted PSG interpretation/validation contract). Create exactly the plan §6 schema. Fresh database (no schema_meta and none of graph_revisions, revision_nodes, revision_edges, branch_heads, ledger_events; an existing F0.2 artifacts table is permitted and preserved): initialize v1 transactionally with exactly one schema_meta row version = 1. Existing schema_meta: exactly one row, version == STORE_SCHEMA_VERSION (else UnsupportedStoreSchemaVersion without altering the database) and every v1 table present (else CorruptStoreSchema; never recreate tables). Graph-store tables without schema_meta: UnversionedStore. No migration engine exists.
+3. Types: RevisionId is a transparent string `rev:<positive decimal version without leading zeros>:<16 lowercase hex>`; RevisionId::new(version, semantic_hash) requires a Semantic psg:sha256: hash and uses the first 16 hex digits of its digest; expose version() and as_str(); reject rev:0, rev:01, Rev:, uppercase hex, wrong hex length, extra components and whitespace. BranchName is a transparent validated string of 1..=255 UTF-8 bytes whose first character is ASCII alphanumeric and remaining characters are only A-Z a-z 0-9 . _ : / - (main, candidate:architecture-A, candidate/team-A and proposal:prop-123 are valid); expose as_str(), parsing and serde.
+4. GraphRevision { id: RevisionId, version: u64, parent: Option<RevisionId>, project_id: Id, psg_schema_version: u32, semantic_hash: Hash (Semantic), evidence_hash: Hash (Evidence), profile_ref: Id, profile_hash: Hash (Generic), rule_pack_hash: Hash (Generic), accepted_patch_ref: Option<Hash> (Generic), decision_refs: Vec<Id>, created_by: Id, created_at: Timestamp } per compiler architecture §4.1; project_id and profile_ref equal the Graph project_id and profile_id. RevisionWriteMeta { decision_refs: Vec<Id>, created_by: Id, created_at: Timestamp }: decision_refs contain no duplicates, are persisted and exposed sorted by Id, and each resolves in the resulting Graph to a baseline-participating ResolutionDecision node (else DuplicateDecisionRef, DecisionRefMissing, DecisionRefWrongType or DecisionRefNotBaseline). created_by is a validated Id with no mandatory prefix, need not resolve to an Agent node and is never used for authorization. The store never reads a wall clock: every persisted timestamp is supplied by the caller.
+5. create_initial_revision(graph, profile_hash, rule_pack_hash, meta) -> GraphRevision: requires no existing GraphRevision or branch (else AlreadyInitialized, even for a different project), Generic profile/rule-pack hashes (else InvalidProfileHashKind / InvalidRulePackHashKind) and valid decision refs; in one transaction persists version 1, parent None, accepted_patch_ref None, psg_schema_version PSG_SCHEMA_VERSION, the Graph semantic/evidence hashes, the exact RevisionId, the full snapshot and branch main -> revision 1 with updated_at = meta.created_at. Pre-existing artifact rows do not prevent it. One database holds exactly one project; commit inherits project_id, profile_ref, profile_hash and rule_pack_hash from the parent revision.
+6. Snapshots: every revision persists every Node and Edge of its Graph (all statuses, provenance and runtime elements included) in revision_nodes/revision_edges as exact RFC 8785 canonical JSON text, inserted by element ID; no delta storage. Element revisions are persisted exactly as produced by F0.7 apply_patch (metamodel §4.5); the store never recalculates them.
+7. commit(branch, expected_head, PatchSet, RevisionWriteMeta) -> GraphRevision runs in one BEGIN IMMEDIATE transaction in this order: resolve branch (BranchNotFound); compare head to expected_head (StaleBase { branch, expected, actual }); load the head revision and Graph in the same transaction; apply the PatchSet through F0.7 apply_patch (its semantic-hash precondition stays independent and a PatchError is returned typed); validate decision refs against the result Graph; canonicalize the PatchSet with the plumb-core RFC 8785 canonicalizer; store it through put_artifact_in_transaction as kind patch, media type application/json, created_at = meta.created_at (typed ArtifactStoreError preserved); allocate version MAX(version)+1 (VersionOverflow outside the positive SQLite INTEGER/u64 domain); build the RevisionId; insert the revision row with accepted_patch_ref Some(artifact hash) and parent = expected_head; insert the full snapshot; UPDATE branch_heads ... WHERE name = ? AND revision_id = expected_head requiring exactly one row; commit. Any failure rolls back artifact, revision, snapshot and branch movement. Never rebase, retry against a newer head or rewrite the PatchSet. Versions are database-global and never reset by branching. Revisions with equal semantic_hash are legal.
+8. load_revision(id) -> LoadedRevision { revision, graph } verifies integrity without repairing data: stored RevisionId parses and equals the ID derived from version and semantic_hash; version > 0; hash kinds (semantic Semantic, evidence Evidence, profile/rule-pack/patch Generic); project_id, profile_ref and created_by parse as Id; created_at parses canonically; decision_refs_json is an array of unique sorted Ids; psg_schema_version == PSG_SCHEMA_VERSION checked before any Graph construction (else UnsupportedPsgSchemaVersion); all Nodes/Edges deserialize; the Graph built with the stored project_id/profile_ref validates and reproduces both stored hashes; every decision ref resolves to a baseline ResolutionDecision. Initial revisions have parent None, accepted_patch_ref None and version 1; commit-created revisions have parent and accepted_patch_ref. The patch artifact must exist with kind patch, media type application/json, bytes hashing to the ref and deserializing as a PatchSet whose base_semantic_hash equals the parent semantic_hash. Mismatches are typed CorruptRevision / RevisionNotFound errors. Patches are not reapplied on load.
+9. head(branch) -> Option<RevisionId> returns None for a missing branch and never creates one. create_branch(name, from, updated_at) requires an existing from revision and an absent name (RevisionNotFound / BranchAlreadyExists) and inserts only a pointer. move_head(branch, expected_head, target, updated_at) runs in one IMMEDIATE transaction: branch and target must exist, head must equal expected_head (StaleBase), and UPDATE ... WHERE name = ? AND revision_id = ? must change exactly one row; it creates no revision and deletes nothing (restore is pointer movement). ledger_events is created but no event rows are written and no event vocabulary is invented.
+10. StoreError is typed and distinguishes at least Sqlite, Core, Artifact, Patch, Serialization, AlreadyInitialized, UnsupportedStoreSchemaVersion, CorruptStoreSchema, UnversionedStore, UnsupportedPsgSchemaVersion, RevisionNotFound, CorruptRevision, InvalidRevisionId, InvalidBranchName, InvalidProfileHashKind, InvalidRulePackHashKind, InvalidPatchArtifactHashKind, BranchAlreadyExists, BranchNotFound, StaleBase, VersionOverflow, DuplicateDecisionRef, DecisionRefMissing, DecisionRefWrongType and DecisionRefNotBaseline. Export STORE_SCHEMA_VERSION, PSG_SCHEMA_VERSION, RevisionId, BranchName, GraphRevision, LoadedRevision, RevisionWriteMeta, SqliteRevisionStore and StoreError; there is exactly one (SQLite) revision-store implementation.
+11. Tests in crates/plumb-store/tests/revisions.rs (inside a module whose name contains revisions) cover at minimum: schema initialization and exact schema_meta; artifact-only database adoption (pre-existing artifact byte-for-byte unchanged, initial revision succeeds); unsupported, unversioned and corrupt schema; RevisionId and BranchName grammar; initial revision, exact revision ID, AlreadyInitialized; profile/rule hash kind validation; project/profile persistence; decision-ref validation; complete snapshot round-trip with canonical node/edge JSON; exact canonical Patch artifact bytes, kind, media type and timestamp; parent linkage; global version allocation 1,2,3 across branches; branch creation and independence; branch-head CAS; PatchSet semantic CAS; two independently opened file-backed connections committing from the same expected head give exactly one success and one StaleBase (never SQLITE_BUSY); rollback of the Patch artifact, revision, snapshot and head after a deliberate failure (for example a temporary trigger); move_head restore and stale move_head; no history deletion; distinct revisions with the same semantic hash; element revision preservation; reopen; revision corruption (semantic/evidence hash, malformed node/edge JSON, wrong RevisionId); PSG schema-version rejection; missing or mismatched Patch artifact.
 
 **Commands**
 
 ```bash
 cargo test -p plumb-store revisions
+cargo test -p plumb-store
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 **Tests**
 
 - `cargo test -p plumb-store revisions`
+- `cargo test -p plumb-store`
+- `cargo test --workspace`
 
 **Acceptance**
 
-- Concurrent commits against the same expected head allow exactly one success; restore is implemented by branch-head movement and does not delete history.
+- The store initializes, adopts artifact-only databases and rejects unsupported, unversioned or corrupt schemas; revisions are immutable full snapshots with exact RevisionIds, global versions, inherited project/profile metadata and an accepted Patch artifact written in the same transaction; commit enforces branch-head CAS and the PatchSet semantic precondition, and concurrent commits against the same expected head give exactly one success and one StaleBase; any failure rolls back artifact, revision, snapshot and head; load verifies integrity, versions and patch artifacts; restore is implemented by branch-head movement and does not delete history.
 
 **Supporting references**
 
@@ -1733,6 +1766,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - Do not overwrite an existing revision.
 - Do not silently rebase a stale patch.
+- Do not open a separate SqliteArtifactStore inside plumb-store or duplicate artifact insertion logic; use put_artifact_in_transaction.
+- Do not call a wall clock, invent a LedgerEvent vocabulary, implement a schema migration engine or add an in-memory revision store.
 
 
 ### `F0.9` — Implement inference artifact/provider contracts and provenance materialization

@@ -3,10 +3,11 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 
 use plumb_artifacts::{
-    ArtifactKind, ArtifactStore, ArtifactStoreError, SqliteArtifactStore, UnknownArtifactKind,
+    ensure_artifact_schema, put_artifact_in_transaction, ArtifactKind, ArtifactStore,
+    ArtifactStoreError, SqliteArtifactStore, UnknownArtifactKind,
 };
 use plumb_core::{Hash, HashKind, Timestamp};
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use serde::de::value::{Error as ValueError, StrDeserializer};
 use serde::de::IntoDeserializer;
 use serde::Deserialize;
@@ -471,4 +472,65 @@ fn artifact_kinds_use_exactly_the_specified_strings() {
         let de: StrDeserializer<ValueError> = bad.into_deserializer();
         assert!(ArtifactKind::deserialize(de).is_err());
     }
+}
+
+#[test]
+fn put_in_external_transaction_rolls_back_with_the_caller() {
+    let db = Db::new();
+    let mut conn = db.raw();
+    ensure_artifact_schema(&conn).unwrap();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let hash =
+        put_artifact_in_transaction(&tx, ArtifactKind::Patch, JSON, b"{\"a\":1}", ts(T1)).unwrap();
+    assert_eq!(hash, Hash::content_sha256(b"{\"a\":1}"));
+    let visible: i64 = tx
+        .query_row("SELECT COUNT(*) FROM artifacts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(visible, 1);
+    tx.rollback().unwrap();
+    drop(conn);
+    assert_eq!(row_count(&db.path), 0);
+    assert!(!db.store().exists(&hash).unwrap());
+}
+
+#[test]
+fn put_in_external_transaction_persists_when_the_caller_commits() {
+    let db = Db::new();
+    let mut conn = db.raw();
+    ensure_artifact_schema(&conn).unwrap();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let hash =
+        put_artifact_in_transaction(&tx, ArtifactKind::Patch, JSON, b"{\"a\":1}", ts(T1)).unwrap();
+    // Idempotent inside the same transaction; a metadata conflict is still typed.
+    assert_eq!(
+        put_artifact_in_transaction(&tx, ArtifactKind::Patch, JSON, b"{\"a\":1}", ts(T2)).unwrap(),
+        hash
+    );
+    assert!(matches!(
+        put_artifact_in_transaction(&tx, ArtifactKind::Diff, JSON, b"{\"a\":1}", ts(T2)),
+        Err(ArtifactStoreError::ArtifactMetadataConflict { .. })
+    ));
+    tx.commit().unwrap();
+    drop(conn);
+    let stored = db.store().get(&hash).unwrap();
+    assert_eq!(stored.kind, ArtifactKind::Patch);
+    assert_eq!(stored.media_type, JSON);
+    assert_eq!(stored.bytes, b"{\"a\":1}");
+    assert_eq!(stored.created_at, ts(T1));
+}
+
+#[test]
+fn ensure_artifact_schema_preserves_existing_artifacts() {
+    let db = Db::new();
+    let hash = db
+        .store()
+        .put(ArtifactKind::Patch, JSON, b"kept", ts(T1))
+        .unwrap();
+    let before = raw_row(&db.path, &hash);
+    ensure_artifact_schema(&db.raw()).unwrap();
+    assert_eq!(raw_row(&db.path, &hash), before);
 }

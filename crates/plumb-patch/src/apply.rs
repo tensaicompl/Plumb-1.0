@@ -823,14 +823,14 @@ fn check_derived_identity(
     }
 }
 
-/// Whether any JSON string anywhere in `value` equals `needle` exactly.
+/// Whether any JSON string value anywhere in `value` equals `needle` exactly.
+///
+/// Object property names are not references, so only values are inspected.
 fn contains_string(value: &Value, needle: &str) -> bool {
     match value {
         Value::String(s) => s == needle,
         Value::Array(items) => items.iter().any(|v| contains_string(v, needle)),
-        Value::Object(map) => map
-            .iter()
-            .any(|(k, v)| k == needle || contains_string(v, needle)),
+        Value::Object(map) => map.values().any(|v| contains_string(v, needle)),
         _ => false,
     }
 }
