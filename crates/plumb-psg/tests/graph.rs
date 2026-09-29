@@ -1342,4 +1342,147 @@ mod graph_contract {
             serde_json::from_value(json!(self)).unwrap()
         }
     }
+
+    // ------------------------------------------------------------------ element hashes (Hotfix 012)
+
+    const GOLDEN_NODE_ELEMENT_JCS: &str = r#"{"element_kind":"node","evidence":[],"extensions":{},"id":"req:HR-001","payload":{"data":{"level":"system","modality":"shall","owner_refs":null,"priority":null,"rationale":null,"requirement_kind":"functional","source_identifier":"HR-001","stakeholder_refs":null,"statement":"The system shall let an employee submit a leave request.","title":null,"verification_method":null},"type":"Requirement"},"standards":[],"status":"Accepted","tags":["hr"]}"#;
+    const GOLDEN_NODE_ELEMENT_HASH: &str =
+        "sha256:0b9c65577e297b0c98959ca2902712f39c7dae2885b8ecf9dfaf4a856943b2ca";
+    const GOLDEN_EDGE_ELEMENT_JCS: &str = r#"{"element_kind":"edge","evidence":[],"from":"req:HR-001","id":"rel:hr:1","kind":"constrained_by","properties":{},"standards":[],"status":"Proposed","to":"constraint:hr:eu"}"#;
+    const GOLDEN_EDGE_ELEMENT_HASH: &str =
+        "sha256:0e45b678a1d77504e09cefe40f3d1fc64cde2dd76274e33bd06ccabd739200e2";
+
+    fn element_node() -> Node {
+        let mut n = node(
+            "req:HR-001",
+            "Accepted",
+            "Requirement",
+            json!({
+                "statement": "The system shall let an employee submit a leave request.",
+                "requirement_kind": "functional", "level": "system", "modality": "shall",
+                "source_identifier": "HR-001"
+            }),
+        );
+        n.tags.insert("hr".into());
+        n
+    }
+
+    #[test]
+    fn golden_node_element_hash_matches_fixed_bytes_and_value() {
+        let n = element_node();
+        let bytes = to_canonical_json(&node_element_projection(&n)).unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(), GOLDEN_NODE_ELEMENT_JCS);
+        assert_eq!(
+            Hash::content_sha256(GOLDEN_NODE_ELEMENT_JCS.as_bytes()).as_str(),
+            GOLDEN_NODE_ELEMENT_HASH
+        );
+        assert_eq!(
+            node_element_hash(&n).unwrap().as_str(),
+            GOLDEN_NODE_ELEMENT_HASH
+        );
+    }
+
+    #[test]
+    fn golden_edge_element_hash_matches_fixed_bytes_and_value() {
+        let e = edge(
+            "rel:hr:1",
+            "Proposed",
+            "constrained_by",
+            "req:HR-001",
+            "constraint:hr:eu",
+        );
+        let bytes = to_canonical_json(&edge_element_projection(&e)).unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(), GOLDEN_EDGE_ELEMENT_JCS);
+        assert_eq!(
+            Hash::content_sha256(GOLDEN_EDGE_ELEMENT_JCS.as_bytes()).as_str(),
+            GOLDEN_EDGE_ELEMENT_HASH
+        );
+        assert_eq!(
+            edge_element_hash(&e).unwrap().as_str(),
+            GOLDEN_EDGE_ELEMENT_HASH
+        );
+    }
+
+    #[test]
+    fn element_hash_ignores_non_semantic_envelope_data() {
+        let base = element_node();
+        let h = |n: &Node| node_element_hash(n).unwrap();
+        let mut revised = base.clone();
+        revised.revision = 42;
+        assert_eq!(h(&revised), h(&base), "revision");
+        let mut audited = base.clone();
+        audited.audit.updated_by = Some(id("actor:reviewer"));
+        audited.audit.updated_at = Some(T2.parse().unwrap());
+        assert_eq!(h(&audited), h(&base), "audit");
+        let mut derived = base.clone();
+        derived.derivations = vec![DerivationRef::from(id("drv:s1:x"))];
+        assert_eq!(h(&derived), h(&base), "derivations");
+        let a = with_evidence(
+            base.clone(),
+            &["evd:aaaaaaaaaaaaaaaa", "evd:bbbbbbbbbbbbbbbb"],
+        );
+        let b = with_evidence(
+            base.clone(),
+            &["evd:bbbbbbbbbbbbbbbb", "evd:aaaaaaaaaaaaaaaa"],
+        );
+        assert_eq!(h(&a), h(&b), "evidence order");
+        let m1: StandardMapping = from_json(
+            json!({"standard_id": "A", "version": "1", "concept": "c", "clause_ref": null,
+            "mapping_role": "taxonomy", "mapping_strength": "compatible", "validator_rules": ["r2", "r1"]}),
+        );
+        let m2: StandardMapping = from_json(
+            json!({"standard_id": "B", "version": "1", "concept": "c", "clause_ref": null,
+            "mapping_role": "taxonomy", "mapping_strength": "exact", "validator_rules": []}),
+        );
+        let mut s1 = base.clone();
+        s1.standards = vec![m1.clone(), m2.clone()];
+        let mut s2 = base.clone();
+        let mut m1_sorted = m1.clone();
+        m1_sorted.validator_rules.sort();
+        s2.standards = vec![m2, m1_sorted];
+        assert_eq!(h(&s1), h(&s2), "standards and validator_rules order");
+        let v1 = view(json!(null), json!(null), json!(["r"]));
+        let v2 = view(json!(H1), json!(H1), json!(["r"]));
+        assert_eq!(h(&v1), h(&v2), "View layout/style");
+        // edges ignore revision/audit/derivations too
+        let e = edge("rel:1", "Accepted", "reads", "op:a", "attr:a");
+        let mut e2 = e.clone();
+        e2.revision = 5;
+        e2.derivations = vec![DerivationRef::from(id("drv:s1:x"))];
+        assert_eq!(
+            edge_element_hash(&e).unwrap(),
+            edge_element_hash(&e2).unwrap()
+        );
+    }
+
+    #[test]
+    fn element_hash_changes_with_semantic_element_data() {
+        let base = element_node();
+        let h = |n: &Node| node_element_hash(n).unwrap();
+        let mut status = base.clone();
+        status.status = ElementStatus::Suspect;
+        assert_ne!(h(&status), h(&base), "status");
+        let mut payload = base.clone();
+        if let NodePayload::Requirement(r) = &mut payload.payload {
+            r.statement = "Changed.".into();
+        }
+        assert_ne!(h(&payload), h(&base), "payload");
+        assert_ne!(
+            h(&with_evidence(base.clone(), &["evd:aaaaaaaaaaaaaaaa"])),
+            h(&base),
+            "evidence"
+        );
+        let e = edge("rel:1", "Accepted", "reads", "op:a", "attr:a");
+        let mut retargeted = e.clone();
+        retargeted.to = id("attr:b");
+        assert_ne!(
+            edge_element_hash(&e).unwrap(),
+            edge_element_hash(&retargeted).unwrap(),
+            "edge endpoint"
+        );
+        assert_eq!(
+            node_element_hash(&base).unwrap().kind(),
+            plumb_core::HashKind::Generic
+        );
+    }
 }

@@ -114,6 +114,35 @@ fn edge_projection(edge: &Edge) -> Value {
     })
 }
 
+/// The element projection of a node (metamodel §20.1): the semantic node projection plus
+/// `"element_kind": "node"`, for every status and node type.
+pub fn node_element_projection(node: &Node) -> Value {
+    with_element_kind(node_projection(node), "node")
+}
+
+/// The element projection of an edge (metamodel §20.1): the semantic edge projection plus
+/// `"element_kind": "edge"`, for every status.
+pub fn edge_element_projection(edge: &Edge) -> Value {
+    with_element_kind(edge_projection(edge), "edge")
+}
+
+fn with_element_kind(mut projection: Value, kind: &str) -> Value {
+    if let Some(object) = projection.as_object_mut() {
+        object.insert("element_kind".into(), Value::from(kind));
+    }
+    projection
+}
+
+/// Generic `sha256:` element hash of a node, used by patch preconditions and revisions.
+pub fn node_element_hash(node: &Node) -> Result<Hash, CoreError> {
+    canonical_hash(HashKind::Generic, &node_element_projection(node))
+}
+
+/// Generic `sha256:` element hash of an edge, used by patch preconditions and revisions.
+pub fn edge_element_hash(edge: &Edge) -> Result<Hash, CoreError> {
+    canonical_hash(HashKind::Generic, &edge_element_projection(edge))
+}
+
 /// The exact `semantic_hash` input object: `{project_id, profile_id, nodes, edges}` with
 /// participating nodes and edges sorted by ID.
 pub fn semantic_projection(graph: &Graph) -> Value {

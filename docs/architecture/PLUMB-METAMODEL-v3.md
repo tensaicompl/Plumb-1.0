@@ -249,7 +249,7 @@ pub struct AuditMeta {
 
 `Node.revision` and `Edge.revision` are element revision counters, not the global `GraphRevision` version. The type is `u32`; `0` is invalid; a newly created node or edge starts at `1`; an unchanged element keeps the same element revision when copied into a later `GraphRevision`; and patch/commit logic increments the element revision when that element is semantically changed.
 
-An element revision increments exactly when any persisted **semantic envelope field** changes. For a `Node` these are `status`, `payload`, `evidence`, `standards`, `tags` and `extensions`; for an `Edge` they are `status`, `kind`, `from`, `to`, `properties`, `evidence` and `standards`. Changes to `audit` or `derivations` do not increment the element revision, and `id` never changes. The rule applies regardless of whether the element currently contributes to `semantic_hash`.
+An element revision is finalized once per applied `PatchSet` (§20) from the generic **element hash** (§20): for an element that existed in the base graph and survives the patch set, the final revision is `base revision + 1` when its final element hash differs from its base element hash and `base revision` otherwise; a newly added element has revision `1` throughout its first committed patch set, even if later sub-patches modify it. Revisions are never incremented per nested operation, so two edits to one element increment it once and an edit followed by its exact reversal leaves the original revision. Because the element hash covers `status`, `payload` (with View `layout_ref`/`style_ref` omitted), `evidence`, `standards`, `tags`/`extensions` (nodes) and `kind`, `from`, `to`, `properties` (edges), audit-only, derivation-only and View layout/style-only changes do not increment the revision; `id` never changes. An increment from `u32::MAX` fails the whole patch set.
 
 ---
 
@@ -2296,33 +2296,67 @@ Diagram edits MUST produce semantic patches. They MUST NOT directly mutate a pri
 
 ## 20. Mutation model
 
-The v2 `Box<dyn Patch>` is replaced by a serializable change AST.
+The v2 `Box<dyn Patch>` is replaced by a serializable change AST. This section is normative.
+
+### 20.1 Element hashes
+
+The **element hash** is a generic `sha256:` hash (`HashKind::Generic`) of the RFC 8785 canonical JSON of an element projection. It applies to every node and edge of every status and node type, and it is neither the global `semantic_hash` nor the element revision. A node projection is exactly `{"element_kind": "node", "id", "status", "payload", "evidence", "standards", "tags", "extensions"}`; an edge projection is exactly `{"element_kind": "edge", "id", "status", "kind", "from", "to", "properties", "evidence", "standards"}`. `revision`, `derivations` and `audit` are excluded, and there is no `project_id`/`profile_id`. `evidence`, `standards`, `validator_rules` and View payloads (`layout_ref`/`style_ref` omitted) are normalized exactly as in the semantic hash projection (implementation plan §6.2).
+
+`NodePayload::validate()` validates the typed sub-structures that deserialization validates (`EvidenceFragment.locator`, `DerivationRecord`, `ResolutionDecision`), and `Node::validate()` delegates to it, so programmatically constructed payloads are checked exactly like deserialized ones.
+
+### 20.2 PatchSet and preconditions
+
+```rust
+#[serde(deny_unknown_fields)]
+pub struct PatchSet { pub base_semantic_hash: Hash, pub patch: SemanticPatch }
+
+#[serde(deny_unknown_fields)]
+pub struct ElementPrecondition { pub id: Id, pub expected_hash: Hash }
+```
+
+`PatchSet` is the serialized replay and compare-and-swap unit. `base_semantic_hash` MUST be `HashKind::Semantic` and MUST equal the base graph's `semantic_hash` before any operation runs (semantic-hash precondition); otherwise the patch set is stale and produces no candidate graph. Branch-head / `GraphRevision` compare-and-swap is a separate store-level protection; both are required. `ElementPrecondition.expected_hash` MUST be `HashKind::Generic` and MUST equal the element hash of the current working element immediately before that leaf operation executes (so a later operation on the same element describes the state produced by an earlier one).
+
+### 20.3 SemanticPatch AST
 
 ```rust
 #[serde(tag = "op")]
 pub enum SemanticPatch {
     AddNode { node: Node },
-    RemoveNode { id: Id, expected_hash: Hash },
-    ReplacePayload { id: Id, expected_hash: Hash, payload: NodePayload },
-    SetStatus { id: Id, from: ElementStatus, to: ElementStatus },
+    RemoveNode { target: ElementPrecondition },
+    ReplacePayload { target: ElementPrecondition, payload: NodePayload },
+    SetStatus { target: ElementPrecondition, from: ElementStatus, to: ElementStatus },
     AddEdge { edge: Edge },
-    RemoveEdge { id: Id, expected_hash: Hash },
-    MergeNodes { keep: Id, merge: Vec<Id>, field_policy: MergePolicy },
-    Supersede { old: Id, new: Id },
-    AttachEvidence { target: Id, evidence: EvidenceRef },
-    AttachStandardMapping { target: Id, mapping: StandardMapping },
+    ReplaceEdge { target: ElementPrecondition, kind: RelationKind, from: Id, to: Id, properties: RelationProperties },
+    RemoveEdge { target: ElementPrecondition },
+    MergeNodes { keep: ElementPrecondition, merge: Vec<ElementPrecondition>, field_policy: MergePolicy },
+    Supersede { old: ElementPrecondition, new: ElementPrecondition, edge: Edge },
+    AttachEvidence { target: ElementPrecondition, evidence: EvidenceRef },
+    AttachStandardMapping { target: ElementPrecondition, mapping: StandardMapping },
     Compound { patches: Vec<SemanticPatch> },
 }
+
+pub enum MergePolicy { KeepPayloadUnionMetadata } // serialized "keep_payload_union_metadata"
 ```
 
-Every patch MUST:
+There are exactly 12 variants; the `op` string is the Rust variant name. Unknown variants and unknown fields are rejected; there is no generic operation or property escape hatch.
 
-- validate preconditions against a base graph hash/revision;
-- be serializable;
-- be replayable;
-- emit a semantic diff;
-- support a deterministic inverse where logically possible;
-- pass through the same intake/conflict engine regardless of whether it came from UI, chat, import, API, diagram edit or AI.
+### 20.4 Operation semantics
+
+- **AddNode / AddEdge:** the ID is absent from both nodes and edges, the revision is exactly `1`, and local validation passes. Endpoint existence and graph-wide validity are checked only on the final graph, so a Compound may add endpoints and edges in either order.
+- **ReplacePayload:** the target is a node whose expected hash matches; the replacement has the same `NodeType` (changing type is forbidden); all other envelope fields are preserved. `SourceArtifact.content_hash` and `EvidenceFragment.source_ref`/`locator` define the derived node ID and MUST NOT change (typed derived-identity error); changing them requires a new, correctly derived node and explicit reference changes.
+- **SetStatus:** the target is a node or edge whose expected hash matches, its status equals `from`, and `from != to`; only the status changes and no relation is created or removed automatically.
+- **ReplaceEdge:** the only mechanism to retarget an edge; it changes exactly `kind`, `from`, `to` and `properties` and preserves `id`, `status`, `evidence`, `derivations`, `standards` and `audit`.
+- **RemoveNode / RemoveEdge:** the expected hash matches; removal never cascades. A node with any incident edge cannot be removed (remove or retarget those edges earlier in the same Compound). A conservative reference guard then rejects the removal if any JSON string of any other surviving node or edge equals the removed ID exactly (typed `ReferencedElement` naming the removed and referencing IDs); references are never rewritten automatically.
+- **MergeNodes:** only for `Requirement` or `Term`, with keep and every merged node of the same type. `merge` is non-empty, unique and excludes `keep`; every expected hash matches; merged nodes have no incident edges and no surviving element contains their ID as a JSON string. The result keeps `id`, `status`, `payload` and `audit` of the keep node; `evidence` and `derivations` are the exact union sorted by ID, `standards` the exact union sorted by RFC 8785 canonical bytes, `tags` the set union, and `extensions` the key union (equal values deduplicate; differing values fail with `MergeExtensionConflict`). Merged nodes are removed; MergeNodes never retargets edges or rewrites references.
+- **Supersede:** `old` and `new` are distinct nodes with matching expected hashes; the supplied edge has a fresh ID, revision `1`, kind `supersedes`, `from = new`, `to = old`, status `Accepted`, and passes local validation. The old node's status becomes `Superseded`, the new node is unchanged, and exactly the supplied edge is added (the engine never generates IDs).
+- **AttachEvidence / AttachStandardMapping:** the target is a node or edge with a matching expected hash and the exact reference/mapping is not already attached; it is appended without creating an `evidenced_by` edge or merging mappings.
+- **Compound:** non-empty; nested Compounds are flattened depth-first in declared order. Each leaf enforces its own existence, hash and local structural preconditions against the working candidate, but graph-wide validity (endpoints, cardinality, cycles, cross-element references) is evaluated once on the final graph. Any failure discards the candidate; the base graph is never modified and no partial graph or delta is returned.
+- **ID recycling:** within one patch set an ID that has existed or been removed cannot be reused for a new node or edge.
+- **Local validation:** a locally changed node or edge is validated immediately (payload, revision, audit, `conflicts_with` orientation, relation/property pairing, envelope duplicates).
+- **Revision finalization:** after all leaf operations and before final graph construction, revisions are finalized by the element-hash rule of §4.5.
+- **Inverse:** an inverse is returned only when it is derivable entirely from the patch input: `AddNode` -> `RemoveNode` and `AddEdge` -> `RemoveEdge` using the supplied element's hash, and a Compound whose children are all invertible (children reversed). Every other variant has no inverse; missing previous values are never fabricated, and a `PatchSet` has no inverse because its resulting base hash is only known after application.
+
+Every patch MUST be serializable, replayable, emit a semantic diff, and pass through the same intake/conflict engine regardless of whether it came from UI, chat, import, API, diagram edit or AI.
 
 ---
 
@@ -2352,7 +2386,7 @@ external_sync
 
 This allows three candidate architectures to allocate the same accepted functional model differently without contaminating the accepted baseline.
 
-Merging a branch uses semantic conflict detection plus compare-and-swap against its captured base revision.
+Merging a branch uses semantic conflict detection plus both protections: the `PatchSet` semantic-hash precondition (§20.2) and branch-head / `GraphRevision` compare-and-swap against its captured base revision.
 
 ---
 

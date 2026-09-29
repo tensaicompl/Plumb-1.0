@@ -1896,4 +1896,69 @@ mod payload_roundtrip {
         ));
         assert_eq!(distinct.validate(), Ok(()));
     }
+
+    // ------------------------------------------------------------------ Hotfix 012 regressions
+
+    #[test]
+    fn node_payload_validate_matches_deserialization_rules() {
+        let bad_locator = NodePayload::EvidenceFragment(EvidenceFragment {
+            source_ref: "src:abababababababab".parse().unwrap(),
+            locator: EvidenceLocator::PageRegion {
+                page: 1,
+                x: Some(f64::NAN),
+                y: None,
+                width: None,
+                height: None,
+            },
+            content_hash: plumb_core::Hash::content_sha256(b"x"),
+            extracted_text: None,
+            speaker: None,
+            source_timestamp: None,
+        });
+        assert_eq!(
+            bad_locator.validate(),
+            Err(NodePayloadError::InvalidEvidenceLocator(
+                EvidenceLocatorError::NonFiniteCoordinate("x")
+            ))
+        );
+        let mut record: DerivationRecord = serde_json::from_value(llm_record()).unwrap();
+        record.model = None;
+        let bad_record = NodePayload::DerivationRecord(record);
+        assert_eq!(
+            bad_record.validate(),
+            Err(NodePayloadError::InvalidDerivationRecord(
+                DerivationRecordError::MissingLlmField("model")
+            ))
+        );
+        let f = fixtures()
+            .into_iter()
+            .find(|f| f.tag == "ResolutionDecision")
+            .unwrap();
+        let mut decision: ResolutionDecision = serde_json::from_value(f.data).unwrap();
+        decision.question_ref = None;
+        let bad_decision = NodePayload::ResolutionDecision(decision);
+        assert_eq!(
+            bad_decision.validate(),
+            Err(NodePayloadError::InvalidResolutionDecision(
+                ResolutionDecisionError::MissingQuestionOrProposal
+            ))
+        );
+        for f in fixtures() {
+            assert_eq!(
+                parse(wire(f.tag, &f.data)).unwrap().validate(),
+                Ok(()),
+                "{}",
+                f.tag
+            );
+        }
+        // Node::validate delegates to NodePayload::validate.
+        let mut n = parse_node(requirement_node()).unwrap();
+        n.payload = bad_decision;
+        assert!(matches!(
+            n.validate(),
+            Err(NodeError::InvalidPayload(
+                NodePayloadError::InvalidResolutionDecision(_)
+            ))
+        ));
+    }
 }

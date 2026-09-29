@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::audit::{AuditMeta, AuditMetaError};
 use crate::extensions::ExtensionKey;
-use crate::payload::{NodePayload, NodeType};
+use crate::payload::{NodePayload, NodePayloadError, NodeType};
 use crate::refs::{DerivationRef, EvidenceRef};
 use crate::standards::StandardMapping;
 use crate::status::ElementStatus;
@@ -20,6 +20,9 @@ pub enum NodeError {
     /// Element revisions start at 1; 0 is invalid.
     #[error("node revision must be at least 1")]
     ZeroRevision,
+    /// The payload fails its programmatic validation.
+    #[error("invalid payload: {0}")]
+    InvalidPayload(#[from] NodePayloadError),
     /// The audit metadata violates its invariants.
     #[error("invalid audit metadata: {0}")]
     InvalidAudit(#[from] AuditMetaError),
@@ -66,6 +69,7 @@ impl Node {
         if self.revision == 0 {
             return Err(NodeError::ZeroRevision);
         }
+        self.payload.validate()?;
         self.audit.validate()?;
         check_unique_envelope_collections(&self.evidence, &self.derivations, &self.standards)
             .map_err(|duplicate| match duplicate {

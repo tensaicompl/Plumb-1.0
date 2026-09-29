@@ -20,7 +20,8 @@ pub use edge::{Edge, EdgeError};
 pub use extensions::{ExtensionKey, InvalidExtensionKey};
 pub use graph::{is_baseline, Graph, GraphViolation};
 pub use hash::{
-    contributes_to_semantic_hash, evidence_hash, evidence_projection_object, semantic_hash,
+    contributes_to_semantic_hash, edge_element_hash, edge_element_projection, evidence_hash,
+    evidence_projection_object, node_element_hash, node_element_projection, semantic_hash,
     semantic_projection, SEMANTIC_HASH_EXCLUDED_NODE_TYPES,
 };
 pub use node::{Node, NodeError};

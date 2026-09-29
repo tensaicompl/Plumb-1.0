@@ -128,6 +128,8 @@ proposal.base_semantic_hash == current_branch.semantic_hash
 
 If false, the proposal is stale and must be re-evaluated against the new head.
 
+The check is made twice: patch application verifies the `PatchSet.base_semantic_hash` precondition against the graph it is applied to (metamodel §20.2), and the store verifies branch-head / `GraphRevision` compare-and-swap against the expected head. Both protections are required.
+
 Accepted patches produce a new immutable `GraphRevision`.
 
 ---

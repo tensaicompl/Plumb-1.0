@@ -1641,12 +1641,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Required actions**
 
-1. Implement AddNode, RemoveNode, ReplacePayload, SetStatus, AddEdge, RemoveEdge, MergeNodes, Supersede, AttachEvidence, AttachStandardMapping and Compound exactly as metamodel §20.
-2. Every destructive operation carries the expected current semantic hash or expected element hash required by the metamodel.
-3. Apply patches to an immutable Graph input and return GraphDelta plus new Graph.
-4. Provide deterministic structured diff sorted by element ID and operation order.
-5. Implement inverse only for patch operations where an exact inverse is derivable from the patch input; do not fabricate an inverse.
-6. When a patch changes any semantic envelope field of an element (Node: status, payload, evidence, standards, tags, extensions; Edge: status, kind, from, to, properties, evidence, standards), increment that element's revision by 1; changes to audit or derivations do not increment it, and id never changes (metamodel §4.5).
+1. Implement the serializable model of metamodel §20: PatchSet { base_semantic_hash: Hash (HashKind::Semantic), patch: SemanticPatch }, ElementPrecondition { id, expected_hash: Hash (HashKind::Generic) }, MergePolicy { KeepPayloadUnionMetadata } (serialized keep_payload_union_metadata) and SemanticPatch with exactly 12 variants AddNode, RemoveNode, ReplacePayload, SetStatus, AddEdge, ReplaceEdge, RemoveEdge, MergeNodes, Supersede, AttachEvidence, AttachStandardMapping, Compound (tag op = variant name). Unknown variants/fields are rejected; there is no generic escape hatch.
+2. Implement apply_patch(base: &Graph, patch_set: &PatchSet) -> Result<ApplyResult { graph: Graph, delta: GraphDelta }, PatchError>. Check base_semantic_hash against base.semantic_hash() before any operation; never mutate the base Graph.
+3. Apply the leaf operations of metamodel §20.4 exactly (AddNode, AddEdge, ReplacePayload with same NodeType and derived-identity protection, SetStatus, ReplaceEdge preserving id/status/evidence/derivations/standards/audit, RemoveNode/RemoveEdge without cascade and with the incident-edge check and the conservative exact-ID JSON reference guard, MergeNodes for Requirement/Term only with the union rules and MergeExtensionConflict, Supersede with an explicitly supplied Accepted supersedes edge, AttachEvidence, AttachStandardMapping), checking every ElementPrecondition against the working element hash immediately before its leaf operation and running local Node/Edge validation immediately after each local change. IDs that existed or were removed in the PatchSet cannot be reused.
+4. Compound is non-empty, flattened depth-first, and atomic: do not call Graph::new() between children or enforce graph-wide constraints between them; construct and validate exactly one final Graph after all leaves. Any child or final failure discards the candidate and returns no Graph or GraphDelta.
+5. Before final Graph construction finalize element revisions once per PatchSet by the element-hash rule of metamodel §4.5 (changed surviving element: base revision + 1; unchanged: base revision; new: 1; overflow from u32::MAX fails the PatchSet).
+6. Return GraphDelta { base_semantic_hash, result_semantic_hash, touched_nodes, touched_edges, added_nodes, removed_nodes, modified_nodes, added_edges, removed_edges, modified_edges, diff: Vec<DiffEntry> }. touched_* contains every element touched by any evaluated leaf; added/removed/modified are the net base-vs-final persisted difference (modified uses persisted equality). DiffEntry { element_kind: Node|Edge, id, operation_ordinal (depth-first leaf ordinal; automatic changes of one leaf share it), change: Added|Removed|Modified, before_hash, after_hash } with generic element hashes (None before for Added, None after for Removed); diff is sorted by element ID, then operation ordinal, then Node before Edge.
+7. Use a typed PatchError distinguishing at least InvalidBaseHashKind, StaleBase, InvalidExpectedHashKind, ElementNotFound, ExpectedNode, ExpectedEdge, ElementHashMismatch, IdAlreadyExists, IdReused, NewElementRevisionNotOne, StatusMismatch, StatusNoOp, NodeTypeChange, DerivedIdentityChange, IncidentEdgesPreventRemoval, ReferencedElement, EmptyCompound, EmptyMerge, DuplicateMergeTarget, MergeContainsKeep, MergeTypeMismatch, MergeTypeUnsupported, MergeExtensionConflict, InvalidSupersede, DuplicateEvidenceAttachment, DuplicateStandardMappingAttachment, RevisionOverflow, InvalidLocalNode, InvalidLocalEdge, FinalGraphInvalid(Vec<GraphViolation>) and Canonicalization.
+8. Implement SemanticPatch::inverse() -> Result<Option<SemanticPatch>, CoreError>: AddNode -> RemoveNode and AddEdge -> RemoveEdge using the supplied element hash; Compound only when every child is invertible (children reversed); None for every other variant. Do not fabricate missing previous values and do not provide a PatchSet inverse.
+9. Tests in crates/plumb-patch/tests/patch.rs cover at minimum: hand-authored fixed JSON round-trips for PatchSet, all 12 variants, ElementPrecondition and MergePolicy, and rejection of unknown fields/ops and wrong hash kinds; base CAS and element preconditions (stale base, Node/Edge hash mismatch, Proposed/Rejected elements, later child seeing earlier child state); Compound atomicity (Add Attribute alone fails, Attribute + has_attribute succeeds, edge before endpoint succeeds, child/final failures return no Graph, base unchanged, depth-first order, empty Compound rejected); revision semantics (new revision 1, single increment, two edits increment once, edit+reversal restores, View layout-only unchanged, added-then-modified stays 1, u32::MAX overflow fails, audit/derivation exclusion); ReplacePayload, ReplaceEdge, removal/reference guard, MergeNodes (Requirement and Term), Supersede, AttachEvidence/AttachStandardMapping, GraphDelta/diff and inverse behaviors of metamodel §20.4; and proptest determinism (equal inputs give equal Graph and byte-identical GraphDelta, deterministic Compound, AddNode/AddEdge inverse round trips).
 
 **Commands**
 
@@ -1654,15 +1657,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p plumb-patch
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 **Tests**
 
 - `cargo test -p plumb-patch`
+- `cargo test --workspace`
 
 **Acceptance**
 
-- All patch variants serialize/deserialize; apply is deterministic; property tests cover applicable apply/invert round trips.
+- PatchSet and all 12 SemanticPatch variants round-trip through fixed JSON fixtures; apply_patch enforces the semantic-hash base precondition, per-leaf element-hash preconditions and all metamodel §20.4 operation rules; Compound is atomic with one final Graph validation and no partial result on failure; element revisions follow the element-hash rule; GraphDelta and diff are deterministic; inverses exist only where derivable from patch input; property tests cover determinism and AddNode/AddEdge inverse round trips.
 
 **Supporting references**
 
@@ -1673,6 +1678,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - Do not use Box<dyn Patch>.
 - Do not mutate Graph in place.
+- Do not add a generic operation or property escape hatch to SemanticPatch, and do not cascade removals or rewrite references automatically.
 
 
 ### `F0.8` — Implement immutable revision store, branch heads and CAS commit
@@ -1697,10 +1703,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 2. A GraphRevision is immutable and stores global numeric version, parent revision, semantic_hash, evidence_hash, profile_ref, rule_pack_hash, patch artifact ref, decision refs, creator and timestamp.
 3. Assign version 1 to the initial revision and max(version)+1 to each successful new revision inside the same SQLite transaction.
 4. Set revision ID to `rev:<version>:<first16-semantic-hash-hex>`.
-5. Implement create_initial_revision, load_revision, head, create_branch, commit(branch, expected_head, patch), and move_head for explicit restore.
+5. Implement create_initial_revision, load_revision, head, create_branch, commit(branch, expected_head, PatchSet), and move_head for explicit restore. commit checks branch-head CAS against expected_head, loads that head Graph, applies the PatchSet through F0.7 apply_patch, persists the exact serialized PatchSet as the accepted patch artifact, and commits the resulting validated GraphRevision atomically.
 6. commit must be one SQLite transaction and fail with STALE_BASE when expected_head differs.
 7. Persist full graph snapshot per revision for the pilot; do not introduce delta storage.
-8. Persist element revisions exactly as produced by patch application: unchanged elements keep their element revision in the new GraphRevision, and element revisions follow the semantic-envelope-field rule of metamodel §4.5.
+8. Persist element revisions exactly as produced by F0.7 patch application (element-hash rule of metamodel §4.5); unchanged elements keep their element revision in the new GraphRevision.
 
 **Commands**
 

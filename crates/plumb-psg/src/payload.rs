@@ -1442,6 +1442,19 @@ pub struct ExtensionPayload {
     pub data: Value,
 }
 
+// ============================================================================ payload validation
+
+/// Why a `NodePayload` fails its programmatic validation (the same rules deserialization applies).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum NodePayloadError {
+    #[error("invalid evidence locator: {0}")]
+    InvalidEvidenceLocator(#[from] EvidenceLocatorError),
+    #[error("invalid derivation record: {0}")]
+    InvalidDerivationRecord(#[from] DerivationRecordError),
+    #[error("invalid resolution decision: {0}")]
+    InvalidResolutionDecision(#[from] ResolutionDecisionError),
+}
+
 // ============================================================================ NodePayload / NodeType
 
 /// Declares `NodePayload` and `NodeType` from one variant list so the two stay one-to-one.
@@ -1474,6 +1487,18 @@ macro_rules! node_payloads {
         }
 
         impl NodePayload {
+            /// Validates typed sub-structures exactly as deserialization does:
+            /// `EvidenceFragment.locator`, `DerivationRecord` and `ResolutionDecision`.
+            pub fn validate(&self) -> Result<(), NodePayloadError> {
+                match self {
+                    NodePayload::EvidenceFragment(fragment) => fragment.locator.validate()?,
+                    NodePayload::DerivationRecord(record) => record.validate()?,
+                    NodePayload::ResolutionDecision(decision) => decision.validate()?,
+                    _ => {}
+                }
+                Ok(())
+            }
+
             /// The discriminator of this payload.
             pub fn node_type(&self) -> NodeType {
                 match self {
