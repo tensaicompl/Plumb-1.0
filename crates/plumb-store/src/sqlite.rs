@@ -11,7 +11,7 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use crate::branches::{cas_head, read_head, BranchName};
 use crate::revisions::{
     insert_revision, load_revision_on, next_version, revision_exists, validate_decision_refs,
-    GraphRevision, LoadedRevision, RevisionId, RevisionWriteMeta, PATCH_MEDIA_TYPE,
+    CommitResult, GraphRevision, LoadedRevision, RevisionId, RevisionWriteMeta, PATCH_MEDIA_TYPE,
 };
 use crate::schema::{open_connection, PSG_SCHEMA_VERSION};
 use crate::StoreError;
@@ -102,7 +102,7 @@ impl SqliteRevisionStore {
         expected_head: &RevisionId,
         patch_set: &PatchSet,
         meta: RevisionWriteMeta,
-    ) -> Result<GraphRevision, StoreError> {
+    ) -> Result<CommitResult, StoreError> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -153,7 +153,10 @@ impl SqliteRevisionStore {
             &revision.created_at.to_string(),
         )?;
         tx.commit()?;
-        Ok(revision)
+        Ok(CommitResult {
+            revision,
+            delta: applied.delta,
+        })
     }
 
     /// Loads revision `id` and verifies its metadata, snapshot, hashes and Patch artifact.

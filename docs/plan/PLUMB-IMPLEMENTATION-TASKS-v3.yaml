@@ -246,9 +246,9 @@ tasks:
   - crates/plumb-artifacts/tests/store.rs
   steps:
   - Implement ArtifactKind exactly for source-original, source-extracted, evidence-manifest, inference-request, inference-response, validated-inference,
-    external-validation, projection, proposal, patch, diff, impact-report, gate-report, conformance-report, scenario-trace, test-receipt, architecture-check.
-    Serialize and persist each kind as exactly its listed kebab-case string. An unknown persisted kind string returns an explicit error; do not
-    map it to an Other variant.
+    external-validation, projection, proposal, patch, diff, impact-report, gate-report, conformance-report, scenario-trace, test-receipt, architecture-check,
+    compile-run (exactly 18 kinds). Serialize and persist each kind as exactly its listed kebab-case string. An unknown persisted kind string
+    returns an explicit error; do not map it to an Other variant.
   - 'Artifact identity is the generic sha256: Hash (plan §6.3) of the exact stored bytes: artifact_hash = sha256:<lowercase SHA-256 of exact stored
     bytes>. ArtifactKind, media_type and created_at do not participate in the hash. The persisted artifact semantics are Artifact { hash: Hash,
     kind: ArtifactKind, media_type: String, bytes: Vec<u8>, created_at: Timestamp }; equivalent owned/borrowed API shapes are acceptable. Use
@@ -780,23 +780,25 @@ tasks:
   - 'Snapshots: every revision persists every Node and Edge of its Graph (all statuses, provenance and runtime elements included) in revision_nodes/revision_edges
     as exact RFC 8785 canonical JSON text, inserted by element ID; no delta storage. Element revisions are persisted exactly as produced by F0.7 apply_patch
     (metamodel §4.5); the store never recalculates them.'
-  - 'commit(branch, expected_head, PatchSet, RevisionWriteMeta) -> GraphRevision runs in one BEGIN IMMEDIATE transaction in this order: resolve branch (BranchNotFound);
-    compare head to expected_head (StaleBase { branch, expected, actual }); load the head revision and Graph in the same transaction; apply the PatchSet
-    through F0.7 apply_patch (its semantic-hash precondition stays independent and a PatchError is returned typed); validate decision refs against the result
-    Graph; canonicalize the PatchSet with the plumb-core RFC 8785 canonicalizer; store it through put_artifact_in_transaction as kind patch, media type
-    application/json, created_at = meta.created_at (typed ArtifactStoreError preserved); allocate version MAX(version)+1 (VersionOverflow outside the positive
-    SQLite INTEGER/u64 domain); build the RevisionId; insert the revision row with accepted_patch_ref Some(artifact hash) and parent = expected_head; insert
-    the full snapshot; UPDATE branch_heads ... WHERE name = ? AND revision_id = expected_head requiring exactly one row; commit. Any failure rolls back
-    artifact, revision, snapshot and branch movement. Never rebase, retry against a newer head or rewrite the PatchSet. Versions are database-global and
-    never reset by branching. Revisions with equal semantic_hash are legal.'
+  - 'commit(branch, expected_head, PatchSet, RevisionWriteMeta) -> CommitResult { revision: GraphRevision, delta: GraphDelta } runs in one BEGIN IMMEDIATE
+    transaction in this order: resolve branch (BranchNotFound); compare head to expected_head (StaleBase { branch, expected, actual }); load the head revision
+    and Graph in the same transaction; apply the PatchSet through F0.7 apply_patch (its semantic-hash precondition stays independent and a PatchError is
+    returned typed); validate decision refs against the result Graph; canonicalize the PatchSet with the plumb-core RFC 8785 canonicalizer; store it through
+    put_artifact_in_transaction as kind patch, media type application/json, created_at = meta.created_at (typed ArtifactStoreError preserved); allocate
+    version MAX(version)+1 (VersionOverflow outside the positive SQLite INTEGER/u64 domain); build the RevisionId; insert the revision row with accepted_patch_ref
+    Some(artifact hash) and parent = expected_head; insert the full snapshot; UPDATE branch_heads ... WHERE name = ? AND revision_id = expected_head requiring
+    exactly one row; commit. Any failure rolls back artifact, revision, snapshot and branch movement. Never rebase, retry against a newer head or rewrite
+    the PatchSet. Versions are database-global and never reset by branching. Revisions with equal semantic_hash are legal. CommitResult.delta is exactly
+    the GraphDelta returned by the single apply_patch call of the successful commit; it is not recomputed, reconstructed from snapshots or persisted.'
   - 'load_revision(id) -> LoadedRevision { revision, graph } verifies integrity without repairing data: stored RevisionId parses and equals the ID derived
     from version and semantic_hash; version > 0; hash kinds (semantic Semantic, evidence Evidence, profile/rule-pack/patch Generic); project_id, profile_ref
     and created_by parse as Id; created_at parses canonically; decision_refs_json is an array of unique sorted Ids; psg_schema_version == PSG_SCHEMA_VERSION
     checked before any Graph construction (else UnsupportedPsgSchemaVersion); all Nodes/Edges deserialize; the Graph built with the stored project_id/profile_ref
     validates and reproduces both stored hashes; every decision ref resolves to a baseline ResolutionDecision. Initial revisions have parent None, accepted_patch_ref
     None and version 1; commit-created revisions have parent and accepted_patch_ref. The patch artifact must exist with kind patch, media type application/json,
-    bytes hashing to the ref and deserializing as a PatchSet whose base_semantic_hash equals the parent semantic_hash. Mismatches are typed CorruptRevision
-    / RevisionNotFound errors. Patches are not reapplied on load.'
+    bytes hashing to the ref, deserializing as a PatchSet whose base_semantic_hash equals the parent semantic_hash, and equal to the RFC 8785 canonical
+    JSON of that PatchSet (valid but noncanonical bytes are CorruptRevision). Mismatches are typed CorruptRevision / RevisionNotFound errors. Patches are
+    not reapplied on load.'
   - 'head(branch) -> Option<RevisionId> returns None for a missing branch and never creates one. create_branch(name, from, updated_at) requires an existing
     from revision and an absent name (RevisionNotFound / BranchAlreadyExists) and inserts only a pointer. move_head(branch, expected_head, target, updated_at)
     runs in one IMMEDIATE transaction: branch and target must exist, head must equal expected_head (StaleBase), and UPDATE ... WHERE name = ? AND revision_id
@@ -805,7 +807,7 @@ tasks:
   - StoreError is typed and distinguishes at least Sqlite, Core, Artifact, Patch, Serialization, AlreadyInitialized, UnsupportedStoreSchemaVersion, CorruptStoreSchema,
     UnversionedStore, UnsupportedPsgSchemaVersion, RevisionNotFound, CorruptRevision, InvalidRevisionId, InvalidBranchName, InvalidProfileHashKind, InvalidRulePackHashKind,
     InvalidPatchArtifactHashKind, BranchAlreadyExists, BranchNotFound, StaleBase, VersionOverflow, DuplicateDecisionRef, DecisionRefMissing, DecisionRefWrongType
-    and DecisionRefNotBaseline. Export STORE_SCHEMA_VERSION, PSG_SCHEMA_VERSION, RevisionId, BranchName, GraphRevision, LoadedRevision, RevisionWriteMeta,
+    and DecisionRefNotBaseline. Export STORE_SCHEMA_VERSION, PSG_SCHEMA_VERSION, CommitResult, RevisionId, BranchName, GraphRevision, LoadedRevision, RevisionWriteMeta,
     SqliteRevisionStore and StoreError; there is exactly one (SQLite) revision-store implementation.
   - 'Tests in crates/plumb-store/tests/revisions.rs (inside a module whose name contains revisions) cover at minimum: schema initialization and exact schema_meta;
     artifact-only database adoption (pre-existing artifact byte-for-byte unchanged, initial revision succeeds); unsupported, unversioned and corrupt schema;
@@ -815,7 +817,8 @@ tasks:
     opened file-backed connections committing from the same expected head give exactly one success and one StaleBase (never SQLITE_BUSY); rollback of the
     Patch artifact, revision, snapshot and head after a deliberate failure (for example a temporary trigger); move_head restore and stale move_head; no
     history deletion; distinct revisions with the same semantic hash; element revision preservation; reopen; revision corruption (semantic/evidence hash,
-    malformed node/edge JSON, wrong RevisionId); PSG schema-version rejection; missing or mismatched Patch artifact.'
+    malformed node/edge JSON, wrong RevisionId); PSG schema-version rejection; missing or mismatched Patch artifact; noncanonical Patch artifact bytes with
+    a consistent hash; commit returns the revision plus the exact F0.7 GraphDelta whose result_semantic_hash equals the revision semantic_hash.'
   tests:
   - cargo test -p plumb-store revisions
   - cargo test -p plumb-store
@@ -855,18 +858,69 @@ tasks:
   - crates/plumb-inference/src/mock.rs
   - crates/plumb-inference/tests/artifacts.rs
   steps:
-  - Reuse plumb_psg::{Agent, AgentKind, DerivationRecord, DerivationKind} (metamodel §§5.3-5.4, compiler architecture §4.4); do not define a second
-    Agent or DerivationRecord type in plumb-inference. Implement InferenceRequest and InferenceArtifact fields exactly from compiler architecture
-    §4.3-4.4.
-  - InferenceRequest ID is deterministic from canonical request content.
-  - NullProvider always returns a typed provider-disabled error.
-  - MockProvider returns only artifacts supplied explicitly by a test fixture keyed by request hash.
-  - A live provider interface returns an InferenceArtifact and has no access to GraphStore or branch commits.
-  - Provide deterministic construction/materialization of a plumb_psg::DerivationRecord from persisted inference artifacts where required.
+  - Reuse plumb_psg::{Agent, AgentKind, DerivationRecord, DerivationKind} (metamodel §§5.3-5.4) and plumb_core::{StageId, CanonicalJson, Hash,
+    Id, Timestamp}; re-export them where useful. Do not define a second Agent, DerivationRecord, stage identifier or canonical-JSON type. Do not
+    create Agent nodes automatically, invent an Agent-node ID convention or require provider/model to resolve to Agent nodes.
+  - 'ProviderPolicy { provider: String, config: CanonicalJson } (compiler architecture §4.3) rejects unknown fields; provider matches exactly
+    ^[a-z][a-z0-9._-]*$ with no normalization; config holds a JSON object ({} is valid) that is opaque to the inference core but contributes to
+    request identity.'
+  - 'InferenceRequest { id: Hash, stage: StageId, task_kind: String, input_refs: Vec<Id>, evidence_refs: Vec<Id>, context_hash: Hash, prompt_template_hash:
+    Hash, schema_hash: Hash, provider_policy: ProviderPolicy } rejects unknown fields. id, context_hash, prompt_template_hash and schema_hash
+    are Generic hashes. task_kind is non-empty, has no leading/trailing whitespace and no control characters, and is otherwise preserved exactly.
+    input_refs and evidence_refs have set semantics: duplicates are invalid and they are stored and serialized sorted by Id.'
+  - InferenceRequest.id is the Generic sha256 of the RFC 8785 canonical JSON of exactly {stage, task_kind, input_refs, evidence_refs, context_hash,
+    prompt_template_hash, schema_hash, provider_policy} (id excluded). Provide InferenceRequest::new (sorts refs and computes id), validate(),
+    identity_projection() and recompute_id(); deserialization recomputes the id and rejects a mismatch.
+  - 'The request ID and the persisted request-artifact reference are distinct: the request artifact bytes are the RFC 8785 canonical JSON of the
+    complete InferenceRequest including id, and its artifact hash is not required to equal request.id.'
+  - 'InferenceArtifact { request_hash, provider, model, parameters: CanonicalJson, raw_response_hash, validated_output: CanonicalJson, validated_output_hash
+    } rejects unknown fields; request_hash, raw_response_hash and validated_output_hash are Generic; provider follows the ProviderPolicy grammar;
+    model is non-empty with no leading/trailing whitespace and no control characters. Against its request: request_hash == request.id, provider
+    == request.provider_policy.provider and validated_output_hash == validated_output.content_hash().'
+  - 'ProviderExecution { artifact: InferenceArtifact, raw_response_media_type: String, raw_response: Vec<u8> }: the media type is non-empty without
+    control characters, artifact.raw_response_hash == sha256 of the exact raw_response bytes, and every InferenceArtifact/request invariant holds.
+    Raw bytes stay outside InferenceArtifact.'
+  - 'pub trait InferenceProvider { fn execute(&self, request: &InferenceRequest) -> Result<ProviderExecution, ProviderError>; }. Providers receive
+    no Graph, GraphRevision, graph or revision store, branch, PatchSet commit capability or ArtifactStore; they cannot mutate PSG or persist artifacts.'
+  - NullProvider always returns the typed ProviderDisabled error for every ProviderPolicy and performs no I/O.
+  - MockProvider is deterministic replay infrastructure keyed by exact InferenceRequest.id. Registration validates that the key is Generic, the
+    execution is structurally valid and execution.artifact.request_hash equals the key. execute validates the request, returns exactly the registered
+    ProviderExecution (never rewriting provider, model or output), returns a typed FixtureNotFound for a missing id, never synthesizes output
+    and never uses the network. It does not require provider_policy.provider == mock.
+  - 'Acquisition uses the standalone ArtifactStore contract, never the F0.8 graph-commit transaction. persist_inference_bundle<S: ArtifactStore>(store,
+    request, execution, created_at) -> Result<PersistedInferenceRefs { request_artifact_ref, raw_response_ref, validated_inference_ref }, InferenceError>
+    validates everything first, then stores: kind inference-request, application/json, canonical full InferenceRequest; kind inference-response,
+    raw_response_media_type, exact raw bytes; kind validated-inference, application/json, canonical full InferenceArtifact; all with the caller-supplied
+    created_at and no hidden clock. All three refs are Generic and raw_response_ref == artifact.raw_response_hash; validated_inference_ref hashes
+    the full InferenceArtifact bytes, not validated_output_hash. The three puts are not transactional: an immutable artifact persisted before
+    a later failure may remain, retry is idempotent and no accepted PSG state changes.'
+  - 'Replay: a persisted validated-inference artifact deserializes to the identical InferenceArtifact, and its fields suffice for deterministic
+    semantic evaluation without a live provider or the raw response.'
+  - 'materialize_derivation_record(request, execution, persisted, output_refs: Vec<String>, created_at) -> Result<DerivationRecord, InferenceError>
+    validates inputs first; rejects duplicate output_refs and stores them sorted; sets kind llm_inference, stage = request.stage.as_str(), provider/model/parameters
+    (underlying JSON)/raw_response_hash/validated_output_hash from the artifact and prompt_template_hash/schema_hash/context_hash from the request;
+    input_refs is the sorted unique union of every input_ref and evidence_ref string, request.id and the three persisted refs. id is drv:<first
+    16 hex of the SHA-256 of the RFC 8785 canonical JSON of the complete record body excluding only id>; the final record must pass DerivationRecord::validate().'
+  - plumb-inference does not depend on plumb-store, and provider interfaces mention no Graph, SqliteRevisionStore, BranchName, PatchSet, commit
+    capability or ArtifactStore; only the acquisition helper uses ArtifactStore.
+  - 'Tests in crates/plumb-inference/tests/artifacts.rs cover at minimum: a fixed golden full InferenceRequest JSON, fixed identity projection
+    and fixed request ID; any identity field change changes the ID while ref insertion order does not; duplicate input/evidence refs, non-Generic
+    hashes, a wrong supplied id, unknown fields and invalid ProviderPolicy rejected; all 13 StageId values usable; provider config contributes
+    to the ID; InferenceArtifact fixed JSON round-trip, request/provider/hash-kind/output-hash/model/unknown-field rules; NullProvider always
+    ProviderDisabled; MockProvider exact replay, FixtureNotFound, registration mismatch rejected, repeated execution identical, replay of an anthropic
+    request without rewriting; persistence of the three artifacts with exact kinds, media types and bytes, reload and replay of the validated-inference
+    artifact and idempotent retry; deterministic DerivationRecord materialization with a fixed drv ID, exact field mapping, sorted unique refs,
+    duplicate output rejection, validation, byte-identical repetition and ID changes for a different created_at or output ref; and the structural
+    dependency rules.'
   tests:
   - cargo test -p plumb-inference
+  - cargo test --workspace
   acceptance:
-  - Request hashes are deterministic; replaying a MockProvider fixture produces the same validated_output_hash.
+  - InferenceRequest IDs are deterministic from the exact identity projection and verified on deserialization; InferenceArtifact and ProviderExecution
+    invariants hold against their request; NullProvider is always disabled and MockProvider replays only exact registered executions; acquisition
+    persists the request, raw response and validated inference with exact kinds, media types and bytes, and replaying a persisted validated-inference
+    artifact produces the same validated_output_hash; DerivationRecord materialization is deterministic with a fixed drv ID; providers have no
+    graph, store, commit or artifact-store capability and plumb-inference does not depend on plumb-store.
   source_refs:
   - SRCREF-96AA517C73
   - SRCREF-25544DD485
@@ -874,10 +928,12 @@ tasks:
   - Do not permit provider code to mutate PSG.
   - Do not call a live network provider in tests.
   - Do not create a second Agent or DerivationRecord type in plumb-inference.
+  - Do not couple inference acquisition to the F0.8 graph-commit transaction or give providers an ArtifactStore.
   commands:
   - cargo test -p plumb-inference
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test --workspace
   commit_message: 'F0.9: Implement inference artifact/provider contracts and provenance materialization'
 - id: F0.10
   title: Implement compiler stage plan/evaluate contract and compile-run records
@@ -892,11 +948,15 @@ tasks:
   - crates/plumb-compiler/src/run.rs
   - crates/plumb-compiler/tests/stage.rs
   steps:
-  - Implement CompilerStage::plan and CompilerStage::evaluate exactly as compiler architecture §28.
-  - Implement StagePlan, StageEvaluation and CompileRun.
+  - Implement CompilerStage::plan and CompilerStage::evaluate exactly as compiler architecture §28; CompilerStage::id() returns plumb_core::StageId.
+  - 'Implement StagePlan, StageEvaluation and CompileRun. CompileRun uses exactly the compiler architecture §4.2 types: id: Hash (Generic, deterministic
+    from the canonical run content excluding id), stage: StageId, input_revision: plumb_store::RevisionId, input_semantic_hash (Semantic), profile_ref:
+    Id, profile_hash, rule_pack_hash, config_hash and output_hash (Generic), inference_artifacts, validation_artifacts and output_proposal_refs:
+    Vec<Hash> (Generic artifact refs) and output_finding_refs: Vec<Id>.'
   - plan and evaluate receive no network/client dependency and must be deterministic for equal inputs/artifacts.
   - Artifact acquisition is represented by requests returned in StagePlan and executed by orchestration code outside the trait.
-  - Persist compile-run metadata as an artifact; do not make operational timestamps part of semantic output hash.
+  - Persist compile-run metadata as an ArtifactKind::CompileRun artifact with media type application/json; do not make operational timestamps
+    part of semantic output hash.
   tests:
   - cargo test -p plumb-compiler
   acceptance:
@@ -921,7 +981,8 @@ tasks:
   - crates/plumb-patch/src/impact.rs
   - crates/plumb-patch/tests/impact.rs
   steps:
-  - For each GraphDelta compute ChangedSet containing touched node and edge IDs.
+  - For each GraphDelta — the exact delta produced by F0.7 apply_patch and surfaced through plumb_store::CommitResult.delta — compute ChangedSet
+    containing touched node and edge IDs. Never reapply the PatchSet or diff revision snapshots to recover it.
   - 'Compute DirtySet through typed graph relations that participate in semantic dependency: derived_from, specified_by, constrained_by, satisfied_by,
     reads, writes, governed_by, uses_calculation, allocated_to, exposed_by, implemented_by, verified_by and implemented_as.'
   - Return affected projections and affected gate namespaces as symbolic sets; full C1 evidence staleness remains post-pilot.

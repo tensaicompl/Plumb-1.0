@@ -14,7 +14,7 @@ use thiserror::Error;
 
 pub use branches::{BranchName, InvalidBranchName};
 pub use revisions::{
-    GraphRevision, InvalidRevisionId, LoadedRevision, RevisionId, RevisionWriteMeta,
+    CommitResult, GraphRevision, InvalidRevisionId, LoadedRevision, RevisionId, RevisionWriteMeta,
 };
 pub use schema::{PSG_SCHEMA_VERSION, STORE_SCHEMA_VERSION};
 pub use sqlite::SqliteRevisionStore;

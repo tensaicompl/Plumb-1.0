@@ -4,7 +4,7 @@
 //! `null` when absent); every struct rejects unknown fields; `*_ref` is `Id`, `*_hash` is
 //! `Hash`; only the whitelisted fields hold open JSON (`Value`); expressions are strings.
 
-use plumb_core::{Hash, Id, Timestamp};
+use plumb_core::{Hash, HashKind, Id, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -491,6 +491,9 @@ pub enum DerivationRecordError {
         kind: DerivationKind,
         field: &'static str,
     },
+    /// An `llm_inference` content hash field is not a generic `sha256:` hash.
+    #[error("llm_inference field {field} must be a generic sha256: hash, got {kind:?}")]
+    NonGenericLlmHash { field: &'static str, kind: HashKind },
 }
 
 /// Provenance of an element (§5.3). LLM-specific fields are present exactly when
@@ -541,6 +544,22 @@ impl DerivationRecord {
                     })
                 }
                 _ => {}
+            }
+        }
+        if is_llm {
+            let llm_hashes: [(&'static str, &Option<Hash>); 5] = [
+                ("prompt_template_hash", &self.prompt_template_hash),
+                ("schema_hash", &self.schema_hash),
+                ("context_hash", &self.context_hash),
+                ("raw_response_hash", &self.raw_response_hash),
+                ("validated_output_hash", &self.validated_output_hash),
+            ];
+            for (field, hash) in llm_hashes {
+                if let Some(kind) = hash.as_ref().map(Hash::kind) {
+                    if kind != HashKind::Generic {
+                        return Err(DerivationRecordError::NonGenericLlmHash { field, kind });
+                    }
+                }
             }
         }
         Ok(())

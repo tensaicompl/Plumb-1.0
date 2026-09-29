@@ -185,26 +185,35 @@ Branch names (`BranchName`) are 1..=255 bytes, start with an ASCII alphanumeric 
 
 This gives Plumb snapshot restore without mutating history.
 
+A successful commit returns `CommitResult { revision: GraphRevision, delta: GraphDelta }`. `delta` is exactly the `GraphDelta` produced by the single semantic-patch application (metamodel §20) that the commit persisted; it is not recomputed, reconstructed from snapshots or persisted. Loading a committed revision verifies that the accepted Patch artifact bytes equal the RFC 8785 canonical JSON of the `PatchSet` they deserialize to; semantically equivalent but noncanonical bytes are revision corruption.
+
 ### 4.2 `CompileRun`
 
 ```rust
 pub struct CompileRun {
-    pub id: RunId,
+    pub id: Hash,
     pub stage: StageId,
+
     pub input_revision: RevisionId,
     pub input_semantic_hash: Hash,
-    pub profile_ref: ProfileRef,
+
+    pub profile_ref: Id,
     pub profile_hash: Hash,
     pub rule_pack_hash: Hash,
+
     pub compiler_version: String,
     pub config_hash: Hash,
-    pub inference_artifacts: Vec<ArtifactRef>,
-    pub validation_artifacts: Vec<ArtifactRef>,
-    pub output_proposal_refs: Vec<ArtifactRef>,
+
+    pub inference_artifacts: Vec<Hash>,
+    pub validation_artifacts: Vec<Hash>,
+    pub output_proposal_refs: Vec<Hash>,
     pub output_finding_refs: Vec<Id>,
+
     pub output_hash: Hash,
 }
 ```
+
+`id` is a generic hash, deterministic from the canonical run content excluding `id` (no separate `RunId` type). `input_semantic_hash` is Semantic; `profile_hash`, `rule_pack_hash`, `config_hash`, `output_hash` and every artifact ref are generic `sha256:` hashes. `stage` is the `plumb-core` `StageId` (`S0`..`S12`); `input_revision` is the revision-store `RevisionId`, so `plumb-compiler` depends on `plumb-store`. At this boundary `ProfileRef` means `Id` and `ArtifactRef` means a generic `Hash`. Compile-run metadata is persisted as an artifact of kind `compile-run` with media type `application/json`.
 
 Operational timestamps are not part of the semantic hash.
 
@@ -222,9 +231,22 @@ pub struct InferenceRequest {
     pub schema_hash: Hash,
     pub provider_policy: ProviderPolicy,
 }
+
+pub struct ProviderPolicy {
+    pub provider: String,
+    pub config: CanonicalJson,
+}
 ```
 
-The request ID is deterministic from its content.
+Unknown fields are rejected in both structures. `id`, `context_hash`, `prompt_template_hash` and `schema_hash` are generic `sha256:` hashes. `task_kind` is non-empty, has no leading/trailing whitespace or control characters and is otherwise preserved exactly. `input_refs` and `evidence_refs` have set semantics: duplicates are invalid and both are stored and serialized sorted by `Id`, so identity does not depend on caller order. `ProviderPolicy.provider` matches exactly `^[a-z][a-z0-9._-]*$` (no normalization); `config` holds a JSON object (`{}` is valid) that is opaque to the inference core but contributes to request identity.
+
+The request ID is deterministic from its content: `id` is the generic SHA-256 of the RFC 8785 canonical JSON of exactly
+
+```json
+{"stage", "task_kind", "input_refs", "evidence_refs", "context_hash", "prompt_template_hash", "schema_hash", "provider_policy"}
+```
+
+with `id` itself excluded. Deserialization recomputes the ID and rejects a mismatch. The request ID is distinct from the request artifact reference: the persisted request artifact holds the canonical JSON of the complete request including `id`, and its artifact hash is not required to equal `id`.
 
 ### 4.4 `InferenceArtifact`
 
@@ -238,9 +260,29 @@ pub struct InferenceArtifact {
     pub validated_output: CanonicalJson,
     pub validated_output_hash: Hash,
 }
+
+pub struct ProviderExecution {
+    pub artifact: InferenceArtifact,
+    pub raw_response_media_type: String,
+    pub raw_response: Vec<u8>,
+}
 ```
 
-A replay uses the persisted artifact.
+Unknown fields are rejected. `request_hash`, `raw_response_hash` and `validated_output_hash` are generic hashes; `provider` follows the `ProviderPolicy` grammar; `model` is non-empty without leading/trailing whitespace or control characters. For its request: `request_hash == request.id`, `provider == request.provider_policy.provider`, and `validated_output_hash` is the generic SHA-256 of the canonical `validated_output`. A `ProviderExecution` additionally requires a non-empty raw-response media type without control characters and `raw_response_hash` equal to the SHA-256 of the exact `raw_response` bytes; raw bytes stay outside `InferenceArtifact` so the replay artifact never embeds large provider payloads.
+
+A replay uses the persisted artifact: a persisted `validated-inference` artifact deserializes to the identical `InferenceArtifact`, whose fields suffice for deterministic semantic evaluation without a live provider call or the raw response.
+
+**Acquisition.** Inference acquisition persists through the standalone artifact store, never inside the graph-commit transaction: inference happens before semantic acceptance and rejected or stale inference artifacts may remain for audit and replay. One acquisition bundle stores, with a caller-supplied timestamp:
+
+| Artifact | kind | media type | bytes |
+|---|---|---|---|
+| request | `inference-request` | `application/json` | canonical JSON of the complete `InferenceRequest` |
+| raw response | `inference-response` | `ProviderExecution.raw_response_media_type` | exact `raw_response` bytes |
+| validated inference | `validated-inference` | `application/json` | canonical JSON of the complete `InferenceArtifact` |
+
+The result is `PersistedInferenceRefs { request_artifact_ref, raw_response_ref, validated_inference_ref }` (all generic), with `raw_response_ref == raw_response_hash`; `validated_inference_ref` hashes the complete `InferenceArtifact` bytes, not `validated_output_hash`. The three puts are not one transaction: if a bundle fails after an immutable artifact was stored, that artifact may remain, a retry is idempotent and no accepted PSG state has changed, so this is never a semantic partial commit.
+
+**Provenance materialization.** A deterministic `DerivationRecord` is materialized from a validated request, execution and persisted refs, caller-supplied `output_refs` and a timestamp: `kind = llm_inference`; `stage = request.stage.as_str()`; `provider`, `model`, `parameters` (the underlying JSON), `raw_response_hash` and `validated_output_hash` from the artifact; `prompt_template_hash`, `schema_hash` and `context_hash` from the request; `input_refs` is the sorted unique union of every input and evidence ref, `request.id` and the three persisted refs; `output_refs` must be unique and are stored sorted. The record ID is `drv:<first 16 lowercase hex of the SHA-256 of the RFC 8785 canonical JSON of the complete record excluding only id>`, and the record must validate. No `Agent` node is created automatically and no Agent-node ID convention is implied.
 
 `Agent` and `DerivationRecord` are PSG provenance payloads defined once in the metamodel (§§5.3-5.4) and implemented in `plumb-psg`. The inference layer reuses those types (for example when materializing a `DerivationRecord` from persisted inference artifacts) and never defines duplicate versions.
 
@@ -398,7 +440,7 @@ ERROR
 
 Maintains typed dependency reachability.
 
-A semantic patch creates a `DirtySet` containing directly changed and transitively affected objects.
+A semantic patch creates a `DirtySet` containing directly changed and transitively affected objects. The impact engine receives the exact `GraphDelta` produced by patch application and surfaced through `CommitResult.delta`; it never reapplies the `PatchSet` or diffs revision snapshots to recover the changed set.
 
 Uses include:
 
@@ -1211,9 +1253,11 @@ Recommended interface:
 
 ```rust
 pub trait InferenceProvider {
-    fn execute(&self, request: &InferenceRequest) -> Result<InferenceArtifact>;
+    fn execute(&self, request: &InferenceRequest) -> Result<ProviderExecution, ProviderError>;
 }
 ```
+
+A provider receives only the request: no graph, revision, store, branch, commit capability or artifact store. Artifact persistence belongs to acquisition orchestration outside the provider. A `NullProvider` always returns a typed provider-disabled error; a `MockProvider` replays only executions registered for an exact request ID (it never synthesizes output and may replay requests whose policy names another provider, keeping the recorded provider and model).
 
 Provider selection belongs in `ProviderPolicy`.
 
@@ -1369,7 +1413,11 @@ conformance-report
 scenario-trace
 test-receipt
 architecture-check
+
+compile-run
 ```
+
+These 18 kinds are the closed artifact-kind list.
 
 Artifacts have identity independent of graph nodes.
 

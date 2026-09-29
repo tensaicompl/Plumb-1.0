@@ -6,7 +6,7 @@
 mod payload_roundtrip {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use plumb_core::Id;
+    use plumb_core::{Hash, HashKind, Id};
     use plumb_psg::*;
     use serde_json::{json, Map, Value};
 
@@ -1263,6 +1263,60 @@ mod payload_roundtrip {
                 record.validate(),
                 Err(DerivationRecordError::MissingLlmField(field))
             );
+        }
+    }
+
+    #[test]
+    fn llm_derivation_record_hash_fields_must_be_generic() {
+        let fields = [
+            "prompt_template_hash",
+            "schema_hash",
+            "context_hash",
+            "raw_response_hash",
+            "validated_output_hash",
+        ];
+        let valid: DerivationRecord = serde_json::from_value(llm_record()).unwrap();
+        for field in fields {
+            assert_eq!(
+                serde_json::to_value(&valid).unwrap()[field]
+                    .as_str()
+                    .unwrap()
+                    .parse::<Hash>()
+                    .unwrap()
+                    .kind(),
+                HashKind::Generic
+            );
+            for (prefix, kind) in [
+                ("psg:sha256:", HashKind::Semantic),
+                ("ev:sha256:", HashKind::Evidence),
+            ] {
+                let bad = format!("{prefix}{}", "a".repeat(64));
+                let mut wire = llm_record();
+                wire[field] = json!(bad);
+                assert!(
+                    serde_json::from_value::<DerivationRecord>(wire).is_err(),
+                    "{field} {kind:?}"
+                );
+                let mut record = valid.clone();
+                let hash: Hash = bad.parse().unwrap();
+                match field {
+                    "prompt_template_hash" => record.prompt_template_hash = Some(hash),
+                    "schema_hash" => record.schema_hash = Some(hash),
+                    "context_hash" => record.context_hash = Some(hash),
+                    "raw_response_hash" => record.raw_response_hash = Some(hash),
+                    _ => record.validated_output_hash = Some(hash),
+                }
+                assert_eq!(
+                    record.validate(),
+                    Err(DerivationRecordError::NonGenericLlmHash { field, kind })
+                );
+                assert_eq!(
+                    NodePayload::DerivationRecord(record).validate(),
+                    Err(NodePayloadError::InvalidDerivationRecord(
+                        DerivationRecordError::NonGenericLlmHash { field, kind }
+                    ))
+                );
+            }
         }
     }
 

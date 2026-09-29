@@ -456,7 +456,10 @@ fn artifact_kinds_use_exactly_the_specified_strings() {
         "scenario-trace",
         "test-receipt",
         "architecture-check",
+        "compile-run",
     ];
+    assert_eq!(ArtifactKind::ALL.len(), 18);
+    assert_eq!(ArtifactKind::CompileRun.as_str(), "compile-run");
     assert_eq!(ArtifactKind::ALL.map(ArtifactKind::as_str), expected);
     for (kind, text) in ArtifactKind::ALL.into_iter().zip(expected) {
         assert_eq!(kind.to_string(), text);
@@ -464,7 +467,15 @@ fn artifact_kinds_use_exactly_the_specified_strings() {
         let de: StrDeserializer<ValueError> = text.into_deserializer();
         assert_eq!(ArtifactKind::deserialize(de).unwrap(), kind);
     }
-    for bad in ["", "other", "Patch", "source_original", "source-original "] {
+    for bad in [
+        "",
+        "other",
+        "Patch",
+        "source_original",
+        "source-original ",
+        "compile_run",
+        "CompileRun",
+    ] {
         assert_eq!(
             bad.parse::<ArtifactKind>(),
             Err(UnknownArtifactKind(bad.to_owned()))

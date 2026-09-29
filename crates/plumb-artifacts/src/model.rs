@@ -29,11 +29,12 @@ pub enum ArtifactKind {
     ScenarioTrace,
     TestReceipt,
     ArchitectureCheck,
+    CompileRun,
 }
 
 impl ArtifactKind {
     /// Every artifact kind, in specification order.
-    pub const ALL: [ArtifactKind; 17] = [
+    pub const ALL: [ArtifactKind; 18] = [
         ArtifactKind::SourceOriginal,
         ArtifactKind::SourceExtracted,
         ArtifactKind::EvidenceManifest,
@@ -51,6 +52,7 @@ impl ArtifactKind {
         ArtifactKind::ScenarioTrace,
         ArtifactKind::TestReceipt,
         ArtifactKind::ArchitectureCheck,
+        ArtifactKind::CompileRun,
     ];
 
     /// The exact persisted/serialized string for this kind.
@@ -73,11 +75,12 @@ impl ArtifactKind {
             ArtifactKind::ScenarioTrace => "scenario-trace",
             ArtifactKind::TestReceipt => "test-receipt",
             ArtifactKind::ArchitectureCheck => "architecture-check",
+            ArtifactKind::CompileRun => "compile-run",
         }
     }
 }
 
-/// A persisted or supplied kind string that is not one of the 17 artifact kinds.
+/// A persisted or supplied kind string that is not one of the 18 artifact kinds.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("unknown artifact kind {0:?}")]
 pub struct UnknownArtifactKind(pub String);

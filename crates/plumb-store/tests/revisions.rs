@@ -773,7 +773,8 @@ mod revisions {
         let ps = add_accepted(&base, "req:log");
         let r2 = store
             .commit(&branch("main"), &r1.id, &ps, meta(T2))
-            .unwrap();
+            .unwrap()
+            .revision;
 
         let bytes = to_canonical_json(&ps).unwrap();
         let patch_ref = Hash::content_sha256(&bytes);
@@ -837,13 +838,15 @@ mod revisions {
                 &add_accepted(&base, "req:main"),
                 meta(T2),
             )
-            .unwrap();
+            .unwrap()
+            .revision;
         assert_eq!(r2.version, 2);
         assert_eq!(store.head(&other).unwrap(), Some(r1.id.clone()));
 
         let r3 = store
             .commit(&other, &r1.id, &add_accepted(&base, "req:other"), meta(T3))
-            .unwrap();
+            .unwrap()
+            .revision;
         assert_eq!(r3.version, 3);
         assert_eq!(r3.parent, Some(r1.id.clone()));
         assert_eq!(store.head(&branch("main")).unwrap(), Some(r2.id.clone()));
@@ -928,7 +931,8 @@ mod revisions {
                 &add_accepted(&base, "req:one"),
                 meta(T2),
             )
-            .unwrap();
+            .unwrap()
+            .revision;
         let err = store
             .commit(
                 &branch("main"),
@@ -991,7 +995,9 @@ mod revisions {
                     barrier.wait();
                     (
                         ps.clone(),
-                        store.commit(&branch("main"), &expected, &ps, meta(T2)),
+                        store
+                            .commit(&branch("main"), &expected, &ps, meta(T2))
+                            .map(|c| c.revision),
                     )
                 })
             })
@@ -1077,7 +1083,8 @@ mod revisions {
         // The store remains usable and the same commit now succeeds.
         let r2 = store
             .commit(&branch("main"), &r1.id, &ps, meta(T2))
-            .unwrap();
+            .unwrap()
+            .revision;
         assert_eq!(r2.version, 2);
         assert_eq!(r2.accepted_patch_ref, Some(patch_ref));
     }
@@ -1141,7 +1148,8 @@ mod revisions {
                 &add_accepted(&base_graph(), "req:x"),
                 meta(T2),
             )
-            .unwrap();
+            .unwrap()
+            .revision;
         let revisions = db.count("SELECT COUNT(*) FROM graph_revisions");
         let nodes = db.count("SELECT COUNT(*) FROM revision_nodes");
 
@@ -1188,7 +1196,8 @@ mod revisions {
         let ps = add_proposed(&base_graph(), "req:draft");
         let r2 = store
             .commit(&branch("main"), &r1.id, &ps, meta(T2))
-            .unwrap();
+            .unwrap()
+            .revision;
         assert_eq!(r2.semantic_hash, r1.semantic_hash);
         assert_ne!(r2.id, r1.id);
         assert_eq!(r2.version, 2);
@@ -1238,7 +1247,8 @@ mod revisions {
         let expected = plumb_patch::apply_patch(&base, &ps).unwrap().graph;
         let r2 = store
             .commit(&branch("main"), &r1.id, &ps, meta(T2))
-            .unwrap();
+            .unwrap()
+            .revision;
         let loaded = store.load_revision(&r2.id).unwrap().graph;
         assert_eq!(loaded, expected);
         let revision_of = |g: &Graph, n: &str| g.node(&id(n)).unwrap().revision;
@@ -1280,7 +1290,8 @@ mod revisions {
                 &add_accepted(&base_graph(), "req:x"),
                 meta(T2),
             )
-            .unwrap();
+            .unwrap()
+            .revision;
         let r3 = store
             .commit(
                 &other,
@@ -1288,7 +1299,8 @@ mod revisions {
                 &add_proposed(&base_graph(), "req:y"),
                 meta(T3),
             )
-            .unwrap();
+            .unwrap()
+            .revision;
         let loaded: Vec<LoadedRevision> = [&r1, &r2, &r3]
             .iter()
             .map(|r| store.load_revision(&r.id).unwrap())
@@ -1333,7 +1345,8 @@ mod revisions {
                 &add_accepted(&base_graph(), "req:x"),
                 meta(T2),
             )
-            .unwrap();
+            .unwrap()
+            .revision;
         (store, r1, r2)
     }
 
@@ -1562,5 +1575,76 @@ mod revisions {
         ));
         store.load_revision(&r2.id).unwrap();
         assert_eq!(patch_ref.kind(), HashKind::Generic);
+    }
+
+    // ------------------------------------------------------------------ commit result (Hotfix 014)
+
+    #[test]
+    fn commit_returns_revision_and_exact_patch_delta() {
+        let db = Db::new();
+        let (mut store, r1) = db.initialized();
+        let base = base_graph();
+        let ps = add_accepted(&base, "req:log");
+        let expected = plumb_patch::apply_patch(&base, &ps).unwrap().delta;
+        let result = store
+            .commit(&branch("main"), &r1.id, &ps, meta(T2))
+            .unwrap();
+        assert_eq!(result.delta, expected);
+        assert_eq!(result.delta.base_semantic_hash, r1.semantic_hash);
+        assert_eq!(
+            result.delta.result_semantic_hash,
+            result.revision.semantic_hash
+        );
+        assert_eq!(result.delta.added_nodes, BTreeSet::from([id("req:log")]));
+        assert_eq!(
+            store.load_revision(&result.revision.id).unwrap().revision,
+            result.revision
+        );
+
+        // A failed commit yields an error, never a CommitResult.
+        let stale = store.commit(
+            &branch("main"),
+            &r1.id,
+            &add_accepted(&base, "req:z"),
+            meta(T3),
+        );
+        assert!(matches!(stale, Err(StoreError::StaleBase { .. })));
+    }
+
+    #[test]
+    fn noncanonical_patch_artifact_bytes_are_corruption() {
+        let db = Db::new();
+        let (store, _, r2) = committed(&db);
+        store.load_revision(&r2.id).unwrap();
+        let conn = db.raw();
+        let canonical: Vec<u8> = conn
+            .query_row(
+                "SELECT bytes FROM artifacts WHERE hash = ?1",
+                [r2.accepted_patch_ref.as_ref().unwrap().as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let patch_set: PatchSet = serde_json::from_slice(&canonical).unwrap();
+        // Same PatchSet, valid JSON, but pretty-printed and therefore not RFC 8785 canonical.
+        let pretty = serde_json::to_vec_pretty(&patch_set).unwrap();
+        assert_ne!(pretty, canonical);
+        assert_eq!(
+            serde_json::from_slice::<PatchSet>(&pretty).unwrap(),
+            patch_set
+        );
+        let pretty_ref = Hash::content_sha256(&pretty);
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO artifacts (hash, kind, media_type, bytes, created_at) VALUES (?1, 'patch', ?2, ?3, ?4)",
+            rusqlite::params![pretty_ref.as_str(), JSON, pretty, T2],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE graph_revisions SET patch_artifact_hash = ?1 WHERE id = ?2",
+            [pretty_ref.as_str(), r2.id.as_str()],
+        )
+        .unwrap();
+        let reason = corrupt_reason(store.load_revision(&r2.id).unwrap_err());
+        assert!(reason.contains("not canonical"), "{reason}");
     }
 }

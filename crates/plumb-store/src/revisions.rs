@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use plumb_artifacts::ArtifactKind;
 use plumb_core::{to_canonical_json, CoreError, Hash, HashKind, Id, Timestamp};
-use plumb_patch::PatchSet;
+use plumb_patch::{GraphDelta, PatchSet};
 use plumb_psg::{is_baseline, Edge, Graph, Node, NodeType};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -159,6 +159,14 @@ pub struct RevisionWriteMeta {
     /// Provenance only: any valid `Id`, never used for authorization.
     pub created_by: Id,
     pub created_at: Timestamp,
+}
+
+/// A successful commit: the new revision and the exact `GraphDelta` produced by the single
+/// F0.7 `apply_patch` call that the commit persisted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommitResult {
+    pub revision: GraphRevision,
+    pub delta: GraphDelta,
 }
 
 /// A revision together with its reconstructed, validated graph.
@@ -506,6 +514,12 @@ fn verify_patch_artifact(
     }
     let patch_set: PatchSet = serde_json::from_slice(&bytes)
         .map_err(|e| corrupt(rid, format!("patch artifact is not a PatchSet: {e}")))?;
+    if to_canonical_json(&patch_set)? != bytes {
+        return Err(corrupt(
+            rid,
+            "patch artifact bytes are not canonical PatchSet JSON",
+        ));
+    }
     let parent_row = read_row(conn, parent.as_str())?
         .ok_or_else(|| corrupt(rid, format!("parent {parent} is missing")))?;
     let parent_meta = parse_metadata(parent_row)?;

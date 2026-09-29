@@ -1610,6 +1610,7 @@ dependencies = [
  "plumb-inference",
  "plumb-patch",
  "plumb-psg",
+ "plumb-store",
  "plumb-validation",
  "serde",
  "serde_json",

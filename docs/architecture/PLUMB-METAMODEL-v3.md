@@ -373,7 +373,7 @@ pub struct DerivationRecord {
 }
 ```
 
-When `kind` is `llm_inference`, all eight LLM-specific fields are mandatory; for every other kind all eight MUST be absent. Invalid combinations are rejected by explicit validation and by deserialization. `input_refs` and `output_refs` are strings because provenance inputs and outputs may identify either PSG IDs or content-addressed artifacts/hashes. `DerivationRecord` is a PSG payload (`NodePayload::DerivationRecord`); a node carrying it MUST have `Node.id == DerivationRecord.id`.
+When `kind` is `llm_inference`, all eight LLM-specific fields are mandatory; for every other kind all eight MUST be absent. For `llm_inference`, `prompt_template_hash`, `schema_hash`, `context_hash`, `raw_response_hash` and `validated_output_hash` MUST be generic `sha256:` content hashes; semantic (`psg:sha256:`) or evidence (`ev:sha256:`) hashes there are invalid. Invalid combinations are rejected by explicit validation and by deserialization. `input_refs` and `output_refs` are strings because provenance inputs and outputs may identify either PSG IDs or content-addressed artifacts/hashes. `DerivationRecord` is a PSG payload (`NodePayload::DerivationRecord`); a node carrying it MUST have `Node.id == DerivationRecord.id`.
 
 Reproducibility means rebuilding from source + accepted decisions + persisted inference artifacts, not re-calling a live model.
 
