@@ -782,11 +782,13 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-psg/Cargo.toml`
 - `crates/plumb-psg/src/audit.rs`
 - `crates/plumb-psg/src/edge.rs`
+- `crates/plumb-psg/src/extensions.rs`
 - `crates/plumb-psg/src/graph.rs`
 - `crates/plumb-psg/src/hash.rs`
 - `crates/plumb-psg/src/lib.rs`
 - `crates/plumb-psg/src/node.rs`
 - `crates/plumb-psg/src/payload.rs`
+- `crates/plumb-psg/src/refs.rs`
 - `crates/plumb-psg/src/registry.rs`
 - `crates/plumb-psg/src/relations.rs`
 - `crates/plumb-psg/src/standards.rs`
@@ -979,9 +981,9 @@ A task is complete only when every acceptance statement is true and every test/c
 | 2 | `P0.2` — Create Rust and UI workspace skeleton | P0 | NOW | P0.1 |
 | 3 | `F0.1` — Implement core IDs, clock, canonical JSON and hashes | Foundation | NOW | P0.2 |
 | 4 | `F0.2` — Implement content-addressed artifact model and SQLite artifact store | Foundation | NOW | F0.1 |
-| 5 | `F0.3` — Implement PSG base envelope and typed status/standards structures | Foundation | NOW | F0.2 |
-| 6 | `F0.4` — Implement complete NodePayload semantic enum | Foundation | NOW | F0.3 |
-| 7 | `F0.5` — Implement RelationKind and typed relation registry | Foundation | NOW | F0.4 |
+| 5 | `F0.3` — Implement PSG envelope primitives and typed status/standards structures | Foundation | NOW | F0.2 |
+| 6 | `F0.4` — Implement complete NodePayload semantic enum and Node envelope | Foundation | NOW | F0.3 |
+| 7 | `F0.5` — Implement RelationKind, Edge envelope and typed relation registry | Foundation | NOW | F0.4 |
 | 8 | `F0.6` — Implement Graph, typed indexes and semantic/evidence hashes | Foundation | NOW | F0.5 |
 | 9 | `F0.7` — Implement serializable SemanticPatch AST and deterministic apply/diff | Foundation | NOW | F0.6 |
 | 10 | `F0.8` — Implement immutable revision store, branch heads and CAS commit | Foundation | NOW | F0.7 |
@@ -1367,30 +1369,42 @@ cargo clippy --workspace --all-targets -- -D warnings
 - Do not store mutable semantic state in the artifact table.
 
 
-### `F0.3` — Implement PSG base envelope and typed status/standards structures
+### `F0.3` — Implement PSG envelope primitives and typed status/standards structures
 
 **Phase:** `Foundation`  
 **Scope:** `NOW`  
 **Dependencies:** `F0.2`  
-**Commit:** `F0.3: Implement PSG base envelope and typed status/standards structures`
+**Commit:** `F0.3: Implement PSG envelope primitives and typed status/standards structures`
 
 **Write allowlist**
 
 - `crates/plumb-psg/src/lib.rs`
 - `crates/plumb-psg/src/status.rs`
 - `crates/plumb-psg/src/standards.rs`
-- `crates/plumb-psg/src/node.rs`
-- `crates/plumb-psg/src/edge.rs`
+- `crates/plumb-psg/src/refs.rs`
+- `crates/plumb-psg/src/extensions.rs`
 - `crates/plumb-psg/src/audit.rs`
 - `crates/plumb-psg/tests/serde.rs`
 
 **Required actions**
 
-1. Implement ElementStatus exactly: Proposed, Accepted, Rejected, Superseded, Deprecated, Suspect.
-2. Implement StandardMapping, MappingRole and MappingStrength exactly from the metamodel.
-3. Implement Node and Edge envelopes with immutable id, revision, status, evidence refs, derivation refs, standards, tags, extensions and audit metadata.
-4. Extensions require a namespace-qualified key containing one colon.
-5. Do not add a universal confidence field to Node or Edge.
+1. Implement ElementStatus exactly: Proposed, Accepted, Rejected, Superseded, Deprecated, Suspect. Rust variant names are those names and serialized JSON values are exactly those case-sensitive strings. Unknown values fail deserialization. Confirmed must not exist.
+2. Implement MappingRole exactly from metamodel §2: Rust variants SemanticAlignment, Taxonomy, Interchange, ValidationReference, PresentationConvention, serialized exactly as semantic_alignment, taxonomy, interchange, validation_reference, presentation_convention. Unknown values fail deserialization. Do not add standard-specific roles.
+3. Implement MappingStrength exactly from metamodel §2: Rust variants Exact, Compatible, Subset, Extension, InspiredBy, serialized exactly as exact, compatible, subset, extension, inspired_by. Unknown values (including taxonomy) fail deserialization.
+4. Implement StandardMapping exactly as metamodel §16.2 { standard_id: String, version: String, concept: String, clause_ref: Option<String>, mapping_role: MappingRole, mapping_strength: MappingStrength, validator_rules: Vec<String> } with no additional fields. F0.3 validates structure and enum vocabulary only; it does not verify that a standard, clause, concept or validator rule exists.
+5. Implement EvidenceRef(Id) and DerivationRef(Id) as distinct transparent wrappers over the plumb-core Id: JSON serialization is the underlying ID string, deserialization validates through Id, the exact string is preserved, each exposes as_id() -> &Id and as_str() -> &str and converts from an already validated Id. Do not use plain String and do not impose any prefix or namespace restriction; resolving the referenced element type is later graph validation.
+6. Implement ExtensionKey as a transparent validated string newtype with the exact grammar ^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+$ (exactly one colon; no whitespace, trimming or normalization; exact string preserved), providing FromStr, TryFrom<String>, Display, AsRef<str>, as_str() and validating serde deserialization.
+7. Implement AuditMeta is exactly { created_by: Id, created_at: Timestamp, updated_by: Option<Id>, updated_at: Option<Timestamp> } using the plumb-core primitives. created_by and created_at are mandatory; updated_by and updated_at are either both Some or both None; when present, updated_at >= created_at. Invalid AuditMeta is never silently repaired: serde deserialization rejects invalid combinations, and an explicit deterministic validation function returns a typed error for programmatically constructed invalid values (no panics). Do not add confidence, deletion metadata, session metadata, free-form audit maps or an implicit current user/time. No plumb-psg code reads wall-clock time. Audit metadata remains excluded from semantic hashing.
+8. F0.3 MUST NOT define NodePayload, RelationKind, Node or Edge, and must not introduce placeholder, temporary or string-based substitutes for them. F0.4 implements Node once NodePayload exists; F0.5 implements Edge once RelationKind exists.
+9. Tests cover at minimum:
+
+   - ElementStatus: all six exact serialized values; unknown-value rejection.
+   - MappingRole: all five exact serialized values; unknown-value rejection.
+   - MappingStrength: all five exact serialized values; unknown-value rejection; taxonomy is rejected as a MappingStrength.
+   - StandardMapping: JSON round-trip with a real MappingRole and MappingStrength; invalid enum values fail.
+   - EvidenceRef and DerivationRef: transparent JSON round-trip; invalid underlying Id rejected.
+   - ExtensionKey: valid acme:priority, jira:issue_key, customer-x:classification.v2; invalid priority, Acme:priority, acme:, acme::priority, acme:priority:extra, acme:bad key; serde invalid-input rejection.
+   - AuditMeta: create-only round-trip; create+update round-trip; only updated_by rejected; only updated_at rejected; updated_at before created_at rejected; updated_at == created_at accepted; explicit programmatic validation returns an error for invalid state.
 
 **Commands**
 
@@ -1406,7 +1420,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Acceptance**
 
-- All base structures round-trip through JSON and reject an extension key without a namespace.
+- All PSG envelope primitives round-trip through JSON; invalid status, mapping, extension, reference-ID and audit representations are rejected; the repository standards profile uses only the normative MappingRole and MappingStrength vocabularies; and F0.3 introduces no placeholder NodePayload, RelationKind, Node or Edge.
 
 **Supporting references**
 
@@ -1416,18 +1430,22 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - Do not implement core semantics as kind:String plus arbitrary props.
 - Do not add fields absent from the metamodel without a blocking spec issue.
+- Do not define NodePayload, RelationKind, Node or Edge, or any placeholder, temporary or string-based substitute for them.
+- Do not read wall-clock time in plumb-psg.
 
 
-### `F0.4` — Implement complete NodePayload semantic enum
+### `F0.4` — Implement complete NodePayload semantic enum and Node envelope
 
 **Phase:** `Foundation`  
 **Scope:** `NOW`  
 **Dependencies:** `F0.3`  
-**Commit:** `F0.4: Implement complete NodePayload semantic enum`
+**Commit:** `F0.4: Implement complete NodePayload semantic enum and Node envelope`
 
 **Write allowlist**
 
+- `crates/plumb-psg/src/lib.rs`
 - `crates/plumb-psg/src/payload.rs`
+- `crates/plumb-psg/src/node.rs`
 - `crates/plumb-psg/tests/payload_roundtrip.rs`
 
 **Required actions**
@@ -1436,6 +1454,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 2. Field names, required/optional status, and enums must follow the metamodel sections defining each type.
 3. Use serde tagged representation type/data as specified by metamodel §24.
 4. When the prose definition and skeleton disagree, do not choose; create docs/blockers/F0.4.md identifying both conflicting passages and stop.
+5. Once NodePayload exists, implement the final concrete Node envelope exactly as metamodel §4.1: Node { id: Id, revision: u32, status: ElementStatus, payload: NodePayload, evidence: Vec<EvidenceRef>, derivations: Vec<DerivationRef>, standards: Vec<StandardMapping>, tags: BTreeSet<String>, extensions: BTreeMap<ExtensionKey, Value>, audit: AuditMeta }, using the F0.3 primitives. No universal confidence field and no stringly typed payload. Node revision is an element revision counter per metamodel §4.5, not the global GraphRevision version: u32, 0 is invalid, a newly created element starts at 1, unchanged elements keep their revision across GraphRevisions, and later patch/commit logic increments it when the element is semantically changed. This task validates the invariant only (deserialization and validation reject revision 0); it does not implement patch increment behavior.
+6. Node-envelope tests live in crates/plumb-psg/tests/payload_roundtrip.rs and cover at minimum: Node JSON round-trip using a real NodePayload; Node revision 1 accepted; Node revision 0 rejected; ExtensionKey map round-trip; typed EvidenceRef/DerivationRef retained; AuditMeta retained; no universal confidence field.
 
 **Commands**
 
@@ -1452,9 +1472,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 **Acceptance**
 
 - One golden round-trip fixture exists for every NodePayload variant and all required-field omission tests fail deserialization or validation as intended.
+- Node round-trips through JSON with a real NodePayload, retains typed EvidenceRef/DerivationRef, the ExtensionKey map and AuditMeta, has no universal confidence field, accepts revision 1 and rejects revision 0.
 
 **Supporting references**
 
+- `SRCREF-2A709879EB` — `docs/architecture/PLUMB-METAMODEL-v3.md §§2-4,16`
 - `SRCREF-7EC2A38F66` — `docs/architecture/PLUMB-METAMODEL-v3.md §§5-16,19,24`
 
 **Task-specific prohibitions**
@@ -1462,17 +1484,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 - Do not omit a metamodel variant because it is post-pilot; post-pilot types must exist even when no service uses them yet.
 
 
-### `F0.5` — Implement RelationKind and typed relation registry
+### `F0.5` — Implement RelationKind, Edge envelope and typed relation registry
 
 **Phase:** `Foundation`  
 **Scope:** `NOW`  
 **Dependencies:** `F0.4`  
-**Commit:** `F0.5: Implement RelationKind and typed relation registry`
+**Commit:** `F0.5: Implement RelationKind, Edge envelope and typed relation registry`
 
 **Write allowlist**
 
+- `crates/plumb-psg/src/lib.rs`
 - `crates/plumb-psg/src/relations.rs`
 - `crates/plumb-psg/src/registry.rs`
+- `crates/plumb-psg/src/edge.rs`
 - `crates/plumb-psg/tests/relations.rs`
 
 **Required actions**
@@ -1481,6 +1505,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 2. For each relation register allowed source NodePayload types, allowed target types, cardinality constraints and graph constraints.
 3. Support namespaced extension relations separately; core code must reject an unknown unqualified relation.
 4. Validate acyclicity for supersedes, refines/decomposes_to where mandated, inherits_role, and depends_on_slice.
+5. Once RelationKind exists, implement the final concrete Edge envelope exactly as metamodel §4.2: Edge { id: Id, revision: u32, status: ElementStatus, kind: RelationKind, from: Id, to: Id, properties: BTreeMap<String, Value>, evidence: Vec<EvidenceRef>, derivations: Vec<DerivationRef>, standards: Vec<StandardMapping>, audit: AuditMeta }, using the F0.3 primitives. No universal confidence field and no stringly typed core relation. Edge revision is an element revision counter per metamodel §4.5, not the global GraphRevision version: u32, 0 is invalid, a newly created element starts at 1, unchanged elements keep their revision across GraphRevisions, and later patch/commit logic increments it when the element is semantically changed. This task validates the invariant only (deserialization and validation reject revision 0); it does not implement patch increment behavior.
+6. Edge-envelope tests live in crates/plumb-psg/tests/relations.rs and cover at minimum: Edge JSON round-trip using a real RelationKind; Edge revision 1 accepted; Edge revision 0 rejected; typed EvidenceRef/DerivationRef retained; AuditMeta retained; no universal confidence field.
 
 **Commands**
 
@@ -1497,9 +1523,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 **Acceptance**
 
 - Every relation listed in metamodel §17 has a registry entry; invalid source/target pairs are rejected; required acyclic relations reject cycles.
+- Edge round-trips through JSON with a real RelationKind, retains typed EvidenceRef/DerivationRef and AuditMeta, has no universal confidence field, accepts revision 1 and rejects revision 0.
 
 **Supporting references**
 
+- `SRCREF-2A709879EB` — `docs/architecture/PLUMB-METAMODEL-v3.md §§2-4,16`
 - `SRCREF-23F6E29DAE` — `docs/architecture/PLUMB-METAMODEL-v3.md §§17-18`
 
 **Task-specific prohibitions**

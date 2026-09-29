@@ -89,6 +89,8 @@ validation_reference
 presentation_convention
 ```
 
+These two vocabularies are closed. The Rust `MappingStrength` variants are `Exact`, `Compatible`, `Subset`, `Extension` and `InspiredBy`; the Rust `MappingRole` variants are `SemanticAlignment`, `Taxonomy`, `Interchange`, `ValidationReference` and `PresentationConvention`. Each serializes exactly as the lowercase identifier listed above, and unknown values are rejected. `taxonomy` is a mapping role, never a mapping strength. Standards profiles and rule metadata MUST use only these values.
+
 Plumb MUST NOT describe a project or export as “ISO compliant”, “BPMN compliant”, “SysML compliant”, etc. unless the relevant conformance validator exists and the declared conformance target is actually satisfied.
 
 Clause references MAY be stored as identifiers. Normative standard text MUST NOT be copied into the product unless licensing explicitly permits it.
@@ -214,7 +216,7 @@ Deprecated
 Suspect
 ```
 
-`Confirmed` from v2 becomes `Accepted`.
+`Confirmed` from v2 becomes `Accepted`; `Confirmed` does not exist in v3. The Rust `ElementStatus` variants are exactly these six names, serialized as exactly these case-sensitive strings; unknown values are rejected.
 
 `Suspect` means the element remains in the graph but its validity is questioned by a finding or invalidated dependency.
 
@@ -223,6 +225,27 @@ Suspect
 Confidence is **not** a universal semantic field.
 
 Confidence belongs to a `DerivationRecord`, proposal or inference. Once a human accepts a semantic assertion, that assertion's accepted state is authoritative for the current model; the original inference confidence remains available in provenance.
+
+### 4.5 Envelope primitives and element revisions
+
+The `Node` and `Edge` envelope primitives are normative:
+
+- `EvidenceRef(Id)` and `DerivationRef(Id)` are distinct transparent wrappers over a validated `Id`. They serialize as the underlying ID string, preserve it exactly and impose no additional prefix or namespace restriction; that the referenced ID resolves to evidence or to a `DerivationRecord` is graph-semantic validation.
+- `ExtensionKey` is a validated string matching exactly `^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+$`: exactly one colon, a lowercase-initial namespace, a non-empty local key, no whitespace, no trimming and no normalization.
+- `AuditMeta` is:
+
+```rust
+pub struct AuditMeta {
+    pub created_by: Id,
+    pub created_at: Timestamp,
+    pub updated_by: Option<Id>,
+    pub updated_at: Option<Timestamp>,
+}
+```
+
+`created_by` and `created_at` are mandatory. `updated_by` and `updated_at` are either both present or both absent; when present, `updated_at >= created_at`. Invalid audit metadata is rejected, never repaired. Audit metadata carries no confidence, deletion, session or free-form data, and is excluded from `semantic_hash`.
+
+`Node.revision` and `Edge.revision` are element revision counters, not the global `GraphRevision` version. The type is `u32`; `0` is invalid; a newly created node or edge starts at `1`; an unchanged element keeps the same element revision when copied into a later `GraphRevision`; and patch/commit logic increments the element revision when that element is semantically changed.
 
 ---
 

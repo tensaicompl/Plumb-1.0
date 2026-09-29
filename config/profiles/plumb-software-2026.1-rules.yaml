@@ -35,17 +35,17 @@ standards:
   ISO12207:
     standard: ISO/IEC/IEEE 12207
     version: '2026'
-    role: lifecycle_alignment
+    role: semantic_alignment
     note: Software life-cycle process framework.
   ISO15289:
     standard: ISO/IEC/IEEE 15289
     version: '2019'
-    role: information_item_alignment
+    role: semantic_alignment
     note: Life-cycle information items; current edition confirmed 2025 and under revision.
   ISO29119-2:
     standard: ISO/IEC/IEEE 29119-2
     version: '2021'
-    role: test_process_alignment
+    role: semantic_alignment
     note: Software test processes.
   BPMN:
     standard: OMG BPMN
@@ -988,7 +988,7 @@ rules:
     version: '2023'
     role: taxonomy
     note: Product quality model with nine characteristics.
-    mapping_strength: taxonomy
+    mapping_strength: compatible
   evaluation: deterministic
   finding_status_on_fail: Open
 - id: PLUMB.Q1.SCENARIO.STIMULUS
@@ -1675,7 +1675,7 @@ rules:
   standard_reference:
     standard: ISO/IEC/IEEE 12207
     version: '2026'
-    role: lifecycle_alignment
+    role: semantic_alignment
     note: Software life-cycle process framework.
     mapping_strength: compatible
   evaluation: deterministic
@@ -1692,7 +1692,7 @@ rules:
   standard_reference:
     standard: ISO/IEC/IEEE 15289
     version: '2019'
-    role: information_item_alignment
+    role: semantic_alignment
     note: Life-cycle information items; current edition confirmed 2025 and under revision.
     mapping_strength: compatible
   evaluation: deterministic
@@ -1776,7 +1776,7 @@ rules:
   standard_reference:
     standard: ISO/IEC/IEEE 29119-2
     version: '2021'
-    role: test_process_alignment
+    role: semantic_alignment
     note: Software test processes.
     mapping_strength: compatible
   evaluation: deterministic

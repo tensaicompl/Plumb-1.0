@@ -60,9 +60,9 @@ The conformance report MUST list every waiver separately from passes.
 | ISO29148 | ISO/IEC/IEEE 29148 2018 | semantic_alignment |
 | ISO25010 | ISO/IEC 25010 2023 | taxonomy |
 | ISO42010 | ISO/IEC/IEEE 42010 2022 | semantic_alignment |
-| ISO12207 | ISO/IEC/IEEE 12207 2026 | lifecycle_alignment |
-| ISO15289 | ISO/IEC/IEEE 15289 2019 | information_item_alignment |
-| ISO29119-2 | ISO/IEC/IEEE 29119-2 2021 | test_process_alignment |
+| ISO12207 | ISO/IEC/IEEE 12207 2026 | semantic_alignment |
+| ISO15289 | ISO/IEC/IEEE 15289 2019 | semantic_alignment |
+| ISO29119-2 | ISO/IEC/IEEE 29119-2 2021 | semantic_alignment |
 | BPMN | OMG BPMN 2.0.2 | interchange |
 | DMN | OMG DMN 1.6 | interchange |
 | SYSML | OMG SysML 2.0 | interchange |
@@ -654,7 +654,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 
 - **Class:** `external_standard`
 - **Severity:** `blocker`
-- **Source/mapping:** ISO/IEC 25010 2023 (taxonomy; taxonomy)
+- **Source/mapping:** ISO/IEC 25010 2023 (compatible; taxonomy)
 - **Applies when:** Requirement kind = quality, or QualityScenario is architecture-driving.
 - **Deterministic check:** QualityScenario has exactly one characterized_by QualityCharacteristic from active taxonomy or approved extension.
 - **Pass condition:** QualityScenario has exactly one characterized_by QualityCharacteristic from active taxonomy or approved extension.
@@ -1234,7 +1234,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 
 - **Class:** `external_standard`
 - **Severity:** `error`
-- **Source/mapping:** ISO/IEC/IEEE 12207 2026 (compatible; lifecycle_alignment)
+- **Source/mapping:** ISO/IEC/IEEE 12207 2026 (compatible; semantic_alignment)
 - **Applies when:** All in-scope accepted elements of the relevant type.
 - **Deterministic check:** Every active WorkPackage/Slice has responsible owner/role and lifecycle state.
 - **Pass condition:** Every active WorkPackage/Slice has responsible owner/role and lifecycle state.
@@ -1244,7 +1244,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 
 - **Class:** `external_standard`
 - **Severity:** `warn`
-- **Source/mapping:** ISO/IEC/IEEE 15289 2019 (compatible; information_item_alignment)
+- **Source/mapping:** ISO/IEC/IEEE 15289 2019 (compatible; semantic_alignment)
 - **Applies when:** Active profile requires human-readable lifecycle information items.
 - **Deterministic check:** Required generated/projected information items are declared with owners and target formats.
 - **Pass condition:** Required generated/projected information items are declared with owners and target formats.
@@ -1308,7 +1308,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 
 - **Class:** `external_standard`
 - **Severity:** `error`
-- **Source/mapping:** ISO/IEC/IEEE 29119-2 2021 (compatible; test_process_alignment)
+- **Source/mapping:** ISO/IEC/IEEE 29119-2 2021 (compatible; semantic_alignment)
 - **Applies when:** VerificationObligation.method = test or scenario and is release-blocking.
 - **Deterministic check:** Test/Scenario has environment/context, responsibility and expected outcome metadata sufficient for controlled execution.
 - **Pass condition:** Test/Scenario has environment/context, responsibility and expected outcome metadata sufficient for controlled execution.
