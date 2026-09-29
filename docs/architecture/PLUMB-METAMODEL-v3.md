@@ -126,15 +126,19 @@ Three hashes are defined:
 - `evidence_hash` — source artifacts and evidence-fragment identity.
 - `view_hash` — one explicit view definition plus layout/style metadata.
 
+Hash strings are normative (implementation plan §6.3). One `Hash` type accepts exactly `sha256:<64 lowercase hex>` (generic/content/artifact/config/rule/output hash), `psg:sha256:<64 lowercase hex>` (PSG semantic hash) and `ev:sha256:<64 lowercase hex>` (evidence hash).
+
 This prevents diagram movement or audit timestamps from invalidating the software specification.
 
 ### 3.2 ID policy
 
 All IDs are immutable.
 
+Every `Id` MUST match the normative grammar `^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$` (implementation plan §6.3). Parsing performs no normalization: invalid strings, including strings with leading or trailing whitespace, are rejected rather than trimmed or repaired, and the exact validated string is preserved.
+
 Readable aliases are optional and mutable; identifiers are not.
 
-Recommended forms:
+Recommended namespace conventions (each concrete ID MUST also satisfy the normative grammar above):
 
 ```text
 src:<hash8>

@@ -446,6 +446,80 @@ It excludes:
 
 If an implementation choice would change these hash inputs, stop with `BLOCKED-SPEC-CONFLICT`; do not improvise.
 
+### 6.3 Exact core primitive contracts
+
+These primitive contracts are normative for `plumb-core` (task `F0.1`) and for every structure that uses `Id`, `Hash` or `Timestamp`.
+
+**`Id`** is a validated string newtype. The exact accepted grammar is:
+
+```regex
+^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$
+```
+
+- the namespace begins with lowercase `[a-z]`; remaining namespace characters are lowercase letters, digits, `_`, `-`;
+- at least one body segment is mandatory; body segment characters are `[A-Za-z0-9._-]+`;
+- additional non-empty body segments may be separated by `:`; empty segments are invalid;
+- whitespace is invalid; leading/trailing whitespace is rejected, not trimmed;
+- parsing performs no normalization; the exact validated string is preserved;
+- there is no F0.1 maximum length constraint.
+
+Examples that MUST validate:
+
+```text
+src:0123456789abcdef
+req:HR-001
+req:hr:leave-request
+rev:42:0123456789abcdef
+project:leave-management
+profile:plumb-software-2026.1
+resolution:01K123456789ABCDEFGHJKMNPQ
+```
+
+Examples that MUST fail (the first is the empty string; two contain a leading or trailing space):
+
+```text
+""
+req
+Req:ABC
+req:
+req::ABC
+req:ABC:
+req:ABC DEF
+ req:ABC
+req:ABC 
+req:ABC/DEF
+```
+
+`Id` serialization and deserialization preserve validation: deserializing an invalid string fails rather than constructing an invalid `Id`. `Id` provides validated `FromStr` and `TryFrom<String>`, plus `Display`, `AsRef<str>` and `as_str()`.
+
+**`Hash`** is one validated string newtype accepting exactly three forms:
+
+```regex
+^sha256:[0-9a-f]{64}$
+^psg:sha256:[0-9a-f]{64}$
+^ev:sha256:[0-9a-f]{64}$
+```
+
+| Prefix | Meaning | `HashKind` |
+|---|---|---|
+| `sha256:` | Generic/content/artifact/config/rule/output hash | `Generic` |
+| `psg:sha256:` | PSG semantic hash | `Semantic` |
+| `ev:sha256:` | Evidence hash | `Evidence` |
+
+`Hash` provides `pub enum HashKind { Generic, Semantic, Evidence }`, `Hash::kind() -> HashKind`, and the byte-hashing constructors `Hash::content_sha256(bytes: &[u8]) -> Hash`, `Hash::semantic_sha256(bytes: &[u8]) -> Hash` and `Hash::evidence_sha256(bytes: &[u8]) -> Hash`. All SHA-256 hex output is lowercase. `Hash` provides validated `FromStr`, `TryFrom<String>`, `Display`, `AsRef<str>` and `as_str()`; serde deserialization validates. Uppercase digest hex, incorrect digest length, unknown prefixes, whitespace and additional trailing material are rejected. No separate `SemanticHash` or `EvidenceHash` field types exist in F0.1; compiler structures use `Hash`.
+
+**`Timestamp`** is `pub struct Timestamp(time::OffsetDateTime);`:
+
+- every stored `Timestamp` is normalized to UTC;
+- parsing/deserialization accepts valid RFC 3339 timestamps; non-UTC offsets are converted to the equivalent UTC instant;
+- nanosecond precision is retained;
+- `Display` and serialization use one canonical form: UTC with `Z` and exactly nine fractional-second digits, e.g. `2026-09-29T12:34:56.123456789Z`;
+- `2026-09-29T14:34:56.123456789+02:00` canonicalizes to `2026-09-29T12:34:56.123456789Z`.
+
+**`Clock`** has `fn now(&self) -> Timestamp;`. `SystemClock` is the only F0.1 implementation permitted to read system time. `FixedClock` is constructed with a `Timestamp` and always returns that same timestamp. No other F0.1 code may access wall-clock time directly.
+
+**Canonical JSON.** The F0.1 canonical JSON primitive applies RFC 8785 JCS through `serde_jcs` to the value supplied to it. F0.1 does not implement Plumb domain-specific ordering of semantically unordered arrays; that ordering is applied by later semantic-envelope construction before calling the canonical JSON primitive. No approximate/custom JCS serializer is permitted.
+
 ## 7. v3 overrides to the v2 plan
 
 These overrides are mandatory wherever v2 text differs.
@@ -1156,12 +1230,19 @@ cd ui && npm run typecheck
 
 **Required actions**
 
-1. Implement Id as a validated String newtype and Hash as a sha256-prefixed String newtype.
-2. Implement Clock trait, SystemClock, and FixedClock.
-3. Implement canonical JSON using RFC 8785 JCS through the explicitly allowed serde_jcs dependency.
-4. Implement sha256 hashing over canonical bytes.
-5. Do not include timestamps, layout metadata, or audit metadata in semantic hash input; the exact semantic envelope is defined by the metamodel.
-6. Add deterministic property tests that map insertion order does not affect canonical output or hash.
+1. Implement Id as a validated String newtype exactly per plan §6.3: grammar ^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$, no trimming or normalization, exact string preserved, validated FromStr and TryFrom<String>, Display, AsRef<str>, as_str(), and serde deserialization that rejects invalid strings.
+2. Implement Hash as one validated String newtype exactly per plan §6.3 accepting only sha256:<64 lowercase hex>, psg:sha256:<64 lowercase hex> and ev:sha256:<64 lowercase hex>; provide HashKind {Generic, Semantic, Evidence}, Hash::kind(), Hash::content_sha256(&[u8]), Hash::semantic_sha256(&[u8]), Hash::evidence_sha256(&[u8]), validated FromStr and TryFrom<String>, Display, AsRef<str>, as_str(), and validating serde deserialization. Do not create separate SemanticHash or EvidenceHash types.
+3. Implement Timestamp(time::OffsetDateTime) exactly per plan §6.3 (UTC-normalized, RFC 3339 parsing with offset conversion, nanosecond precision, canonical Display/serialization with Z and exactly nine fractional digits) and the Clock trait with fn now(&self) -> Timestamp, SystemClock and FixedClock.
+4. Implement the canonical JSON primitive by applying RFC 8785 JCS through the explicitly allowed serde_jcs dependency to the supplied value. Do not implement Plumb domain-specific ordering of semantically unordered arrays in F0.1; later semantic-envelope construction applies it before calling this primitive.
+5. Implement sha256 hashing over canonical bytes.
+6. Do not include timestamps, layout metadata, or audit metadata in semantic hash input; the exact semantic envelope is defined by the metamodel.
+7. Add deterministic property tests that map insertion order does not affect canonical output or hash.
+8. Tests cover at minimum:
+
+   - Id: every plan §6.3 valid and invalid example; serialization round-trip; invalid serde deserialization rejection.
+   - Hash: all three accepted prefixes; exactly 64 lowercase hex; uppercase rejection; length rejection; unknown-prefix rejection; HashKind; deterministic SHA-256 constructors.
+   - Timestamp: UTC serialization; non-UTC offset normalization; exactly nine fractional digits; nanosecond retention; serde round-trip; FixedClock repeatability.
+   - Canonical JSON/hash: map insertion order produces byte-identical RFC 8785 output and equal resulting hashes; repeated canonicalization is byte-identical.
 
 **Commands**
 
@@ -1178,6 +1259,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 **Acceptance**
 
 - Canonical output is byte-identical for semantically identical map insertion orders and all tests pass.
+- Id, Hash and Timestamp satisfy every plan §6.3 grammar, example and canonicalization rule, and serde deserialization of invalid Id/Hash/Timestamp values fails.
 
 **Supporting references**
 

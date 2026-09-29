@@ -153,6 +153,8 @@ pub struct GraphRevision {
 
 A revision is immutable.
 
+`Timestamp` in these structures is the canonical Plumb timestamp defined by implementation plan §6.3: a UTC-normalized instant with nanosecond precision, serialized as RFC 3339 with `Z` and exactly nine fractional-second digits (for example `2026-09-29T12:34:56.123456789Z`); RFC 3339 input with a non-UTC offset is converted to the equivalent UTC instant. `Hash` values use exactly the normative forms `sha256:`, `psg:sha256:` and `ev:sha256:` followed by 64 lowercase hex digits (implementation plan §6.3).
+
 Branches are mutable pointers to revisions:
 
 ```text
