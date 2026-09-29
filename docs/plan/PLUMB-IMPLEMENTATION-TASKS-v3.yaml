@@ -247,15 +247,84 @@ tasks:
   steps:
   - Implement ArtifactKind exactly for source-original, source-extracted, evidence-manifest, inference-request, inference-response, validated-inference,
     external-validation, projection, proposal, patch, diff, impact-report, gate-report, conformance-report, scenario-trace, test-receipt, architecture-check.
-  - Artifact identity is sha256 of stored bytes; duplicate put returns the existing hash.
+    Serialize and persist each kind as exactly its listed kebab-case string. An unknown persisted kind string returns an explicit error; do not
+    map it to an Other variant.
+  - 'Artifact identity is the generic sha256: Hash (plan §6.3) of the exact stored bytes: artifact_hash = sha256:<lowercase SHA-256 of exact stored
+    bytes>. ArtifactKind, media_type and created_at do not participate in the hash. The persisted artifact semantics are Artifact { hash: Hash,
+    kind: ArtifactKind, media_type: String, bytes: Vec<u8>, created_at: Timestamp }; equivalent owned/borrowed API shapes are acceptable. Use
+    the plumb-core Hash and Timestamp primitives; do not duplicate them.'
   - Create SQLite table artifacts(hash TEXT PRIMARY KEY, kind TEXT NOT NULL, media_type TEXT NOT NULL, bytes BLOB NOT NULL, created_at TEXT NOT
-    NULL).
-  - Artifact bytes are immutable; no update method is permitted.
-  - Provide put/get/exists and transaction-safe duplicate insertion.
+    NULL). Persist created_at in the canonical Timestamp form of plan §6.3.
+  - 'put receives ArtifactKind, media type, the exact artifact bytes and a caller-supplied Timestamp; the store must not obtain wall-clock time
+    itself. put semantics:
+
+
+    1. Compute the generic sha256: Hash over the exact byte slice.
+
+    2. If the hash does not exist: insert exactly one row persisting the supplied kind, media type, bytes and created_at; return the artifact
+    hash.
+
+    3. If the hash already exists: load the existing row and verify that the existing bytes, ArtifactKind and media_type equal the supplied values.
+
+    4. If bytes, kind and media_type all match: the operation is idempotent; do not update created_at, do not add another row, and return the
+    existing hash. created_at from a duplicate put is intentionally ignored after the first successful insert.
+
+    5. If the same content hash exists but kind or media_type differs: return an explicit ArtifactMetadataConflict and do not mutate the existing
+    row.
+
+    6. If the stored bytes differ from the supplied bytes for the same hash (a hash collision): return an explicit integrity error and never overwrite
+    the existing row.'
+  - Artifact bytes and their persisted metadata are immutable after the first successful insertion. No artifact update, replace or delete-by-put
+    behavior is permitted.
+  - 'Provide get (lookup by artifact Hash) and exists (existence check by Hash). get on a missing artifact returns an explicit not-found result/error
+    and never fabricates an empty artifact; exists returns false for a missing hash. Reject non-Generic hash kinds (psg:sha256: and ev:sha256:)
+    as artifact-store keys; the artifact table is keyed only by generic sha256: hashes.'
+  - 'Duplicate insertion is transaction-safe and a race/retry converges to the same result: same bytes, kind and media_type give the same hash
+    and one row; a metadata mismatch gives a conflict with the existing row unchanged. Do not solve concurrency by weakening uniqueness or adding
+    duplicate rows.'
+  - 'Tests cover at minimum:
+
+
+    - first put inserts one row;
+
+    - identical bytes with identical kind and media_type put twice return the same hash;
+
+    - a duplicate put leaves the original created_at unchanged;
+
+    - different bytes produce different hashes;
+
+    - same bytes with a different ArtifactKind return ArtifactMetadataConflict;
+
+    - same bytes with a different media_type return ArtifactMetadataConflict;
+
+    - a metadata conflict leaves the original row byte-for-byte unchanged;
+
+    - get returns all five persisted fields correctly;
+
+    - exists true/false behavior;
+
+    - the artifact hash is the generic sha256: kind;
+
+    - the store rejects psg:sha256: key lookup where applicable;
+
+    - the store rejects ev:sha256: key lookup where applicable;
+
+    - an unknown persisted ArtifactKind string fails explicitly;
+
+    - duplicate/repeated insertion never creates more than one row;
+
+    - transaction rollback leaves no partial artifact on failure.
+
+
+    If an actual SHA-256 collision cannot reasonably be generated in a unit test, implement the integrity check in code but do not fabricate a
+    cryptographic collision test.'
   tests:
   - cargo test -p plumb-artifacts
   acceptance:
   - Putting identical bytes twice returns the same hash and stores one row; differing bytes return differing hashes.
+  - A duplicate put with identical bytes, kind and media_type is idempotent and keeps the original created_at; the same bytes with a different
+    kind or media_type return ArtifactMetadataConflict and leave the existing row unchanged; get and exists reject non-generic hash keys; an unknown
+    persisted kind fails explicitly; a failed put leaves no partial row.
   source_refs:
   - SRCREF-440BF23BDA
   - SRCREF-AED4772768
