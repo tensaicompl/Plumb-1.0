@@ -2,7 +2,7 @@ plan_version: 3.0-draft.1
 release: pilot-v3-foundation
 tasks:
 - id: P0.1
-  status: pending
+  status: done
 - id: P0.2
   status: pending
 - id: F0.1
