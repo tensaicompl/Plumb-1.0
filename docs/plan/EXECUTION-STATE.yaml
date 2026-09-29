@@ -12,7 +12,7 @@ tasks:
 - id: F0.3
   status: done
 - id: F0.4
-  status: pending
+  status: done
 - id: F0.5
   status: pending
 - id: F0.6
