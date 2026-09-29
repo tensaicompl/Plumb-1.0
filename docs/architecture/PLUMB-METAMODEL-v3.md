@@ -141,8 +141,8 @@ Readable aliases are optional and mutable; identifiers are not.
 Recommended namespace conventions (each concrete ID MUST also satisfy the normative grammar above):
 
 ```text
-src:<hash8>
-evd:<hash12>
+src:<hash16>
+evd:<hash16>
 req:<namespace>:<key>
 criterion:<req>:<key>
 term:<namespace>:<key>
