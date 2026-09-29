@@ -89,10 +89,13 @@ tasks:
   - Set ui/package.json `engines` exactly to {"node":"24.21.0","npm":"11.19.0"} and `packageManager` exactly to "npm@11.19.0".
   - Set ui/package.json scripts at P0.2 exactly to {"typecheck":"tsc --noEmit"}. U0.1 later replaces/extends the scripts block with its fully
     specified UI scripts.
+  - 'Set ui/package.json install-script policy exactly to "allowScripts": {"msw": false}. MSW''s postinstall worker synchronization is not required
+    by the P0.2 skeleton and must not execute. Any other package with an unreviewed install script must make P0.2 block.'
   - Copy the exact [workspace.dependencies] and crate dependency matrix from this plan into Cargo.toml files; crate Cargo.toml files must use
     workspace = true and may not alter versions/features.
-  - Install exactly the UI runtime and development package names listed in this plan with npm and commit ui/package-lock.json. Do not add any
-    other package.
+  - Install exactly the versioned UI runtime and development packages listed in §§5.2-5.3 with npm using --save-exact --strict-peer-deps --strict-allow-scripts,
+    apply the JavaScript dependency installation policy in §5.3.1, and commit ui/package-lock.json. Do not add any other package. Do not use --ignore-scripts,
+    --force, --legacy-peer-deps, --dangerously-allow-all-scripts or npm overrides, and do not regenerate the lockfile with npm install --package-lock-only.
   - 'Create Makefile targets with these exact P0.2 behaviors:
 
 
@@ -123,11 +126,17 @@ tasks:
   tests:
   - cargo check --workspace
   - cargo test --workspace
-  - cd ui && npm install --package-lock-only && npm ci && npm run typecheck
+  - cd ui && npm ci --strict-peer-deps --strict-allow-scripts
+  - cd ui && npm ls --depth=0
+  - cd ui && npm audit --audit-level=high
+  - cd ui && npm run typecheck
   acceptance:
   - rustc --version starts with `rustc 1.98.1`; node --version equals `v24.21.0`; npm --version equals `11.19.0`.
   - Workspace compiles with empty crates; Cargo.lock and ui/package-lock.json are committed; CI workflow uses the exact pinned toolchain and runner.
   - cc --version exits 0 and identifies an installed native C compiler.
+  - cd ui && npm ci --strict-peer-deps --strict-allow-scripts, npm ls --depth=0, npm audit --audit-level=high and npm run typecheck exit 0; npm
+    audit reports zero HIGH and zero CRITICAL findings; no unreviewed install script exists; every direct UI dependency in ui/package.json equals
+    its exact §§5.2-5.3 version.
   source_refs:
   - SRCREF-E772EBFE16
   - SRCREF-340600AFE6
@@ -142,12 +151,17 @@ tasks:
   - cc --version
   - cargo check --workspace
   - cargo test --workspace
-  - cd ui && npm install react react-dom @tanstack/react-router @tanstack/react-query zustand @radix-ui/react-dialog @radix-ui/react-dropdown-menu
-    @radix-ui/react-tabs @radix-ui/react-tooltip @radix-ui/react-popover @radix-ui/react-select @radix-ui/react-checkbox @radix-ui/react-radio-group
-    @radix-ui/react-toast tailwindcss @tailwindcss/vite elkjs openapi-fetch date-fns zod
-  - cd ui && npm install --save-dev typescript vite vitest jsdom @types/react @types/react-dom @types/node @testing-library/react @testing-library/user-event
-    msw openapi-typescript @stoplight/prism-cli playwright @axe-core/playwright eslint typescript-eslint eslint-plugin-jsx-a11y eslint-plugin-react-hooks
-    prettier
+  - cd ui && npm install --save-exact --strict-peer-deps --strict-allow-scripts react@19.3.0 react-dom@19.3.0 @tanstack/react-router@1.170.40
+    @tanstack/react-query@5.104.0 zustand@5.0.15 @radix-ui/react-dialog@1.1.23 @radix-ui/react-dropdown-menu@2.1.24 @radix-ui/react-tabs@1.1.21
+    @radix-ui/react-tooltip@1.2.16 @radix-ui/react-popover@1.1.23 @radix-ui/react-select@2.3.7 @radix-ui/react-checkbox@1.3.11 @radix-ui/react-radio-group@1.4.7
+    @radix-ui/react-toast@1.2.23 tailwindcss@4.3.3 @tailwindcss/vite@4.3.3 elkjs@0.12.0 openapi-fetch@0.17.0 date-fns@4.4.0 zod@4.6.5
+  - cd ui && npm install --save-dev --save-exact --strict-peer-deps --strict-allow-scripts typescript@5.9.3 vite@8.3.1 vitest@5.0.2 jsdom@30.1.1
+    @types/react@19.3.0 @types/react-dom@19.3.0 @types/node@26.6.3 @testing-library/react@16.3.3 @testing-library/dom@10.4.2 @testing-library/user-event@14.6.7
+    msw@2.15.0 openapi-typescript@7.13.0 playwright@1.63.0 @axe-core/playwright@4.13.0 eslint@9.39.5 typescript-eslint@8.71.0 eslint-plugin-jsx-a11y@6.10.2
+    eslint-plugin-react-hooks@7.1.1 prettier@3.9.9
+  - cd ui && npm ci --strict-peer-deps --strict-allow-scripts
+  - cd ui && npm ls --depth=0
+  - cd ui && npm audit --audit-level=high
   - cd ui && npm run typecheck
   commit_message: 'P0.2: Create Rust and UI workspace skeleton'
 - id: F0.1
@@ -1576,14 +1590,15 @@ tasks:
   - crates/plumb-inference/tests/provider_contract.rs
   - scripts/manual-llm-smoke.sh
   steps:
-  - Add Anthropic provider under Cargo feature llm using reqwest.
+  - Add AnthropicProvider under the plumb-inference Cargo feature anthropic using reqwest. The plumb-api and plumb-cli llm features enable plumb-inference/anthropic
+    as defined in §5.4.
   - Provider accepts only InferenceRequest and returns InferenceArtifact; caller supplies JSON schema/prompt artifacts.
   - Record provider, model, parameters, raw_response_hash and validated_output_hash.
   - No live provider test runs in CI; manual smoke script requires ANTHROPIC_API_KEY and exits with a clear error when absent.
   - Provider/model string is configuration, not hard-coded semantic truth.
   tests:
   - cargo test -p plumb-inference --no-default-features
-  - cargo test -p plumb-inference --features llm
+  - cargo test -p plumb-inference --features anthropic
   acceptance:
   - Mock/Null contract tests pass; feature-off build has no network dependency path; manual script is documented.
   source_refs:
@@ -1594,7 +1609,7 @@ tasks:
   - Do not make Anthropic the only possible trait implementation.
   commands:
   - cargo test -p plumb-inference --no-default-features
-  - cargo test -p plumb-inference --features llm
+  - cargo test -p plumb-inference --features anthropic
   - "if cargo tree -p plumb-inference --no-default-features -e normal | grep -qE '(^|[[:space:]])reqwest v'; then\n  echo \"ERROR: reqwest present\
     \ in feature-off plumb-inference dependency graph\" >&2\n  exit 1\nfi"
   - cargo fmt --check

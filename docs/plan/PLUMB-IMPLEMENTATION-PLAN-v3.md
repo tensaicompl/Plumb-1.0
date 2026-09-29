@@ -222,23 +222,51 @@ cargo install cargo-llvm-cov --version 0.9.1 --locked
 cargo install cargo-mutants --version 27.1.0 --locked
 ```
 
-### 5.2 Exact UI runtime package names
+### 5.2 Exact UI runtime dependency versions
 
-The scaffold task SHALL run one install command containing exactly these runtime names:
-
-```bash
-npm install react react-dom @tanstack/react-router @tanstack/react-query zustand @radix-ui/react-dialog @radix-ui/react-dropdown-menu @radix-ui/react-tabs @radix-ui/react-tooltip @radix-ui/react-popover @radix-ui/react-select @radix-ui/react-checkbox @radix-ui/react-radio-group @radix-ui/react-toast tailwindcss @tailwindcss/vite elkjs openapi-fetch date-fns zod
-```
-
-### 5.3 Exact UI development package names
+The scaffold task SHALL run one install command containing exactly these exact-version runtime packages:
 
 ```bash
-npm install --save-dev typescript vite vitest jsdom @types/react @types/react-dom @types/node @testing-library/react @testing-library/user-event msw openapi-typescript @stoplight/prism-cli playwright @axe-core/playwright eslint typescript-eslint eslint-plugin-jsx-a11y eslint-plugin-react-hooks prettier
+npm install --save-exact --strict-peer-deps --strict-allow-scripts react@19.3.0 react-dom@19.3.0 @tanstack/react-router@1.170.40 @tanstack/react-query@5.104.0 zustand@5.0.15 @radix-ui/react-dialog@1.1.23 @radix-ui/react-dropdown-menu@2.1.24 @radix-ui/react-tabs@1.1.21 @radix-ui/react-tooltip@1.2.16 @radix-ui/react-popover@1.1.23 @radix-ui/react-select@2.3.7 @radix-ui/react-checkbox@1.3.11 @radix-ui/react-radio-group@1.4.7 @radix-ui/react-toast@1.2.23 tailwindcss@4.3.3 @tailwindcss/vite@4.3.3 elkjs@0.12.0 openapi-fetch@0.17.0 date-fns@4.4.0 zod@4.6.5
 ```
+
+### 5.3 Exact UI development dependency versions
+
+```bash
+npm install --save-dev --save-exact --strict-peer-deps --strict-allow-scripts typescript@5.9.3 vite@8.3.1 vitest@5.0.2 jsdom@30.1.1 @types/react@19.3.0 @types/react-dom@19.3.0 @types/node@26.6.3 @testing-library/react@16.3.3 @testing-library/dom@10.4.2 @testing-library/user-event@14.6.7 msw@2.15.0 openapi-typescript@7.13.0 playwright@1.63.0 @axe-core/playwright@4.13.0 eslint@9.39.5 typescript-eslint@8.71.0 eslint-plugin-jsx-a11y@6.10.2 eslint-plugin-react-hooks@7.1.1 prettier@3.9.9
+```
+
+P0.2 resolves no direct JavaScript dependency versions dynamically. Direct runtime and development dependency versions are fixed by this plan. Transitive versions are frozen by ui/package-lock.json. No direct version or lockfile may be changed after P0.2 except through a human-approved plan revision.
 
 The resulting `ui/package-lock.json` is committed by `P0.2` and is authoritative thereafter. No later task may run `npm update`, change package versions, or add another package.
 
+`@stoplight/prism-cli` is not an allowed Plumb dependency; the v3 build does not use Prism. MSW is the approved API mocking dependency for the pilot.
+
 No other Rust or JavaScript dependency is permitted.
+
+### 5.3.1 JavaScript dependency installation policy
+
+All P0.2 npm installation commands use `--save-exact --strict-peer-deps --strict-allow-scripts`. `ui/package.json` declares the install-script policy `"allowScripts": {"msw": false}`; MSW's postinstall worker synchronization is not required by the P0.2 skeleton and must not execute.
+
+A P0.2 JavaScript dependency installation is blocking on:
+
+- npm `ERESOLVE` or peer dependency conflict;
+- unsupported Node/npm engine;
+- package integrity/checksum failure;
+- an install script that is neither explicitly allowed nor explicitly denied;
+- npm audit finding of HIGH or CRITICAL severity;
+- install command, `npm ci`, `npm ls --depth=0`, `npm audit --audit-level=high` or `npm run typecheck` returning non-zero.
+
+The following are non-blocking but must be reported:
+
+- deprecation notices for dependencies in the exact human-approved frozen graph;
+- funding notices;
+- ordinary package-maintenance notices;
+- LOW or MODERATE npm audit findings.
+
+`eslint@9.39.5` is an explicitly approved temporary pilot dev-tool version despite its deprecation/EOL notice.
+
+Do not use `--ignore-scripts`, `--force`, `--legacy-peer-deps`, `--dangerously-allow-all-scripts` or npm overrides. No warning may be suppressed merely to obtain a successful installation.
 
 ### 5.4 Exact Rust crate dependency matrix
 
@@ -1043,9 +1071,10 @@ python3 scripts/verify-plan-contract.py
 3. Write .node-version containing exactly `24.21.0` followed by one newline.
 4. Set ui/package.json `engines` exactly to {"node":"24.21.0","npm":"11.19.0"} and `packageManager` exactly to "npm@11.19.0".
 5. Set ui/package.json scripts at P0.2 exactly to {"typecheck":"tsc --noEmit"}. U0.1 later replaces/extends the scripts block with its fully specified UI scripts.
-6. Copy the exact [workspace.dependencies] and crate dependency matrix from this plan into Cargo.toml files; crate Cargo.toml files must use workspace = true and may not alter versions/features.
-7. Install exactly the UI runtime and development package names listed in this plan with npm and commit ui/package-lock.json. Do not add any other package.
-8. Create Makefile targets with these exact P0.2 behaviors:
+6. Set ui/package.json install-script policy exactly to "allowScripts": {"msw": false}. MSW's postinstall worker synchronization is not required by the P0.2 skeleton and must not execute. Any other package with an unreviewed install script must make P0.2 block.
+7. Copy the exact [workspace.dependencies] and crate dependency matrix from this plan into Cargo.toml files; crate Cargo.toml files must use workspace = true and may not alter versions/features.
+8. Install exactly the versioned UI runtime and development packages listed in §§5.2-5.3 with npm using --save-exact --strict-peer-deps --strict-allow-scripts, apply the JavaScript dependency installation policy in §5.3.1, and commit ui/package-lock.json. Do not add any other package. Do not use --ignore-scripts, --force, --legacy-peer-deps, --dangerously-allow-all-scripts or npm overrides, and do not regenerate the lockfile with npm install --package-lock-only.
+9. Create Makefile targets with these exact P0.2 behaviors:
 
    - check: run cargo check --workspace, then ui-check
    - test: run cargo test --workspace
@@ -1057,10 +1086,10 @@ python3 scripts/verify-plan-contract.py
    - all: depend on check and test
 
    The openapi and e2e targets are deliberate readiness checks. They are expected to return failure until the later tasks responsible for those artifacts create them. Do not put unfinished implementation markers or dummy commands into these targets.
-9. Create CI on ubuntu-24.04 using actions/checkout@v4 and actions/setup-node@v4 with node-version 24.21.0; install npm@11.19.0; install Rust 1.98.1 with rustfmt, clippy, llvm-tools-preview.
-10. CI verifies the native C toolchain by running cc --version; the ubuntu-24.04 runner remains the pinned CI operating-system baseline.
-11. CI installs cargo-llvm-cov exactly 0.9.1 and cargo-mutants exactly 27.1.0 using cargo install --version ... --locked.
-12. If local node --version is not v24.21.0 or npm --version is not 11.19.0, stop with BLOCKED-ENVIRONMENT rather than using a different version.
+10. Create CI on ubuntu-24.04 using actions/checkout@v4 and actions/setup-node@v4 with node-version 24.21.0; install npm@11.19.0; install Rust 1.98.1 with rustfmt, clippy, llvm-tools-preview.
+11. CI verifies the native C toolchain by running cc --version; the ubuntu-24.04 runner remains the pinned CI operating-system baseline.
+12. CI installs cargo-llvm-cov exactly 0.9.1 and cargo-mutants exactly 27.1.0 using cargo install --version ... --locked.
+13. If local node --version is not v24.21.0 or npm --version is not 11.19.0, stop with BLOCKED-ENVIRONMENT rather than using a different version.
 
 **Commands**
 
@@ -1072,8 +1101,11 @@ npm --version
 cc --version
 cargo check --workspace
 cargo test --workspace
-cd ui && npm install react react-dom @tanstack/react-router @tanstack/react-query zustand @radix-ui/react-dialog @radix-ui/react-dropdown-menu @radix-ui/react-tabs @radix-ui/react-tooltip @radix-ui/react-popover @radix-ui/react-select @radix-ui/react-checkbox @radix-ui/react-radio-group @radix-ui/react-toast tailwindcss @tailwindcss/vite elkjs openapi-fetch date-fns zod
-cd ui && npm install --save-dev typescript vite vitest jsdom @types/react @types/react-dom @types/node @testing-library/react @testing-library/user-event msw openapi-typescript @stoplight/prism-cli playwright @axe-core/playwright eslint typescript-eslint eslint-plugin-jsx-a11y eslint-plugin-react-hooks prettier
+cd ui && npm install --save-exact --strict-peer-deps --strict-allow-scripts react@19.3.0 react-dom@19.3.0 @tanstack/react-router@1.170.40 @tanstack/react-query@5.104.0 zustand@5.0.15 @radix-ui/react-dialog@1.1.23 @radix-ui/react-dropdown-menu@2.1.24 @radix-ui/react-tabs@1.1.21 @radix-ui/react-tooltip@1.2.16 @radix-ui/react-popover@1.1.23 @radix-ui/react-select@2.3.7 @radix-ui/react-checkbox@1.3.11 @radix-ui/react-radio-group@1.4.7 @radix-ui/react-toast@1.2.23 tailwindcss@4.3.3 @tailwindcss/vite@4.3.3 elkjs@0.12.0 openapi-fetch@0.17.0 date-fns@4.4.0 zod@4.6.5
+cd ui && npm install --save-dev --save-exact --strict-peer-deps --strict-allow-scripts typescript@5.9.3 vite@8.3.1 vitest@5.0.2 jsdom@30.1.1 @types/react@19.3.0 @types/react-dom@19.3.0 @types/node@26.6.3 @testing-library/react@16.3.3 @testing-library/dom@10.4.2 @testing-library/user-event@14.6.7 msw@2.15.0 openapi-typescript@7.13.0 playwright@1.63.0 @axe-core/playwright@4.13.0 eslint@9.39.5 typescript-eslint@8.71.0 eslint-plugin-jsx-a11y@6.10.2 eslint-plugin-react-hooks@7.1.1 prettier@3.9.9
+cd ui && npm ci --strict-peer-deps --strict-allow-scripts
+cd ui && npm ls --depth=0
+cd ui && npm audit --audit-level=high
 cd ui && npm run typecheck
 ```
 
@@ -1081,13 +1113,17 @@ cd ui && npm run typecheck
 
 - `cargo check --workspace`
 - `cargo test --workspace`
-- `cd ui && npm install --package-lock-only && npm ci && npm run typecheck`
+- `cd ui && npm ci --strict-peer-deps --strict-allow-scripts`
+- `cd ui && npm ls --depth=0`
+- `cd ui && npm audit --audit-level=high`
+- `cd ui && npm run typecheck`
 
 **Acceptance**
 
 - rustc --version starts with `rustc 1.98.1`; node --version equals `v24.21.0`; npm --version equals `11.19.0`.
 - Workspace compiles with empty crates; Cargo.lock and ui/package-lock.json are committed; CI workflow uses the exact pinned toolchain and runner.
 - cc --version exits 0 and identifies an installed native C compiler.
+- cd ui && npm ci --strict-peer-deps --strict-allow-scripts, npm ls --depth=0, npm audit --audit-level=high and npm run typecheck exit 0; npm audit reports zero HIGH and zero CRITICAL findings; no unreviewed install script exists; every direct UI dependency in ui/package.json equals its exact §§5.2-5.3 version.
 
 **Supporting references**
 
@@ -3183,7 +3219,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Required actions**
 
-1. Add Anthropic provider under Cargo feature llm using reqwest.
+1. Add AnthropicProvider under the plumb-inference Cargo feature anthropic using reqwest. The plumb-api and plumb-cli llm features enable plumb-inference/anthropic as defined in §5.4.
 2. Provider accepts only InferenceRequest and returns InferenceArtifact; caller supplies JSON schema/prompt artifacts.
 3. Record provider, model, parameters, raw_response_hash and validated_output_hash.
 4. No live provider test runs in CI; manual smoke script requires ANTHROPIC_API_KEY and exits with a clear error when absent.
@@ -3193,7 +3229,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ```bash
 cargo test -p plumb-inference --no-default-features
-cargo test -p plumb-inference --features llm
+cargo test -p plumb-inference --features anthropic
 if cargo tree -p plumb-inference --no-default-features -e normal | grep -qE '(^|[[:space:]])reqwest v'; then
   echo "ERROR: reqwest present in feature-off plumb-inference dependency graph" >&2
   exit 1
@@ -3205,7 +3241,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 **Tests**
 
 - `cargo test -p plumb-inference --no-default-features`
-- `cargo test -p plumb-inference --features llm`
+- `cargo test -p plumb-inference --features anthropic`
 
 **Acceptance**
 
