@@ -223,6 +223,8 @@ pub struct InferenceArtifact {
 
 A replay uses the persisted artifact.
 
+`Agent` and `DerivationRecord` are PSG provenance payloads defined once in the metamodel (§§5.3-5.4) and implemented in `plumb-psg`. The inference layer reuses those types (for example when materializing a `DerivationRecord` from persisted inference artifacts) and never defines duplicate versions.
+
 A user explicitly choosing "re-run with model" creates a **new compile run**, not a replay of the old one.
 
 ### 4.5 `Proposal`

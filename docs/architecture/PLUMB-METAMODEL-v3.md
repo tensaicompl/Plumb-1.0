@@ -347,6 +347,30 @@ raw_response_hash
 validated_output_hash
 ```
 
+Normative payload (§24.1):
+
+```rust
+pub struct DerivationRecord {
+    pub id: Id,
+    pub kind: DerivationKind,
+    pub stage: String,
+    pub input_refs: Vec<String>,
+    pub output_refs: Vec<String>,
+    pub created_at: Timestamp,
+
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub prompt_template_hash: Option<Hash>,
+    pub schema_hash: Option<Hash>,
+    pub context_hash: Option<Hash>,
+    pub parameters: Option<Value>,
+    pub raw_response_hash: Option<Hash>,
+    pub validated_output_hash: Option<Hash>,
+}
+```
+
+When `kind` is `llm_inference`, all eight LLM-specific fields are mandatory; for every other kind all eight MUST be absent. Invalid combinations are rejected by explicit validation and by deserialization. `input_refs` and `output_refs` are strings because provenance inputs and outputs may identify either PSG IDs or content-addressed artifacts/hashes. `DerivationRecord` is a PSG payload (`NodePayload::DerivationRecord`); a node carrying it MUST have `Node.id == DerivationRecord.id`.
+
 Reproducibility means rebuilding from source + accepted decisions + persisted inference artifacts, not re-calling a live model.
 
 ### 5.4 `Agent`
@@ -361,6 +385,8 @@ llm_model
 compiler_stage
 external_system
 ```
+
+Normative payload: `pub struct Agent { pub agent_kind: AgentKind }`. The node envelope ID identifies the actual actor, service, model or stage instance; the payload carries no name, provider details or free-form properties. `Agent` and `DerivationRecord` are defined once, in the PSG; the inference layer reuses them and never defines duplicates.
 
 ### 5.5 Standards mapping
 
@@ -1302,22 +1328,24 @@ conventions
 
 ### 12.5 `View`
 
-Required:
+This is the single normative `View` payload (it supersedes the separate field lists previously given here and in §19):
 
-```text
-name
-viewpoint_ref
-architecture_description_ref
+```rust
+pub struct View {
+    pub name: String,
+    pub viewpoint_ref: Id,
+    pub architecture_description_ref: Id,
+
+    pub root_refs: Option<Vec<Id>>,
+    pub filter: Option<Value>,
+
+    pub projection_rules: Vec<String>,
+    pub layout_ref: Option<Hash>,
+    pub style_ref: Option<Hash>,
+}
 ```
 
-Optional:
-
-```text
-root_refs[]
-filter
-```
-
-Layout/style are stored in view metadata and excluded from the semantic hash.
+`projection_rules` are semantic view-definition rules. `layout_ref` and `style_ref` point to separately stored and separately hashed view metadata; coordinates, routes and style values are never embedded in the `View` payload. `semantic_hash` of a `View` excludes `layout_ref` and `style_ref`, so changing only layout/style metadata does not change `semantic_hash`.
 
 ### 12.6 `ModelKind`
 
@@ -2093,16 +2121,7 @@ The following are Plumb invariants, independent of any external standard claim.
 
 A diagram is a `View`, not a second semantic model.
 
-A view contains:
-
-```text
-viewpoint_ref
-root_refs
-filter
-projection_rules
-layout_ref
-style_ref
-```
+The `View` payload is defined normatively in §12.5 (name, viewpoint_ref, architecture_description_ref, root_refs, filter, projection_rules, layout_ref, style_ref).
 
 View metadata contains:
 
@@ -2306,6 +2325,7 @@ pub enum NodePayload {
     // Evidence / governance
     SourceArtifact(SourceArtifact),
     EvidenceFragment(EvidenceFragment),
+    DerivationRecord(DerivationRecord),
     Agent(Agent),
     Finding(Finding),
     Question(Question),
@@ -2372,9 +2392,9 @@ pub enum NodePayload {
     Interface(ArchitectureElement),
     DataStore(ArchitectureElement),
     ExternalSystem(ArchitectureElement),
-    DeploymentNode(DeploymentNode),
-    RuntimeEnvironment(RuntimeEnvironment),
-    NetworkZone(NetworkZone),
+    DeploymentNode(ArchitectureElement),
+    RuntimeEnvironment(ArchitectureElement),
+    NetworkZone(ArchitectureElement),
     ArchitectureDecision(ArchitectureDecision),
     Technology(Technology),
     TechnologySelection(TechnologySelection),
@@ -2415,6 +2435,135 @@ pub enum NodePayload {
 ```
 
 This looks large, but it is intentionally a semantic type system rather than a generic graph with undocumented conventions.
+
+### 24.1 Payload binding contract (normative)
+
+This section fixes the Rust/JSON binding of every `NodePayload` variant (86 variants, including `DerivationRecord` and `Extension`). Types not derivable from these rules MUST NOT be inferred.
+
+**Required / optional.** A field listed under *Required* is `T`; under *Optional* it is `Option<T>`. A required list is `Vec<T>`; an optional list is `Option<Vec<T>>`. `None` serializes as JSON `null` (no `skip_serializing_if`); a missing optional field deserializes as `None`; a missing required field fails deserialization.
+
+**Unknown fields.** Every core payload struct and every nested typed struct rejects unknown fields (`#[serde(deny_unknown_fields)]`). Extensibility exists only through the node `extensions` map and `NodePayload::Extension`; unknown core fields are never silently preserved.
+
+**Default scalar binding.** Unless another rule applies, a scalar field is `String` and a list of scalars is `Vec<String>`. No enum is created merely because a field name ends in `kind`, `status`, `type`, `class`, `mode`, `policy` or similar; only the closed vocabularies below are enums.
+
+**References, hashes, timestamps.** Unless excepted: `*_ref` → `Id`, `*_refs[]` → `Vec<Id>`, `*_hash` → `Hash`, `*_hashes[]` → `Vec<Hash>` (`plumb_core` types). The fields `created_at_source`, `source_timestamp`, `created_at`, `decided_at`, `expires_at`, `started_at`, `finished_at` and `executed_at` are `Timestamp`. `target_date` is a calendar date and is `String`.
+
+**Exceptions.** `StandardMapping.clause_ref` → `Option<String>`; `Finding.standard_rule_ref` → `Option<String>`; `ResolutionDecision.patch_ref` → `Hash`; `DerivationRecord.input_refs` and `output_refs` → `Vec<String>`; `View.layout_ref`, `View.style_ref` and `TestReceipt.logs_ref` → `Option<Hash>`; `CodeBinding.repository_ref` → `String`.
+
+**Other primitives.** `Attribute.nullable` → `bool`; `Entity.aggregate_root` → `Option<bool>`; `Attribute.precision` → `Option<u32>`; `DomainRelationship.snapshot_semantics` → `Option<bool>`; `StandardsProfileStandard.required` → `bool`. Evidence-locator integer indexes are `u64`; page-region coordinates are `f64`.
+
+**Open JSON (`serde_json::Value`).** Allowed only for: `DerivationRecord.parameters` → `Option<Value>`; `Question.answer_schema` → `Option<Value>`; `ResolutionDecision.answer` → `Value`; `Assumption.default_value` → `Option<Value>`; `DecisionTable.inputs`, `outputs`, `rows` → `Vec<Value>`; `Calculation.examples` → `Option<Vec<Value>>`; `Calendar.week_pattern` → `Value`; `Scenario.given` → `Vec<Value>`; `Scenario.when` → `Value`; `Scenario.then` → `Vec<Value>`; `QualityScenario.threshold` → `Value`; `View.filter` → `Option<Value>`; `DataSchema.inline_schema` → `Option<Value>`; `TestCase.steps`, `expected` → `Vec<Value>`; `ScenarioRun.trace` → `Vec<Value>`; `ExtensionPayload.data` → `Value`. No other core payload field uses `Value`. Later tasks may add deterministic interpretation of these fields but may not change their persisted type without a human-approved plan revision.
+
+**Expressions.** The PSG does not depend on `plumb-expr`. Expression-bearing fields (`guard_expr`, `condition_expr`, `preconditions[]`, `postconditions[]`, `action_expr`, `expression`, `timer_expr`) are `String` / `Vec<String>` / `Option<...>` per their optionality; parsing and typechecking belong to `plumb-expr`.
+
+**Closed vocabularies.** Only these are Rust enums; each serializes exactly as listed, and unknown values are rejected:
+
+| Enum | Field | Serialized values |
+|---|---|---|
+| `DerivationKind` | `DerivationRecord.kind` | `deterministic_rule`, `parser`, `import`, `human_edit`, `human_resolution`, `llm_inference`, `recovery`, `migration`, `external_sync` |
+| `AgentKind` | `Agent.agent_kind` | `human`, `organization`, `software_service`, `llm_model`, `compiler_stage`, `external_system` |
+| `FindingSeverity` | `Finding.severity` | `blocker`, `error`, `warn`, `info` |
+| `QuestionKind` | `Question.question_kind` | `YesNo`, `PickOne`, `PickMany`, `Number`, `Text`, `Cardinality`, `Unit`, `Precision`, `Rounding`, `FormulaConfirm`, `RuleCell`, `Calendar`, `RoleAssignment`, `Permission`, `QualityThreshold`, `ArchitectureChoice`, `TechnologyChoice`, `InterfaceChoice`, `VerificationMethod` (exact spellings, not snake_case) |
+| `RequirementKind` | `Requirement.requirement_kind` | `functional`, `quality`, `interface`, `data`, `security`, `operational`, `compliance`, `transition`, `constraint` |
+| `RequirementLevel` | `Requirement.level` | `stakeholder`, `system`, `software`, `subsystem`, `component`, `interface` |
+| `Modality` | `Requirement.modality` | `shall`, `should`, `may`, `shall_not` |
+| `ConstraintCategory` | `Constraint.constraint_category` | `business`, `technical`, `technology`, `security`, `data`, `integration`, `operational`, `legal`, `regulatory`, `organizational`, `legacy` |
+| `ConstraintStrength` | `Constraint.strength` | `mandatory`, `preferred`, `prohibited` |
+| `ConceptKind` | `Concept.concept_kind` | `object_type`, `fact_type`, `value_type`, `role`, `other` |
+| `ActorKind` | `Actor.actor_kind` | `human`, `system`, `external_system`, `organization` |
+| `OperationKind` | `Operation.operation_kind` | `command`, `query` |
+| `OutcomeKind` | `Outcome.outcome_kind` | `success`, `business_failure`, `technical_failure`, `partial` |
+| `ProcessNodeKind` | `ProcessNode.node_kind` | `start`, `end`, `human_task`, `service_task`, `exclusive_gateway`, `parallel_split`, `parallel_join`, `message_event`, `timer_event`, `error_event`, `subprocess` |
+| `RuleKind` | `Rule.rule_kind` | `constraint`, `derivation`, `permission`, `validation`, `business` |
+| `ScenarioKind` | `Scenario.scenario_kind` | `acceptance`, `boundary`, `failure`, `state_transition`, `rule_row`, `quality`, `integration`, `regression` |
+| `SeparationConstraintKind` | `SeparationConstraint.constraint_kind` | `static_separation_of_duty`, `dynamic_separation_of_duty`, `mutual_exclusion`, `required_combination` |
+| `ArchitectureCandidateStatus` | `ArchitectureCandidate.status` | `exploring`, `candidate`, `accepted`, `rejected`, `superseded` |
+| `TechnologySelectionStatus` | `TechnologySelection.status` | `candidate`, `selected`, `rejected`, `legacy`, `prohibited` |
+| `ApiContractKind` | `ApiContract.contract_kind` | `http`, `rpc`, `other` |
+| `VerificationKind` | `VerificationObligation.verification_kind` | `test`, `scenario`, `analysis`, `inspection`, `review`, `demonstration`, `formal_check`, `architecture_check`, `security_check` |
+| `ScenarioRunResult` | `ScenarioRun.result` | `pass`, `fail`, `undecidable` |
+
+**Fields that remain `String`** (no closed authoritative vocabulary yet; optionality per the metamodel): `SourceArtifact.source_kind`, `SourceArtifact.classification`, `Finding.family`, `Finding.status`, `Question.status`, `Assumption.status`, `Stakeholder.stakeholder_kind`, `AcceptanceCriterion.criterion_kind`, `Term.status`, `Attribute.value_type`, `Attribute.data_classification`, `DomainRelationship.relationship_kind`, `DomainRelationship.cardinality_from`, `DomainRelationship.cardinality_to`, `DomainRelationship.ownership`, `Operation.idempotency`, `Operation.transaction_semantics`, `Process.process_kind`, `DecisionTable.hit_policy`, `Calculation.result_type`, `Calculation.rounding`, `Scenario.confirmation_status`, `Principal.principal_kind`, `ResourceScope.scope_kind`, `Measure.measure_type`, `Measure.aggregation`, `ArchitectureDecision.status`, `Technology.technology_kind`, `DataSchema.schema_kind`, `Migration.migration_kind`, `TestExecution.result`, `TestReceipt.result`, `ArchitectureCheck.result`, `CoverageRecord.coverage_kind`, `CoverageRecord.status`.
+
+**`EvidenceLocator`** (`EvidenceFragment.locator`) is `#[serde(tag = "kind", content = "data")]` with exactly these variants (tag strings equal the variant names); nested locator objects reject unknown fields, and only structural validation happens at this layer:
+
+```rust
+pub enum EvidenceLocator {
+    TextRange { start: u64, end: u64 },
+    PageRegion { page: u64, x: Option<f64>, y: Option<f64>, width: Option<f64>, height: Option<f64> },
+    TableCell { table: u64, row: u64, column: u64 },
+    XmlPath { xpath: String },
+    JsonPointer { pointer: String },
+    ConversationTurn { turn_id: Id },
+    ExternalObject { object_id: String, field: Option<String> },
+}
+```
+
+**Explicit payload structures.**
+
+```rust
+pub struct Agent { pub agent_kind: AgentKind }
+
+pub struct SourceArtifact {
+    pub source_kind: String, pub display_name: String, pub content_hash: Hash, pub media_type: String,
+    pub external_uri: Option<String>, pub external_version: Option<String>, pub producer: Option<String>,
+    pub created_at_source: Option<Timestamp>, pub language: Option<String>, pub classification: Option<String>,
+}
+
+pub struct EvidenceFragment {
+    pub source_ref: Id, pub locator: EvidenceLocator, pub content_hash: Hash,
+    pub extracted_text: Option<String>, pub speaker: Option<String>, pub source_timestamp: Option<Timestamp>,
+}
+
+pub struct Finding {
+    pub code: String, pub family: String, pub severity: FindingSeverity, pub message: String,
+    pub status: String, pub affected_refs: Vec<Id>,
+    pub standard_rule_ref: Option<String>, pub suggested_resolution: Option<String>, pub waiver_ref: Option<Id>,
+}
+
+pub struct Question {
+    pub finding_ref: Id, pub question_kind: QuestionKind, pub prompt: String, pub status: String,
+    pub answer_schema: Option<Value>, pub stakeholder_ref: Option<Id>, pub priority: Option<String>,
+    pub round_ref: Option<Id>, pub context_refs: Option<Vec<Id>>,
+}
+
+pub struct ResolutionDecision {
+    pub question_ref: Option<Id>, pub proposal_ref: Option<Id>, pub answer: Value,
+    pub decided_by: Id, pub decided_at: Timestamp, pub patch_ref: Hash,
+    pub rationale: Option<String>, pub supersedes: Option<Id>,
+}
+
+pub struct ArchitectureElement {
+    pub name: String, pub description: Option<String>, pub responsibilities: Option<Vec<String>>,
+    pub technology_selection_refs: Option<Vec<Id>>, pub owner_ref: Option<Id>,
+}
+
+pub struct ApiOperation {
+    pub api_contract_ref: Id, pub operation_id: String,
+    pub method: Option<String>, pub path: Option<String>,
+    pub request_schema_ref: Option<Id>, pub response_schema_refs: Option<Vec<Id>>,
+    pub error_schema_refs: Option<Vec<Id>>, pub security_refs: Option<Vec<Id>>,
+}
+
+pub struct StandardsProfileStandard { pub standard_id: String, pub version: String, pub role: MappingRole, pub required: bool }
+
+pub struct StandardsProfile {
+    pub id: Id, pub name: String, pub version: String,
+    pub standards: Vec<StandardsProfileStandard>, pub validation_packs: Vec<String>,
+}
+
+pub struct ExtensionPayload { pub extension_type: ExtensionKey, pub data: Value }
+```
+
+`DerivationRecord` is defined in §5.3 and `View` in §12.5. `ResolutionDecision` requires at least one of `question_ref` and `proposal_ref` (both may be present). Whether `ApiOperation.method`/`path` are mandatory for an HTTP contract is later graph-semantic validation. `ArchitectureElement` is the payload of all ten architecture element variants (`SoftwareSystem`, `Container`, `Component`, `Module`, `Interface`, `DataStore`, `ExternalSystem`, `DeploymentNode`, `RuntimeEnvironment`, `NetworkZone`); the variant itself is the architectural type, so there is no `architecture_element_kind` field. `ArchitectureDecision` uses `drivers: Vec<Id>`, `alternatives: Vec<String>`, `selected_option: String`, `affected_refs: Option<Vec<Id>>`, `supersedes: Option<Id>`. `TechnologySelection` uses `applies_to_refs: Vec<Id>`, `alternatives: Option<Vec<Id>>`, `drivers: Option<Vec<Id>>`, `architecture_decision_ref: Option<Id>`. `ExtensionPayload` is the only generic semantic escape hatch and MUST NOT carry core semantics.
+
+**Remaining payloads.** Every other payload in §§5-16 preserves its exact field names and Required/Optional split, applies the rules above, and adds no fields.
+
+**Wire contract.** `NodePayload` is `#[serde(tag = "type", content = "data")]`; the `type` value is exactly the Rust variant name (not snake_case). Unknown variant names and extra top-level keys are rejected.
+
+**`NodeType`.** A closed enum with exactly one variant per `NodePayload` variant (86), with `NodePayload::node_type() -> NodeType` and `NodeType::as_str() -> &'static str` returning exactly the `type` tag. It is the stable discriminator for registries and indexes; type identity is never derived from Rust type-name strings.
+
+**Node.** `Node` (§4.1, §4.5) rejects unknown fields and exposes a deterministic `Node::validate()` with a typed error; deserialization enforces the same invariants: `revision != 0`, valid `AuditMeta`, and `Node.id == payload.id` for `DerivationRecord` and `StandardsProfile` payloads. Invalid nodes are never repaired. `tags` has no additional grammar and is preserved exactly. There is no universal confidence field.
 
 ---
 

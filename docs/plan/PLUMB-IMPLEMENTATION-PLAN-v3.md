@@ -280,7 +280,7 @@ Crate `Cargo.toml` files SHALL contain only the path/workspace dependencies belo
 | `plumb-patch` | `plumb-core`, `plumb-psg` | `serde`, `serde_json`, `petgraph`, `thiserror` | — | `proptest` |
 | `plumb-store` | `plumb-core`, `plumb-artifacts`, `plumb-psg`, `plumb-patch` | `serde`, `serde_json`, `rusqlite`, `time`, `thiserror` | — | `tempfile`, `proptest` |
 | `plumb-validation` | `plumb-core`, `plumb-artifacts`, `plumb-psg` | `serde`, `serde_json`, `serde_yaml`, `sha2`, `hex`, `thiserror` | — | `insta` |
-| `plumb-inference` | `plumb-core`, `plumb-artifacts` | `serde`, `serde_json`, `jsonschema`, `sha2`, `thiserror` | `reqwest` | `tempfile` |
+| `plumb-inference` | `plumb-core`, `plumb-artifacts`, `plumb-psg` | `serde`, `serde_json`, `jsonschema`, `sha2`, `thiserror` | `reqwest` | `tempfile` |
 | `plumb-compiler` | `plumb-core`, `plumb-artifacts`, `plumb-psg`, `plumb-patch`, `plumb-validation`, `plumb-inference` | `serde`, `serde_json`, `thiserror` | — | — |
 | `plumb-import` | `plumb-core`, `plumb-artifacts`, `plumb-psg`, `plumb-inference` | `serde`, `serde_json`, `regex`, `unicode-normalization`, `zip`, `quick-xml`, `thiserror` | — | `tempfile`, `insta` |
 | `plumb-lint` | `plumb-core`, `plumb-psg` | `serde`, `regex`, `thiserror` | — | `insta` |
@@ -987,7 +987,7 @@ A task is complete only when every acceptance statement is true and every test/c
 | 8 | `F0.6` — Implement Graph, typed indexes and semantic/evidence hashes | Foundation | NOW | F0.5 |
 | 9 | `F0.7` — Implement serializable SemanticPatch AST and deterministic apply/diff | Foundation | NOW | F0.6 |
 | 10 | `F0.8` — Implement immutable revision store, branch heads and CAS commit | Foundation | NOW | F0.7 |
-| 11 | `F0.9` — Implement provenance DerivationRecord and inference artifact contracts | Foundation | NOW | F0.8 |
+| 11 | `F0.9` — Implement inference artifact/provider contracts and provenance materialization | Foundation | NOW | F0.8 |
 | 12 | `F0.10` — Implement compiler stage plan/evaluate contract and compile-run records | Foundation | NOW | F0.9 |
 | 13 | `F0.11` — Implement impact seed and dirty-set reachability | Foundation | NOW | F0.10 |
 | 14 | `F0.12` — Implement standards profile loader and validation rule metadata | Foundation | NOW | F0.11 |
@@ -1450,17 +1450,34 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Required actions**
 
-1. Implement every core NodePayload variant defined by the metamodel namespaces: evidence/provenance, governance, intent/requirements, vocabulary/domain, functional behavior, authorization, quality, architecture, technical contracts, delivery, verification, standards profile and view model.
-2. Field names, required/optional status, and enums must follow the metamodel sections defining each type.
-3. Use serde tagged representation type/data as specified by metamodel §24.
+1. Implement every NodePayload variant of metamodel §24 — 86 variants, including DerivationRecord (immediately after EvidenceFragment) and Extension(ExtensionPayload) — across the namespaces evidence/provenance, governance, intent/requirements, vocabulary/domain, functional behavior, authorization, quality, architecture, technical contracts, delivery, verification, standards profile and view model.
+2. Field names, Required/Optional status, Rust types, closed enums, open-JSON fields, nested structures and unknown-field rejection follow the metamodel §24.1 payload binding contract exactly. Do not infer any type outside it; if a field cannot be typed uniquely by §24.1, stop with docs/blockers/F0.4.md (BLOCKED-SPEC-MISSING) naming the field.
+3. Use serde tagged representation type/data as specified by metamodel §§24-24.1; the type tag is exactly the Rust variant name. Unknown variant names and extra top-level keys are rejected.
 4. When the prose definition and skeleton disagree, do not choose; create docs/blockers/F0.4.md identifying both conflicting passages and stop.
-5. Once NodePayload exists, implement the final concrete Node envelope exactly as metamodel §4.1: Node { id: Id, revision: u32, status: ElementStatus, payload: NodePayload, evidence: Vec<EvidenceRef>, derivations: Vec<DerivationRef>, standards: Vec<StandardMapping>, tags: BTreeSet<String>, extensions: BTreeMap<ExtensionKey, Value>, audit: AuditMeta }, using the F0.3 primitives. No universal confidence field and no stringly typed payload. Node revision is an element revision counter per metamodel §4.5, not the global GraphRevision version: u32, 0 is invalid, a newly created element starts at 1, unchanged elements keep their revision across GraphRevisions, and later patch/commit logic increments it when the element is semantically changed. This task validates the invariant only (deserialization and validation reject revision 0); it does not implement patch increment behavior.
-6. Node-envelope tests live in crates/plumb-psg/tests/payload_roundtrip.rs and cover at minimum: Node JSON round-trip using a real NodePayload; Node revision 1 accepted; Node revision 0 rejected; ExtensionKey map round-trip; typed EvidenceRef/DerivationRef retained; AuditMeta retained; no universal confidence field.
+5. Implement the closed NodeType enum with exactly one variant per NodePayload variant, NodePayload::node_type() -> NodeType, and NodeType::as_str() -> &'static str returning exactly the type tag. Do not derive type identity from Rust type-name strings.
+6. Implement DerivationRecord conditional validation (metamodel §5.3: for llm_inference all eight LLM-specific fields are mandatory; for every other kind all eight are None) and ResolutionDecision structural validation (at least one of question_ref and proposal_ref), each through explicit validate() with a typed error and through serde deserialization. Do not call an LLM or inspect artifacts.
+7. Once NodePayload exists, implement the final concrete Node envelope exactly as metamodel §4.1: Node { id: Id, revision: u32, status: ElementStatus, payload: NodePayload, evidence: Vec<EvidenceRef>, derivations: Vec<DerivationRef>, standards: Vec<StandardMapping>, tags: BTreeSet<String>, extensions: BTreeMap<ExtensionKey, Value>, audit: AuditMeta }, using the F0.3 primitives. No universal confidence field and no stringly typed payload. Node rejects unknown fields; tags are preserved exactly with no additional grammar. Node::validate() returns a typed Node error, and deserialization enforces the same invariants: revision != 0 (element revision counter per metamodel §4.5; this task validates the invariant only and does not implement patch increment behavior), valid AuditMeta, Node.id == DerivationRecord.id for DerivationRecord payloads, and Node.id == StandardsProfile.id for StandardsProfile payloads. Invalid nodes are never repaired.
+8. Tests live in crates/plumb-psg/tests/payload_roundtrip.rs inside a module whose name contains payload_roundtrip so that cargo test -p plumb-psg payload_roundtrip selects them; the unfiltered cargo test -p plumb-psg proves none is skipped. Tests cover at minimum:
+
+   - one fixed golden JSON round-trip fixture for each of the 86 NodePayload variants;
+   - the exact NodePayload type tag for every variant;
+   - the NodeType mapping and as_str() for every variant;
+   - missing-required-field rejection for every payload variant;
+   - unknown payload field rejection; unknown NodePayload type rejection; extra top-level NodePayload field rejection;
+   - optional missing field -> None; optional None serializes as explicit JSON null;
+   - all closed-enum exact values and unknown enum rejection;
+   - Agent round-trip; EvidenceLocator round-trip for all seven locator variants;
+   - LLM DerivationRecord accepts all required LLM fields and rejects each missing one; non-LLM DerivationRecord rejects any LLM-only field;
+   - ExtensionPayload round-trip; View merged-field round-trip; StandardsProfile nested-standard round-trip;
+   - Node with a real Requirement payload round-trip; Node revision 1 accepted and 0 rejected; Node unknown field rejected; Node ExtensionKey map round-trip; Node keeps typed EvidenceRef and DerivationRef; Node AuditMeta validation enforced; DerivationRecord and StandardsProfile Node ID mismatches rejected; no universal confidence field exists.
+
+   Golden fixtures are explicit fixed JSON values; expected JSON is never generated by serializing the implementation under test. A table-driven test is allowed, but every variant has a hand-authored fixed fixture.
 
 **Commands**
 
 ```bash
 cargo test -p plumb-psg payload_roundtrip
+cargo test -p plumb-psg
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -1468,11 +1485,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 **Tests**
 
 - `cargo test -p plumb-psg payload_roundtrip`
+- `cargo test -p plumb-psg`
 
 **Acceptance**
 
-- One golden round-trip fixture exists for every NodePayload variant and all required-field omission tests fail deserialization or validation as intended.
-- Node round-trips through JSON with a real NodePayload, retains typed EvidenceRef/DerivationRef, the ExtensionKey map and AuditMeta, has no universal confidence field, accepts revision 1 and rejects revision 0.
+- All 86 NodePayload variants have fixed golden JSON round-trip fixtures. Every required-field omission is rejected. Unknown core payload/envelope fields are rejected. All closed vocabularies reject unknown values. NodePayload uses exact type/data tagging. NodeType has a one-to-one mapping with every NodePayload variant. Node validates revision, audit metadata and payload/envelope identity invariants. No universal confidence or generic kind+props representation exists.
 
 **Supporting references**
 
@@ -1556,6 +1573,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 4. Implement semantic_hash over accepted semantic nodes/edges plus accepted semantic decisions/constraints using exclusions defined by metamodel §3.1.
 5. Implement evidence_hash over source artifacts/evidence identity.
 6. View/layout data must not influence semantic_hash.
+7. The semantic_hash contribution of a View payload excludes layout_ref and style_ref (metamodel §§12.5, 24.1); changing only layout/style metadata must not change semantic_hash.
 
 **Commands**
 
@@ -1571,7 +1589,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Acceptance**
 
-- Graph hash is stable across insertion order; changing audit timestamp or view position does not change semantic_hash; changing an accepted requirement statement does.
+- Graph hash is stable across insertion order; changing audit timestamp or view position does not change semantic_hash; changing an accepted requirement statement does. Changing only a View's layout_ref or style_ref does not change semantic_hash.
 
 **Supporting references**
 
@@ -1685,12 +1703,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 - Do not silently rebase a stale patch.
 
 
-### `F0.9` — Implement provenance DerivationRecord and inference artifact contracts
+### `F0.9` — Implement inference artifact/provider contracts and provenance materialization
 
 **Phase:** `Foundation`  
 **Scope:** `NOW`  
 **Dependencies:** `F0.8`  
-**Commit:** `F0.9: Implement provenance DerivationRecord and inference artifact contracts`
+**Commit:** `F0.9: Implement inference artifact/provider contracts and provenance materialization`
 
 **Write allowlist**
 
@@ -1703,11 +1721,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Required actions**
 
-1. Implement Agent, DerivationRecord, InferenceRequest and InferenceArtifact fields exactly from metamodel §5 and compiler architecture §4.3-4.4.
+1. Reuse plumb_psg::{Agent, AgentKind, DerivationRecord, DerivationKind} (metamodel §§5.3-5.4, compiler architecture §4.4); do not define a second Agent or DerivationRecord type in plumb-inference. Implement InferenceRequest and InferenceArtifact fields exactly from compiler architecture §4.3-4.4.
 2. InferenceRequest ID is deterministic from canonical request content.
 3. NullProvider always returns a typed provider-disabled error.
 4. MockProvider returns only artifacts supplied explicitly by a test fixture keyed by request hash.
 5. A live provider interface returns an InferenceArtifact and has no access to GraphStore or branch commits.
+6. Provide deterministic construction/materialization of a plumb_psg::DerivationRecord from persisted inference artifacts where required.
 
 **Commands**
 
@@ -1734,6 +1753,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - Do not permit provider code to mutate PSG.
 - Do not call a live network provider in tests.
+- Do not create a second Agent or DerivationRecord type in plumb-inference.
 
 
 ### `F0.10` — Implement compiler stage plan/evaluate contract and compile-run records

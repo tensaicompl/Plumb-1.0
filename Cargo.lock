@@ -1692,6 +1692,7 @@ dependencies = [
  "jsonschema",
  "plumb-artifacts",
  "plumb-core",
+ "plumb-psg",
  "reqwest",
  "serde",
  "serde_json",
