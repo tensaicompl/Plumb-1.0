@@ -356,19 +356,21 @@
         "crates/plumb-psg/tests/relations.rs"
       ],
       "steps": [
-        "Implement the closed core relation vocabulary exactly from metamodel §17.",
-        "For each relation register allowed source NodePayload types, allowed target types, cardinality constraints and graph constraints.",
-        "Support namespaced extension relations separately; core code must reject an unknown unqualified relation.",
-        "Validate acyclicity for supersedes, refines/decomposes_to where mandated, inherits_role, and depends_on_slice.",
-        "Once RelationKind exists, implement the final concrete Edge envelope exactly as metamodel §4.2: Edge { id: Id, revision: u32, status: ElementStatus, kind: RelationKind, from: Id, to: Id, properties: BTreeMap<String, Value>, evidence: Vec<EvidenceRef>, derivations: Vec<DerivationRef>, standards: Vec<StandardMapping>, audit: AuditMeta }, using the F0.3 primitives. No universal confidence field and no stringly typed core relation. Edge revision is an element revision counter per metamodel §4.5, not the global GraphRevision version: u32, 0 is invalid, a newly created element starts at 1, unchanged elements keep their revision across GraphRevisions, and later patch/commit logic increments it when the element is semantically changed. This task validates the invariant only (deserialization and validation reject revision 0); it does not implement patch increment behavior.",
-        "Edge-envelope tests live in crates/plumb-psg/tests/relations.rs and cover at minimum: Edge JSON round-trip using a real RelationKind; Edge revision 1 accepted; Edge revision 0 rejected; typed EvidenceRef/DerivationRef retained; AuditMeta retained; no universal confidence field."
+        "Implement RelationKind exactly per metamodel §17.8: a closed enum of the 51 core relations of §17 (EvidencedBy ... BoundToCode) plus Extension(ExtensionKey). It serializes as one JSON string: core variants as their exact snake_case names, extension relations as their ExtensionKey. A known unqualified core name deserializes to the core variant, a valid namespaced ExtensionKey to Extension; an unknown unqualified relation or a malformed namespace is rejected. Do not create Other(String). Expose RelationKind::as_str() and RelationKind::is_core().",
+        "Implement RelationProperties { None, SchemaFor(SchemaForProperties), Extension(BTreeMap<ExtensionKey, Value>) }, SchemaForProperties { role: SchemaBindingRole } and SchemaBindingRole { Attribute, MessagePayload, MessageHeaders, ApiRequest, ApiResponse, ApiError } (serialized attribute, message_payload, message_headers, api_request, api_response, api_error). Edge properties serialize as a JSON object ({} for None, {\"role\": ...} for schema_for, namespaced keys for extensions); the Rust variant name never appears in JSON. Every core relation except schema_for uses None; schema_for uses SchemaFor with no additional fields; extension relations use Extension (possibly empty) with ExtensionKey keys; every other kind/properties combination is invalid.",
+        "Implement the node categories of metamodel §17.8 (Evidence, Provenance, SemanticNode, SemanticOrEvidenceNode, ArchitectureElement, TechnicalContract, StateOwner, DeployableArchitectureElement) as predicates over NodeType, never over Rust type names.",
+        "Implement a static machine-readable registry with exactly one RelationDef { kind, from, to, outgoing, incoming, directionality, cycle_policy, same_node_type, property_schema } per core relation, with Cardinality { min: u32, max: Option<u32> }, Directionality { Directed, Symmetric }, CyclePolicy { Allowed, Acyclic } and RelationPropertySchema { None, SchemaFor }. Extension relations have no registry entries. Registry entries enforce exactly the source/target compatibility table of metamodel §17.8 (supersedes: same node type) and the schema_for role compatibility; do not broaden any set.",
+        "Enforce only the unconditional structural cardinalities of metamodel §17.8 (supersedes outgoing 0..1; resolves outgoing 1..*; has_attribute incoming exactly 1 per Attribute; transitions_via, permits, scoped_to, characterized_by, measured_by outgoing exactly 1; workflow_step outgoing 1..*; produces_receipt outgoing 0..1; all others 0..*). Do not encode conditional gate/profile requirements (evidence for requirements, performed_by for executable steps, allocated_to by A2, deployed_to by deployment profile, justified_by for accepted decisions, verified_by by D2/C1) as structural cardinality.",
+        "conflicts_with is Symmetric: a single edge represents the unordered pair and no mirrored edge is required or created; every other core relation is Directed. Reject cycles for the core-acyclic relations supersedes, refines, decomposes_to, inherits_role and depends_on_slice; other relations (for example next) may contain cycles.",
+        "Once RelationKind exists, implement the final concrete Edge envelope exactly as metamodel §4.2: Edge { id: Id, revision: u32, status: ElementStatus, kind: RelationKind, from: Id, to: Id, properties: RelationProperties, evidence: Vec<EvidenceRef>, derivations: Vec<DerivationRef>, standards: Vec<StandardMapping>, audit: AuditMeta }, using the F0.3 primitives. Edge rejects unknown fields and has no universal confidence field. Edge::validate() returns a typed EdgeError, and deserialization enforces the same local invariants: revision != 0 (element revision counter per metamodel §4.5; no increment behavior here), valid AuditMeta, and RelationKind/properties compatibility. Source/target NodeType validation, cardinality and cycles are registry validation over node types and edges.",
+        "Tests live in crates/plumb-psg/tests/relations.rs inside a module whose name contains relations so that cargo test -p plumb-psg relations selects them; the unfiltered cargo test -p plumb-psg proves none is skipped. Tests cover at minimum:\n\n- RelationKind: all 51 core values round-trip exactly; core count exactly 51; unknown unqualified relation rejected; valid extension relation accepted; malformed extension relation rejected; no Other/String fallback.\n- Registry: exactly one entry per core relation; no duplicates; every entry is core; every core relation has an entry; a representative valid and invalid source/target pair for every relation; category membership; schema_for target/role compatibility.\n- Cardinality: every unconditional cardinality above.\n- Cycles: for each of supersedes, refines, decomposes_to, inherits_role and depends_on_slice an acyclic fixture is accepted and a direct cycle and a multi-edge cycle are rejected; a legitimate next loop is accepted.\n- conflicts_with: a single symmetric edge is accepted, the registry reports Symmetric, and no mirror edge is required.\n- RelationProperties: every non-schema core relation accepts {} and rejects semantic/free-form properties; schema_for requires SchemaForProperties; all six SchemaBindingRole values round-trip exactly; an invalid schema role and a wrong role for the target type are rejected; extension relations accept namespaced property keys and reject unqualified keys; core relations reject extension properties.\n- Edge: real core, schema_for and extension edges round-trip; revision 1 accepted and 0 rejected; invalid AuditMeta rejected; evidence/derivation refs stay typed; unknown fields rejected; no confidence, kind-string or props escape hatch; RelationKind/properties mismatch rejected."
       ],
       "tests": [
-        "cargo test -p plumb-psg relations"
+        "cargo test -p plumb-psg relations",
+        "cargo test -p plumb-psg"
       ],
       "acceptance": [
-        "Every relation listed in metamodel §17 has a registry entry; invalid source/target pairs are rejected; required acyclic relations reject cycles.",
-        "Edge round-trips through JSON with a real RelationKind, retains typed EvidenceRef/DerivationRef and AuditMeta, has no universal confidence field, accepts revision 1 and rejects revision 0."
+        "RelationKind has exactly 51 core relations plus namespaced extensions with no string fallback; the registry has exactly one entry per core relation and enforces the metamodel §17.8 source/target compatibility, unconditional cardinalities, symmetric conflicts_with and core-acyclic relations; Edge properties are typed and kind-compatible; Edge round-trips through JSON with a real RelationKind, retains typed EvidenceRef/DerivationRef and AuditMeta, has no universal confidence field, accepts revision 1 and rejects revision 0."
       ],
       "source_refs": [
         "SRCREF-2A709879EB",
@@ -379,6 +381,7 @@
       ],
       "commands": [
         "cargo test -p plumb-psg relations",
+        "cargo test -p plumb-psg",
         "cargo fmt --check",
         "cargo clippy --workspace --all-targets -- -D warnings"
       ],
@@ -404,7 +407,8 @@
         "Implement semantic_hash over accepted semantic nodes/edges plus accepted semantic decisions/constraints using exclusions defined by metamodel §3.1.",
         "Implement evidence_hash over source artifacts/evidence identity.",
         "View/layout data must not influence semantic_hash.",
-        "The semantic_hash contribution of a View payload excludes layout_ref and style_ref (metamodel §§12.5, 24.1); changing only layout/style metadata must not change semantic_hash."
+        "The semantic_hash projection of a View payload omits the layout_ref and style_ref fields entirely (absent from the hash-input object, not serialized as null); changing only layout/style metadata must not change semantic_hash.",
+        "Exclude every node whose payload is DerivationRecord entirely from semantic_hash (it remains a persisted provenance node), and exclude the derivations reference vectors of nodes and edges; evidence references remain part of semantic_hash (plan §6.2)."
       ],
       "tests": [
         "cargo test -p plumb-psg graph"
@@ -445,7 +449,8 @@
         "Every destructive operation carries the expected current semantic hash or expected element hash required by the metamodel.",
         "Apply patches to an immutable Graph input and return GraphDelta plus new Graph.",
         "Provide deterministic structured diff sorted by element ID and operation order.",
-        "Implement inverse only for patch operations where an exact inverse is derivable from the patch input; do not fabricate an inverse."
+        "Implement inverse only for patch operations where an exact inverse is derivable from the patch input; do not fabricate an inverse.",
+        "When a patch changes any semantic envelope field of an element (Node: status, payload, evidence, standards, tags, extensions; Edge: status, kind, from, to, properties, evidence, standards), increment that element's revision by 1; changes to audit or derivations do not increment it, and id never changes (metamodel §4.5)."
       ],
       "tests": [
         "cargo test -p plumb-patch"
@@ -491,7 +496,8 @@
         "Set revision ID to `rev:<version>:<first16-semantic-hash-hex>`.",
         "Implement create_initial_revision, load_revision, head, create_branch, commit(branch, expected_head, patch), and move_head for explicit restore.",
         "commit must be one SQLite transaction and fail with STALE_BASE when expected_head differs.",
-        "Persist full graph snapshot per revision for the pilot; do not introduce delta storage."
+        "Persist full graph snapshot per revision for the pilot; do not introduce delta storage.",
+        "Persist element revisions exactly as produced by patch application: unchanged elements keep their element revision in the new GraphRevision, and element revisions follow the semantic-envelope-field rule of metamodel §4.5."
       ],
       "tests": [
         "cargo test -p plumb-store revisions"

@@ -39,7 +39,6 @@ mod payload_roundtrip {
             "name": name,
             "description": "Architecture element fixture",
             "responsibilities": ["serve leave requests"],
-            "technology_selection_refs": null,
             "owner_ref": "actor:hr:platform-team"
         })
     }
@@ -174,7 +173,7 @@ mod payload_roundtrip {
                     "stakeholder_kind": "business_owner",
                     "organization": "HR",
                     "responsibilities": ["approve leave policy"],
-                    "contact_ref": null
+                    "contact_ref": "mailto:hr-lead@example.com"
                 }),
                 &["name", "stakeholder_kind"],
             ),
@@ -283,7 +282,6 @@ mod payload_roundtrip {
                     "name": "days",
                     "value_type": "decimal",
                     "nullable": false,
-                    "entity_ref": "ent:hr:leave-request",
                     "unit": "day",
                     "precision": 1,
                     "enum_values": null,
@@ -311,22 +309,17 @@ mod payload_roundtrip {
                     "cardinality_to",
                 ],
             ),
-            fx(
-                "State",
-                json!({"name": "Submitted", "owner_ref": "ent:hr:leave-request"}),
-                &["name", "owner_ref"],
-            ),
+            fx("State", json!({"name": "Submitted"}), &["name"]),
             fx(
                 "Transition",
                 json!({
                     "stateful_ref": "ent:hr:leave-request",
-                    "from_state": "Submitted",
-                    "to_state": "Approved",
-                    "trigger_ref": "op:hr:approve",
+                    "from_state": "state:hr:submitted",
+                    "to_state": "state:hr:approved",
                     "guard_expr": "request.days <= balance.remaining",
                     "effect_refs": ["evt:hr:approved"]
                 }),
-                &["stateful_ref", "from_state", "to_state", "trigger_ref"],
+                &["stateful_ref", "from_state", "to_state"],
             ),
             fx(
                 "Invariant",
@@ -379,7 +372,6 @@ mod payload_roundtrip {
                     "process_ref": "proc:hr:leave-approval",
                     "node_kind": "exclusive_gateway",
                     "operation_ref": null,
-                    "actor_ref": null,
                     "condition_expr": "request.days > 10",
                     "message_ref": null,
                     "timer_expr": null
@@ -454,16 +446,7 @@ mod payload_roundtrip {
                 json!({"name": "hr-approver", "description": null}),
                 &["name"],
             ),
-            fx(
-                "Permission",
-                json!({
-                    "name": "approve-leave",
-                    "operation_ref": "op:hr:approve",
-                    "resource_scope_ref": "scope:hr:own-team",
-                    "policy_condition_refs": null
-                }),
-                &["name", "operation_ref", "resource_scope_ref"],
-            ),
+            fx("Permission", json!({"name": "approve-leave"}), &["name"]),
             fx(
                 "ResourceScope",
                 json!({
@@ -508,23 +491,15 @@ mod payload_roundtrip {
             fx(
                 "QualityScenario",
                 json!({
-                    "quality_characteristic_ref": "quality:hr:performance",
                     "stimulus": "5000 concurrent users submit leave requests",
                     "response": "requests are accepted and processed",
-                    "measure_ref": "measure:hr:p95",
                     "threshold": "<= 400 ms",
                     "source_ref": null,
                     "environment_condition": "normal production operation",
                     "affected_refs": ["api:hr:leave"],
                     "priority": null
                 }),
-                &[
-                    "quality_characteristic_ref",
-                    "stimulus",
-                    "response",
-                    "measure_ref",
-                    "threshold",
-                ],
+                &["stimulus", "response", "threshold"],
             ),
             fx(
                 "SystemOfInterest",
@@ -606,7 +581,6 @@ mod payload_roundtrip {
                 json!({
                     "question": "Monolith or microservices?",
                     "status": "accepted",
-                    "drivers": ["quality:hr:performance"],
                     "alternatives": ["Modular monolith", "Microservices"],
                     "selected_option": "Modular monolith",
                     "rationale": "Small team, single domain.",
@@ -618,7 +592,6 @@ mod payload_roundtrip {
                 &[
                     "question",
                     "status",
-                    "drivers",
                     "alternatives",
                     "selected_option",
                     "rationale",
@@ -639,14 +612,12 @@ mod payload_roundtrip {
                 json!({
                     "technology_ref": "tech:postgresql",
                     "status": "selected",
-                    "applies_to_refs": ["container:hr:db"],
                     "version_range": ">=16",
                     "alternatives": ["tech:sqlite"],
-                    "drivers": null,
                     "rationale": null,
                     "architecture_decision_ref": "adr:hr:1"
                 }),
-                &["technology_ref", "status", "applies_to_refs"],
+                &["technology_ref", "status"],
             ),
             fx(
                 "ApiContract",
@@ -655,7 +626,7 @@ mod payload_roundtrip {
                     "contract_kind": "http",
                     "version": "1.0.0",
                     "base_uri": "/api",
-                    "external_spec_ref": null
+                    "external_spec_ref": "https://example.com/specs/leave-openapi.yaml"
                 }),
                 &["name", "contract_kind"],
             ),
@@ -666,16 +637,13 @@ mod payload_roundtrip {
                     "operation_id": "approveLeave",
                     "method": "POST",
                     "path": "/leave/{id}/approve",
-                    "request_schema_ref": null,
-                    "response_schema_refs": ["schema:hr:leave"],
-                    "error_schema_refs": null,
                     "security_refs": null
                 }),
                 &["api_contract_ref", "operation_id"],
             ),
             fx(
                 "EventContract",
-                json!({"name": "Leave events", "external_spec_ref": null}),
+                json!({"name": "Leave events", "external_spec_ref": "specs/leave asyncapi.yaml"}),
                 &["name"],
             ),
             fx(
@@ -689,31 +657,23 @@ mod payload_roundtrip {
             ),
             fx(
                 "Message",
-                json!({
-                    "name": "LeaveApprovedMessage",
-                    "payload_schema_ref": "schema:hr:leave-approved",
-                    "headers_schema_ref": null,
-                    "correlation_ref": null
-                }),
-                &["name", "payload_schema_ref"],
+                json!({"name": "LeaveApprovedMessage", "correlation_ref": null}),
+                &["name"],
             ),
             fx(
                 "DataSchema",
                 json!({
                     "name": "LeaveRequest",
                     "schema_kind": "json_schema",
-                    "external_ref": null,
+                    "external_ref": "schemas/LeaveRequest.json#/definitions/Leave",
                     "inline_schema": {"type": "object"}
                 }),
                 &["name", "schema_kind"],
             ),
             fx(
                 "TechnicalWorkflow",
-                json!({
-                    "name": "Approve flow",
-                    "step_refs": ["apiop:hr:get", "apiop:hr:approve"]
-                }),
-                &["name", "step_refs"],
+                json!({"name": "Approve flow"}),
+                &["name"],
             ),
             fx(
                 "Capability",
@@ -779,12 +739,7 @@ mod payload_roundtrip {
             ),
             fx(
                 "Release",
-                json!({
-                    "name": "Pilot",
-                    "version": "0.1.0",
-                    "target_date": "2026-12-01",
-                    "slice_refs": null
-                }),
+                json!({"name": "Pilot", "version": "0.1.0", "target_date": "2026-12-01"}),
                 &["name", "version"],
             ),
             fx(
@@ -792,12 +747,11 @@ mod payload_roundtrip {
                 json!({
                     "name": "Verify approval",
                     "verification_kind": "scenario",
-                    "target_refs": ["req:HR-001"],
                     "method": null,
                     "acceptance_condition": "all approval scenarios pass",
                     "required_evidence_kind": null
                 }),
-                &["name", "verification_kind", "target_refs"],
+                &["name", "verification_kind"],
             ),
             fx(
                 "TestCase",
@@ -805,8 +759,7 @@ mod payload_roundtrip {
                     "name": "Approve happy path",
                     "steps": [{"action": "submit"}],
                     "expected": [{"status": "Approved"}],
-                    "automation_ref": null,
-                    "verification_obligation_refs": ["verify:hr:approval"]
+                    "automation_ref": "tests/e2e/Approve Leave.spec.ts"
                 }),
                 &["name", "steps", "expected"],
             ),
@@ -857,17 +810,11 @@ mod payload_roundtrip {
             fx(
                 "CodeBinding",
                 json!({
-                    "semantic_ref": "op:hr:approve",
                     "repository_ref": "git@example.com:acme/leave.git",
                     "code_locator": "src/approve.rs::approve",
                     "code_revision": "abc123"
                 }),
-                &[
-                    "semantic_ref",
-                    "repository_ref",
-                    "code_locator",
-                    "code_revision",
-                ],
+                &["repository_ref", "code_locator", "code_revision"],
             ),
             fx(
                 "ArchitectureCheck",
@@ -915,6 +862,9 @@ mod payload_roundtrip {
             ),
         ]
     }
+
+    /// Total Required fields across all payload variants after Hotfix 010.
+    const REQUIRED_FIELD_TOTAL: usize = 211;
 
     /// Optional fields whose omission is rejected for a cross-field reason, not a type reason.
     const CROSS_FIELD_OPTIONALS: &[(&str, &str)] = &[
@@ -1019,7 +969,7 @@ mod payload_roundtrip {
                 checked += 1;
             }
         }
-        assert_eq!(checked, 223);
+        assert_eq!(checked, REQUIRED_FIELD_TOTAL);
     }
 
     #[test]
@@ -1656,5 +1606,238 @@ mod payload_roundtrip {
     #[test]
     fn other_payloads_do_not_constrain_the_node_id() {
         assert!(parse_node(node_with_payload("anything:goes", "Agent")).is_ok());
+    }
+
+    // ------------------------------------------------------------------ Hotfix 010 regressions
+
+    /// Payload fields removed because a §17 relation is their canonical representation.
+    const REMOVED_RELATION_FIELDS: &[(&str, &str)] = &[
+        ("Attribute", "entity_ref"),
+        ("State", "owner_ref"),
+        ("Transition", "trigger_ref"),
+        ("ProcessNode", "actor_ref"),
+        ("Permission", "operation_ref"),
+        ("Permission", "resource_scope_ref"),
+        ("Permission", "policy_condition_refs"),
+        ("QualityScenario", "quality_characteristic_ref"),
+        ("QualityScenario", "measure_ref"),
+        ("SoftwareSystem", "technology_selection_refs"),
+        ("DeploymentNode", "technology_selection_refs"),
+        ("ArchitectureDecision", "drivers"),
+        ("TechnologySelection", "applies_to_refs"),
+        ("TechnologySelection", "drivers"),
+        ("TechnicalWorkflow", "step_refs"),
+        ("Release", "slice_refs"),
+        ("VerificationObligation", "target_refs"),
+        ("TestCase", "verification_obligation_refs"),
+        ("CodeBinding", "semantic_ref"),
+        ("ApiOperation", "request_schema_ref"),
+        ("ApiOperation", "response_schema_refs"),
+        ("ApiOperation", "error_schema_refs"),
+        ("Message", "payload_schema_ref"),
+        ("Message", "headers_schema_ref"),
+    ];
+
+    fn fixture(tag: &str) -> Value {
+        fixtures().into_iter().find(|f| f.tag == tag).unwrap().data
+    }
+
+    #[test]
+    fn removed_relation_fields_are_rejected_as_unknown_fields() {
+        for (tag, field) in REMOVED_RELATION_FIELDS {
+            let mut data = fixture(tag);
+            let value = if field.ends_with("_refs") || *field == "drivers" {
+                json!(["req:HR-001"])
+            } else {
+                json!("req:HR-001")
+            };
+            data.as_object_mut().unwrap().insert((*field).into(), value);
+            assert!(
+                parse(wire(tag, &data)).is_err(),
+                "{tag} accepted removed field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_relation_fields_do_not_exist_in_the_payload_source() {
+        let source = include_str!("../src/payload.rs");
+        for field in [
+            "entity_ref",
+            "trigger_ref",
+            "actor_ref",
+            "resource_scope_ref",
+            "policy_condition_refs",
+            "quality_characteristic_ref",
+            "technology_selection_refs",
+            "drivers",
+            "applies_to_refs",
+            "step_refs",
+            "slice_refs",
+            "verification_obligation_refs",
+            "semantic_ref",
+            "request_schema_ref",
+            "response_schema_refs",
+            "error_schema_refs",
+            "headers_schema_ref",
+        ] {
+            assert!(
+                !source.contains(&format!("pub {field}:")),
+                "payload.rs still declares {field}"
+            );
+        }
+        for (strukt, field) in [
+            ("State", "owner_ref"),
+            ("Permission", "operation_ref"),
+            ("QualityScenario", "measure_ref"),
+            ("Message", "payload_schema_ref"),
+            ("VerificationObligation", "target_refs"),
+        ] {
+            let start = source.find(&format!("pub struct {strukt} {{")).unwrap();
+            let body = &source[start..start + source[start..].find("\n}").unwrap()];
+            assert!(
+                !body.contains(&format!("pub {field}:")),
+                "{strukt} still declares {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn domain_relationship_endpoints_are_validated_ids() {
+        let valid = fixture("DomainRelationship");
+        let payload = parse(wire("DomainRelationship", &valid)).unwrap();
+        let NodePayload::DomainRelationship(rel) = payload else {
+            panic!("not a relationship")
+        };
+        assert_eq!(rel.from_entity.as_str(), "ent:hr:employee");
+        for (field, bad) in [
+            ("from_entity", "Employee"),
+            ("to_entity", "leave request"),
+            ("to_entity", ""),
+        ] {
+            let mut data = valid.clone();
+            data[field] = json!(bad);
+            assert!(
+                parse(wire("DomainRelationship", &data)).is_err(),
+                "{field} accepted {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transition_states_are_validated_ids() {
+        let valid = fixture("Transition");
+        for (field, bad) in [
+            ("from_state", "Submitted"),
+            ("to_state", "Approved"),
+            ("from_state", "state:"),
+        ] {
+            let mut data = valid.clone();
+            data[field] = json!(bad);
+            assert!(
+                parse(wire("Transition", &data)).is_err(),
+                "{field} accepted {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn external_references_accept_values_that_are_not_plumb_ids() {
+        for (tag, field) in [
+            ("Stakeholder", "contact_ref"),
+            ("ApiContract", "external_spec_ref"),
+            ("EventContract", "external_spec_ref"),
+            ("DataSchema", "external_ref"),
+            ("TestCase", "automation_ref"),
+        ] {
+            for value in [
+                "https://example.com/a b?x=1",
+                "C:\\specs\\API.yaml",
+                "Not An Id",
+                "mailto:x@y",
+            ] {
+                assert!(
+                    value.parse::<Id>().is_err(),
+                    "{value:?} is unexpectedly a valid Id"
+                );
+                let mut data = fixture(tag);
+                data[field] = json!(value);
+                let payload = parse(wire(tag, &data))
+                    .unwrap_or_else(|e| panic!("{tag}.{field}={value:?}: {e}"));
+                assert_eq!(
+                    serde_json::to_value(&payload).unwrap()["data"][field],
+                    json!(value)
+                );
+            }
+        }
+    }
+
+    fn page_region(
+        x: Option<f64>,
+        y: Option<f64>,
+        width: Option<f64>,
+        height: Option<f64>,
+    ) -> EvidenceLocator {
+        EvidenceLocator::PageRegion {
+            page: 1,
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn page_region_accepts_finite_values() {
+        for locator in [
+            page_region(Some(-12.5), Some(0.0), Some(0.0), Some(3.25)),
+            page_region(None, None, None, None),
+            page_region(Some(1e9), Some(-1e9), Some(1e9), Some(0.5)),
+        ] {
+            assert_eq!(locator.validate(), Ok(()));
+            let json = serde_json::to_value(&locator).unwrap();
+            assert_eq!(
+                serde_json::from_value::<EvidenceLocator>(json).unwrap(),
+                locator
+            );
+        }
+    }
+
+    #[test]
+    fn page_region_rejects_non_finite_values() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (name, locator) in [
+                ("x", page_region(Some(bad), None, None, None)),
+                ("y", page_region(None, Some(bad), None, None)),
+                ("width", page_region(None, None, Some(bad), None)),
+                ("height", page_region(None, None, None, Some(bad))),
+            ] {
+                assert_eq!(
+                    locator.validate(),
+                    Err(EvidenceLocatorError::NonFiniteCoordinate(name))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn page_region_rejects_negative_width_or_height() {
+        assert_eq!(
+            page_region(None, None, Some(-0.5), None).validate(),
+            Err(EvidenceLocatorError::NegativeExtent("width"))
+        );
+        assert_eq!(
+            page_region(None, None, None, Some(-1.0)).validate(),
+            Err(EvidenceLocatorError::NegativeExtent("height"))
+        );
+        for (field, value) in [("width", -0.5), ("height", -1.0)] {
+            let mut data = json!({"page": 1, "x": null, "y": null, "width": null, "height": null});
+            data[field] = json!(value);
+            let locator = json!({"kind": "PageRegion", "data": data});
+            assert!(
+                serde_json::from_value::<EvidenceLocator>(locator).is_err(),
+                "{field}"
+            );
+        }
     }
 }

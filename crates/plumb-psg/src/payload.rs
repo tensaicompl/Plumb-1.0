@@ -314,9 +314,26 @@ pub struct SourceArtifact {
     pub classification: Option<String>,
 }
 
-/// Where an evidence fragment sits inside its source (§5.2). Structural only.
+/// Why an [`EvidenceLocator`] is invalid.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum EvidenceLocatorError {
+    /// A `PageRegion` coordinate is NaN or infinite.
+    #[error("page-region {0} must be finite")]
+    NonFiniteCoordinate(&'static str),
+    /// A `PageRegion` width or height is negative.
+    #[error("page-region {0} must be >= 0")]
+    NegativeExtent(&'static str),
+}
+
+/// Where an evidence fragment sits inside its source (§5.2). Structural only, except that
+/// `PageRegion` values must be finite and its width/height non-negative.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "data", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    deny_unknown_fields,
+    try_from = "EvidenceLocatorFields"
+)]
 pub enum EvidenceLocator {
     TextRange {
         start: u64,
@@ -347,6 +364,107 @@ pub enum EvidenceLocator {
         object_id: String,
         field: Option<String>,
     },
+}
+
+impl EvidenceLocator {
+    /// Checks `PageRegion` values: finite coordinates and non-negative width/height.
+    pub fn validate(&self) -> Result<(), EvidenceLocatorError> {
+        if let EvidenceLocator::PageRegion {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } = self
+        {
+            for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+                if value.is_some_and(|v| !v.is_finite()) {
+                    return Err(EvidenceLocatorError::NonFiniteCoordinate(name));
+                }
+            }
+            for (name, value) in [("width", width), ("height", height)] {
+                if value.is_some_and(|v| v < 0.0) {
+                    return Err(EvidenceLocatorError::NegativeExtent(name));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Unvalidated wire form of [`EvidenceLocator`]; deserialization goes through `TryFrom`.
+#[derive(Deserialize)]
+#[serde(tag = "kind", content = "data", deny_unknown_fields)]
+enum EvidenceLocatorFields {
+    TextRange {
+        start: u64,
+        end: u64,
+    },
+    PageRegion {
+        page: u64,
+        x: Option<f64>,
+        y: Option<f64>,
+        width: Option<f64>,
+        height: Option<f64>,
+    },
+    TableCell {
+        table: u64,
+        row: u64,
+        column: u64,
+    },
+    XmlPath {
+        xpath: String,
+    },
+    JsonPointer {
+        pointer: String,
+    },
+    ConversationTurn {
+        turn_id: Id,
+    },
+    ExternalObject {
+        object_id: String,
+        field: Option<String>,
+    },
+}
+
+impl TryFrom<EvidenceLocatorFields> for EvidenceLocator {
+    type Error = EvidenceLocatorError;
+
+    fn try_from(f: EvidenceLocatorFields) -> Result<Self, Self::Error> {
+        let locator = match f {
+            EvidenceLocatorFields::TextRange { start, end } => {
+                EvidenceLocator::TextRange { start, end }
+            }
+            EvidenceLocatorFields::PageRegion {
+                page,
+                x,
+                y,
+                width,
+                height,
+            } => EvidenceLocator::PageRegion {
+                page,
+                x,
+                y,
+                width,
+                height,
+            },
+            EvidenceLocatorFields::TableCell { table, row, column } => {
+                EvidenceLocator::TableCell { table, row, column }
+            }
+            EvidenceLocatorFields::XmlPath { xpath } => EvidenceLocator::XmlPath { xpath },
+            EvidenceLocatorFields::JsonPointer { pointer } => {
+                EvidenceLocator::JsonPointer { pointer }
+            }
+            EvidenceLocatorFields::ConversationTurn { turn_id } => {
+                EvidenceLocator::ConversationTurn { turn_id }
+            }
+            EvidenceLocatorFields::ExternalObject { object_id, field } => {
+                EvidenceLocator::ExternalObject { object_id, field }
+            }
+        };
+        locator.validate()?;
+        Ok(locator)
+    }
 }
 
 /// §5.2.
@@ -600,7 +718,7 @@ pub struct Stakeholder {
     pub stakeholder_kind: String,
     pub organization: Option<String>,
     pub responsibilities: Option<Vec<String>>,
-    pub contact_ref: Option<Id>,
+    pub contact_ref: Option<String>,
 }
 
 /// §7.2.
@@ -720,7 +838,6 @@ pub struct Attribute {
     pub name: String,
     pub value_type: String,
     pub nullable: bool,
-    pub entity_ref: Option<Id>,
     pub unit: Option<String>,
     pub precision: Option<u32>,
     pub enum_values: Option<Vec<String>>,
@@ -731,8 +848,8 @@ pub struct Attribute {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DomainRelationship {
-    pub from_entity: String,
-    pub to_entity: String,
+    pub from_entity: Id,
+    pub to_entity: Id,
     pub relationship_kind: String,
     pub cardinality_from: String,
     pub cardinality_to: String,
@@ -741,22 +858,20 @@ pub struct DomainRelationship {
     pub ownership: Option<String>,
 }
 
-/// §8.8.
+/// §8.8. The owner is the `has_state` relation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct State {
     pub name: String,
-    pub owner_ref: Id,
 }
 
-/// §8.9.
+/// §8.9. `from_state`/`to_state` are State IDs; the trigger is the `transitions_via` relation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transition {
     pub stateful_ref: Id,
-    pub from_state: String,
-    pub to_state: String,
-    pub trigger_ref: Id,
+    pub from_state: Id,
+    pub to_state: Id,
     pub guard_expr: Option<String>,
     pub effect_refs: Option<Vec<Id>>,
 }
@@ -818,7 +933,6 @@ pub struct ProcessNode {
     pub process_ref: Id,
     pub node_kind: ProcessNodeKind,
     pub operation_ref: Option<Id>,
-    pub actor_ref: Option<Id>,
     pub condition_expr: Option<String>,
     pub message_ref: Option<Id>,
     pub timer_expr: Option<String>,
@@ -900,14 +1014,12 @@ pub struct SecurityRole {
     pub description: Option<String>,
 }
 
-/// §10.3.
+/// §10.3. Operation, scope and conditions are the `permits`, `scoped_to` and
+/// `conditioned_by` relations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Permission {
     pub name: String,
-    pub operation_ref: Id,
-    pub resource_scope_ref: Id,
-    pub policy_condition_refs: Option<Vec<Id>>,
 }
 
 /// §10.4.
@@ -959,10 +1071,8 @@ pub struct Measure {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QualityScenario {
-    pub quality_characteristic_ref: Id,
     pub stimulus: String,
     pub response: String,
-    pub measure_ref: Id,
     pub threshold: Value,
     pub source_ref: Option<Id>,
     pub environment_condition: Option<String>,
@@ -1039,7 +1149,6 @@ pub struct ArchitectureElement {
     pub name: String,
     pub description: Option<String>,
     pub responsibilities: Option<Vec<String>>,
-    pub technology_selection_refs: Option<Vec<Id>>,
     pub owner_ref: Option<Id>,
 }
 
@@ -1049,7 +1158,6 @@ pub struct ArchitectureElement {
 pub struct ArchitectureDecision {
     pub question: String,
     pub status: String,
-    pub drivers: Vec<Id>,
     pub alternatives: Vec<String>,
     pub selected_option: String,
     pub rationale: String,
@@ -1075,10 +1183,8 @@ pub struct Technology {
 pub struct TechnologySelection {
     pub technology_ref: Id,
     pub status: TechnologySelectionStatus,
-    pub applies_to_refs: Vec<Id>,
     pub version_range: Option<String>,
     pub alternatives: Option<Vec<Id>>,
-    pub drivers: Option<Vec<Id>>,
     pub rationale: Option<String>,
     pub architecture_decision_ref: Option<Id>,
 }
@@ -1093,10 +1199,11 @@ pub struct ApiContract {
     pub contract_kind: ApiContractKind,
     pub version: Option<String>,
     pub base_uri: Option<String>,
-    pub external_spec_ref: Option<Id>,
+    pub external_spec_ref: Option<String>,
 }
 
-/// §13.2. Whether `method`/`path` are mandatory for HTTP is graph-semantic validation.
+/// §13.2. Whether `method`/`path` are mandatory for HTTP is graph-semantic validation;
+/// schemas are `schema_for` relations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiOperation {
@@ -1104,9 +1211,6 @@ pub struct ApiOperation {
     pub operation_id: String,
     pub method: Option<String>,
     pub path: Option<String>,
-    pub request_schema_ref: Option<Id>,
-    pub response_schema_refs: Option<Vec<Id>>,
-    pub error_schema_refs: Option<Vec<Id>>,
     pub security_refs: Option<Vec<Id>>,
 }
 
@@ -1115,7 +1219,7 @@ pub struct ApiOperation {
 #[serde(deny_unknown_fields)]
 pub struct EventContract {
     pub name: String,
-    pub external_spec_ref: Option<Id>,
+    pub external_spec_ref: Option<String>,
 }
 
 /// §13.4.
@@ -1132,8 +1236,6 @@ pub struct Channel {
 #[serde(deny_unknown_fields)]
 pub struct Message {
     pub name: String,
-    pub payload_schema_ref: Id,
-    pub headers_schema_ref: Option<Id>,
     pub correlation_ref: Option<Id>,
 }
 
@@ -1143,7 +1245,7 @@ pub struct Message {
 pub struct DataSchema {
     pub name: String,
     pub schema_kind: String,
-    pub external_ref: Option<Id>,
+    pub external_ref: Option<String>,
     pub inline_schema: Option<Value>,
 }
 
@@ -1152,7 +1254,6 @@ pub struct DataSchema {
 #[serde(deny_unknown_fields)]
 pub struct TechnicalWorkflow {
     pub name: String,
-    pub step_refs: Vec<Id>,
 }
 
 // ============================================================================ delivery
@@ -1218,7 +1319,6 @@ pub struct Release {
     pub name: String,
     pub version: String,
     pub target_date: Option<String>,
-    pub slice_refs: Option<Vec<Id>>,
 }
 
 // ============================================================================ verification
@@ -1229,7 +1329,6 @@ pub struct Release {
 pub struct VerificationObligation {
     pub name: String,
     pub verification_kind: VerificationKind,
-    pub target_refs: Vec<Id>,
     pub method: Option<String>,
     pub acceptance_condition: Option<String>,
     pub required_evidence_kind: Option<String>,
@@ -1242,8 +1341,7 @@ pub struct TestCase {
     pub name: String,
     pub steps: Vec<Value>,
     pub expected: Vec<Value>,
-    pub automation_ref: Option<Id>,
-    pub verification_obligation_refs: Option<Vec<Id>>,
+    pub automation_ref: Option<String>,
 }
 
 /// §15.3.
@@ -1286,7 +1384,6 @@ pub struct TestReceipt {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodeBinding {
-    pub semantic_ref: Id,
     pub repository_ref: String,
     pub code_locator: String,
     pub code_revision: String,

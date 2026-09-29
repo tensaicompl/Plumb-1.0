@@ -197,13 +197,15 @@ pub struct Edge {
     pub kind: RelationKind,
     pub from: Id,
     pub to: Id,
-    pub properties: BTreeMap<String, Value>,
+    pub properties: RelationProperties,
     pub evidence: Vec<EvidenceRef>,
     pub derivations: Vec<DerivationRef>,
     pub standards: Vec<StandardMapping>,
     pub audit: AuditMeta,
 }
 ```
+
+`Edge` rejects unknown fields and exposes a deterministic `Edge::validate()` with a typed error; deserialization enforces the same local invariants: `revision != 0`, valid `AuditMeta`, and compatibility of `kind` with `properties` (§17.8). Source/target node-type validation is registry validation (§17.8), because an edge carries only IDs. There is no universal confidence field.
 
 ### 4.3 Status
 
@@ -246,6 +248,8 @@ pub struct AuditMeta {
 `created_by` and `created_at` are mandatory. `updated_by` and `updated_at` are either both present or both absent; when present, `updated_at >= created_at`. Invalid audit metadata is rejected, never repaired. Audit metadata carries no confidence, deletion, session or free-form data, and is excluded from `semantic_hash`.
 
 `Node.revision` and `Edge.revision` are element revision counters, not the global `GraphRevision` version. The type is `u32`; `0` is invalid; a newly created node or edge starts at `1`; an unchanged element keeps the same element revision when copied into a later `GraphRevision`; and patch/commit logic increments the element revision when that element is semantically changed.
+
+An element revision increments exactly when any persisted **semantic envelope field** changes. For a `Node` these are `status`, `payload`, `evidence`, `standards`, `tags` and `extensions`; for an `Edge` they are `status`, `kind`, `from`, `to`, `properties`, `evidence` and `standards`. Changes to `audit` or `derivations` do not increment the element revision, and `id` never changes. The rule applies regardless of whether the element currently contributes to `semantic_hash`.
 
 ---
 
@@ -792,12 +796,13 @@ nullable
 Optional:
 
 ```text
-entity_ref
 unit
 precision
 enum_values[]
 data_classification
 ```
+
+The owning entity is the canonical `has_attribute` relation (Entity -> Attribute), not a payload field.
 
 ### 8.7 `DomainRelationship`
 
@@ -825,8 +830,9 @@ Required:
 
 ```text
 name
-owner_ref
 ```
+
+The state owner is the canonical `has_state` relation (StateOwner -> State), not a payload field.
 
 ### 8.9 `Transition`
 
@@ -836,7 +842,6 @@ Required:
 stateful_ref
 from_state
 to_state
-trigger_ref
 ```
 
 Optional:
@@ -846,7 +851,7 @@ guard_expr
 effect_refs[]
 ```
 
-The trigger MAY be an `Operation` or `Event`.
+`from_state` and `to_state` are State node IDs (`Id`). The trigger is the canonical `transitions_via` relation (Transition -> Operation/Event), exactly one per transition, not a payload field.
 
 ### 8.10 `Invariant`
 
@@ -969,11 +974,12 @@ Optional:
 
 ```text
 operation_ref
-actor_ref
 condition_expr
 message_ref
 timer_expr
 ```
+
+The performer is the canonical `performed_by` relation (ProcessNode -> Actor/BusinessRole), not a payload field.
 
 Plumb's process semantics are an executable subset with BPMN 2.0.2 interoperability, not a full BPMN engine.
 
@@ -1126,15 +1132,9 @@ Required:
 
 ```text
 name
-operation_ref
-resource_scope_ref
 ```
 
-Optional:
-
-```text
-policy_condition_refs[]
-```
+The operation, resource scope and policy conditions are the canonical `permits`, `scoped_to` and `conditioned_by` relations, not payload fields.
 
 ### 10.4 `ResourceScope`
 
@@ -1229,12 +1229,12 @@ measurement_method
 Required:
 
 ```text
-quality_characteristic_ref
 stimulus
 response
-measure_ref
 threshold
 ```
+
+The characteristic and measure are the canonical `characterized_by` and `measured_by` relations (exactly one each), not payload fields.
 
 Optional:
 
@@ -1248,12 +1248,11 @@ priority
 Example:
 
 ```yaml
-quality_characteristic_ref: quality:performance-efficiency
+# characterized_by -> quality:performance-efficiency; measured_by -> measure:p95-latency
 stimulus: "5000 concurrent users submit leave requests"
 environment_condition: "normal production operation"
 affected_refs: [api:leave]
 response: "requests are accepted and processed"
-measure_ref: measure:p95-latency
 threshold: "<= 400 ms"
 ```
 
@@ -1345,7 +1344,7 @@ pub struct View {
 }
 ```
 
-`projection_rules` are semantic view-definition rules. `layout_ref` and `style_ref` point to separately stored and separately hashed view metadata; coordinates, routes and style values are never embedded in the `View` payload. `semantic_hash` of a `View` excludes `layout_ref` and `style_ref`, so changing only layout/style metadata does not change `semantic_hash`.
+`projection_rules` are semantic view-definition rules. `layout_ref` and `style_ref` point to separately stored and separately hashed view metadata; coordinates, routes and style values are never embedded in the `View` payload. `semantic_hash` of a `View` is computed from a projection of the payload in which `layout_ref` and `style_ref` are absent (not serialized as `null`), so changing only layout/style metadata does not change `semantic_hash`.
 
 ### 12.6 `ModelKind`
 
@@ -1398,9 +1397,10 @@ Optional common fields:
 ```text
 description
 responsibilities[]
-technology_selection_refs[]
 owner_ref
 ```
+
+Technology selections are the canonical `uses_technology` relation, not a payload field.
 
 ### 12.8 `ArchitectureDecision`
 
@@ -1409,11 +1409,12 @@ Required:
 ```text
 question
 status
-drivers[]
 alternatives[]
 selected_option
 rationale
 ```
+
+Drivers are the canonical `justified_by` relation, not a payload field.
 
 Optional:
 
@@ -1449,7 +1450,6 @@ Required:
 ```text
 technology_ref
 status
-applies_to_refs[]
 ```
 
 Statuses:
@@ -1467,10 +1467,11 @@ Optional:
 ```text
 version_range
 alternatives[]
-drivers[]
 rationale
 architecture_decision_ref
 ```
+
+The elements a selection applies to are the inverse of `uses_technology`, and its drivers are `justified_by`; neither is a payload field.
 
 ### 12.11 ISO 42010 semantics
 
@@ -1534,11 +1535,10 @@ path
 Optional:
 
 ```text
-request_schema_ref
-response_schema_refs[]
-error_schema_refs[]
 security_refs[]
 ```
+
+Request, response and error schemas are the canonical `schema_for` relation (DataSchema -> ApiOperation) with roles `api_request`, `api_response` and `api_error`, not payload fields.
 
 OpenAPI is the preferred HTTP interchange projection.
 
@@ -1577,15 +1577,15 @@ Required:
 
 ```text
 name
-payload_schema_ref
 ```
 
 Optional:
 
 ```text
-headers_schema_ref
 correlation_ref
 ```
+
+Payload and header schemas are the canonical `schema_for` relation (DataSchema -> Message) with roles `message_payload` and `message_headers`, not payload fields.
 
 AsyncAPI is the preferred message/event interchange projection.
 
@@ -1621,8 +1621,9 @@ Required:
 
 ```text
 name
-step_refs[]
 ```
+
+Steps are the canonical `workflow_step` relation (TechnicalWorkflow -> ApiOperation), not a payload field.
 
 Used for concrete API-call sequences and dependencies. Arazzo is the preferred HTTP/API workflow projection.
 
@@ -1730,8 +1731,9 @@ Optional:
 
 ```text
 target_date
-slice_refs[]
 ```
+
+Slices are the canonical `contains` relation (Release -> ImplementationSlice), not a payload field.
 
 ---
 
@@ -1744,7 +1746,6 @@ Required:
 ```text
 name
 verification_kind
-target_refs[]
 ```
 
 Kinds:
@@ -1769,7 +1770,7 @@ acceptance_condition
 required_evidence_kind
 ```
 
-This replaces the v2 idea that every requirement must necessarily have an executed passing scenario. Verification method depends on requirement semantics.
+Targets are the inverse of the canonical `verified_by` relation, not a payload field. This replaces the v2 idea that every requirement must necessarily have an executed passing scenario. Verification method depends on requirement semantics.
 
 ### 15.2 `TestCase`
 
@@ -1785,8 +1786,9 @@ Optional:
 
 ```text
 automation_ref
-verification_obligation_refs[]
 ```
+
+Verification obligations are the inverse of the canonical `implemented_as` relation, not a payload field.
 
 ### 15.3 `ScenarioRun`
 
@@ -1845,11 +1847,12 @@ runner_identity
 Required:
 
 ```text
-semantic_ref
 repository_ref
 code_locator
 code_revision
 ```
+
+The bound semantic element is the inverse of the canonical `bound_to_code` relation, not a payload field.
 
 Locators MAY describe files, symbols, modules, packages or generated artifacts.
 
@@ -1958,6 +1961,8 @@ industry profile
 
 Core relation kinds are closed and typed. Extensions MAY introduce namespaced relations.
 
+**Canonical relation ownership.** When this section defines a core typed relation for a cross-node semantic association, that `Edge` is the canonical representation. The same association MUST NOT also be persisted as a duplicate payload reference field. Payload fields remain only where they express intrinsic structure for which this section has no equivalent relation, so graph validation never has to decide which of two conflicting representations is authoritative. In particular these associations exist only as relations: Attribute owner (`has_attribute`), State owner (`has_state`), Transition trigger (`transitions_via`), ProcessNode performer (`performed_by`), Permission operation/scope/conditions (`permits`, `scoped_to`, `conditioned_by`), QualityScenario characteristic/measure (`characterized_by`, `measured_by`), architecture element technology (`uses_technology`), ArchitectureDecision/TechnologySelection drivers (`justified_by`), TechnologySelection targets (inverse `uses_technology`), TechnicalWorkflow steps (`workflow_step`), Release slices (`contains`), VerificationObligation targets (inverse `verified_by`), TestCase obligations (inverse `implemented_as`), CodeBinding element (inverse `bound_to_code`) and ApiOperation/Message schemas (`schema_for`). `Operation.input_schema_ref`, `Operation.output_schema_ref` and `Event.payload_schema_ref` remain payload fields because no relation targets Operation/Event schemas.
+
 ### 17.1 Evidence and governance
 
 | Relation | From | To | Cardinality / rule |
@@ -2044,6 +2049,97 @@ Core relation kinds are closed and typed. Extensions MAY introduce namespaced re
 | `produces_receipt` | TestExecution/ScenarioRun | TestReceipt | 0..1 |
 | `bound_to_code` | semantic element | CodeBinding | 0..* |
 
+### 17.8 Relation registry contract (normative)
+
+**Wire model.** `RelationKind` is a closed enum of exactly the 51 core relations above plus `Extension(ExtensionKey)`. It serializes as a single JSON string: core relations as their exact snake_case name, extension relations as their `ExtensionKey` (for example `"acme:depends_on"`). A known unqualified core name deserializes to the core variant; a valid namespaced `ExtensionKey` to `Extension`; an unknown unqualified name or a malformed namespace is rejected. There is no `Other(String)` fallback.
+
+**Edge properties.** `Edge.properties` is `RelationProperties`, serialized as a JSON object:
+
+```rust
+pub enum RelationProperties {
+    None,                                         // {}
+    SchemaFor(SchemaForProperties),               // {"role": "api_request"}
+    Extension(BTreeMap<ExtensionKey, Value>),     // {"acme:criticality": "high"}
+}
+
+pub struct SchemaForProperties { pub role: SchemaBindingRole }
+
+pub enum SchemaBindingRole {
+    Attribute,       // attribute
+    MessagePayload,  // message_payload
+    MessageHeaders,  // message_headers
+    ApiRequest,      // api_request
+    ApiResponse,     // api_response
+    ApiError,        // api_error
+}
+```
+
+The Rust variant name never appears in JSON. Every core relation except `schema_for` uses `None` (`{}`); `schema_for` uses `SchemaFor` with no additional fields; extension relations use `Extension`, whose keys are all valid `ExtensionKey`s and which may be empty. Any other combination is invalid, and core semantic data MUST NOT be placed in property maps. `schema_for` role compatibility: DataSchema -> Attribute requires `attribute`; DataSchema -> Message requires `message_payload` or `message_headers`; DataSchema -> ApiOperation requires `api_request`, `api_response` or `api_error`.
+
+**Node categories** (by `NodeType`, never by Rust type name): *Evidence* = SourceArtifact, EvidenceFragment. *Provenance* = DerivationRecord, Agent. *SemanticNode* = every node type except SourceArtifact, EvidenceFragment, DerivationRecord and Agent. *SemanticOrEvidenceNode* = every node type except DerivationRecord and Agent. *ArchitectureElement* = SoftwareSystem, Container, Component, Module, Interface, DataStore, ExternalSystem, DeploymentNode, RuntimeEnvironment, NetworkZone. *TechnicalContract* = ApiContract, ApiOperation, EventContract, Channel, Message, DataSchema, TechnicalWorkflow. *StateOwner* = Entity, Process and every ArchitectureElement type. *DeployableArchitectureElement* = SoftwareSystem, Container, Component, Module, DataStore.
+
+**Registry.** A static machine-readable registry holds exactly one `RelationDef { kind, from, to, outgoing, incoming, directionality, cycle_policy, same_node_type, property_schema }` per core relation, with `Cardinality { min: u32, max: Option<u32> }` (`None` = unbounded), `Directionality { Directed, Symmetric }`, `CyclePolicy { Allowed, Acyclic }` and `RelationPropertySchema { None, SchemaFor }`. Extension relations have no registry entries.
+
+**Exact source/target compatibility:**
+
+| Relation | From | To |
+|---|---|---|
+| `evidenced_by` | SemanticNode | EvidenceFragment |
+| `derived_from` | SemanticNode | SemanticOrEvidenceNode |
+| `supersedes` | any node type | the same node type (`same_node_type`) |
+| `conflicts_with` | SemanticNode | SemanticNode (symmetric) |
+| `resolves` | ResolutionDecision | Question, Finding |
+| `raises` | Finding | Question |
+| `addresses` | Requirement, ArchitectureElement, View | Concern, Goal |
+| `refines` | Requirement | Requirement |
+| `decomposes_to` | Requirement, Capability | Requirement, Capability |
+| `specified_by` | Requirement | Operation, Process, Rule, QualityScenario |
+| `constrained_by` | SemanticNode | Constraint |
+| `satisfied_by` | Requirement | ArchitectureElement, TechnicalContract |
+| `has_attribute` | Entity | Attribute |
+| `has_state` | StateOwner | State |
+| `transitions_via` | Transition | Operation, Event |
+| `performed_by` | Operation, ProcessNode | Actor, BusinessRole |
+| `reads` | Operation | Attribute, Entity |
+| `writes` | Operation | Attribute, Entity |
+| `produces` | Operation, ProcessNode | Outcome, Event |
+| `consumes` | Operation, ProcessNode | Event |
+| `governed_by` | Operation, ProcessNode | Rule, DecisionTable |
+| `uses_calculation` | Operation, Rule | Calculation |
+| `next` | ProcessNode | ProcessNode |
+| `assigned_role` | Principal, Actor | SecurityRole |
+| `inherits_role` | SecurityRole | SecurityRole |
+| `grants` | SecurityRole | Permission |
+| `permits` | Permission | Operation |
+| `scoped_to` | Permission | ResourceScope |
+| `conditioned_by` | Permission | PolicyCondition |
+| `characterized_by` | QualityScenario | QualityCharacteristic |
+| `measured_by` | QualityScenario | Measure |
+| `drives` | QualityScenario, Constraint | ArchitectureDecision, ArchitectureCandidate |
+| `allocated_to` | Operation, Process, Entity | ArchitectureElement |
+| `depends_on` | ArchitectureElement | ArchitectureElement |
+| `exposes` | ArchitectureElement | Interface, ApiOperation, Channel |
+| `stores_in` | Component, Container | DataStore |
+| `deployed_to` | DeployableArchitectureElement | DeploymentNode, RuntimeEnvironment |
+| `uses_technology` | ArchitectureElement | TechnologySelection |
+| `justified_by` | ArchitectureDecision, TechnologySelection | Requirement, QualityScenario, Constraint |
+| `exposed_by` | Operation | ApiOperation |
+| `publishes` | Operation, Component | Message, Event |
+| `subscribes_to` | Operation, Component | Message, Channel |
+| `schema_for` | DataSchema | Attribute, Message, ApiOperation |
+| `workflow_step` | TechnicalWorkflow | ApiOperation |
+| `implemented_by` | Requirement, Operation, ArchitectureElement | ImplementationSlice |
+| `contains` | WorkPackage, Release | ImplementationSlice |
+| `depends_on_slice` | ImplementationSlice | ImplementationSlice |
+| `verified_by` | Requirement, Operation, ArchitectureElement, TechnicalContract | VerificationObligation |
+| `implemented_as` | VerificationObligation | TestCase, Scenario, ArchitectureCheck |
+| `produces_receipt` | TestExecution, ScenarioRun | TestReceipt |
+| `bound_to_code` | SemanticNode | CodeBinding |
+
+**Structural cardinality** (unconditional only): `supersedes` outgoing 0..1; `resolves` outgoing 1..*; `has_attribute` incoming (per Attribute) exactly 1; `transitions_via`, `permits`, `scoped_to`, `characterized_by` and `measured_by` outgoing exactly 1; `workflow_step` outgoing 1..*; `produces_receipt` outgoing 0..1. Every other relation is outgoing 0..* and incoming 0..*. A minimum applies to every node whose type matches the relation's source (outgoing) or target (incoming) predicate. Conditional gate/profile requirements (evidence for requirements, `performed_by` for executable business steps, `allocated_to` by A2, `deployed_to` by a deployment profile, `justified_by` for accepted decisions, `verified_by` by D2/C1) are later validation rules, not structural cardinality.
+
+**Directionality and cycles.** `conflicts_with` is `Symmetric`: one edge represents the unordered pair and no mirrored edge is required or created. Every other core relation is `Directed`. `supersedes`, `refines`, `decomposes_to`, `inherits_role` and `depends_on_slice` are `Acyclic` in the core profile (a future exception requires an explicit plan revision/profile mechanism); every other relation allows cycles unless a later semantic rule forbids them.
+
 ---
 
 ## 18. Mandatory semantic invariants
@@ -2095,7 +2191,7 @@ The following are Plumb invariants, independent of any external standard claim.
 ### 18.7 Architecture
 
 25. Functional elements MUST NOT mutate into architecture elements; allocation is a relationship.
-26. Accepted ArchitectureDecision nodes MUST include at least one driver and one rationale.
+26. Accepted ArchitectureDecision nodes MUST have at least one driver (`justified_by` relation) and a rationale.
 27. An accepted architecture candidate MUST be uniquely designated for a given baseline unless an explicit multi-target deployment profile is active.
 28. Layout coordinates MUST NOT influence `semantic_hash`.
 
@@ -2448,7 +2544,7 @@ This section fixes the Rust/JSON binding of every `NodePayload` variant (86 vari
 
 **References, hashes, timestamps.** Unless excepted: `*_ref` → `Id`, `*_refs[]` → `Vec<Id>`, `*_hash` → `Hash`, `*_hashes[]` → `Vec<Hash>` (`plumb_core` types). The fields `created_at_source`, `source_timestamp`, `created_at`, `decided_at`, `expires_at`, `started_at`, `finished_at` and `executed_at` are `Timestamp`. `target_date` is a calendar date and is `String`.
 
-**Exceptions.** `StandardMapping.clause_ref` → `Option<String>`; `Finding.standard_rule_ref` → `Option<String>`; `ResolutionDecision.patch_ref` → `Hash`; `DerivationRecord.input_refs` and `output_refs` → `Vec<String>`; `View.layout_ref`, `View.style_ref` and `TestReceipt.logs_ref` → `Option<Hash>`; `CodeBinding.repository_ref` → `String`.
+**Exceptions.** `StandardMapping.clause_ref` → `Option<String>`; `Finding.standard_rule_ref` → `Option<String>`; `ResolutionDecision.patch_ref` → `Hash`; `DerivationRecord.input_refs` and `output_refs` → `Vec<String>`; `View.layout_ref`, `View.style_ref` and `TestReceipt.logs_ref` → `Option<Hash>`; `CodeBinding.repository_ref` → `String`. Fields that identify PSG nodes although their names do not end in `_ref`: `DomainRelationship.from_entity`, `DomainRelationship.to_entity`, `Transition.from_state` and `Transition.to_state` → `Id`. Genuinely external references (URIs, addresses, paths or external identifiers; no `Id` grammar, normalization or URI validation): `Stakeholder.contact_ref`, `ApiContract.external_spec_ref`, `EventContract.external_spec_ref`, `DataSchema.external_ref` and `TestCase.automation_ref` → `Option<String>`.
 
 **Other primitives.** `Attribute.nullable` → `bool`; `Entity.aggregate_root` → `Option<bool>`; `Attribute.precision` → `Option<u32>`; `DomainRelationship.snapshot_semantics` → `Option<bool>`; `StandardsProfileStandard.required` → `bool`. Evidence-locator integer indexes are `u64`; page-region coordinates are `f64`.
 
@@ -2499,6 +2595,8 @@ pub enum EvidenceLocator {
 }
 ```
 
+`PageRegion` coordinates `x`, `y`, `width` and `height`, when present, MUST be finite (no NaN or infinity), and `width` and `height` MUST be `>= 0`; this is enforced by explicit validation and on deserialization. No range is imposed on `x`/`y`.
+
 **Explicit payload structures.**
 
 ```rust
@@ -2535,14 +2633,13 @@ pub struct ResolutionDecision {
 
 pub struct ArchitectureElement {
     pub name: String, pub description: Option<String>, pub responsibilities: Option<Vec<String>>,
-    pub technology_selection_refs: Option<Vec<Id>>, pub owner_ref: Option<Id>,
+    pub owner_ref: Option<Id>,
 }
 
 pub struct ApiOperation {
     pub api_contract_ref: Id, pub operation_id: String,
     pub method: Option<String>, pub path: Option<String>,
-    pub request_schema_ref: Option<Id>, pub response_schema_refs: Option<Vec<Id>>,
-    pub error_schema_refs: Option<Vec<Id>>, pub security_refs: Option<Vec<Id>>,
+    pub security_refs: Option<Vec<Id>>,
 }
 
 pub struct StandardsProfileStandard { pub standard_id: String, pub version: String, pub role: MappingRole, pub required: bool }
@@ -2555,7 +2652,7 @@ pub struct StandardsProfile {
 pub struct ExtensionPayload { pub extension_type: ExtensionKey, pub data: Value }
 ```
 
-`DerivationRecord` is defined in §5.3 and `View` in §12.5. `ResolutionDecision` requires at least one of `question_ref` and `proposal_ref` (both may be present). Whether `ApiOperation.method`/`path` are mandatory for an HTTP contract is later graph-semantic validation. `ArchitectureElement` is the payload of all ten architecture element variants (`SoftwareSystem`, `Container`, `Component`, `Module`, `Interface`, `DataStore`, `ExternalSystem`, `DeploymentNode`, `RuntimeEnvironment`, `NetworkZone`); the variant itself is the architectural type, so there is no `architecture_element_kind` field. `ArchitectureDecision` uses `drivers: Vec<Id>`, `alternatives: Vec<String>`, `selected_option: String`, `affected_refs: Option<Vec<Id>>`, `supersedes: Option<Id>`. `TechnologySelection` uses `applies_to_refs: Vec<Id>`, `alternatives: Option<Vec<Id>>`, `drivers: Option<Vec<Id>>`, `architecture_decision_ref: Option<Id>`. `ExtensionPayload` is the only generic semantic escape hatch and MUST NOT carry core semantics.
+`DerivationRecord` is defined in §5.3 and `View` in §12.5. `ResolutionDecision` requires at least one of `question_ref` and `proposal_ref` (both may be present). Whether `ApiOperation.method`/`path` are mandatory for an HTTP contract is later graph-semantic validation. `ArchitectureElement` is the payload of all ten architecture element variants (`SoftwareSystem`, `Container`, `Component`, `Module`, `Interface`, `DataStore`, `ExternalSystem`, `DeploymentNode`, `RuntimeEnvironment`, `NetworkZone`); the variant itself is the architectural type, so there is no `architecture_element_kind` field. `ArchitectureDecision` uses `alternatives: Vec<String>`, `selected_option: String`, `affected_refs: Option<Vec<Id>>`, `supersedes: Option<Id>`. `TechnologySelection` uses `alternatives: Option<Vec<Id>>`, `architecture_decision_ref: Option<Id>`. Payload reference fields that duplicate a §17 relation do not exist (§17, canonical relation ownership). `ExtensionPayload` is the only generic semantic escape hatch and MUST NOT carry core semantics.
 
 **Remaining payloads.** Every other payload in §§5-16 preserves its exact field names and Required/Optional split, applies the rules above, and adds no fields.
 
