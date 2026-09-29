@@ -1984,6 +1984,7 @@
       "commands": [
         "cargo test -p plumb-inference --no-default-features",
         "cargo test -p plumb-inference --features llm",
+        "if cargo tree -p plumb-inference --no-default-features -e normal | grep -qE '(^|[[:space:]])reqwest v'; then\n  echo \"ERROR: reqwest present in feature-off plumb-inference dependency graph\" >&2\n  exit 1\nfi",
         "cargo fmt --check",
         "cargo clippy --workspace --all-targets -- -D warnings"
       ],

@@ -166,7 +166,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 serde_jcs = "0.1"
-jsonschema = "0.18"
+jsonschema = { version = "0.18", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 petgraph = "0.6"
 rand = "0.8"
@@ -3194,6 +3194,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```bash
 cargo test -p plumb-inference --no-default-features
 cargo test -p plumb-inference --features llm
+if cargo tree -p plumb-inference --no-default-features -e normal | grep -qE '(^|[[:space:]])reqwest v'; then
+  echo "ERROR: reqwest present in feature-off plumb-inference dependency graph" >&2
+  exit 1
+fi
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
