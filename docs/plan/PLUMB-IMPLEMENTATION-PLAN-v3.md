@@ -506,6 +506,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 
 - `.github/workflows/ci.yml`
 - `.gitignore`
+- `.node-version`
 - `Cargo.lock`
 - `Cargo.toml`
 - `Makefile`
@@ -597,6 +598,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-functional/src/state.rs`
 - `crates/plumb-functional/src/verification.rs`
 - `crates/plumb-functional/src/vocabulary.rs`
+- `crates/plumb-functional/src/vocabulary_exceptions.rs`
 - `crates/plumb-functional/tests/assumption.rs`
 - `crates/plumb-functional/tests/authorization.rs`
 - `crates/plumb-functional/tests/calculation.rs`
@@ -2140,6 +2142,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 **Write allowlist**
 
 - `crates/plumb-functional/src/vocabulary.rs`
+- `crates/plumb-functional/src/vocabulary_exceptions.rs`
 - `crates/plumb-functional/tests/vocabulary.rs`
 - `prompts/s1-vocabulary.md`
 - `schemas/inference/s1-vocabulary.schema.json`

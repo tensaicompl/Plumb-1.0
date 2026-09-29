@@ -10,7 +10,7 @@ Before editing code:
 4. Read `docs/plan/SOURCE-REFERENCE-INDEX.json` (machine authority) and the YAML mirror.
 5. Run `sha256sum -c docs/plan/SUPPORTING-DOCS.sha256` and `python3 scripts/verify-plan-contract.py`.
 6. Resolve the current task's `source_refs` IDs through the JSON source-reference index and read those exact local locators.
-6. Execute one ready task only.
+7. Execute one ready task only.
 
 Hard rules:
 

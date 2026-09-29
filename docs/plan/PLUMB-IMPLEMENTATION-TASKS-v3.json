@@ -1052,6 +1052,7 @@
       ],
       "files": [
         "crates/plumb-functional/src/vocabulary.rs",
+        "crates/plumb-functional/src/vocabulary_exceptions.rs",
         "crates/plumb-functional/tests/vocabulary.rs",
         "prompts/s1-vocabulary.md",
         "schemas/inference/s1-vocabulary.schema.json"
