@@ -32,7 +32,7 @@ tasks:
 - id: F0.13
   status: done
 - id: F0.14
-  status: pending
+  status: done
 - id: S0.1
   status: pending
 - id: S0.2

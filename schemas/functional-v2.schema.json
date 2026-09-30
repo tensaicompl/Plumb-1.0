@@ -1,0 +1,795 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Plumb functional.yaml v2 compatibility projection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "model_hash",
+    "glossary",
+    "actors",
+    "roles",
+    "entities",
+    "calendars",
+    "calculations",
+    "rules",
+    "operations",
+    "processes",
+    "events",
+    "requirements",
+    "scenarios",
+    "assumptions"
+  ],
+  "properties": {
+    "version": {
+      "const": 2
+    },
+    "model_hash": {
+      "type": "string",
+      "pattern": "^psg:sha256:[0-9a-f]{64}$"
+    },
+    "glossary": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/glossary_entry"
+      }
+    },
+    "actors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/actor"
+      }
+    },
+    "roles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/role"
+      }
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entity"
+      }
+    },
+    "calendars": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/calendar"
+      }
+    },
+    "calculations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/calculation"
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/operation"
+      }
+    },
+    "processes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/process"
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/requirement"
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/scenario"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/assumption"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(:[A-Za-z0-9._-]+)*$"
+    },
+    "glossary_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "definition",
+        "aliases"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string"
+        },
+        "definition": {
+          "type": "string"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "human",
+            "system",
+            "external"
+          ]
+        }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "actor",
+        "operations"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "actor": {
+          "$ref": "#/$defs/id"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "attribute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "class"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "pii",
+            "financial",
+            "confidential",
+            "none"
+          ]
+        },
+        "unit": {
+          "type": "string"
+        },
+        "precision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "to",
+        "card_from",
+        "card_to",
+        "snapshot"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "card_from": {
+          "type": "string"
+        },
+        "card_to": {
+          "type": "string"
+        },
+        "snapshot": {
+          "type": "boolean"
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "operation",
+        "actor"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "operation": {
+          "$ref": "#/$defs/id"
+        },
+        "actor": {
+          "$ref": "#/$defs/id"
+        },
+        "precondition": {
+          "type": "string"
+        }
+      }
+    },
+    "invariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "expr"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "expr": {
+          "type": "string"
+        }
+      }
+    },
+    "entity_nfr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "consistency": {},
+        "availability": {},
+        "volatility": {},
+        "residency": {},
+        "retention": {}
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "attributes",
+        "relationships",
+        "states",
+        "transitions",
+        "invariants"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "attributes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attribute"
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relationship"
+          }
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/state"
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/transition"
+          }
+        },
+        "invariants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/invariant"
+          }
+        },
+        "nfr": {
+          "$ref": "#/$defs/entity_nfr"
+        }
+      }
+    },
+    "calendar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "tz",
+        "week_pattern"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "tz": {
+          "type": "string"
+        },
+        "week_pattern": {},
+        "region": {
+          "type": "string"
+        },
+        "holidays_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "calculation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "target",
+        "expr",
+        "unit",
+        "rounding",
+        "inputs",
+        "examples"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "target": {
+          "$ref": "#/$defs/id"
+        },
+        "expr": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "rounding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "step"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string"
+            },
+            "step": {}
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "examples": {
+          "type": "array",
+          "items": {}
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "conditions",
+        "rows"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "default": {}
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "success",
+            "failure"
+          ]
+        }
+      }
+    },
+    "operation_nfr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "latency_ms": {
+          "type": "number"
+        },
+        "audit": {
+          "type": "boolean"
+        },
+        "idempotent": {
+          "type": "boolean"
+        }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "actor",
+        "reads",
+        "writes",
+        "pre",
+        "post",
+        "outcomes",
+        "governed_by"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "command",
+            "query"
+          ]
+        },
+        "actor": {
+          "$ref": "#/$defs/id"
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "pre": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "post": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/outcome"
+          }
+        },
+        "governed_by": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "nfr": {
+          "$ref": "#/$defs/operation_nfr"
+        }
+      }
+    },
+    "next": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "to"
+      ],
+      "properties": {
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "when": {
+          "type": "string"
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "actor",
+        "operation",
+        "emits",
+        "next"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "actor": {
+          "$ref": "#/$defs/id"
+        },
+        "operation": {
+          "$ref": "#/$defs/id"
+        },
+        "emits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "next": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/next"
+          }
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "trigger",
+        "steps",
+        "outcomes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "trigger": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "event",
+                "timer"
+              ]
+            },
+            "ref": {
+              "type": "string"
+            }
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "payload"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "payload": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text",
+        "class",
+        "criteria",
+        "operations",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        },
+        "criteria": {
+          "type": "array",
+          "items": {}
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "status": {
+          "type": "string"
+        },
+        "normalised": {
+          "type": "string"
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "requirement",
+        "operation",
+        "given",
+        "when",
+        "then",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "requirement": {
+          "$ref": "#/$defs/id"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "given": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "when": {
+          "type": "object"
+        },
+        "then": {
+          "type": "object"
+        },
+        "status": {
+          "type": "string"
+        },
+        "run": {
+          "type": "object"
+        }
+      }
+    },
+    "assumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "finding",
+        "default",
+        "owner",
+        "expires"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "finding": {
+          "$ref": "#/$defs/id"
+        },
+        "default": {},
+        "owner": {
+          "$ref": "#/$defs/id"
+        },
+        "expires": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
