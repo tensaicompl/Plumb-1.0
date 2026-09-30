@@ -8,8 +8,10 @@ pub mod text;
 
 pub use md::{import_markdown, table_cells};
 pub use source::{
-    ExtractedTextArtifact, FragmentKind, FragmentMetadata, ImportAudit, ImportError,
-    ImportedSource, SourceArtifactLinks, SourceKind, UnknownImportValue, EXTRACTED_TEXT_MEDIA_TYPE,
-    EXTRACTED_TEXT_VERSION, E_SOURCE_ENCODING, FRAGMENT_EXTENSION, SOURCE_ARTIFACTS_EXTENSION,
+    source_parse_metadata, ExtractedTextArtifact, FragmentKind, FragmentMetadata, ImportAudit,
+    ImportError, ImportWarning, ImportWarningCode, ImportedSource, ParseMetadata, ParseStatus,
+    SourceArtifactLinks, SourceKind, UnknownImportValue, EXTRACTED_TEXT_MEDIA_TYPE,
+    EXTRACTED_TEXT_VERSION, E_DOCX_ARCHIVE, E_DOCX_LIMIT, E_DOCX_MISSING_PART, E_DOCX_XML,
+    E_SOURCE_ENCODING, FRAGMENT_EXTENSION, PARSE_EXTENSION, SOURCE_ARTIFACTS_EXTENSION,
 };
 pub use text::import_plain_text;

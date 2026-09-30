@@ -428,7 +428,12 @@ mod md_text_contract {
             let source_links = links(&imported.source);
             assert_eq!(source_links.original_ref, original.hash);
             assert_eq!(source_links.extracted_ref, extracted_artifact.hash);
-            assert_eq!(imported.source.extensions.len(), 1);
+            assert_eq!(imported.source.extensions.len(), 2);
+            assert_eq!(imported.parse, ParseMetadata::complete());
+            assert_eq!(
+                source_parse_metadata(&imported.source).unwrap(),
+                imported.parse
+            );
             assert_eq!(original.created_at, audit().created_at);
             assert_eq!(extracted_artifact.created_at, audit().created_at);
             assert_eq!(imported.source.audit.created_by, id("actor:importer"));
@@ -776,6 +781,179 @@ mod md_text_contract {
         assert!(kinds.contains(&FragmentKind::Heading));
         let again = import_markdown("requirements.md", HR_REQUIREMENTS, &audit()).unwrap();
         assert_eq!(again, imported);
+    }
+
+    // ------------------------------------------------------------------ parse metadata (hotfix 021)
+
+    #[test]
+    fn text_imports_persist_a_complete_parse() {
+        for imported in [md(GOLDEN_DOC), txt("A list:\n- one\n")] {
+            let key = PARSE_EXTENSION.parse().unwrap();
+            assert_eq!(
+                imported.source.extensions[&key],
+                json!({"status": "complete", "warnings": []})
+            );
+            assert_eq!(
+                serde_json::to_string(&imported.source.extensions[&key]).unwrap(),
+                r#"{"status":"complete","warnings":[]}"#
+            );
+            assert_eq!(imported.parse, ParseMetadata::complete());
+            assert_eq!(
+                source_parse_metadata(&imported.source).unwrap(),
+                imported.parse
+            );
+            let keys: Vec<&str> = imported
+                .source
+                .extensions
+                .keys()
+                .map(|k| k.as_str())
+                .collect();
+            assert_eq!(
+                keys,
+                ["plumb_import:parse", "plumb_import:source_artifacts"]
+            );
+            for fragment in &imported.fragments {
+                assert_eq!(fragment.extensions.len(), 1);
+            }
+            check_invariants(&imported);
+        }
+        // The golden IDs and hashes are unchanged by the extra source extension.
+        let golden = md(GOLDEN_DOC);
+        assert_eq!(golden.source.id.as_str(), GOLDEN_SOURCE_ID);
+        assert_eq!(golden.original_artifact.hash.as_str(), GOLDEN_RAW_HASH);
+        assert_eq!(
+            golden.extracted_artifact.hash.as_str(),
+            GOLDEN_EXTRACTED_HASH
+        );
+        let ids: Vec<&str> = golden.fragments.iter().map(|f| f.id.as_str()).collect();
+        let expected: Vec<&str> = GOLDEN_FRAGMENTS.iter().map(|g| g.5).collect();
+        assert_eq!(ids, expected);
+    }
+
+    #[test]
+    fn parse_vocabularies_are_exact() {
+        assert_eq!(
+            ParseStatus::ALL.map(ParseStatus::as_str),
+            ["complete", "partial-with-explicit-unparsed-regions"]
+        );
+        assert_eq!(
+            ImportWarningCode::ALL.map(ImportWarningCode::as_str),
+            ["W_DOCX_UNSUPPORTED_VISIBLE"]
+        );
+        for bad in [
+            "Complete",
+            "partial",
+            "partial_with_explicit_unparsed_regions",
+            "failed",
+            "",
+        ] {
+            assert!(bad.parse::<ParseStatus>().is_err(), "{bad}");
+        }
+        for bad in ["w_docx_unsupported_visible", "W_DOCX_UNSUPPORTED", ""] {
+            assert!(bad.parse::<ImportWarningCode>().is_err(), "{bad}");
+        }
+        for (error, code) in [
+            (
+                ImportError::DocxArchive { reason: "r".into() },
+                "E_DOCX_ARCHIVE",
+            ),
+            (
+                ImportError::DocxMissingPart {
+                    part: "word/document.xml".into(),
+                },
+                "E_DOCX_MISSING_PART",
+            ),
+            (
+                ImportError::DocxXml {
+                    part: "p".into(),
+                    reason: "r".into(),
+                },
+                "E_DOCX_XML",
+            ),
+            (
+                ImportError::DocxLimit {
+                    limit: "l".into(),
+                    actual: 2,
+                    max: 1,
+                },
+                "E_DOCX_LIMIT",
+            ),
+        ] {
+            assert_eq!(error.code(), Some(code));
+        }
+    }
+
+    fn warning(xpath: &str, message: &str) -> Value {
+        json!({"code": "W_DOCX_UNSUPPORTED_VISIBLE",
+               "locator": {"kind": "XmlPath", "data": {"xpath": xpath}}, "message": message})
+    }
+
+    #[test]
+    fn malformed_parse_metadata_is_rejected() {
+        let parse = |value: Value| serde_json::from_value::<ParseMetadata>(value);
+        let a = warning("/w:document/w:body/*[1]", "Flattened.");
+        let b = warning("/w:document/w:body/*[2]", "Flattened.");
+        assert!(parse(json!({"status": "complete", "warnings": []})).is_ok());
+        assert!(parse(
+            json!({"status": "partial-with-explicit-unparsed-regions", "warnings": [a, b]})
+        )
+        .is_ok());
+        for bad in [
+            json!({"status": "complete", "warnings": [a]}),
+            json!({"status": "partial-with-explicit-unparsed-regions", "warnings": []}),
+            json!({"status": "partial-with-explicit-unparsed-regions", "warnings": [b, a]}),
+            json!({"status": "partial-with-explicit-unparsed-regions", "warnings": [a, a]}),
+            json!({"status": "failed", "warnings": []}),
+            json!({"status": "complete", "warnings": [], "extra": 1}),
+            json!({"status": "complete"}),
+            json!({"status": "partial-with-explicit-unparsed-regions", "warnings": [warning("/x", "")]}),
+            json!({"status": "partial-with-explicit-unparsed-regions", "warnings": [warning("/x", " padded")]}),
+            json!({"status": "partial-with-explicit-unparsed-regions",
+                   "warnings": [{"code": "W_OTHER", "locator": {"kind": "XmlPath", "data": {"xpath": "/x"}}, "message": "m"}]}),
+            json!({"status": "partial-with-explicit-unparsed-regions",
+                   "warnings": [{"code": "W_DOCX_UNSUPPORTED_VISIBLE",
+                                 "locator": {"kind": "PageRegion", "data": {"page": 1, "x": null, "y": null, "width": -1.0, "height": null}},
+                                 "message": "m"}]}),
+        ] {
+            assert!(parse(bad.clone()).is_err(), "{bad}");
+        }
+        // from_warnings normalizes order, removes exact repeats and picks the status.
+        let first: ImportWarning = serde_json::from_value(a.clone()).unwrap();
+        let second: ImportWarning = serde_json::from_value(b.clone()).unwrap();
+        let normalized =
+            ParseMetadata::from_warnings(vec![second.clone(), first.clone(), first.clone()])
+                .unwrap();
+        assert_eq!(
+            normalized.status,
+            ParseStatus::PartialWithExplicitUnparsedRegions
+        );
+        assert_eq!(normalized.warnings, [first, second]);
+        assert_eq!(
+            ParseMetadata::from_warnings(vec![]).unwrap(),
+            ParseMetadata::complete()
+        );
+    }
+
+    #[test]
+    fn source_parse_metadata_requires_a_source_with_valid_metadata() {
+        let imported = md(GOLDEN_DOC);
+        assert!(source_parse_metadata(&imported.fragments[0]).is_err());
+        let key = PARSE_EXTENSION.parse().unwrap();
+        let mut missing = imported.source.clone();
+        missing.extensions.remove(&key);
+        assert!(matches!(
+            source_parse_metadata(&missing),
+            Err(ImportError::InvalidMetadata(_))
+        ));
+        let mut malformed = imported.source.clone();
+        malformed.extensions.insert(
+            key,
+            json!({"status": "complete", "warnings": [warning("/x", "m")]}),
+        );
+        assert!(matches!(
+            source_parse_metadata(&malformed),
+            Err(ImportError::InvalidMetadata(_))
+        ));
     }
 
     // ------------------------------------------------------------------ source guards (§§58, 71)

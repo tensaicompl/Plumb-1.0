@@ -34,6 +34,21 @@ pub const SOURCE_ARTIFACTS_EXTENSION: &str = "plumb_import:source_artifacts";
 /// Extension key of an EvidenceFragment node's [`FragmentMetadata`].
 pub const FRAGMENT_EXTENSION: &str = "plumb_import:fragment";
 
+/// Extension key of the SourceArtifact node's [`ParseMetadata`].
+pub const PARSE_EXTENSION: &str = "plumb_import:parse";
+
+/// The stable code of a DOCX package that is not a readable ZIP archive.
+pub const E_DOCX_ARCHIVE: &str = "E_DOCX_ARCHIVE";
+
+/// The stable code of a DOCX package without a required part.
+pub const E_DOCX_MISSING_PART: &str = "E_DOCX_MISSING_PART";
+
+/// The stable code of malformed WordprocessingML in a DOCX part.
+pub const E_DOCX_XML: &str = "E_DOCX_XML";
+
+/// The stable code of a DOCX package exceeding a safety limit.
+pub const E_DOCX_LIMIT: &str = "E_DOCX_LIMIT";
+
 /// Why a source could not be imported.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ImportError {
@@ -51,6 +66,22 @@ pub enum ImportError {
     InvalidNode(String),
     #[error("invalid import metadata: {0}")]
     InvalidMetadata(String),
+    /// The bytes are not a readable ZIP archive.
+    #[error("DOCX archive is unreadable: {reason}")]
+    DocxArchive { reason: String },
+    /// A required package part is absent.
+    #[error("DOCX part {part} is missing")]
+    DocxMissingPart { part: String },
+    /// A package part is not well-formed or valid WordprocessingML.
+    #[error("DOCX part {part} is malformed: {reason}")]
+    DocxXml { part: String, reason: String },
+    /// A safety limit was exceeded.
+    #[error("DOCX {limit} is {actual}, above the limit {max}")]
+    DocxLimit {
+        limit: String,
+        actual: u64,
+        max: u64,
+    },
 }
 
 impl ImportError {
@@ -58,6 +89,10 @@ impl ImportError {
     pub fn code(&self) -> Option<&'static str> {
         match self {
             ImportError::SourceEncoding { .. } => Some(E_SOURCE_ENCODING),
+            ImportError::DocxArchive { .. } => Some(E_DOCX_ARCHIVE),
+            ImportError::DocxMissingPart { .. } => Some(E_DOCX_MISSING_PART),
+            ImportError::DocxXml { .. } => Some(E_DOCX_XML),
+            ImportError::DocxLimit { .. } => Some(E_DOCX_LIMIT),
             _ => None,
         }
     }
@@ -166,6 +201,185 @@ closed_vocabulary! {
         TableRow => "table_row",
         Paragraph => "paragraph",
     }
+}
+
+closed_vocabulary! {
+    /// Whether a source was parsed completely.
+    ParseStatus, 2 {
+        Complete => "complete",
+        PartialWithExplicitUnparsedRegions => "partial-with-explicit-unparsed-regions",
+    }
+}
+
+closed_vocabulary! {
+    /// The code of a non-fatal import warning.
+    ImportWarningCode, 1 {
+        DocxUnsupportedVisible => "W_DOCX_UNSUPPORTED_VISIBLE",
+    }
+}
+
+/// A located, non-fatal import warning: content the importer could not parse structurally.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, try_from = "ImportWarningFields")]
+pub struct ImportWarning {
+    pub code: ImportWarningCode,
+    pub locator: EvidenceLocator,
+    pub message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportWarningFields {
+    code: ImportWarningCode,
+    locator: EvidenceLocator,
+    message: String,
+}
+
+impl TryFrom<ImportWarningFields> for ImportWarning {
+    type Error = ImportError;
+
+    fn try_from(f: ImportWarningFields) -> Result<Self, Self::Error> {
+        let warning = ImportWarning {
+            code: f.code,
+            locator: f.locator,
+            message: f.message,
+        };
+        warning.validate()?;
+        Ok(warning)
+    }
+}
+
+/// The canonical order key of a warning.
+type WarningKey = (Vec<u8>, &'static str, String);
+
+impl ImportWarning {
+    pub fn validate(&self) -> Result<(), ImportError> {
+        let clean = !self.message.is_empty()
+            && self.message.trim() == self.message
+            && !self.message.chars().any(char::is_control);
+        if !clean {
+            return Err(ImportError::InvalidMetadata(format!(
+                "invalid warning message {:?}",
+                self.message
+            )));
+        }
+        self.locator
+            .validate()
+            .map_err(|e| ImportError::InvalidMetadata(format!("invalid warning locator: {e}")))
+    }
+
+    /// The canonical order: RFC 8785 locator JSON, then code, then message.
+    fn sort_key(&self) -> Result<WarningKey, ImportError> {
+        Ok((
+            to_canonical_json(&self.locator)?,
+            self.code.as_str(),
+            self.message.clone(),
+        ))
+    }
+}
+
+/// Parse completeness of a source (`plumb_import:parse`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, try_from = "ParseMetadataFields")]
+pub struct ParseMetadata {
+    pub status: ParseStatus,
+    pub warnings: Vec<ImportWarning>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParseMetadataFields {
+    status: ParseStatus,
+    warnings: Vec<ImportWarning>,
+}
+
+impl TryFrom<ParseMetadataFields> for ParseMetadata {
+    type Error = ImportError;
+
+    fn try_from(f: ParseMetadataFields) -> Result<Self, Self::Error> {
+        let metadata = ParseMetadata {
+            status: f.status,
+            warnings: f.warnings,
+        };
+        metadata.validate()?;
+        Ok(metadata)
+    }
+}
+
+impl ParseMetadata {
+    /// A complete parse without warnings.
+    pub fn complete() -> ParseMetadata {
+        ParseMetadata {
+            status: ParseStatus::Complete,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Complete without warnings; otherwise partial, with the warnings in canonical order and
+    /// exact repeats removed.
+    pub fn from_warnings(warnings: Vec<ImportWarning>) -> Result<ParseMetadata, ImportError> {
+        let mut keyed: Vec<(WarningKey, ImportWarning)> = Vec::with_capacity(warnings.len());
+        for warning in warnings {
+            warning.validate()?;
+            keyed.push((warning.sort_key()?, warning));
+        }
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        keyed.dedup_by(|a, b| a.0 == b.0);
+        let warnings: Vec<ImportWarning> = keyed.into_iter().map(|(_, w)| w).collect();
+        let status = if warnings.is_empty() {
+            ParseStatus::Complete
+        } else {
+            ParseStatus::PartialWithExplicitUnparsedRegions
+        };
+        let metadata = ParseMetadata { status, warnings };
+        metadata.validate()?;
+        Ok(metadata)
+    }
+
+    /// Complete has no warnings; partial has at least one; warnings are valid, in canonical
+    /// order and unique.
+    pub fn validate(&self) -> Result<(), ImportError> {
+        let invalid = ImportError::InvalidMetadata;
+        match (self.status, self.warnings.is_empty()) {
+            (ParseStatus::Complete, false) => {
+                return Err(invalid("a complete parse has no warnings".into()))
+            }
+            (ParseStatus::PartialWithExplicitUnparsedRegions, true) => {
+                return Err(invalid("a partial parse needs explicit warnings".into()))
+            }
+            _ => {}
+        }
+        let mut previous: Option<WarningKey> = None;
+        for warning in &self.warnings {
+            warning.validate()?;
+            let key = warning.sort_key()?;
+            if previous.as_ref().is_some_and(|p| *p >= key) {
+                return Err(invalid(
+                    "warnings are not in canonical order or repeat".into(),
+                ));
+            }
+            previous = Some(key);
+        }
+        Ok(())
+    }
+}
+
+/// The parse metadata persisted on an imported SourceArtifact node. Missing metadata is an
+/// error, never an implicit complete parse.
+pub fn source_parse_metadata(source: &Node) -> Result<ParseMetadata, ImportError> {
+    if !matches!(source.payload, NodePayload::SourceArtifact(_)) {
+        return Err(ImportError::InvalidMetadata(format!(
+            "{} is not a SourceArtifact",
+            source.id
+        )));
+    }
+    let key: ExtensionKey = PARSE_EXTENSION
+        .parse()
+        .map_err(|e: plumb_psg::InvalidExtensionKey| ImportError::InvalidMetadata(e.to_string()))?;
+    let value = source.extensions.get(&key).ok_or_else(|| {
+        ImportError::InvalidMetadata(format!("{} has no {PARSE_EXTENSION}", source.id))
+    })?;
+    serde_json::from_value(value.clone()).map_err(|e| ImportError::InvalidMetadata(e.to_string()))
 }
 
 /// The source-extracted artifact: the normalized text, wrapped so that its bytes never equal
@@ -335,6 +549,9 @@ pub struct ImportedSource {
 
     pub original_artifact: Artifact,
     pub extracted_artifact: Artifact,
+
+    /// Equal to the source node's `plumb_import:parse` extension.
+    pub parse: ParseMetadata,
 }
 
 // ============================================================================ text model
@@ -451,16 +668,23 @@ fn validate_display_name(display_name: &str) -> Result<(), ImportError> {
     }
 }
 
-fn extension(
+fn extension_entry(
     key: &str,
     value: &impl Serialize,
-) -> Result<BTreeMap<ExtensionKey, Value>, ImportError> {
+) -> Result<(ExtensionKey, Value), ImportError> {
     let key: ExtensionKey = key
         .parse()
         .map_err(|e: plumb_psg::InvalidExtensionKey| ImportError::InvalidMetadata(e.to_string()))?;
     let value =
         serde_json::to_value(value).map_err(|e| ImportError::InvalidMetadata(e.to_string()))?;
-    Ok(BTreeMap::from([(key, value)]))
+    Ok((key, value))
+}
+
+fn extension(
+    key: &str,
+    value: &impl Serialize,
+) -> Result<BTreeMap<ExtensionKey, Value>, ImportError> {
+    Ok(BTreeMap::from([extension_entry(key, value)?]))
 }
 
 fn envelope(
@@ -490,16 +714,39 @@ fn envelope(
     Ok(node)
 }
 
-/// Builds the ImportedSource of `bytes` from the classified segments of its normalized text.
+/// Builds the ImportedSource of a completely parsed source.
 pub(crate) fn build(
     kind: SourceKind,
     display_name: &str,
     bytes: &[u8],
     text: String,
+    segments: Vec<Segment>,
+    audit: &ImportAudit,
+) -> Result<ImportedSource, ImportError> {
+    build_with_parse(
+        kind,
+        display_name,
+        bytes,
+        text,
+        segments,
+        ParseMetadata::complete(),
+        audit,
+    )
+}
+
+/// Builds the ImportedSource of `bytes` from the classified segments of its normalized text,
+/// recording `parse` on the source node.
+pub(crate) fn build_with_parse(
+    kind: SourceKind,
+    display_name: &str,
+    bytes: &[u8],
+    text: String,
     mut segments: Vec<Segment>,
+    parse: ParseMetadata,
     audit: &ImportAudit,
 ) -> Result<ImportedSource, ImportError> {
     validate_display_name(display_name)?;
+    parse.validate()?;
     let raw_hash = Hash::content_sha256(bytes);
     let extracted = ExtractedTextArtifact::new(text);
     let extracted_bytes = extracted.canonical_bytes()?;
@@ -539,7 +786,10 @@ pub(crate) fn build(
             language: None,
             classification: None,
         }),
-        extension(SOURCE_ARTIFACTS_EXTENSION, &links)?,
+        BTreeMap::from([
+            extension_entry(SOURCE_ARTIFACTS_EXTENSION, &links)?,
+            extension_entry(PARSE_EXTENSION, &parse)?,
+        ]),
         audit,
     )?;
 
@@ -576,5 +826,6 @@ pub(crate) fn build(
         fragments,
         original_artifact,
         extracted_artifact,
+        parse,
     })
 }

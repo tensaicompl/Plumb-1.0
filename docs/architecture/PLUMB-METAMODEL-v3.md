@@ -309,7 +309,7 @@ speaker
 source_timestamp
 ```
 
-Importer-specific facts such as a fragment's structural kind or a table row's header cells are not core fields; an importer records them in its own namespaced node extensions (for the pilot text importer `plumb_import:source_artifacts` on the source and `plumb_import:fragment` on each fragment).
+Importer-specific facts such as a fragment's structural kind or a table row's header cells are not core fields; an importer records them in its own namespaced node extensions (for the pilot importers `plumb_import:source_artifacts` and `plumb_import:parse` on the source and `plumb_import:fragment` on each fragment). Parse completeness likewise stays an importer extension rather than a core `SourceArtifact` field.
 
 ### 5.3 `DerivationRecord`
 

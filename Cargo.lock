@@ -1814,6 +1814,7 @@ dependencies = [
  "insta",
  "plumb-artifacts",
  "plumb-core",
+ "plumb-import",
  "plumb-psg",
  "serde",
  "serde_json",
