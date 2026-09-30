@@ -436,7 +436,7 @@ Consumes the active rule pack.
 
 Rule evaluation is pure.
 
-External validators execute outside the rule and supply content-addressed `ValidationArtifact`s.
+External validators execute outside the rule and supply content-addressed `ValidationArtifact`s. At implementation level that input is the canonical `plumb_compiler::ExternalValidationArtifact` (§28) stored as `external-validation` / `application/json`; no separate `ValidationArtifact` type exists.
 
 The rule engine returns:
 
@@ -448,6 +448,65 @@ NOT_APPLICABLE
 WAIVED
 ERROR
 ```
+
+These six values are the closed `RuleResultState` vocabulary. No seventh state exists; in particular `NOT_IMPLEMENTED` is not a rule result.
+
+**Pilot validation-profile contract.** The active rule pack is `config/profiles/plumb-software-2026.1-rules.yaml`. It is read-only and is loaded, never rewritten, into the typed `ValidationProfile` with exactly its nine top-level fields:
+
+```rust
+pub struct ValidationProfile {
+    pub profile_id: Id,
+    pub profile_version: String,
+    pub metamodel: String,
+    pub status: String,
+    pub rule_classes: BTreeMap<RuleClass, String>,
+    pub result_states: Vec<RuleResultState>,
+    pub standards: BTreeMap<String, StandardDefinition>,
+    pub gates: Vec<GateMetadata>,
+    pub rules: Vec<RuleMetadata>,
+}
+
+pub struct StandardDefinition { pub standard: String, pub version: String, pub role: MappingRole, pub note: String }
+
+pub struct StandardRef {
+    pub standard: String, pub version: String, pub role: MappingRole, pub note: String,
+    pub mapping_strength: MappingStrength,
+}
+
+pub struct GateMetadata { pub id: GateId, pub purpose: String, pub rule_ids: Vec<String>, pub pass_algorithm: String }
+
+pub struct RuleMetadata {
+    pub id: String, pub gate: GateId, pub title: String,
+    pub severity: Severity, pub rule_class: RuleClass,
+    pub applies_when: String, pub check: String, pub pass_condition: String,
+    pub waiver_policy: WaiverPolicy,
+    pub standard_reference: Option<StandardRef>, pub remediation: Option<String>,
+    pub evaluation: EvaluationMode, pub finding_status_on_fail: String,
+}
+```
+
+Every fixed-shape struct rejects unknown fields. `GateId` is the `plumb-core` type and `MappingRole` / `MappingStrength` are the `plumb-psg` types; none is redefined. The closed vocabularies and their exact wire strings are:
+
+```text
+RuleClass        external_standard, external_interop, plumb_core, profile_policy, organization_policy
+RuleResultState  PASS, FAIL, WARN, NOT_APPLICABLE, WAIVED, ERROR
+Severity         blocker, error, warn, info
+WaiverPolicy     forbidden, decision_required, profile_allow
+EvaluationMode   deterministic
+```
+
+Rule IDs, severities, classes, waiver policies and texts come from the YAML; no rule-ID enum, per-rule constant or list of rule IDs exists in Rust. A valid profile has exactly the five rule classes, exactly the six result states each once, a standards catalog without duplicate `(standard, version, role)` triples to which every rule `StandardRef` resolves exactly once, 13 gates with each `GateId` once, and 133 uniquely identified rules whose ID set equals the union of the gates' `rule_ids`, each rule listed by exactly the gate it names.
+
+A loaded profile is normalized: `rule_classes` and `standards` in map key order, `result_states` in `RuleResultState::ALL` order, `gates` in `GateId::ALL` order, each gate's `rule_ids` and the `rules` in lexicographic ID order. Two generic `sha256:` hashes are defined over RFC 8785 canonical JSON of that normalized typed model, never over raw YAML bytes, so YAML formatting, comments and ordering do not affect them:
+
+```text
+profile_hash     the complete ValidationProfile
+rule_pack_hash   exactly { result_states, gates, rules }
+```
+
+`profile_hash` identifies the complete active validation/profile declaration; `rule_pack_hash` identifies the gate/rule pack independently of profile identity, rule-class descriptions and the standards catalog. They are the `profile_hash` and `rule_pack_hash` persisted by `GraphRevision`, `CompileContext` and `GateReport`.
+
+The profile loader, this metadata model and the metadata registry are one layer (plan F0.12); rule evaluators, their bindings, gate execution, findings, waivers and `GateReport` are a later layer (plan F0.13) and are not part of the metadata registry. The pilot's evaluator scope is the NOW gates `I0`, `F1`, `F2`, `F3`, `F4`: for the supplied profile 54 rules require an evaluator and 79 are deferred metadata. Metadata of every gate and rule is always loaded and queryable; explicitly requesting evaluation of a later gate yields the typed `ValidationError::GateNotImplemented(GateId)`, an evaluator-availability error and not a rule result. A missing evaluator for a NOW rule is a startup error of the evaluator layer.
 
 ### 5.6 Impact engine
 
@@ -1698,6 +1757,8 @@ profile_hash
 rule_pack_hash
 validation_artifact_hashes
 ```
+
+`profile_hash` and `rule_pack_hash` are the two hashes of the typed `ValidationProfile` defined in §5.5; the validation inputs are `ExternalValidationArtifact`s (§28). The exact `ValidationContext`, `Applicability`, `RuleResult`, evaluator-binding and `GateReport` contract is fixed before the gate evaluator is implemented and is not part of the metadata registry.
 
 A readiness score can be computed for UI prioritization, but it never overrides a blocker.
 

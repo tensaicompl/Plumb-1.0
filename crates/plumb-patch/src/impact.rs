@@ -2,8 +2,8 @@
 //! affected gate namespaces (compiler architecture §§5.6, 22).
 //!
 //! The input is the base graph, the result graph and the exact `GraphDelta` produced by patch
-//! application (after a commit, `CommitResult.delta`). The patch is never reapplied and this
-//! module has no revision-store dependency.
+//! application and supplied by orchestration. The patch is never reapplied and this module has
+//! no revision-store dependency.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;

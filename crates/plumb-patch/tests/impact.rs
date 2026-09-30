@@ -1259,21 +1259,33 @@ mod impact_contract {
 
     #[test]
     fn impact_has_no_store_dependency() {
-        let code: String = include_str!("../src/impact.rs")
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        // The raw, complete source: comments are part of the layering boundary.
+        let source = include_str!("../src/impact.rs");
         for forbidden in [
             "plumb_store",
             "CommitResult",
             "SqliteRevisionStore",
             "RevisionId",
-            "touched_",
         ] {
-            assert!(!code.contains(forbidden), "impact.rs mentions {forbidden}");
+            assert!(
+                !source.contains(forbidden),
+                "impact.rs mentions {forbidden}"
+            );
         }
         let manifest = include_str!("../Cargo.toml");
         assert!(!manifest.contains("plumb-store"));
+    }
+
+    #[test]
+    fn impact_does_not_consume_touched_sets() {
+        // Documentation may contrast touched with changed; executable source must not read them.
+        let code: String = include_str!("../src/impact.rs")
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in ["touched_nodes", "touched_edges"] {
+            assert!(!code.contains(forbidden), "impact.rs reads {forbidden}");
+        }
     }
 }
