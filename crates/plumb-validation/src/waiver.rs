@@ -5,7 +5,7 @@
 //! validated for owner, exact finding scope, rationale and accepted governance state only.
 
 use plumb_core::{Hash, HashKind, Id};
-use plumb_psg::{ElementStatus, Graph, NodePayload, RelationKind, ResolutionDecision};
+use plumb_psg::{ElementStatus, Finding, Graph, NodePayload, RelationKind, ResolutionDecision};
 use serde::{Deserialize, Serialize};
 
 use crate::evaluator::{EvaluationError, ValidationPolicy};
@@ -35,22 +35,28 @@ pub struct AppliedWaiver {
     pub decision_ref: Id,
 }
 
-/// Looks in `graph` for the governed waiver of the finding `finding_ref` of `rule`.
+/// Looks in `graph` for the governed waiver of the finding `finding_ref` of `rule`, whose
+/// violation targets are `targets` (sorted).
 ///
 /// Returns `None` when no accepted waiver decision resolves the accepted finding. A decision
 /// that claims to be a waiver but is malformed, forbidden, not enabled or ambiguous is an
-/// error, never silently ignored.
+/// error, never silently ignored, and so is a waiver claim on a node at the deterministic
+/// Finding ID whose payload is not this finding.
 pub fn governed_waiver(
     graph: &Graph,
     rule: &RuleMetadata,
     policy: &ValidationPolicy,
     finding_key: &Hash,
     finding_ref: &Id,
+    targets: &[Id],
 ) -> Result<Option<AppliedWaiver>, EvaluationError> {
-    let finding_is_accepted = graph.node(finding_ref).is_some_and(|node| {
-        matches!(node.payload, NodePayload::Finding(_)) && node.status == ElementStatus::Accepted
-    });
-    if !finding_is_accepted {
+    let Some(finding_node) = graph.node(finding_ref) else {
+        return Ok(None);
+    };
+    let NodePayload::Finding(finding) = &finding_node.payload else {
+        return Ok(None);
+    };
+    if finding_node.status != ElementStatus::Accepted {
         return Ok(None);
     }
 
@@ -71,6 +77,7 @@ pub fn governed_waiver(
         if decision_node.status != ElementStatus::Accepted || !claims_waiver(decision) {
             continue;
         }
+        check_finding_identity(finding_ref, finding, rule, targets)?;
         check_waiver_decision(&decision_node.id, decision, rule, finding_key, finding_ref)?;
         qualifying.push(decision_node.id.clone());
     }
@@ -108,6 +115,41 @@ pub fn governed_waiver(
             decision_ref,
         })),
     }
+}
+
+/// Requires the accepted Finding at the deterministic ID to be the evaluated finding: same
+/// rule code, gate family and sorted targets. Severity, message, resolution and waiver_ref
+/// may legitimately differ.
+fn check_finding_identity(
+    finding_ref: &Id,
+    finding: &Finding,
+    rule: &RuleMetadata,
+    targets: &[Id],
+) -> Result<(), EvaluationError> {
+    let mismatch = |reason: String| EvaluationError::FindingIdentityMismatch {
+        finding_ref: finding_ref.clone(),
+        reason,
+    };
+    if finding.code != rule.id {
+        return Err(mismatch(format!(
+            "code {:?} is not rule {:?}",
+            finding.code, rule.id
+        )));
+    }
+    if finding.family != rule.gate.as_str() {
+        return Err(mismatch(format!(
+            "family {:?} is not gate {}",
+            finding.family, rule.gate
+        )));
+    }
+    let mut expected = targets.to_vec();
+    expected.sort();
+    if finding.affected_refs != expected {
+        return Err(mismatch(
+            "affected_refs are not the violation targets".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Whether the decision's answer is an object whose `kind` is the waiver kind.

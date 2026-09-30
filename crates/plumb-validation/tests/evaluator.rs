@@ -127,18 +127,30 @@ mod evaluator_contract {
         )
     }
 
-    fn finding_node(node_id: &Id, status: &str) -> Node {
+    /// A persisted Finding with the given identity fields.
+    fn finding_node_for(
+        node_id: &Id,
+        status: &str,
+        code: &str,
+        family: &str,
+        affected_refs: &[&str],
+    ) -> Node {
         node(
             node_id.as_str(),
             status,
             "Finding",
             json!({
-                "code": PARSE_STATUS, "family": "I0", "severity": "blocker",
+                "code": code, "family": family, "severity": "blocker",
                 "message": "Source could not be parsed.", "status": "Open",
-                "affected_refs": ["src:hr-policy"], "standard_rule_ref": null,
+                "affected_refs": affected_refs, "standard_rule_ref": null,
                 "suggested_resolution": null, "waiver_ref": null
             }),
         )
+    }
+
+    /// The persisted PARSE_STATUS finding for `src:hr-policy`.
+    fn finding_node(node_id: &Id, status: &str) -> Node {
+        finding_node_for(node_id, status, PARSE_STATUS, "I0", &["src:hr-policy"])
     }
 
     fn decision_at(node_id: &str, status: &str, answer: Value, rationale: Value, at: &str) -> Node {
@@ -435,7 +447,13 @@ mod evaluator_contract {
                 )
             })
             .collect();
-        let mut nodes = vec![finding_node(&finding, "Accepted")];
+        let mut nodes = vec![finding_node_for(
+            &finding,
+            "Accepted",
+            rule_id,
+            "I0",
+            &["src:hr-policy"],
+        )];
         nodes.extend(decision_nodes);
         build_graph(nodes, edges)
     }
@@ -2163,6 +2181,149 @@ mod evaluator_contract {
         assert_ne!(
             without.content_hash().unwrap(),
             forward.content_hash().unwrap()
+        );
+    }
+
+    // ------------------------------------------------------------------ hotfix 019: profile binding
+
+    #[test]
+    fn context_requires_the_graph_to_declare_the_registry_profile() {
+        let registry = metadata();
+        let same = plain_graph();
+        let other_profile = Graph::new(
+            id(PROJECT),
+            id("profile:other-software"),
+            vec![requirement("req:HR-001")],
+            vec![],
+        )
+        .unwrap();
+        // Same nodes and edges; only the declared profile differs.
+        assert_eq!(same.nodes(), other_profile.nodes());
+        assert_eq!(same.edges(), other_profile.edges());
+        let is_profile_mismatch = |r: Result<ValidationContext, EvaluationError>| matches!(r, Err(EvaluationError::InvalidContext(reason)) if reason.contains("graph profile"));
+        assert!(is_profile_mismatch(ValidationContext::new(
+            &other_profile,
+            &registry,
+            ValidationPolicy::default(),
+            vec![]
+        )));
+
+        // A context bound to the right graph does not validate against the other one.
+        let ctx = context(&same, &registry, ValidationPolicy::default());
+        assert_eq!(ctx.validate_for(&same, &registry), Ok(()));
+        assert!(matches!(
+            ctx.validate_for(&other_profile, &registry),
+            Err(EvaluationError::InvalidContext(reason)) if reason.contains("graph profile")
+        ));
+        let evaluators = i0_registry(metadata(), &[]);
+        assert!(matches!(
+            evaluators.evaluate_gate(GateId::I0, &other_profile, &ctx),
+            Err(EvaluationError::InvalidContext(reason)) if reason.contains("graph profile")
+        ));
+    }
+
+    // ------------------------------------------------------------------ hotfix 019: finding identity
+
+    /// A graph whose node at the real deterministic PARSE_STATUS Finding ID carries `code`,
+    /// `family` and `affected_refs`, resolved by an otherwise valid accepted waiver.
+    fn spoofed_waiver_graph(code: &str, family: &str, affected_refs: &[&str]) -> Graph {
+        let (_, finding) = fixture_finding(PARSE_STATUS);
+        build_graph(
+            vec![
+                finding_node_for(&finding, "Accepted", code, family, affected_refs),
+                valid_waiver(PARSE_STATUS, "dec:waive-1"),
+            ],
+            vec![resolves(
+                "edge:resolves-0",
+                "Accepted",
+                "dec:waive-1",
+                &finding,
+            )],
+        )
+    }
+
+    #[test]
+    fn spoofed_finding_at_the_deterministic_id_cannot_be_waived() {
+        let (_, finding) = fixture_finding(PARSE_STATUS);
+        for (code, family, refs) in [
+            (CONTENT_ADDRESSED, "I0", &["src:hr-policy"][..]),
+            (PARSE_STATUS, "F1", &["src:hr-policy"][..]),
+            (PARSE_STATUS, "I0", &["src:hr-handbook"][..]),
+            (
+                PARSE_STATUS,
+                "I0",
+                &["src:hr-handbook", "src:hr-policy"][..],
+            ),
+            (PARSE_STATUS, "I0", &[][..]),
+        ] {
+            let graph = spoofed_waiver_graph(code, family, refs);
+            let result = evaluate_violation(&graph, PARSE_STATUS, ValidationPolicy::default());
+            assert!(
+                matches!(
+                    &result,
+                    Err(EvaluationError::FindingIdentityMismatch { finding_ref, .. })
+                        if finding_ref == &finding
+                ),
+                "{code} {family} {refs:?}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn finding_identity_ignores_severity_message_resolution_and_waiver_ref() {
+        let (key, finding) = fixture_finding(PARSE_STATUS);
+        let persisted = node(
+            finding.as_str(),
+            "Accepted",
+            "Finding",
+            json!({
+                "code": PARSE_STATUS, "family": "I0", "severity": "warn",
+                "message": "An older wording.", "status": "Resolved",
+                "affected_refs": ["src:hr-policy"], "standard_rule_ref": PARSE_STATUS,
+                "suggested_resolution": "Something else.", "waiver_ref": "dec:older"
+            }),
+        );
+        let graph = build_graph(
+            vec![
+                persisted,
+                decision(
+                    "dec:waive-1",
+                    "Accepted",
+                    marker(PARSE_STATUS, &key, &finding),
+                ),
+            ],
+            vec![resolves(
+                "edge:resolves-0",
+                "Accepted",
+                "dec:waive-1",
+                &finding,
+            )],
+        );
+        let report = evaluate_violation(&graph, PARSE_STATUS, ValidationPolicy::default()).unwrap();
+        assert_eq!(
+            rule_result(&report, PARSE_STATUS).state,
+            RuleResultState::Waived
+        );
+    }
+
+    #[test]
+    fn mismatched_finding_without_a_waiver_claim_is_not_an_error() {
+        // No decision claims a waiver, so nothing is accepted and nothing is rejected.
+        let (_, finding) = fixture_finding(PARSE_STATUS);
+        let graph = build_graph(
+            vec![finding_node_for(
+                &finding,
+                "Accepted",
+                CONTENT_ADDRESSED,
+                "I0",
+                &[],
+            )],
+            vec![],
+        );
+        let report = evaluate_violation(&graph, PARSE_STATUS, ValidationPolicy::default()).unwrap();
+        assert_eq!(
+            rule_result(&report, PARSE_STATUS).state,
+            RuleResultState::Fail
         );
     }
 

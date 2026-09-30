@@ -59,6 +59,9 @@ pub enum EvaluationError {
     #[error("invalid finding id: {0}")]
     InvalidFindingId(String),
 
+    /// The node at a deterministic Finding ID is not the evaluated finding.
+    #[error("finding {finding_ref} does not match the evaluated finding: {reason}")]
+    FindingIdentityMismatch { finding_ref: Id, reason: String },
     #[error("waiver decision {decision} is malformed: {reason}")]
     MalformedWaiverDecision { decision: Id, reason: String },
     #[error("rule {rule_id} forbids waivers, but decision {decision} waives it")]
@@ -152,6 +155,7 @@ impl ValidationContext {
         policy: ValidationPolicy,
         external_validation_artifacts: Vec<ExternalValidationArtifact>,
     ) -> Result<ValidationContext, EvaluationError> {
+        require_graph_profile(graph, registry)?;
         policy.validate(registry)?;
         let mut keyed: Vec<(Hash, ExternalValidationArtifact)> = Vec::new();
         for artifact in external_validation_artifacts {
@@ -191,6 +195,7 @@ impl ValidationContext {
         registry: &ValidationRegistry,
     ) -> Result<(), EvaluationError> {
         let invalid = EvaluationError::InvalidContext;
+        require_graph_profile(graph, registry)?;
         if self.baseline_semantic_hash != graph.semantic_hash()? {
             return Err(invalid(
                 "baseline_semantic_hash is not the graph's semantic hash".into(),
@@ -222,6 +227,22 @@ impl ValidationContext {
             &self.validation_artifact_refs()?,
         )
         .map_err(invalid)
+    }
+}
+
+/// The evaluated graph must declare the profile whose metadata drives the evaluation.
+fn require_graph_profile(
+    graph: &Graph,
+    registry: &ValidationRegistry,
+) -> Result<(), EvaluationError> {
+    let profile_id = &registry.profile().profile_id;
+    if graph.profile_id() == profile_id {
+        Ok(())
+    } else {
+        Err(EvaluationError::InvalidContext(format!(
+            "graph profile {} is not the registry profile {profile_id}",
+            graph.profile_id()
+        )))
     }
 }
 
@@ -1063,8 +1084,14 @@ fn evaluate_rule(
                     };
                     let mut generated =
                         GeneratedFinding::for_violation(rule, effective_severity, &facts, None)?;
-                    waiver =
-                        governed_waiver(graph, rule, &ctx.policy, &generated.key, &generated.id)?;
+                    waiver = governed_waiver(
+                        graph,
+                        rule,
+                        &ctx.policy,
+                        &generated.key,
+                        &generated.id,
+                        &generated.payload.affected_refs,
+                    )?;
                     result.state = match &waiver {
                         Some(applied) => {
                             generated.payload.waiver_ref = Some(applied.decision_ref.clone());

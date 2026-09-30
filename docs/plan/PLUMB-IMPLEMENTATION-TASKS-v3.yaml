@@ -1298,7 +1298,8 @@ tasks:
     baseline_semantic_hash = graph.semantic_hash(), profile_id, profile_hash and rule_pack_hash from registry.profile(), validates the policy
     and every artifact, stores the artifacts sorted by ExternalValidationArtifact::artifact_hash() and rejects duplicate artifact hashes.
     ValidationContext::validation_artifact_refs() returns the sorted Generic artifact hashes. Before a gate is evaluated the context is re-checked
-    against the graph and registry; any mismatch is InvalidContext.'
+    against the graph and registry; any mismatch is InvalidContext. Both the constructor and the re-check also require graph.profile_id()
+    == registry.profile().profile_id (InvalidContext otherwise), independently of the semantic hash.'
   - 'Applicability { Applicable, NotApplicable { reason: String } } has the exact wire forms {"state":"APPLICABLE"} and {"state":"NOT_APPLICABLE","reason":"..."};
     reason is non-empty, without leading or trailing whitespace and without control characters. NOT_APPLICABLE exists only when an evaluator
     explicitly returns it with a reason; it is never derived from the free-text RuleMetadata.applies_when, which stays documentation.'
@@ -1338,7 +1339,11 @@ tasks:
     order. For the single qualifying decision WaiverPolicy Forbidden is ForbiddenWaiver, DecisionRequired yields WAIVED, and ProfileAllow
     yields WAIVED only when the rule ID is in ValidationPolicy.profile_allow_waiver_rule_ids and is ProfileWaiverNotEnabled otherwise. Invalid
     waiver attempts are never silently ignored. ResolutionDecision has no review or expiry field and none is invented: the pilot evaluator
-    validates owner, exact finding scope, rationale and accepted governance state, consults no clock and evaluates no time expiry.'
+    validates owner, exact finding scope, rationale and accepted governance state, consults no clock and evaluates no time expiry. Before
+    any waiver claim on a finding is accepted, the Accepted Finding node at the deterministic ID must be the evaluated finding: Finding.code
+    == RuleMetadata.id, Finding.family == rule.gate.as_str() and Finding.affected_refs == the sorted violation targets; otherwise evaluation
+    fails with FindingIdentityMismatch. Severity, message, suggested_resolution and waiver_ref are not compared, and the finding-key algorithm
+    is unchanged.'
   - 'RuleResult { rule_id: String, state: RuleResultState, declared_severity: Severity, effective_severity: Severity, applicability: Applicability,
     targets: Vec<Id>, evidence: Vec<String>, semantic_condition_key: Option<String>, finding_ref: Option<Id>, waiver_ref: Option<Id>, error:
     Option<EvaluatorFailure> } rejects unknown fields. PASS: Applicable, no key, finding, waiver or error. NOT_APPLICABLE: NotApplicable {
@@ -1370,8 +1375,8 @@ tasks:
     or rejects it; produces the RuleResults; aggregates GateSummary; derives GateResult; and returns the normalized GateReport.'
   - EvaluationError is typed and distinguishes at least Core, Metadata, ExternalValidation, InvalidContext, InvalidPolicy, UnknownEvaluatorRule,
     EvaluatorForDeferredRule, DuplicateEvaluator, MissingGateEvaluators, InvalidEvaluatorOutput, InvalidSemanticConditionKey, InvalidFindingKey,
-    InvalidFindingId, MalformedWaiverDecision, ForbiddenWaiver, ProfileWaiverNotEnabled, AmbiguousWaiver and GateReportInvalid. It means the
-    framework cannot produce a trustworthy report; an EvaluatorFailure is rule data that becomes an ERROR result.
+    InvalidFindingId, FindingIdentityMismatch, MalformedWaiverDecision, ForbiddenWaiver, ProfileWaiverNotEnabled, AmbiguousWaiver and GateReportInvalid.
+    It means the framework cannot produce a trustworthy report; an EvaluatorFailure is rule data that becomes an ERROR result.
   - 'Tests in crates/plumb-validation/tests/evaluator.rs (inside a module whose name contains evaluator), using the real F0.12 profile metadata
     and test-only fixture evaluators, cover at minimum: ValidationPolicy (empty valid, fixed canonical JSON and Generic hash, unknown promotion
     and profile-allow IDs, profile-allow of a non-ProfileAllow rule, promotion of Error/Warn/Info to Blocker and no demotion, deterministic
@@ -1424,27 +1429,165 @@ tasks:
   - schemas/functional-v2.schema.json
   - docs/formats.md
   steps:
-  - Implement the v2 functional.yaml shape exactly as v2 plan §4.1 as an output projection only.
-  - Map PSG Actor/BusinessRole/SecurityRole/Permission to the legacy actor/role representation without losing PSG truth; any lossy mapping must
-    be documented in projection metadata and never written back automatically.
-  - Map QualityScenario to legacy NFR fields only where an exact legacy field exists; omit unsupported quality scenarios from the legacy NFR bag
-    and list them in projection warnings.
-  - Validate the projection against schemas/functional-v2.schema.json.
-  - Projection metadata records source semantic_hash, profile_hash, projection version and content hash.
+  - Direction and principle. F0.14 implements PSG -> functional.yaml v2 only; there is no functional.yaml -> PSG importer, round trip or writeback.
+    Projection reads the Graph and the ValidationProfile, produces a deterministic compatibility document and deterministic companion metadata,
+    never mutates the Graph, never generates a SemanticPatch or Proposal and never writes projected values back. No production function takes
+    functional-v2 YAML and produces a Graph, SemanticPatch or Proposal, and no API named like import_functional_v2, load_functional_into_graph,
+    apply_functional_yaml or functional_to_psg exists. plumb-functional depends on the workspace serde_yaml and jsonschema (added by Hotfix 019);
+    no other dependency is added.
+  - 'API. pub fn project_functional_v2(graph: &Graph, profile: &ValidationProfile) -> Result<FunctionalProjection, ProjectionError> requires graph.profile_id()
+    == profile.profile_id (ProfileMismatch otherwise) and takes profile_hash from profile.profile_hash(), never from the caller. FunctionalProjection
+    { document: FunctionalV2, yaml: Vec<u8>, metadata: ProjectionMetadata }. pub const FUNCTIONAL_V2_VERSION: u32 = 2 and pub const FUNCTIONAL_V2_PROJECTION_VERSION:
+    u32 = 2. ProjectionError is typed and distinguishes at least Core, Yaml, Schema, ProfileMismatch, ConflictingLegacyNfr, InvalidProjectionNotice
+    and UnrepresentableElement (an Accepted Scenario whose given or then contains a non-object entry cannot be carried by any listed notice code
+    and fails the projection instead of being dropped silently or mapped to an invented code).'
+  - 'Document. FunctionalV2 has exactly the top-level fields version (2), model_hash, glossary, actors, roles, entities, calendars, calculations,
+    rules, operations, processes, events, requirements, scenarios, assumptions, in that order; all thirteen collections are always serialized,
+    including when empty, and no other top-level field (in particular no profile_hash, projection_version, content_hash, warnings or lossy_mappings)
+    exists. model_hash == Graph.semantic_hash() exactly (psg:sha256:<64 hex>): the v2 plan''s fm: prefix never defined its bytes, so v3 uses the
+    PSG semantic hash rather than inventing a second hash system. Nested shapes follow v2 plan §4.1 and the mappings below; fields marked ? in
+    §4.1, calendar region and holidays_ref, and the entity and operation nfr objects (which carry only QualityScenario/idempotency-mapped keys)
+    are omitted when absent. Required legacy fields are never fabricated from names, capitalization or text; when one cannot be reconstructed
+    from typed PSG the legacy object is omitted and a notice is recorded unless a mapping below defines a deterministic collapse.'
+  - 'Metadata and notices. ProjectionNotice { code: String, source_refs: Vec<Id>, message: String }: code and message non-empty, trimmed and control-free,
+    source_refs sorted and unique; notices are sorted by (code, source_refs, message), unique and carry no timestamp (InvalidProjectionNotice
+    otherwise). ProjectionMetadata { source_semantic_hash: Hash (Semantic, == graph.semantic_hash()), profile_hash: Hash (Generic, == profile.profile_hash()),
+    projection_version: u32 (2), content_hash: Hash (Generic SHA-256 of the exact emitted UTF-8 YAML bytes), warnings: Vec<ProjectionNotice>,
+    lossy_mappings: Vec<ProjectionNotice> }. Warnings record omitted or unrepresentable content; lossy_mappings record a deterministic collapse
+    that was projected. Metadata is companion data and never inside functional.yaml. The only notice codes are: V2_NON_ACCEPTED_BASELINE_OMITTED,
+    V2_GLOSSARY_DEFINITION_MISSING, V2_ORGANIZATION_ACTOR_COLLAPSE, V2_BUSINESS_ROLE_COLLAPSE, V2_SECURITY_ROLE_COLLAPSE, V2_PERMISSION_SCOPE_OMITTED,
+    V2_ATTRIBUTE_NULLABILITY_OMITTED, V2_RELATIONSHIP_DETAIL_OMITTED, V2_EVENT_TRIGGER_TRANSITION_OMITTED, V2_OPERATION_PERFORMER_MISSING, V2_MULTIPLE_PERFORMERS_COLLAPSED,
+    V2_ENTITY_LEVEL_READ_WRITE_OMITTED, V2_OUTCOME_KIND_COLLAPSE, V2_IDEMPOTENCY_UNREPRESENTABLE, V2_CALCULATION_TARGET_UNREPRESENTABLE, V2_RULE_TABLE_UNREPRESENTABLE,
+    V2_DECISION_TABLE_DETAIL_OMITTED, V2_EVENT_PAYLOAD_UNREPRESENTABLE, V2_ACCEPTANCE_CRITERION_UNMAPPED, V2_PROCESS_TRIGGER_UNREPRESENTABLE,
+    V2_PROCESS_STEP_OPERATION_MISSING, V2_QUALITY_SCENARIO_COLLAPSE, V2_QUALITY_SCENARIO_OMITTED, V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE, V2_SCENARIO_OPERATION_MISSING,
+    V2_SCENARIO_THEN_CONFLICT, V2_ASSUMPTION_UNREPRESENTABLE. No ad-hoc code is created; a genuinely uncovered loss case blocks the task.'
+  - Serialization. The yaml bytes are exactly serde_yaml's serialization of the normalized typed FunctionalV2, with no trimming, line sorting,
+    whitespace rewriting, comments or timestamps. Every projected collection is sorted by ID; set-like nested references (operations, reads, writes,
+    governed_by, emits, payload, aliases, outcomes, affected targets) are sorted; intrinsically ordered content (pre, post, enum values, week_pattern,
+    conditions, rows, given) keeps its PSG order. Open JSON values keep serde_json's key order.
+  - Accepted-only view and lookup discipline. Only Accepted nodes and edges contribute. Proposed and Rejected elements are ignored. A Suspect,
+    Superseded or Deprecated node of a projectable type, or such an edge of a relation the projection reads, is omitted with V2_NON_ACCEPTED_BASELINE_OMITTED
+    (its ID in source_refs, plus the dependent legacy object when that omission removes it, for example a Transition whose only transitions_via
+    edge is not Accepted). Associations are read only from typed payload fields, typed Accepted RelationKind edges and typed relation properties,
+    never from names, ID prefixes, text similarity, array order, capitalization or requirement order. No View is projected.
+  - 'Glossary and actors. Every Accepted Term yields {id: Term ID, name: term, definition, aliases: aliases or [] (sorted)}; definition is the
+    definition of the Accepted Concept named by definition_ref, otherwise "" with V2_GLOSSARY_DEFINITION_MISSING. Every Accepted Concept not referenced
+    by an Accepted Term yields {id, name, definition, aliases: []}. Terms are never merged by string. Every Accepted Actor yields {id, kind} with
+    human -> human, system -> system, external_system -> external and organization -> external (lossy, V2_ORGANIZATION_ACTOR_COLLAPSE).'
+  - 'Roles. Every Accepted BusinessRole yields {id, actor: the BusinessRole ID as a projection-only self-token, operations: Accepted Operations
+    with an Accepted performed_by edge to it} with lossy V2_BUSINESS_ROLE_COLLAPSE; the token never creates a PSG Actor, is never imported back
+    and asserts nothing. Every Accepted SecurityRole yields {id, actor, operations: the sorted union over Accepted SecurityRole -grants-> Permission
+    -permits-> Operation}; actor is the single Actor with an Accepted assigned_role edge to it, otherwise (zero or several) the SecurityRole ID
+    as self-token with lossy V2_SECURITY_ROLE_COLLAPSE, never an arbitrary pick. Every Permission used whose scope or conditions exist records
+    lossy V2_PERMISSION_SCOPE_OMITTED with the SecurityRole, Permission, ResourceScope and PolicyCondition IDs; PSG stays authoritative for security
+    semantics.'
+  - 'Entities. Every Accepted Entity yields {id, attributes, relationships, states, transitions, invariants, nfr?}, nested lists sorted by ID.
+    Attributes come from Accepted Entity -has_attribute-> Attribute: {id, type: value_type, class: data_classification or "none", unit?, precision?,
+    enum?: enum_values}; nullable has no v2 field and every projected Attribute records V2_ATTRIBUTE_NULLABILITY_OMITTED (a data_classification
+    outside pii|financial|confidential|none is not remapped and fails schema validation). Relationships are the Accepted DomainRelationships with
+    from_entity == Entity ID: {id, to: to_entity, card_from, card_to, snapshot: snapshot_semantics or false}, with V2_RELATIONSHIP_DETAIL_OMITTED
+    whenever relationship_kind, name or ownership carries data; ownership is never inferred. States are the Accepted States with an Accepted Entity
+    -has_state-> State edge: {id}. Transitions are the Accepted Transitions with stateful_ref == Entity ID and exactly one Accepted transitions_via
+    edge: an Operation target gives {from: from_state, to: to_state, operation, actor, precondition?: guard_expr}, where actor is the operation
+    performer resolved as for operations (none: omitted with V2_OPERATION_PERFORMER_MISSING); an Event target omits the transition with V2_EVENT_TRIGGER_TRANSITION_OMITTED.
+    Invariants are the Accepted Invariants with scope_ref == Entity ID: {id, expr: expression}.'
+  - 'Operations. Every Accepted Operation yields {id, kind: operation_kind, actor, reads, writes, pre, post, outcomes, governed_by, nfr?}. actor
+    is the single performer of the Accepted performed_by edges; none omits the operation with V2_OPERATION_PERFORMER_MISSING; several use the
+    lexicographically smallest with lossy V2_MULTIPLE_PERFORMERS_COLLAPSED listing all performers. reads and writes are the Accepted Attribute
+    targets of Accepted reads/writes edges; Entity targets are omitted (never expanded into attributes) with V2_ENTITY_LEVEL_READ_WRITE_OMITTED.
+    pre and post are preconditions and postconditions or []. outcomes are the Accepted Outcomes of Accepted produces edges: {id, kind} with success
+    -> success and business_failure, technical_failure, partial -> failure (lossy V2_OUTCOME_KIND_COLLAPSE). governed_by are the Accepted Rule
+    and DecisionTable targets of Accepted governed_by edges. idempotency "true" or "false" maps nfr.idempotent to that boolean; any other value
+    is not mapped and warns V2_IDEMPOTENCY_UNREPRESENTABLE.'
+  - 'Calendars, calculations, rules, events. Every Accepted Calendar yields {id, region?, tz: time_zone, holidays_ref?: holiday_source, week_pattern}
+    with no date or time inference. Every Accepted Calculation is omitted with V2_CALCULATION_TARGET_UNREPRESENTABLE because no PSG field or core
+    relation identifies its legacy target attribute; no target is inferred, so calculations is empty in F0.14. Every Accepted Rule is omitted
+    with V2_RULE_TABLE_UNREPRESENTABLE; condition tables are never fabricated from expressions. An Accepted DecisionTable whose inputs and rows
+    are all JSON objects yields {id, conditions: inputs, rows: rows} unmodified, with V2_DECISION_TABLE_DETAIL_OMITTED because hit_policy and
+    outputs are not carried; otherwise it is omitted with V2_RULE_TABLE_UNREPRESENTABLE. Every Accepted Event yields {id, payload}: when payload_schema_ref
+    names an Accepted DataSchema, payload is the Accepted Attributes bound by Accepted DataSchema -schema_for-> Attribute edges with role attribute;
+    when a payload_schema_ref exists but yields no such Attribute, payload is [] with V2_EVENT_PAYLOAD_UNREPRESENTABLE; payload is never inferred
+    from names.'
+  - 'Requirements. Every Accepted Requirement yields {id, text: statement, class: requirement_kind, criteria: [], operations: the Accepted Operation
+    targets of Accepted specified_by edges, status: "Confirmed"}; normalised is omitted because PSG has no EARS-normalized field. No core relation
+    attaches an AcceptanceCriterion to a Requirement, so every Accepted AcceptanceCriterion records V2_ACCEPTANCE_CRITERION_UNMAPPED and criterion
+    ownership is never inferred from text.'
+  - 'Processes. An Accepted Process uses the Accepted ProcessNodes with process_ref == Process ID. Its trigger needs exactly one Accepted start
+    node with exactly one of message_ref ({kind: "event", ref: message_ref}) or timer_expr ({kind: "timer", ref: timer_expr}); otherwise the process
+    is omitted with V2_PROCESS_TRIGGER_UNREPRESENTABLE and no manual trigger is invented. Every other Accepted node except end nodes becomes a
+    step {id, actor, operation: operation_ref, emits, next} or, without operation_ref, is omitted with V2_PROCESS_STEP_OPERATION_MISSING. The
+    step actor is resolved from the node''s Accepted performed_by edges with the operation rule, falling back to the performer of its Operation
+    (typed relation reuse); with no performer at all the step is omitted with V2_OPERATION_PERFORMER_MISSING. emits are the Accepted Event targets
+    of Accepted produces edges; next are the Accepted next edges {to: target ID, when?: the source node''s condition_expr}. The process outcomes
+    are the sorted union of the Accepted Outcome targets produced by its nodes.'
+  - 'Quality scenarios. An Accepted QualityScenario maps to a legacy NFR value only when it has exactly one Accepted characterized_by edge to
+    an Accepted QualityCharacteristic, affected_refs holds exactly one ID of an Accepted Entity or Operation, and the characteristic name equals
+    a legacy key exactly (no case folding or fuzzy matching): consistency, availability, volatility, residency, retention for an Entity (nfr.<key>
+    = threshold); latency_ms (JSON number), audit (JSON boolean), idempotent (JSON boolean) for an Operation. A mapped scenario still records
+    lossy V2_QUALITY_SCENARIO_COLLAPSE (stimulus, response, environment, source, priority and measure are dropped); an unmappable one is omitted
+    from the NFR bags with V2_QUALITY_SCENARIO_OMITTED. Identical values for the same target and key, from several scenarios or from a scenario
+    and the idempotency field, are emitted once; different values fail with ConflictingLegacyNfr and are never resolved by ID or order.'
+  - 'Scenarios and assumptions. An Accepted Scenario yields {id, requirement, operation, given, when, then, status: "Confirmed"}. requirement
+    is its single requirement_refs entry; with several, the lexicographically smallest with lossy V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE listing
+    all; with none, the scenario is omitted and warned under the requirement-cardinality code V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE (as a warning
+    with the scenario ID only, because the listed codes name no separate zero-requirement code). operation is the string when["operation"]; if
+    when is not an object or has no string operation the scenario is omitted with V2_SCENARIO_OPERATION_MISSING and the operation is never inferred.
+    given entries must be JSON objects (a non-object given or then entry fails with UnrepresentableElement); given and when are carried unmodified;
+    then is {} for no entries, the single object, or the merge of objects with disjoint keys, and overlapping keys omit the scenario with V2_SCENARIO_THEN_CONFLICT.
+    run is omitted because no core relation links a Scenario to a ScenarioRun. An Accepted Assumption with finding_ref, default_value and expires_at
+    present yields {id, finding, default, owner: owner_ref, expires: expires_at}; otherwise it is omitted with V2_ASSUMPTION_UNREPRESENTABLE and
+    no default or expiry is invented.'
+  - Schema. schemas/functional-v2.schema.json declares JSON Schema draft 2020-12 ($schema https://json-schema.org/draft/2020-12/schema), has top-level
+    additionalProperties false, version const 2, model_hash pattern ^psg:sha256:[0-9a-f]{64}$ and all thirteen collections required; nested objects
+    follow v2 §4.1 and the mappings above with optional fields not required, and permit open JSON only for week_pattern, conditions, rows, given,
+    when, then and assumption default. No ProjectionMetadata field appears in it. The workspace jsonschema 0.18 is built without its draft202012
+    feature, so the schema uses only keywords whose semantics are identical in draft 2020-12 and draft 7 ($schema, $defs, $ref without siblings,
+    type, properties, required, additionalProperties, items as a single schema, enum, const, pattern) and is compiled by jsonschema with its draft
+    7 validator; a test enforces that keyword subset. project_functional_v2 validates every generated document against this schema at runtime,
+    with no network resolution, before returning (Schema error otherwise); the schema is not test-only.
+  - 'docs/formats.md documents: functional.yaml is compatibility output only and PSG is canonical; version 2; model_hash equals the PSG semantic
+    hash; ProjectionMetadata is companion data with its exact fields; the Accepted-only policy and status omissions; BusinessRole, SecurityRole
+    and Permission loss behavior; QualityScenario legacy collapse; every notice code with its source_refs; that unsupported objects are never
+    fabricated; and that projected YAML is never written back automatically.'
+  - 'Tests in crates/plumb-functional/tests/golden.rs (inside a module whose name contains golden) use a hand-built deterministic HR PSG fixture,
+    not a pretend full compiled HR graph (the full-HR export belongs to S4.7), covering Term/Concept, Actor, BusinessRole, SecurityRole/Permission,
+    Entity/Attribute/relationship/state/transition/invariant, Calendar, Operation/Outcome, Process/ProcessNode, Event, Requirement, DecisionTable,
+    Scenario, Assumption, QualityScenario and at least one lossy and one unrepresentable case. They hard-code the hand-authored expected functional.yaml
+    bytes, content_hash and expected notices (the fixture''s source semantic hash comes from plumb-psg and is then fixed), and cover at minimum:
+    metadata hashes and version, sorted notice refs and byte-identical repetition; layout independence (graphs differing only in View layout_ref/style_ref
+    give the same semantic hash, YAML, content hash and metadata); every status (Accepted appears, Proposed/Rejected absent, Suspect/Superseded/Deprecated
+    absent with warning) for nodes and edges; roles and security (actor mapping, organization collapse, BusinessRole self-token and operations,
+    SecurityRole with one and without a unique Actor, grants/permits, permission scope loss, no graph mutation, no synthetic Actor); NFR mapping
+    (entity keys, numeric latency_ms, boolean audit/idempotent, unsupported characteristic, collapse notice, identical duplicate, conflicting
+    thresholds); functional mappings (entity membership, attribute values, relationship direction and cardinality, state ownership, operation-triggered
+    transition, invariant, performer, attribute and entity-level reads/writes, outcomes, governed_by, event payload via schema_for, requirement
+    specified_by, DecisionTable, process trigger/steps/next/emits, scenario, assumption, ordering); every explicit unrepresentable case (calculation,
+    generic rule, acceptance criterion, event-triggered transition, process without trigger, operation without performer, scenario without operation,
+    assumption without legacy fields); schema acceptance of the golden with the production validator and rejection of version != 2, a bad model_hash,
+    a missing collection, an unknown top-level field, an invalid actor kind, an invalid operation kind and a malformed nested object; the keyword-subset
+    check; and the output-only source guard.'
   tests:
   - cargo test -p plumb-functional golden
+  - cargo test -p plumb-functional
+  - cargo test --workspace
   acceptance:
-  - Golden HR projection is deterministic and validates; modifying UI layout does not change projection content.
+  - The golden hand-built HR PSG projection is byte-identical on repeated runs, validates against schemas/functional-v2.schema.json with the runtime
+    validator and matches the hand-authored YAML, content hash and notices; model_hash and source_semantic_hash equal the PSG semantic hash; modifying
+    only View layout/style changes neither the YAML nor its metadata; nothing is fabricated, every loss is recorded under a listed code, and no
+    functional.yaml -> PSG path exists.
   source_refs:
   - SRCREF-94287B9738
   - SRCREF-A384F23134
   - SRCREF-ED9C3A0EA2
   forbidden:
   - Do not treat functional.yaml as canonical input state.
+  - Do not import, round-trip or write projected values back into the PSG, invent notice codes, or fabricate legacy fields from names or text.
   commands:
   - cargo test -p plumb-functional golden
+  - cargo test -p plumb-functional
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test --workspace
   commit_message: 'F0.14: Implement functional.yaml v2 compatibility projection from PSG'
 - id: S0.1
   title: Implement Markdown and plain-text source import
@@ -1527,7 +1670,10 @@ tasks:
   - crates/plumb-validation/src/rules/mod.rs
   - crates/plumb-validation/tests/i0.rs
   steps:
-  - Implement all six I0 rules from the supplied rule YAML and rulebook without changing IDs, severity or waiver policy.
+  - 'Implement all six I0 rules from the supplied rule YAML and rulebook without changing IDs, severity or waiver
+    policy. Expose pub fn register_i0_evaluators(registry: &mut EvaluatorRegistry) -> Result<(), EvaluationError>,
+    which registers exactly the six I0 rule IDs of the loaded metadata through the F0.13 EvaluatorRegistry. It registers
+    only the rule ID -> evaluator association and hard-codes no I0 metadata such as severity or waiver policy.'
   - Evidence manifest lists source artifact refs, extracted artifact refs, fragment refs and hashes in sorted order.
   - PPMN.I0.PROVENANCE.AGENT_IDENTIFIED passes only when every derivation-producing action identifies an Agent.
   - PLUMB.I0.BASELINE.HASHABLE validates reproducible evidence_hash.
@@ -1535,7 +1681,8 @@ tasks:
   - cargo test -p plumb-validation i0
   - cargo test -p plumb-import manifest
   acceptance:
-  - All six I0 rule fixtures cover PASS and FAIL; HR source corpus passes I0.
+  - All six I0 rule fixtures cover PASS and FAIL; HR source corpus passes I0. After S0.3, I0 missing_for_gate is empty
+    and I0 evaluates, while F1 stays unbound and does not prevent I0 evaluation.
   source_refs:
   - SRCREF-EAF71A2D01
   - SRCREF-D0FDFF3BDE
@@ -2396,6 +2543,9 @@ tasks:
   - crates/plumb-functional/tests/projections.rs
   steps:
   - Generate functional.yaml, glossary.md, scenarios.yaml, decisions.jsonl, model-report.md and gate-report JSON from PSG.
+    functional.yaml is produced by running the F0.14 project_functional_v2 projector against the authoritative compiled
+    HR graph; S4.7 does not create a second functional.yaml generator. Its full-HR golden verifies the same projector over
+    the real compiled PSG, the 32-requirement fixture and the functional outputs and reports.
   - Each machine projection records or accompanies source semantic_hash and projection content hash.
   - Sort all projected collections deterministically.
   - Readiness may be reported as advisory only and cannot alter gate result.

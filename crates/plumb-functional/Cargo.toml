@@ -12,6 +12,8 @@ plumb-inference = { path = "../plumb-inference" }
 plumb-expr = { path = "../plumb-expr" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+jsonschema = { workspace = true }
 regex = { workspace = true }
 unicode-normalization = { workspace = true }
 rust_decimal = { workspace = true }
