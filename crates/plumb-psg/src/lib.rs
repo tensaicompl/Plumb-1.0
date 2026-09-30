@@ -18,7 +18,7 @@ pub mod status;
 pub use audit::{AuditMeta, AuditMetaError};
 pub use edge::{Edge, EdgeError};
 pub use extensions::{ExtensionKey, InvalidExtensionKey};
-pub use graph::{is_baseline, Graph, GraphViolation};
+pub use graph::{evidence_fragment_id, is_baseline, source_artifact_id, Graph, GraphViolation};
 pub use hash::{
     contributes_to_semantic_hash, edge_contributes_to_semantic_hash, edge_element_hash,
     edge_element_projection, evidence_hash, evidence_projection_object,

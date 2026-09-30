@@ -1459,8 +1459,9 @@ tasks:
     V2_ATTRIBUTE_NULLABILITY_OMITTED, V2_RELATIONSHIP_DETAIL_OMITTED, V2_EVENT_TRIGGER_TRANSITION_OMITTED, V2_OPERATION_PERFORMER_MISSING, V2_MULTIPLE_PERFORMERS_COLLAPSED,
     V2_ENTITY_LEVEL_READ_WRITE_OMITTED, V2_OUTCOME_KIND_COLLAPSE, V2_IDEMPOTENCY_UNREPRESENTABLE, V2_CALCULATION_TARGET_UNREPRESENTABLE, V2_RULE_TABLE_UNREPRESENTABLE,
     V2_DECISION_TABLE_DETAIL_OMITTED, V2_EVENT_PAYLOAD_UNREPRESENTABLE, V2_ACCEPTANCE_CRITERION_UNMAPPED, V2_PROCESS_TRIGGER_UNREPRESENTABLE,
-    V2_PROCESS_STEP_OPERATION_MISSING, V2_QUALITY_SCENARIO_COLLAPSE, V2_QUALITY_SCENARIO_OMITTED, V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE, V2_SCENARIO_OPERATION_MISSING,
-    V2_SCENARIO_THEN_CONFLICT, V2_ASSUMPTION_UNREPRESENTABLE. No ad-hoc code is created; a genuinely uncovered loss case blocks the task.'
+    V2_PROCESS_STEP_OPERATION_MISSING, V2_QUALITY_SCENARIO_COLLAPSE, V2_QUALITY_SCENARIO_OMITTED, V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE, V2_SCENARIO_REQUIREMENT_MISSING,
+    V2_SCENARIO_OPERATION_MISSING, V2_SCENARIO_THEN_CONFLICT, V2_ASSUMPTION_UNREPRESENTABLE. No ad-hoc code is created; a genuinely uncovered
+    loss case blocks the task.'
   - Serialization. The yaml bytes are exactly serde_yaml's serialization of the normalized typed FunctionalV2, with no trimming, line sorting,
     whitespace rewriting, comments or timestamps. Every projected collection is sorted by ID; set-like nested references (operations, reads, writes,
     governed_by, emits, payload, aliases, outcomes, affected targets) are sorted; intrinsically ordered content (pre, post, enum values, week_pattern,
@@ -1529,9 +1530,8 @@ tasks:
     and the idempotency field, are emitted once; different values fail with ConflictingLegacyNfr and are never resolved by ID or order.'
   - 'Scenarios and assumptions. An Accepted Scenario yields {id, requirement, operation, given, when, then, status: "Confirmed"}. requirement
     is its single requirement_refs entry; with several, the lexicographically smallest with lossy V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE listing
-    all; with none, the scenario is omitted and warned under the requirement-cardinality code V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE (as a warning
-    with the scenario ID only, because the listed codes name no separate zero-requirement code). operation is the string when["operation"]; if
-    when is not an object or has no string operation the scenario is omitted with V2_SCENARIO_OPERATION_MISSING and the operation is never inferred.
+    all; with none, the scenario is omitted with the warning V2_SCENARIO_REQUIREMENT_MISSING. operation is the string when["operation"]; if when
+    is not an object or has no string operation the scenario is omitted with V2_SCENARIO_OPERATION_MISSING and the operation is never inferred.
     given entries must be JSON objects (a non-object given or then entry fails with UnrepresentableElement); given and when are carried unmodified;
     then is {} for no entries, the single object, or the merge of objects with disjoint keys, and overlapping keys omit the scenario with V2_SCENARIO_THEN_CONFLICT.
     run is omitted because no core relation links a Scenario to a ScenarioRun. An Accepted Assumption with finding_ref, default_value and expires_at
@@ -1540,11 +1540,10 @@ tasks:
   - Schema. schemas/functional-v2.schema.json declares JSON Schema draft 2020-12 ($schema https://json-schema.org/draft/2020-12/schema), has top-level
     additionalProperties false, version const 2, model_hash pattern ^psg:sha256:[0-9a-f]{64}$ and all thirteen collections required; nested objects
     follow v2 §4.1 and the mappings above with optional fields not required, and permit open JSON only for week_pattern, conditions, rows, given,
-    when, then and assumption default. No ProjectionMetadata field appears in it. The workspace jsonschema 0.18 is built without its draft202012
-    feature, so the schema uses only keywords whose semantics are identical in draft 2020-12 and draft 7 ($schema, $defs, $ref without siblings,
-    type, properties, required, additionalProperties, items as a single schema, enum, const, pattern) and is compiled by jsonschema with its draft
-    7 validator; a test enforces that keyword subset. project_functional_v2 validates every generated document against this schema at runtime,
-    with no network resolution, before returning (Schema error otherwise); the schema is not test-only.
+    when, then and assumption default. No ProjectionMetadata field appears in it. The workspace jsonschema 0.18 dependency enables its draft202012
+    feature and the schema is compiled and evaluated with Draft::Draft202012 (FUNCTIONAL_V2_SCHEMA_DRAFT); a regression proves the dialect, compilation,
+    golden acceptance and mutation rejection. project_functional_v2 validates every generated document against this schema at runtime, with no
+    network resolution, before returning (Schema error otherwise); the schema is not test-only.
   - 'docs/formats.md documents: functional.yaml is compatibility output only and PSG is canonical; version 2; model_hash equals the PSG semantic
     hash; ProjectionMetadata is companion data with its exact fields; the Accepted-only policy and status omissions; BusinessRole, SecurityRole
     and Permission loss behavior; QualityScenario legacy collapse; every notice code with its source_refs; that unsupported objects are never
@@ -1602,33 +1601,103 @@ tasks:
   - crates/plumb-import/src/text.rs
   - crates/plumb-import/tests/md_text.rs
   steps:
-  - Import bytes into SourceArtifact with source_kind, display_name, content_hash and media_type.
-  - Decode UTF-8; reject invalid UTF-8 for .md/.txt with E_SOURCE_ENCODING. Normalize CRLF and CR to LF; do not trim internal whitespace.
-  - Create a content-addressed source-extracted artifact from the normalized UTF-8 text.
-  - 'Markdown heading fragment: one ATX heading matching `^#{1,6}[ \t]+(.+?)\s*$`; fragment includes the full normalized source line.'
-  - 'Markdown unordered-list fragment: one line matching `^[ \t]*[-+*][ \t]+(.+)$`; ordered-list fragment: one line matching `^[ \t]*[0-9]+[.)][
-    \t]+(.+)$`.'
-  - 'Markdown table fragment: a contiguous pipe-delimited block is a table only when its second nonblank line matches a GFM delimiter row whose
-    cells match `^:?-{3,}:?$`; emit one EvidenceFragment per subsequent data row and include header cells in fragment metadata.'
-  - 'Paragraph fragment: maximal contiguous nonblank lines not already classified as heading/list/table; preserve embedded newlines.'
-  - Plain-text import emits paragraph fragments using the same paragraph rule and ordered/unordered list recognition; it has no heading or table
-    inference.
-  - TextRange start/end are zero-based UTF-8 byte offsets into normalized extracted text with end exclusive; slicing those bytes must equal the
-    exact fragment text.
+  - 'Deterministic parse/build only. Expose pub fn import_markdown(display_name: &str, bytes: &[u8], audit: &ImportAudit) -> Result<ImportedSource,
+    ImportError> and pub fn import_plain_text(same arguments). They take no ArtifactStore, SQLite, graph store, clock, network or filesystem
+    access: the result is a deterministic function of the arguments, performs no persistence, and artifact persistence stays orchestration/acquisition
+    work. ImportAudit { created_by: Id, created_at: Timestamp } is supplied by the caller; no clock or environment is read. ImportedSource {
+    source: Node, fragments: Vec<Node>, original_artifact: Artifact, extracted_artifact: Artifact } has fragments strictly ordered by increasing
+    TextRange start.'
+  - Vocabularies defined once in plumb-import. SourceKind { Markdown, PlainText, Docx } with exact SourceArtifact.source_kind strings markdown,
+    plain_text, docx and original media types text/markdown, text/plain and application/vnd.openxmlformats-officedocument.wordprocessingml.document;
+    the caller's choice of import function decides kind and media type, never the display name; S0.1 emits only markdown and plain_text and S0.2
+    reuses Docx. FragmentKind { Heading, ListItem, TableRow, Paragraph } with wire strings heading, list_item, table_row, paragraph; ordered
+    and unordered list lines are both list_item with their marker kept in the text; no sentence, non_requirement, code, blockquote or ordered/unordered
+    list kinds exist. Both expose ALL and as_str() and reject unknown or wrong-case strings.
+  - 'Artifacts. EXTRACTED_TEXT_VERSION: u32 = 1 and ExtractedTextArtifact { version: u32, text: String } (deny_unknown_fields, version == 1).
+    The original artifact is kind source-original with the source media type and the exact caller bytes; its hash is SHA-256 of those bytes.
+    The extracted artifact is kind source-extracted, media type application/json, and its bytes are the RFC 8785 canonical JSON of ExtractedTextArtifact
+    holding the normalized text, never the naked text: the artifact store keys by byte hash only, so storing unchanged text under both roles
+    would conflict, and the wrapper gives the extracted role independent bytes. Both artifacts carry ImportAudit.created_at; the importer never
+    calls a clock.'
+  - 'SourceArtifact. raw_hash is the Generic SHA-256 of the exact input bytes before newline normalization. The source node ID is plumb_psg::source_artifact_id(raw_hash)
+    (src:<first 16 hex>, never derived from filename, kind, media type, normalized text or time). Payload: source_kind the SourceKind wire value,
+    display_name exactly as supplied, content_hash raw_hash, media_type per SourceKind, and external_uri, external_version, producer, created_at_source,
+    language and classification all None. display_name must be non-empty, not surrounded by whitespace and free of control characters (typed
+    ImportError, never trimmed or repaired; interior spaces allowed). The only extension is plumb_import:source_artifacts = SourceArtifactLinks
+    { original_ref: Hash, extracted_ref: Hash } (deny_unknown_fields, both Generic, original_ref == content_hash, extracted_ref == the extracted
+    artifact hash).'
+  - 'EvidenceFragment. For every fragment: source_ref is the source node ID; locator is EvidenceLocator::TextRange { start, end } (also for table
+    rows; TableCell is not used by S0.1); content_hash is the Generic SHA-256 of the exact fragment UTF-8 bytes; extracted_text is Some(exact
+    fragment text); speaker and source_timestamp are None. The node ID is plumb_psg::evidence_fragment_id(source_ref, locator) (evd:<first 16
+    hex of SHA-256(source_ref || "|" || RFC 8785 locator JSON)>), never derived from text, kind, headers or time. The only extension is plumb_import:fragment
+    = FragmentMetadata { kind: FragmentKind, extracted_ref: Hash, header_cells: Option<Vec<String>> (omitted when None) } (deny_unknown_fields):
+    extracted_ref is the source''s Generic extracted_ref, header_cells is Some exactly for TableRow and None otherwise, and malformed combinations
+    are rejected. No core field is added to SourceArtifact, EvidenceFragment or EvidenceLocator; plumb_import:source_artifacts and plumb_import:fragment
+    are the only importer extension keys.'
+  - Node envelopes. Every source and fragment node has revision 1, status Accepted, audit created_by/created_at from ImportAudit with updated_by
+    and updated_at None, and empty evidence, derivations, standards and tags. S0.1 creates no DerivationRecord, Agent, Edge, Finding or Question.
+  - 'Decoding and normalization. Invalid UTF-8 fails with ImportError::SourceEncoding { valid_up_to: usize, error_len: Option<usize> } whose
+    code() is E_SOURCE_ENCODING (pub const E_SOURCE_ENCODING: &str = "E_SOURCE_ENCODING"); no lossy conversion or replacement character and no
+    partial output. After decoding, CRLF becomes LF and every remaining CR becomes LF; nothing else changes (no trimming, Unicode normalization,
+    whitespace collapsing, tab changes, BOM removal or case folding). The normalized string is ExtractedTextArtifact.text.'
+  - Coordinates. The normalized text is split into logical lines with their start byte offset, end byte offset excluding the LF and exact text;
+    a trailing LF's empty final line yields nothing. start and end are zero-based UTF-8 byte offsets into ExtractedTextArtifact.text, end exclusive,
+    start < end <= text byte length, and text.as_bytes()[start..end] equals the fragment's extracted_text bytes exactly. A line is blank only
+    when it consists of zero or more ASCII spaces and tabs; blank lines never produce fragments.
+  - 'Markdown classification, in this exact precedence, with no line in two fragments and no overlap: (1) a table block, a maximal contiguous
+    run of nonblank lines each containing a literal |, recognized only when every cell of its second line (after ASCII space/tab trimming) matches
+    ^:?-{3,}:?$ with at least one cell; line 1 is the header, line 2 the delimiter, and each line from 3 on is one TableRow fragment covering
+    the whole line with header_cells = the parsed header cells; header and delimiter rows produce no fragment. Cells are parsed by removing an
+    optional leading and an optional trailing outer |, splitting on literal |, trimming ASCII space and tab around each cell and keeping empty
+    interior cells in order, with no Unicode normalization, case folding, unescaping, inline interpretation or sorting (escaped pipes are outside
+    S0.1). (2) An ATX heading line matching ^#{1,6}[ \t]+(.+?)\s*$ is one Heading fragment covering the whole line exactly as stored, marker
+    and trailing spaces included; no Setext headings. (3) An unordered list line matching ^[ \t]*[-+*][ \t]+(.+)$ and (4) an ordered list line
+    matching ^[ \t]*[0-9]+[.)][ \t]+(.+)$ are each one ListItem fragment covering the whole line; indented and nested items are emitted independently
+    in source order and markers are never renumbered. (5) A paragraph is a maximal contiguous run of nonblank lines not consumed above, one Paragraph
+    fragment from the first byte of its first line to the last byte of its last line with embedded LFs kept and the final LF excluded. Fenced
+    code, blockquotes, HTML, links, images, emphasis, thematic breaks, Setext headings, task checkboxes and escaped pipes get no special treatment
+    and no general Markdown parser is used.'
+  - 'Plain text recognizes only ordered list items, unordered list items and paragraphs with the same rules; it has no heading or table inference,
+    so # lines and pipe blocks are paragraph text. Newline normalization and byte offsets are the same.'
+  - Graph compatibility and determinism. Graph::new(project, profile, source + fragments, no edges) must pass current validation with no ID repair.
+    Equal bytes, display name, ImportAudit and import mode give identical nodes, artifacts, IDs and hashes; re-importing equal bytes with another
+    created_at changes only the operational artifact and audit timestamps. No HashMap iteration influences output.
+  - 'Tests in crates/plumb-import/tests/md_text.rs (inside a module whose name contains md_text) cover at minimum: exhaustive SourceKind and
+    FragmentKind wire values with unknown and wrong-case rejection and no duplicate fragment-kind type elsewhere; independently calculated fixed
+    goldens for one small Markdown document (raw source hash, SourceArtifact ID, extracted canonical JSON and its hash, a TextRange canonical
+    JSON, an EvidenceFragment ID and fragment content hash), the exact plumb_import:source_artifacts JSON and FragmentMetadata values for Heading,
+    ListItem, TableRow (header order) and Paragraph with unknown-field rejection; artifact kinds, media types, bytes and link equalities for
+    both modes; A\r\nB\rC\nD normalizing to A\nB\nC\nD with the raw hash over the original bytes; per-fragment source_ref, Generic content hash,
+    exact text, range, ID, extracted_ref and kind; Markdown headings of levels 1 and 6, an invalid 7-hash heading, -, + and * items, 1. and 2)
+    items, nested lists, multi-line paragraphs, a paragraph ending at a structural line, a space-only blank line, CRLF, lone CR, non-ASCII text
+    before and inside fragments (byte, not char, offsets), tables with and without outer pipes, left/center/right delimiters, two data rows and
+    an invalid delimiter falling back to a paragraph; plain text lists and paragraphs with # and pipe lines not being headings or table rows;
+    an invalid continuation byte and a truncated sequence returning SourceEncoding with code E_SOURCE_ENCODING and no output; Graph::new acceptance
+    for both modes; the read-only fixtures/hr-leave/requirements.md (import succeeds, markdown kind, graph valid, sorted fragments, exact ranges,
+    deterministic re-import, no semantic extraction asserted); and source guards that production S0.1 source contains none of HashMap, SystemClock,
+    Utc::now, ArtifactStore, Sqlite, rusqlite, std::fs::write, reqwest, InferenceProvider, LlmProvider, Graph::new, SemanticPatch and Proposal.'
   tests:
   - cargo test -p plumb-import md_text
+  - cargo test -p plumb-import
+  - cargo test --workspace
   acceptance:
-  - All classification regexes above are covered by tests; fragment ranges round-trip exactly; no other Markdown construct receives a special
-    fragment kind in NOW scope.
+  - All classification regexes and precedence rules above are covered by tests; fragment ranges round-trip exactly as UTF-8 byte offsets into
+    the extracted text; source and fragment IDs come from the shared plumb-psg helpers and imported nodes pass Graph validation; independently
+    calculated ID and hash goldens match; the HR Markdown fixture imports deterministically; no other Markdown construct receives a special fragment
+    kind in NOW scope.
   source_refs:
   - SRCREF-52BF75EEBC
   - SRCREF-F3C31C7BB3
   - SRCREF-BC2B9CB618
-  forbidden: []
+  forbidden:
+  - Do not add fields to SourceArtifact, EvidenceFragment or EvidenceLocator, copy the evidence ID formulas, read a clock or persist anything
+    from the importer.
   commands:
   - cargo test -p plumb-import md_text
+  - cargo test -p plumb-import
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test --workspace
   commit_message: 'S0.1: Implement Markdown and plain-text source import'
 - id: S0.2
   title: Implement deterministic minimal DOCX importer
@@ -1645,6 +1714,9 @@ tasks:
   - Preserve extracted-text order; merged cells must resolve deterministically.
   - Unsupported DOCX content becomes a parse warning with source locator; it must not be silently dropped when it contains visible text.
   - Use the bundled read-only fixtures/hr-leave/requirements.docx as one acceptance input; do not edit it.
+  - DOCX import reuses SourceKind::Docx, ExtractedTextArtifact, SourceArtifactLinks, FragmentKind, FragmentMetadata, the shared plumb_psg
+    source_artifact_id/evidence_fragment_id helpers, ImportAudit and ImportedSource from S0.1 and creates no parallel evidence contract;
+    DOCX-specific table or cell semantics may extend FragmentMetadata only through a later explicit contract revision.
   tests:
   - cargo test -p plumb-import docx
   acceptance:
@@ -1711,6 +1783,9 @@ tasks:
   - 'Implement deterministic fallback: one candidate per list item or sentence containing shall, must, should or can.'
   - Post-check fragment coverage, overlap and locator validity; unassigned text is explicitly classified non-requirement and flagged.
   - A failed or absent inference artifact uses fallback; this operational fallback must be recorded in DerivationRecord.
+  - Segmentation reads EvidenceFragment.extracted_text, its TextRange and the plumb_import:fragment metadata, and may retrieve the
+    exact normalized text through FragmentMetadata.extracted_ref; it does not redefine fragment kinds, and non-requirement is a segmentation
+    classification, not an S0.1 FragmentKind.
   tests:
   - cargo test -p plumb-import segment
   acceptance:

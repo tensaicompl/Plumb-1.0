@@ -616,6 +616,8 @@ DerivationRecord[]
 EvidenceManifest
 ```
 
+**Pilot text import contract (plan S0.1).** Importing is a deterministic parse/build step separate from impure acquisition: `import_markdown` / `import_plain_text(display_name, bytes, audit)` return the `SourceArtifact` node, its `EvidenceFragment` nodes and two immutable artifact records, read no clock and persist nothing. The original artifact (`source-original`, the source media type) holds the exact input bytes, and the `SourceArtifact.content_hash` and ID derive from them. The extracted artifact (`source-extracted`, `application/json`) holds the RFC 8785 JSON `{"version":1,"text":<normalized text>}`; the wrapper keeps the two roles byte-distinct because the artifact store keys by byte hash alone. Every fragment locator is a `TextRange` of UTF-8 byte offsets into that normalized text, whose only normalization is CRLF/CR → LF. Source and fragment IDs come from the shared `plumb-psg` helpers that graph validation itself uses. Importer-profile metadata (fragment kind, table header cells, the artifact links) lives in the namespaced node extensions `plumb_import:source_artifacts` and `plumb_import:fragment`, not in new core payload fields.
+
 ### Gate
 
 `I0`

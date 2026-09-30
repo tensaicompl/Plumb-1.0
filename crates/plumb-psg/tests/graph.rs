@@ -251,6 +251,47 @@ mod graph_contract {
     }
 
     #[test]
+    fn public_evidence_id_helpers_are_the_validation_algorithm() {
+        // Fixed values independent of the helpers (see GOLDEN_EVIDENCE_JCS).
+        let content_hash: Hash = format!("sha256:{}", "ab".repeat(32)).parse().unwrap();
+        let source_id = source_artifact_id(&content_hash).unwrap();
+        assert_eq!(source_id.as_str(), "src:abababababababab");
+        let text_range: EvidenceLocator = from_json(locator(0, 42));
+        let fragment_id = evidence_fragment_id(&source_id, &text_range).unwrap();
+        assert_eq!(fragment_id.as_str(), "evd:d4432335574078c1");
+        // The helpers agree with the independent derivations used by these tests.
+        assert_eq!(source_id.as_str(), src_id(content_hash.as_str()));
+        assert_eq!(
+            fragment_id.as_str(),
+            evd_id(source_id.as_str(), &locator(0, 42))
+        );
+        // Graph validation reports exactly the helper result as the expected ID.
+        let mut wrong = fragment("Accepted", source_id.as_str(), locator(0, 42), &digest("c"));
+        wrong.id = id("evd:0000000000000000");
+        let v = violations(
+            vec![source("Accepted", content_hash.as_str()), wrong],
+            vec![],
+        );
+        assert!(
+            v.contains(&GraphViolation::EvidenceFragmentIdMismatch {
+                node: id("evd:0000000000000000"),
+                expected: fragment_id.as_str().to_owned(),
+            }),
+            "{v:?}"
+        );
+        let mut wrong_source = source("Accepted", content_hash.as_str());
+        wrong_source.id = id("src:0000000000000000");
+        let v = violations(vec![wrong_source], vec![]);
+        assert!(
+            v.contains(&GraphViolation::SourceArtifactIdMismatch {
+                node: id("src:0000000000000000"),
+                expected: source_id.as_str().to_owned(),
+            }),
+            "{v:?}"
+        );
+    }
+
+    #[test]
     fn evidence_content_hashes_must_be_generic() {
         let hash = digest("a");
         let mut src = source("Accepted", &hash);

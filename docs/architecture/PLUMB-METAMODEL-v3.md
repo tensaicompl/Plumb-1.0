@@ -309,6 +309,8 @@ speaker
 source_timestamp
 ```
 
+Importer-specific facts such as a fragment's structural kind or a table row's header cells are not core fields; an importer records them in its own namespaced node extensions (for the pilot text importer `plumb_import:source_artifacts` on the source and `plumb_import:fragment` on each fragment).
+
 ### 5.3 `DerivationRecord`
 
 This replaces the shallow v2 `Origin` enum as the actual provenance mechanism.
@@ -2164,7 +2166,7 @@ The Rust variant name never appears in JSON. Every core relation except `schema_
 
 **Provenance references.** Every `EvidenceRef` MUST resolve to an existing `EvidenceFragment` node and every `DerivationRef` to an existing `DerivationRecord` node; when the owning node/edge is baseline-participating, the referenced node MUST be baseline-participating too. Every `EvidenceFragment.source_ref` MUST resolve to an existing `SourceArtifact`, baseline-participating when the fragment is. `SourceArtifact.content_hash` and `EvidenceFragment.content_hash` MUST be generic `sha256:` hashes.
 
-**Deterministic evidence identity.** A `SourceArtifact` node ID MUST equal `src:<first 16 hex of its content_hash digest>`. An `EvidenceFragment` node ID MUST equal `evd:<first 16 hex of SHA-256(source_ref || "|" || RFC 8785 canonical JSON of locator)>`, concatenated as exact UTF-8 bytes using the stored `source_ref` string (implementation plan §6.1).
+**Deterministic evidence identity.** A `SourceArtifact` node ID MUST equal `src:<first 16 hex of its content_hash digest>`. An `EvidenceFragment` node ID MUST equal `evd:<first 16 hex of SHA-256(source_ref || "|" || RFC 8785 canonical JSON of locator)>`, concatenated as exact UTF-8 bytes using the stored `source_ref` string (implementation plan §6.1). `plumb-psg` exposes these as `source_artifact_id` and `evidence_fragment_id`; graph validation and every importer use those same functions rather than copies of the formulas.
 
 **Global ID uniqueness.** A graph MUST reject duplicate node IDs, duplicate edge IDs and an ID used by both a node and an edge; construction never silently overwrites a duplicate.
 

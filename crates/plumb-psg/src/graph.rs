@@ -420,11 +420,14 @@ impl Graph {
             let (content_hash, expected) = match &node.payload {
                 NodePayload::SourceArtifact(source) => (
                     &source.content_hash,
-                    expected_source_id(&source.content_hash),
+                    expected_id(source_artifact_id(&source.content_hash)),
                 ),
                 NodePayload::EvidenceFragment(fragment) => (
                     &fragment.content_hash,
-                    expected_fragment_id(&fragment.source_ref, &fragment.locator),
+                    expected_id(evidence_fragment_id(
+                        &fragment.source_ref,
+                        &fragment.locator,
+                    )),
                 ),
                 _ => continue,
             };
@@ -481,22 +484,32 @@ impl Graph {
     }
 }
 
-/// `src:<first 16 hex of the content hash digest>` (plan §6.1).
-fn expected_source_id(content_hash: &Hash) -> String {
-    format!("src:{}", digest_prefix(content_hash.as_str()))
+/// The deterministic ID of a `SourceArtifact`: `src:<first 16 hex of the content hash
+/// digest>` (plan §6.1). Graph validation uses exactly this function.
+pub fn source_artifact_id(content_hash: &Hash) -> Result<Id, CoreError> {
+    format!("src:{}", digest_prefix(content_hash.as_str())).parse()
 }
 
-/// `evd:<first 16 hex of SHA-256(source_ref || "|" || RFC 8785 JSON of locator)>` (plan §6.1).
-fn expected_fragment_id(source_ref: &Id, locator: &crate::payload::EvidenceLocator) -> String {
+/// The deterministic ID of an `EvidenceFragment`: `evd:<first 16 hex of SHA-256(source_ref ||
+/// "|" || RFC 8785 JSON of locator)>` (plan §6.1). Graph validation uses exactly this function.
+pub fn evidence_fragment_id(
+    source_ref: &Id,
+    locator: &crate::payload::EvidenceLocator,
+) -> Result<Id, CoreError> {
     let mut bytes = source_ref.as_str().as_bytes().to_vec();
     bytes.push(b'|');
-    // Locator values are validated finite, so canonicalization cannot fail; an empty digest
-    // input on failure would simply never match a real ID.
-    bytes.extend(to_canonical_json(locator).unwrap_or_default());
+    bytes.extend(to_canonical_json(locator)?);
     format!(
         "evd:{}",
         digest_prefix(Hash::content_sha256(&bytes).as_str())
     )
+    .parse()
+}
+
+/// The expected ID string for validation. Locator values are validated finite, so
+/// canonicalization cannot fail; an empty expectation on failure never matches a real ID.
+fn expected_id(id: Result<Id, CoreError>) -> String {
+    id.map(|id| id.as_str().to_owned()).unwrap_or_default()
 }
 
 fn digest_prefix(hash: &str) -> &str {

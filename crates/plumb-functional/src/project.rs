@@ -24,6 +24,9 @@ use crate::model::*;
 /// The machine schema every projected document is validated against.
 pub const FUNCTIONAL_V2_SCHEMA: &str = include_str!("../../../schemas/functional-v2.schema.json");
 
+/// The JSON Schema dialect `FUNCTIONAL_V2_SCHEMA` declares and is validated with.
+pub const FUNCTIONAL_V2_SCHEMA_DRAFT: Draft = Draft::Draft202012;
+
 /// Why a projection could not be produced.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ProjectionError {
@@ -120,14 +123,13 @@ pub fn project_functional_v2(
 
 /// Validates `document` against [`FUNCTIONAL_V2_SCHEMA`].
 ///
-/// The schema declares draft 2020-12 and uses only keywords with identical draft 2020-12 and
-/// draft 7 semantics; the workspace jsonschema build evaluates it with its draft 7 validator.
-/// No reference is resolved over the network.
+/// The schema declares JSON Schema draft 2020-12 and is evaluated with the draft 2020-12
+/// validator. No reference is resolved over the network.
 pub fn validate_against_schema<T: serde::Serialize>(document: &T) -> Result<(), ProjectionError> {
     let schema: Value = serde_json::from_str(FUNCTIONAL_V2_SCHEMA)
         .map_err(|e| ProjectionError::Schema(format!("schema is not JSON: {e}")))?;
     let compiled = JSONSchema::options()
-        .with_draft(Draft::Draft7)
+        .with_draft(FUNCTIONAL_V2_SCHEMA_DRAFT)
         .compile(&schema)
         .map_err(|e| ProjectionError::Schema(format!("schema does not compile: {e}")))?;
     let instance = serde_json::to_value(document)
@@ -214,15 +216,13 @@ fn message(code: &str) -> &'static str {
         V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE => {
             "Several requirements collapsed to the smallest ID."
         }
+        V2_SCENARIO_REQUIREMENT_MISSING => "Scenario has no requirement; omitted.",
         V2_SCENARIO_OPERATION_MISSING => "Scenario has no when.operation; omitted.",
         V2_SCENARIO_THEN_CONFLICT => "Scenario then objects conflict; omitted.",
         V2_ASSUMPTION_UNREPRESENTABLE => "Assumption lacks legacy-required fields; omitted.",
         _ => "",
     }
 }
-
-/// Message of a scenario omitted for having no requirement.
-const NO_REQUIREMENT_MESSAGE: &str = "Scenario has no requirement; omitted.";
 
 /// Node types the legacy document reads.
 const PROJECTED_NODE_TYPES: [NodeType; 30] = [
@@ -1177,11 +1177,7 @@ impl<'g> Projector<'g> {
             requirements.dedup();
             let requirement = match requirements.as_slice() {
                 [] => {
-                    self.warnings.insert(notice(
-                        V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE,
-                        [id],
-                        NO_REQUIREMENT_MESSAGE,
-                    ));
+                    self.warn(V2_SCENARIO_REQUIREMENT_MISSING, [id]);
                     continue;
                 }
                 [one] => one.clone(),

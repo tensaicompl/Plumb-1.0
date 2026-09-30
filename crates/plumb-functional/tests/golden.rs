@@ -1521,9 +1521,15 @@ assumptions:
         assert!(none.document.scenarios.is_empty());
         assert!(has_notice(
             &none.metadata.warnings,
-            "V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE",
+            "V2_SCENARIO_REQUIREMENT_MISSING",
             &["scn:s"]
         ));
+        assert!(none.metadata.lossy_mappings.is_empty());
+        assert!(!none
+            .metadata
+            .warnings
+            .iter()
+            .any(|n| n.code == "V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE"));
         let conflict = project_fixture(&scenario(json!(["req:a"]), json!([{"x": 1}, {"x": 2}])));
         assert!(conflict.document.scenarios.is_empty());
         assert!(has_notice(
@@ -1717,7 +1723,7 @@ assumptions:
     }
 
     #[test]
-    fn schema_declares_2020_12_and_uses_only_the_common_keyword_subset() {
+    fn schema_is_validated_as_draft_2020_12() {
         let schema: Value = serde_json::from_str(FUNCTIONAL_V2_SCHEMA).unwrap();
         assert_eq!(
             schema["$schema"],
@@ -1732,50 +1738,33 @@ assumptions:
         assert_eq!(schema["required"].as_array().unwrap().len(), 15);
         assert!(!FUNCTIONAL_V2_SCHEMA.contains("warnings"));
         assert!(!FUNCTIONAL_V2_SCHEMA.contains("content_hash"));
-        const ALLOWED: [&str; 14] = [
-            "$schema",
-            "$defs",
-            "$ref",
-            "title",
-            "type",
-            "properties",
-            "required",
-            "additionalProperties",
-            "items",
-            "enum",
-            "const",
-            "pattern",
-            "minimum",
-            "description",
-        ];
-        fn walk(value: &Value, in_properties: bool, seen: &mut BTreeSet<String>) {
-            if let Value::Object(map) = value {
-                for (key, child) in map {
-                    if !in_properties {
-                        seen.insert(key.clone());
-                    }
-                    let child_is_map_of_schemas =
-                        !in_properties && (key == "properties" || key == "$defs");
-                    if !in_properties && key == "$ref" {
-                        assert_eq!(map.len(), 1, "$ref has siblings: {map:?}");
-                    }
-                    match child {
-                        Value::Object(_) => walk(child, child_is_map_of_schemas, seen),
-                        Value::Array(items) if !in_properties => {
-                            for item in items {
-                                walk(item, false, seen);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        let mut seen = BTreeSet::new();
-        walk(&schema, false, &mut seen);
-        for keyword in &seen {
-            assert!(ALLOWED.contains(&keyword.as_str()), "keyword {keyword}");
-        }
+
+        // The production validator uses the draft 2020-12 dialect ...
+        assert_eq!(
+            project::FUNCTIONAL_V2_SCHEMA_DRAFT,
+            jsonschema::Draft::Draft202012
+        );
+        let source = include_str!("../src/project.rs");
+        assert!(source.contains(".with_draft(FUNCTIONAL_V2_SCHEMA_DRAFT)"));
+        assert!(!source.contains("Draft7"));
+        // ... under which the schema compiles and decides the golden and a mutation.
+        let compiled = jsonschema::JSONSchema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .compile(&schema)
+            .unwrap();
+        assert!(compiled.is_valid(&golden_json()));
+        let mut bad = golden_json();
+        bad["version"] = json!(3);
+        assert!(!compiled.is_valid(&bad));
+        // A 2020-12-only keyword is enforced, which a draft 7 validator would ignore.
+        let tuple = jsonschema::JSONSchema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .compile(
+                &json!({"$schema": "https://json-schema.org/draft/2020-12/schema",
+                             "prefixItems": [{"type": "integer"}]}),
+            )
+            .unwrap();
+        assert!(!tuple.is_valid(&json!(["not an integer"])));
     }
 
     // ------------------------------------------------------------------ output-only guard (§56)

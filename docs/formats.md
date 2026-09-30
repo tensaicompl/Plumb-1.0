@@ -102,7 +102,8 @@ A QualityScenario becomes a legacy NFR value only when it has exactly one accept
 | `V2_PROCESS_STEP_OPERATION_MISSING` | warnings | ProcessNode |
 | `V2_QUALITY_SCENARIO_COLLAPSE` | lossy | QualityScenario and its legacy target |
 | `V2_QUALITY_SCENARIO_OMITTED` | warnings | QualityScenario |
-| `V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE` | lossy (several requirements: Scenario and all requirements) or warnings (no requirement, scenario omitted: Scenario) | |
+| `V2_SCENARIO_MULTI_REQUIREMENT_COLLAPSE` | lossy | Scenario and all its requirements |
+| `V2_SCENARIO_REQUIREMENT_MISSING` | warnings | Scenario (it has no requirement and is omitted) |
 | `V2_SCENARIO_OPERATION_MISSING` | warnings | Scenario |
 | `V2_SCENARIO_THEN_CONFLICT` | warnings | Scenario |
 | `V2_ASSUMPTION_UNREPRESENTABLE` | warnings | Assumption |
@@ -120,4 +121,4 @@ No other code exists. An accepted Scenario whose `given` or `then` contains a no
 
 ### Schema dialect
 
-`schemas/functional-v2.schema.json` declares JSON Schema draft 2020-12. The workspace `jsonschema` 0.18 is built without its `draft202012` feature, so the schema is written only with keywords whose meaning is identical in draft 2020-12 and draft 7 (`$schema`, `$defs`, `$ref` without siblings, `title`, `type`, `properties`, `required`, `additionalProperties`, single-schema `items`, `enum`, `const`, `pattern`, `minimum`) and is evaluated with the draft 7 validator. No reference is resolved over the network.
+`schemas/functional-v2.schema.json` declares JSON Schema draft 2020-12 and is compiled and evaluated with the draft 2020-12 validator of the workspace `jsonschema` 0.18 (built with its `draft202012` feature). No reference is resolved over the network.
