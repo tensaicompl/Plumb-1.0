@@ -28,7 +28,7 @@ tasks:
 - id: F0.11
   status: done
 - id: F0.12
-  status: pending
+  status: done
 - id: F0.13
   status: pending
 - id: F0.14
