@@ -1,10 +1,14 @@
-//! Validation profile metadata: the typed rule-pack model, its YAML loader and hashes, and
-//! the metadata registry (compiler architecture §5.5). Rule evaluation is not part of it.
+//! Validation profile metadata: the typed rule-pack model, its YAML loader and hashes, the
+//! metadata registry and the external-validation contracts (compiler architecture §5.5).
 
+pub mod external;
 pub mod model;
 pub mod profile;
 pub mod registry;
 
+pub use external::{
+    ExternalValidationArtifact, ExternalValidationError, ExternalValidationRequest,
+};
 pub use model::{
     EvaluationMode, GateMetadata, RuleClass, RuleMetadata, RuleResultState, Severity,
     StandardDefinition, StandardRef, UnknownVocabularyValue, ValidationError, ValidationProfile,

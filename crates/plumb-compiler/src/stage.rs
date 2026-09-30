@@ -4,15 +4,16 @@
 use std::collections::BTreeSet;
 
 use plumb_artifacts::{Artifact, ArtifactKind, ArtifactStoreError};
-use plumb_core::{to_canonical_json, CanonicalJson, CoreError, Hash, HashKind, StageId};
+use plumb_core::{to_canonical_json, CoreError, Hash, HashKind, StageId};
 use plumb_inference::{InferenceArtifact, InferenceRequest};
 use plumb_patch::{PatchSet, Proposal};
 use plumb_psg::Graph;
+use plumb_validation::ExternalValidationError;
+pub use plumb_validation::{ExternalValidationArtifact, ExternalValidationRequest};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use thiserror::Error;
 
-use crate::context::{require_kind, require_text, CompileContext, Scope};
+use crate::context::{require_kind, CompileContext, Scope};
 
 /// Media type of every JSON compiler artifact.
 pub const JSON_MEDIA_TYPE: &str = "application/json";
@@ -72,17 +73,16 @@ pub enum CompilerError {
     },
 }
 
-/// `^[a-z][a-z0-9._-]*$`.
-fn require_identifier(what: &str, value: &str) -> Result<(), String> {
-    let mut bytes = value.bytes();
-    let valid = bytes.next().is_some_and(|b| b.is_ascii_lowercase())
-        && bytes.all(|b| {
-            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
-        });
-    if valid {
-        Ok(())
-    } else {
-        Err(format!("invalid {what} {value:?}"))
+impl From<ExternalValidationError> for CompilerError {
+    fn from(error: ExternalValidationError) -> Self {
+        match error {
+            ExternalValidationError::InvalidRequest(reason) => {
+                CompilerError::InvalidExternalValidationRequest(reason)
+            }
+            ExternalValidationError::InvalidArtifact(reason) => {
+                CompilerError::InvalidExternalValidationArtifact(reason)
+            }
+        }
     }
 }
 
@@ -164,180 +164,6 @@ impl TryFrom<PlannedArtifactFields> for PlannedArtifact {
             kind: f.kind,
             media_type: f.media_type,
             bytes: f.bytes,
-        };
-        artifact.validate()?;
-        Ok(artifact)
-    }
-}
-
-// ============================================================================ external validation
-
-/// A deterministic request for an external validator (for example an API-spec linter).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "ExternalValidationRequestFields")]
-pub struct ExternalValidationRequest {
-    pub id: Hash,
-    pub validator: String,
-    pub task_kind: String,
-    pub input_artifact_refs: Vec<Hash>,
-    pub config: CanonicalJson,
-}
-
-impl ExternalValidationRequest {
-    /// Builds a request with `input_artifact_refs` sorted and `id` computed.
-    pub fn new(
-        validator: String,
-        task_kind: String,
-        mut input_artifact_refs: Vec<Hash>,
-        config: CanonicalJson,
-    ) -> Result<ExternalValidationRequest, CompilerError> {
-        input_artifact_refs.sort();
-        let mut request = ExternalValidationRequest {
-            // Placeholder replaced below; identity never includes `id`.
-            id: Hash::content_sha256(b""),
-            validator,
-            task_kind,
-            input_artifact_refs,
-            config,
-        };
-        request.id = request.recompute_id()?;
-        request.validate()?;
-        Ok(request)
-    }
-
-    /// Exactly the fields that determine the request ID.
-    pub fn identity_projection(&self) -> Value {
-        json!({
-            "validator": self.validator,
-            "task_kind": self.task_kind,
-            "input_artifact_refs": self.input_artifact_refs,
-            "config": self.config,
-        })
-    }
-
-    pub fn recompute_id(&self) -> Result<Hash, CoreError> {
-        canonical_hash_of(&self.identity_projection())
-    }
-
-    pub fn validate(&self) -> Result<(), CompilerError> {
-        let invalid = CompilerError::InvalidExternalValidationRequest;
-        require_kind("id", &self.id, HashKind::Generic).map_err(invalid)?;
-        require_identifier("validator", &self.validator).map_err(invalid)?;
-        require_text("task_kind", &self.task_kind).map_err(invalid)?;
-        for r in &self.input_artifact_refs {
-            require_kind("input_artifact_ref", r, HashKind::Generic).map_err(invalid)?;
-        }
-        require_strictly_sorted("input_artifact_ref", &self.input_artifact_refs)
-            .map_err(invalid)?;
-        if !self.config.as_value().is_object() {
-            return Err(invalid("config must be a JSON object".into()));
-        }
-        let recomputed = self.recompute_id()?;
-        if recomputed != self.id {
-            return Err(invalid(format!(
-                "id {} does not match recomputed id {recomputed}",
-                self.id
-            )));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExternalValidationRequestFields {
-    id: Hash,
-    validator: String,
-    task_kind: String,
-    input_artifact_refs: Vec<Hash>,
-    config: CanonicalJson,
-}
-
-impl TryFrom<ExternalValidationRequestFields> for ExternalValidationRequest {
-    type Error = CompilerError;
-
-    fn try_from(f: ExternalValidationRequestFields) -> Result<Self, Self::Error> {
-        let request = ExternalValidationRequest {
-            id: f.id,
-            validator: f.validator,
-            task_kind: f.task_kind,
-            input_artifact_refs: f.input_artifact_refs,
-            config: f.config,
-        };
-        request.validate()?;
-        Ok(request)
-    }
-}
-
-/// The replayable result of one external validation, supplied to EVALUATE.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "ExternalValidationArtifactFields")]
-pub struct ExternalValidationArtifact {
-    pub request_hash: Hash,
-    pub validator: String,
-    pub validated_output: CanonicalJson,
-    pub validated_output_hash: Hash,
-}
-
-impl ExternalValidationArtifact {
-    pub fn validate(&self) -> Result<(), CompilerError> {
-        let invalid = CompilerError::InvalidExternalValidationArtifact;
-        require_kind("request_hash", &self.request_hash, HashKind::Generic).map_err(invalid)?;
-        require_identifier("validator", &self.validator).map_err(invalid)?;
-        require_kind(
-            "validated_output_hash",
-            &self.validated_output_hash,
-            HashKind::Generic,
-        )
-        .map_err(invalid)?;
-        let computed = self.validated_output.content_hash()?;
-        if computed != self.validated_output_hash {
-            return Err(invalid(format!(
-                "validated_output_hash {} does not match output content hash {computed}",
-                self.validated_output_hash
-            )));
-        }
-        Ok(())
-    }
-
-    pub fn validate_for(&self, request: &ExternalValidationRequest) -> Result<(), CompilerError> {
-        request.validate()?;
-        self.validate()?;
-        let invalid = CompilerError::InvalidExternalValidationArtifact;
-        if self.request_hash != request.id {
-            return Err(invalid(format!(
-                "request_hash {} does not match request id {}",
-                self.request_hash, request.id
-            )));
-        }
-        if self.validator != request.validator {
-            return Err(invalid(format!(
-                "validator {:?} does not match request validator {:?}",
-                self.validator, request.validator
-            )));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExternalValidationArtifactFields {
-    request_hash: Hash,
-    validator: String,
-    validated_output: CanonicalJson,
-    validated_output_hash: Hash,
-}
-
-impl TryFrom<ExternalValidationArtifactFields> for ExternalValidationArtifact {
-    type Error = CompilerError;
-
-    fn try_from(f: ExternalValidationArtifactFields) -> Result<Self, Self::Error> {
-        let artifact = ExternalValidationArtifact {
-            request_hash: f.request_hash,
-            validator: f.validator,
-            validated_output: f.validated_output,
-            validated_output_hash: f.validated_output_hash,
         };
         artifact.validate()?;
         Ok(artifact)

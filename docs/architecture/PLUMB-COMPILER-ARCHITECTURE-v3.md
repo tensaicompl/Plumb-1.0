@@ -436,7 +436,7 @@ Consumes the active rule pack.
 
 Rule evaluation is pure.
 
-External validators execute outside the rule and supply content-addressed `ValidationArtifact`s. At implementation level that input is the canonical `plumb_compiler::ExternalValidationArtifact` (§28) stored as `external-validation` / `application/json`; no separate `ValidationArtifact` type exists.
+External validators execute outside the rule and supply content-addressed `ValidationArtifact`s. At implementation level that input is the canonical `ExternalValidationArtifact` (§28) stored as `external-validation` / `application/json`; no separate `ValidationArtifact` type exists. `ExternalValidationRequest`, `ExternalValidationArtifact` and `ExternalValidationError` are owned by `plumb-validation`, which never depends on `plumb-compiler`; `plumb-compiler` re-exports the two contract types.
 
 The rule engine returns:
 
@@ -495,7 +495,7 @@ WaiverPolicy     forbidden, decision_required, profile_allow
 EvaluationMode   deterministic
 ```
 
-Rule IDs, severities, classes, waiver policies and texts come from the YAML; no rule-ID enum, per-rule constant or list of rule IDs exists in Rust. A valid profile has exactly the five rule classes, exactly the six result states each once, a standards catalog without duplicate `(standard, version, role)` triples to which every rule `StandardRef` resolves exactly once, 13 gates with each `GateId` once, and 133 uniquely identified rules whose ID set equals the union of the gates' `rule_ids`, each rule listed by exactly the gate it names.
+Rule IDs, severities, classes, waiver policies and texts come from the YAML; no rule-ID enum, per-rule constant or list of rule IDs exists in Rust. A valid profile has exactly the five rule classes, exactly the six result states each once, a standards catalog without duplicate `(standard, version, role)` triples to which every rule `StandardRef` resolves exactly once, 13 gates with each `GateId` once, and 133 uniquely identified rules whose ID set equals the union of the gates' `rule_ids`, each rule listed by exactly the gate it names. Profile identity text, rule text, gate text, rule-class descriptions, standards-catalog keys and the `standard`, `version` and `note` of every `StandardDefinition` and `StandardRef` are non-empty, not surrounded by whitespace and free of control characters (rule text may contain an embedded newline); nothing is trimmed or normalized.
 
 A loaded profile is normalized: `rule_classes` and `standards` in map key order, `result_states` in `RuleResultState::ALL` order, `gates` in `GateId::ALL` order, each gate's `rule_ids` and the `rules` in lexicographic ID order. Two generic `sha256:` hashes are defined over RFC 8785 canonical JSON of that normalized typed model, never over raw YAML bytes, so YAML formatting, comments and ordering do not affect them:
 
@@ -506,7 +506,9 @@ rule_pack_hash   exactly { result_states, gates, rules }
 
 `profile_hash` identifies the complete active validation/profile declaration; `rule_pack_hash` identifies the gate/rule pack independently of profile identity, rule-class descriptions and the standards catalog. They are the `profile_hash` and `rule_pack_hash` persisted by `GraphRevision`, `CompileContext` and `GateReport`.
 
-The profile loader, this metadata model and the metadata registry are one layer (plan F0.12); rule evaluators, their bindings, gate execution, findings, waivers and `GateReport` are a later layer (plan F0.13) and are not part of the metadata registry. The pilot's evaluator scope is the NOW gates `I0`, `F1`, `F2`, `F3`, `F4`: for the supplied profile 54 rules require an evaluator and 79 are deferred metadata. Metadata of every gate and rule is always loaded and queryable; explicitly requesting evaluation of a later gate yields the typed `ValidationError::GateNotImplemented(GateId)`, an evaluator-availability error and not a rule result. A missing evaluator for a NOW rule is a startup error of the evaluator layer.
+The profile loader, this metadata model and the metadata registry are one layer (plan F0.12); the evaluator framework is a later layer (plan F0.13) and is not part of the metadata registry. The pilot's evaluator scope is the NOW gates `I0`, `F1`, `F2`, `F3`, `F4`: for the supplied profile 54 rules require an evaluator and 79 are deferred metadata. Metadata of every gate and rule is always loaded and queryable; explicitly requesting evaluation of a later gate yields the typed `ValidationError::GateNotImplemented(GateId)`, an evaluator-availability error and not a rule result.
+
+**Pilot evaluator framework.** The framework (registration, rule execution, finding generation, waiver application, gate aggregation, `GateReport`; §29) contains no production rule evaluator. Production evaluators are registered gate by gate by the stage tasks that implement them (`I0`, then `F1`, `F2`, `F3`, `F4`), so evaluator availability is gate-incremental: a gate is evaluatable exactly when every rule it owns has exactly one evaluator, unbound rules of one gate never prevent evaluation of another, and no global all-54 binding check exists before the last NOW gate's rules are implemented. Evaluation is pure: it mutates no graph, persists nothing, executes no external validator and has no clock, store, provider, network or compiler capability.
 
 ### 5.6 Impact engine
 
@@ -1726,7 +1728,8 @@ Rules:
 - **CompileContext** has no timestamp. `input_semantic_hash` is Semantic; `profile_hash` and `rule_pack_hash` are generic; `compiler_version` is non-empty without surrounding whitespace or control characters; `config` is a JSON object whose canonical content hash is `config_hash()`. It is constructed from a loaded revision so revision, semantic hash, profile and rule-pack metadata cannot drift, and it must match the graph's semantic hash and profile ID. No clock or environment is read.
 - **PlannedArtifact** has no timestamp (a pure PLAN cannot manufacture one); its media type is non-empty without control characters and its content hash is the generic SHA-256 of its bytes. Acquisition persists it later with an explicit timestamp. Its `bytes` serialize in serde's ordinary JSON byte-array form (`"bytes":[0,1,2,255]`); that is the fixed pilot wire form.
 - **ExternalValidationRequest** rejects unknown fields; `validator` matches `^[a-z][a-z0-9._-]*$`; `task_kind` follows the `InferenceRequest` text rule; `input_artifact_refs` are generic, sorted and unique; `config` is a JSON object; `id` is the generic SHA-256 of the canonical `{validator, task_kind, input_artifact_refs, config}` and is verified on deserialization.
-- **ExternalValidationArtifact** rejects unknown fields; its hashes are generic, `validated_output_hash` is the content hash of `validated_output`, and against its request `request_hash == request.id` and `validator == request.validator`. It is the replayable validator result supplied to EVALUATE.
+- **ExternalValidationArtifact** rejects unknown fields; its hashes are generic, `validated_output_hash` is the content hash of `validated_output`, and against its request `request_hash == request.id` and `validator == request.validator`. It is the replayable validator result supplied to EVALUATE. `artifact_hash()` is the generic SHA-256 of the RFC 8785 canonical JSON of the complete artifact, equal to its artifact-store content hash when persisted as `external-validation` / `application/json`.
+- **Ownership.** `ExternalValidationRequest` and `ExternalValidationArtifact` are defined once, in `plumb-validation`, with `ExternalValidationError { InvalidRequest(String), InvalidArtifact(String) }`; `plumb-compiler` re-exports both types under its own public names and maps the error into `CompilerError::InvalidExternalValidationRequest` / `InvalidExternalValidationArtifact`. Wire forms, request IDs and validation rules are those stated above.
 - **ArtifactInput** is an artifact without `created_at`: its generic hash equals the SHA-256 of its bytes and its media type is non-empty without control characters. Converting a stored artifact drops the timestamp, so acquisition time is unobservable to evaluation.
 - **ArtifactSet** lists are each sorted by hash, and hashes are unique across the set. Inference inputs are `validated-inference` / `application/json`; validation inputs are `external-validation` / `application/json`. Against its `StagePlan` it matches one-to-one: one identical deterministic input per planned artifact, one canonical `InferenceArtifact` input valid for each inference request, one canonical `ExternalValidationArtifact` input valid for each validation request, and nothing extra.
 - **StagePlan** lists are ordered by content hash, request ID and request ID respectively, without duplicates; every inference request carries the stage's `StageId`. It contains no timestamps, provider clients or store handles.
@@ -1740,27 +1743,103 @@ Rules:
 ## 29. Gate API
 
 ```rust
-pub fn evaluate_gate(
-    graph: &Graph,
-    profile: &ResolvedProfile,
-    rule_pack: &RulePack,
-    gate: GateId,
-    artifacts: &ArtifactSet,
-) -> GateReport;
+pub struct ValidationPolicy {
+    pub promoted_to_blocker_rule_ids: BTreeSet<String>,
+    pub profile_allow_waiver_rule_ids: BTreeSet<String>,
+}
+
+pub struct ValidationContext {
+    pub baseline_semantic_hash: Hash,
+    pub profile_id: Id,
+    pub profile_hash: Hash,
+    pub rule_pack_hash: Hash,
+    pub policy: ValidationPolicy,
+    pub external_validation_artifacts: Vec<ExternalValidationArtifact>,
+}
+
+pub enum Applicability { Applicable, NotApplicable { reason: String } }
+
+pub enum RuleEvaluation {
+    Pass { targets: Vec<Id>, evidence: Vec<String> },
+    Violation {
+        targets: Vec<Id>, evidence: Vec<String>,
+        semantic_condition_key: String, message: String, suggested_resolution: Option<String>,
+    },
+    NotApplicable { reason: String },
+}
+
+pub struct EvaluatorFailure { pub code: String, pub message: String, pub targets: Vec<Id>, pub evidence: Vec<String> }
+
+pub type RuleEvaluator =
+    fn(&Graph, &ValidationContext, &RuleMetadata) -> Result<RuleEvaluation, EvaluatorFailure>;
+
+pub struct RuleResult {
+    pub rule_id: String,
+    pub state: RuleResultState,
+    pub declared_severity: Severity,
+    pub effective_severity: Severity,
+    pub applicability: Applicability,
+    pub targets: Vec<Id>,
+    pub evidence: Vec<String>,
+    pub semantic_condition_key: Option<String>,
+    pub finding_ref: Option<Id>,
+    pub waiver_ref: Option<Id>,
+    pub error: Option<EvaluatorFailure>,
+}
+
+pub struct GeneratedFinding { pub key: Hash, pub id: Id, pub semantic_condition_key: String, pub payload: Finding }
+
+pub struct AppliedWaiver { pub rule_id: String, pub finding_ref: Id, pub finding_key: Hash, pub decision_ref: Id }
+
+pub enum GateResult { Pass, Fail }
+
+pub struct GateSummary { pub blocker_failed: u32, pub blocker_waived: u32, pub warnings: u32 }
+
+pub struct GateReport {
+    pub gate: GateId,
+    pub baseline_semantic_hash: Hash,
+    pub profile_id: Id,
+    pub profile_hash: Hash,
+    pub rule_pack_hash: Hash,
+    pub policy: ValidationPolicy,
+    pub validation_artifact_refs: Vec<Hash>,
+    pub result: GateResult,
+    pub rules: Vec<RuleResult>,
+    pub findings: Vec<GeneratedFinding>,
+    pub waivers: Vec<AppliedWaiver>,
+    pub summary: GateSummary,
+}
+
+impl EvaluatorRegistry {
+    pub fn evaluate_gate(&self, gate: GateId, graph: &Graph, ctx: &ValidationContext)
+        -> Result<GateReport, EvaluationError>;
+}
 ```
 
-The result is reproducible for:
+The report is reproducible for:
 
 ```text
 semantic_hash
 profile_hash
 rule_pack_hash
+validation policy
 validation_artifact_hashes
 ```
 
-`profile_hash` and `rule_pack_hash` are the two hashes of the typed `ValidationProfile` defined in §5.5; the validation inputs are `ExternalValidationArtifact`s (§28). The exact `ValidationContext`, `Applicability`, `RuleResult`, evaluator-binding and `GateReport` contract is fixed before the gate evaluator is implemented and is not part of the metadata registry.
+`profile_hash` and `rule_pack_hash` are the two hashes of the typed `ValidationProfile` defined in §5.5; the validation inputs are `ExternalValidationArtifact`s (§28), identified by `artifact_hash()` and held by the context in hash order without duplicates.
 
-A readiness score can be computed for UI prioritization, but it never overrides a blocker.
+- **ValidationPolicy** is a deterministic input separate from the profile: the rulebook's severity promotion and `profile_allow` waiver enablement are project choices the profile YAML does not encode. Both sets default to empty; every ID must exist, `profile_allow_waiver_rule_ids` may hold only `profile_allow` rules, and `policy_hash()` is the generic hash of its canonical JSON. Effective severity is the declared severity, or `blocker` for a promoted rule; nothing demotes a severity.
+- **ValidationContext** is built from the graph, the metadata registry, the policy and the external validation artifacts, and is re-checked against the graph and registry before evaluation. It has no timestamp, clock, store, provider, network client or compiler type.
+- **Applicability** serializes as `{"state":"APPLICABLE"}` or `{"state":"NOT_APPLICABLE","reason":"..."}`. `NOT_APPLICABLE` exists only when an evaluator returns it with a reason; it is never derived from the free-text `applies_when`.
+- **State derivation.** Evaluators never choose the final state: `Pass` → `PASS`; `NotApplicable` → `NOT_APPLICABLE`; `Err(EvaluatorFailure)` → `ERROR` (remaining rules still run); `Violation` with effective `blocker`/`error` → `FAIL`; `Violation` with effective `warn`/`info` → `WARN`; a violation with a valid governed waiver → `WAIVED`.
+- **Finding identity.** The finding key is the generic SHA-256 of exactly `UTF-8(rule_id) 0x00 (UTF-8(target) 0x00)* UTF-8(semantic_condition_key)` with targets in `Id` order; the Finding node ID is `fnd:` followed by the first 16 hex digits of that digest. Identity depends only on rule, targets and condition key. A `GeneratedFinding` payload has `code` = rule ID, `family` = gate, `severity` = the effective severity mapped one-to-one onto `FindingSeverity`, `status` = the rule's `finding_status_on_fail`, `affected_refs` = the sorted targets, `standard_rule_ref` = the rule ID when the rule has a standard reference, and `waiver_ref` = the applied decision. The framework returns finding material only; node envelopes and persistence belong to stage logic.
+- **Waivers** follow metamodel §6.3: an `Accepted` `ResolutionDecision` with the waiver marker and a rationale, linked by an `Accepted` `resolves` edge to the `Accepted` deterministic `Finding`. `forbidden` rules reject a waiver (`ForbiddenWaiver`), `decision_required` rules accept it, `profile_allow` rules accept it only when the policy enables the rule (`ProfileWaiverNotEnabled` otherwise); a malformed marker is `MalformedWaiverDecision` and two qualifying decisions are `AmbiguousWaiver`. No clock is consulted and no waiver expiry is evaluated in the pilot.
+- **Gate result.** `blocker_failed` counts effective-blocker rules in `FAIL` or `ERROR`, `blocker_waived` effective-blocker rules in `WAIVED`, `warnings` all `WARN` results. The gate is `PASS` exactly when `blocker_failed == 0`. `evaluate_gate` does not require predecessor gates; claiming a later gate for a formal baseline is an orchestration concern.
+- **GateReport** has no `evaluated_at`, timestamp, readiness score, branch or revision ID; the rulebook's sample `evaluated_at` is operational presentation metadata. Rules are ordered by rule ID, findings by Finding ID, waivers by `(rule_id, finding_ref, decision_ref)` and artifact refs by hash, all unique; `content_hash()` is the generic hash of the canonical report.
+- **EvaluatorRegistry** owns one metadata registry and a rule-ID → evaluator map. Registration rejects an unknown rule, a rule of a deferred gate and a second evaluator for the same rule. `evaluate_gate` returns `GateNotImplemented` for a later gate and `MissingGateEvaluators { gate, rule_ids }` when the requested gate is not completely bound.
+- **EvaluationError** means the framework cannot produce a trustworthy report (`Core`, `Metadata`, `ExternalValidation`, `InvalidContext`, `InvalidPolicy`, `UnknownEvaluatorRule`, `EvaluatorForDeferredRule`, `DuplicateEvaluator`, `MissingGateEvaluators`, `InvalidEvaluatorOutput`, `InvalidSemanticConditionKey`, `InvalidFindingKey`, `InvalidFindingId`, `MalformedWaiverDecision`, `ForbiddenWaiver`, `ProfileWaiverNotEnabled`, `AmbiguousWaiver`, `GateReportInvalid`); an `EvaluatorFailure` is rule data that becomes an `ERROR` result.
+
+A readiness score can be computed for UI prioritization, but it never overrides a blocker and is not part of the evaluator API.
 
 ---
 

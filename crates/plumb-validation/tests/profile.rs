@@ -929,6 +929,53 @@ mod profile_contract {
     }
 
     #[test]
+    fn invalid_standard_metadata_text_is_rejected() {
+        const RULE: &str = "PPMN.I0.PROVENANCE.AGENT_IDENTIFIED";
+        let text_error = |result: Result<ValidationProfile, ValidationError>| match result {
+            Err(ValidationError::InvalidProfileText { field, reason }) => (field, reason),
+            other => panic!("expected InvalidProfileText, got {other:?}"),
+        };
+        let bad_texts = [
+            ("", "empty"),
+            (" padded", "leading or trailing whitespace"),
+            ("padded ", "leading or trailing whitespace"),
+            ("a\tb", "control character"),
+            ("two\nlines", "control character"),
+        ];
+        for field in ["standard", "version", "note"] {
+            for (text, reason) in bad_texts {
+                assert_eq!(
+                    text_error(load_mutated(|v| {
+                        v["standards"]["BPMN"][field] = Value::from(text)
+                    })),
+                    (format!("standards.BPMN.{field}"), reason)
+                );
+                assert_eq!(
+                    text_error(load_mutated(|v| {
+                        rule(v, RULE)["standard_reference"][field] = Value::from(text)
+                    })),
+                    (format!("rules.{RULE}.standard_reference.{field}"), reason)
+                );
+            }
+        }
+        for (key, reason) in bad_texts {
+            let result = load_mutated(|v| {
+                let standards = v["standards"].as_mapping_mut().unwrap();
+                let definition = standards.remove("SYSML").unwrap();
+                standards.insert(Value::from(key), definition);
+            });
+            assert_eq!(text_error(result), ("standards key".to_owned(), reason));
+        }
+        // Values are checked, never trimmed or rewritten.
+        let profile = supplied();
+        assert_eq!(profile.standards["JSONSCHEMA"].version, "2020-12");
+        assert_eq!(
+            profile.standards["RBAC"].note,
+            "RBAC reference-model concepts: users, roles, permissions, operations, objects."
+        );
+    }
+
+    #[test]
     fn embedded_newline_in_rule_text_is_kept_verbatim() {
         let profile = load_mutated(|v| {
             rule(v, "PLUMB.F1.REQ.GROUNDED")["check"] = Value::from("first line\nsecond line")
@@ -1095,8 +1142,8 @@ mod profile_contract {
 
     // ------------------------------------------------------------------ source guards (§§35, 49)
 
-    const PRODUCTION_SOURCES: [&str; 4] = [
-        include_str!("../src/lib.rs"),
+    /// The F0.12 metadata layer: model, loader and metadata registry.
+    const PRODUCTION_SOURCES: [&str; 3] = [
         include_str!("../src/model.rs"),
         include_str!("../src/profile.rs"),
         include_str!("../src/registry.rs"),
@@ -1133,7 +1180,7 @@ mod profile_contract {
                 "Applicability",
                 "RuleEvaluator",
                 "GateReport",
-                "ValidationArtifact",
+                "struct ValidationArtifact",
                 "struct RuleResult ",
                 "struct Waiver ",
                 "plumb_compiler",
@@ -1143,5 +1190,9 @@ mod profile_contract {
             }
         }
         assert!(!include_str!("../Cargo.toml").contains("plumb-compiler"));
+        // The external-validation contracts live in this crate and never reach back.
+        let external = include_str!("../src/external.rs");
+        assert!(!external.contains("plumb_compiler"));
+        assert!(!external.contains("struct ValidationArtifact"));
     }
 }

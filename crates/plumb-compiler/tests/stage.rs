@@ -14,6 +14,7 @@ use plumb_patch::{
 };
 use plumb_psg::{node_element_hash, Edge, ElementStatus, Graph, Node, NodeType};
 use plumb_store::{GraphRevision, LoadedRevision, RevisionId, PSG_SCHEMA_VERSION};
+use plumb_validation::ExternalValidationError;
 use serde_json::{json, Value};
 
 const T1: &str = "2026-09-29T12:00:00.000000000Z";
@@ -29,6 +30,8 @@ const GOLDEN_EVR_JSON: &str = r#"{"config":{},"id":"sha256:2dbd3ea3b1c8233a76edf
 const GOLDEN_EVR_ID: &str =
     "sha256:2dbd3ea3b1c8233a76edf9e42cccc62fa2b46c79eacd47695d2d2a20075e9832";
 const GOLDEN_EVA_JSON: &str = r#"{"request_hash":"sha256:2dbd3ea3b1c8233a76edf9e42cccc62fa2b46c79eacd47695d2d2a20075e9832","validated_output":{"ok":true},"validated_output_hash":"sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93","validator":"req-lint"}"#;
+const GOLDEN_EVA_HASH: &str =
+    "sha256:614f8e1d2c377bf6b4a4eb92d28604de49308a806b7a63890fc8a3bc492f4756";
 const GOLDEN_PLAN_JSON: &str = r#"{"deterministic_artifacts":[{"bytes":[114,101,113,58,72,82,45,48,48,49,10,114,101,113,58,72,82,45,48,48,50],"kind":"projection","media_type":"text/plain"}],"external_validation_requests":[{"config":{},"id":"sha256:a9c573dbd7e8f1e520ffc4495127cee9b11ac1980c881667eb7714738e5504e4","input_artifact_refs":["sha256:5e3f2173ac22d5887e5a98e35497943052ce23aacc841b941c576eaf6108d2dc"],"task_kind":"lint","validator":"req-lint"}],"inference_requests":[{"context_hash":"sha256:5359f0a81f1e876e87ffe35cffc12b819a044a962a9c542f5c975ca9c0e72e19","evidence_refs":[],"id":"sha256:be95c0d694a87c8ec11d63ec39ae3b9ff4703d61169d970cf2bf89023b5a9ac8","input_refs":["req:HR-001","req:HR-002"],"prompt_template_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","provider_policy":{"config":{},"provider":"anthropic"},"schema_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","stage":"S1","task_kind":"extract-requirements"}],"scope":{"kind":"elements","refs":["req:HR-001","req:HR-002"]}}"#;
 const GOLDEN_EVALUATION_JSON: &str = r#"{"derivation_patch_set":{"base_semantic_hash":"psg:sha256:f0626043428dce3e421bf2d11665e55153c7aa9fc440b3e9bffc6feff72f5a19","patch":{"node":{"audit":{"created_at":"2026-09-29T12:00:00.000000000Z","created_by":"actor:analyst","updated_at":null,"updated_by":null},"derivations":[],"evidence":[],"extensions":{},"id":"req:derived-1","payload":{"data":{"level":"system","modality":"shall","owner_refs":null,"priority":null,"rationale":null,"requirement_kind":"functional","source_identifier":null,"stakeholder_refs":null,"statement":"The system shall list pending leave requests.","title":null,"verification_method":null},"type":"Requirement"},"revision":1,"standards":[],"status":"Proposed","tags":[]},"op":"AddNode"}},"proposals":[{"acceptance_policy":"HUMAN_CONFIRM","confidence":0.5,"derivation_refs":[],"evidence_refs":[],"id":"prop:0d5d15377e36d268","materiality":"semantic","patch_set":{"base_semantic_hash":"psg:sha256:f0626043428dce3e421bf2d11665e55153c7aa9fc440b3e9bffc6feff72f5a19","patch":{"from":"Proposed","op":"SetStatus","target":{"expected_hash":"sha256:90f45d530c518d64d026bf4403d66a2960cc948dba0cf87236a3f81c9adac9dc","id":"req:HR-002"},"to":"Accepted"}},"stage":"S1"}]}"#;
 const GOLDEN_OUTPUT_HASH: &str =
@@ -574,8 +577,11 @@ fn external_validation_request_rejections() {
             CanonicalJson::new(config),
         )
     };
-    let is_invalid = |r: Result<ExternalValidationRequest, CompilerError>| {
-        matches!(r, Err(CompilerError::InvalidExternalValidationRequest(_)))
+    let is_invalid = |r: Result<ExternalValidationRequest, ExternalValidationError>| {
+        matches!(
+            r.map_err(CompilerError::from),
+            Err(CompilerError::InvalidExternalValidationRequest(_))
+        )
     };
     assert!(is_invalid(new(
         "req-lint",
@@ -622,8 +628,11 @@ fn external_validation_artifact_golden_and_checks() {
         a
     );
     a.validate_for(&r).unwrap();
-    let invalid = |r: Result<(), CompilerError>| {
-        matches!(r, Err(CompilerError::InvalidExternalValidationArtifact(_)))
+    let invalid = |r: Result<(), ExternalValidationError>| {
+        matches!(
+            r.map_err(CompilerError::from),
+            Err(CompilerError::InvalidExternalValidationArtifact(_))
+        )
     };
     let mut bad = a.clone();
     bad.validated_output_hash = generic('f');
@@ -650,6 +659,75 @@ fn external_validation_artifact_golden_and_checks() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn external_validation_contracts_are_owned_by_plumb_validation() {
+    // The compiler names are re-exports of the canonical plumb-validation types.
+    let request: plumb_validation::ExternalValidationRequest =
+        validation_request(vec![generic('c'), generic('d')]);
+    let artifact: plumb_validation::ExternalValidationArtifact = validation_artifact(&request);
+    let _: plumb_compiler::ExternalValidationRequest = request.clone();
+    let _: plumb_compiler::ExternalValidationArtifact = artifact.clone();
+    assert_eq!(canonical(&request), GOLDEN_EVR_JSON);
+    assert_eq!(canonical(&artifact), GOLDEN_EVA_JSON);
+
+    // Compiler paths keep their own error variants.
+    let mut bad = request.clone();
+    bad.validator = "Req".into();
+    assert!(matches!(
+        CompilerError::from(bad.validate().unwrap_err()),
+        CompilerError::InvalidExternalValidationRequest(_)
+    ));
+    assert!(matches!(
+        CompilerError::from(artifact.validate_for(&bad).unwrap_err()),
+        CompilerError::InvalidExternalValidationRequest(_)
+    ));
+    let mut bad = artifact.clone();
+    bad.validated_output_hash = generic('f');
+    assert!(matches!(
+        CompilerError::from(bad.validate().unwrap_err()),
+        CompilerError::InvalidExternalValidationArtifact(_)
+    ));
+
+    let compiler_source = include_str!("../src/stage.rs");
+    assert!(compiler_source.contains("plumb_validation::{ExternalValidationArtifact"));
+    assert!(!compiler_source.contains("struct ExternalValidationArtifact"));
+    assert!(!compiler_source.contains("struct ExternalValidationRequest"));
+    let validation_source = include_str!("../../plumb-validation/src/external.rs");
+    assert!(!validation_source.contains("plumb_compiler"));
+    assert!(!include_str!("../../plumb-validation/Cargo.toml").contains("plumb-compiler"));
+}
+
+#[test]
+fn external_validation_artifact_hash_is_the_canonical_artifact_content_hash() {
+    let request = validation_request(vec![generic('c'), generic('d')]);
+    let artifact = validation_artifact(&request);
+    // sha256 of the exact GOLDEN_EVA_JSON bytes, calculated outside the implementation.
+    assert_eq!(artifact.artifact_hash().unwrap().as_str(), GOLDEN_EVA_HASH);
+    assert_eq!(
+        artifact.artifact_hash().unwrap(),
+        Hash::content_sha256(GOLDEN_EVA_JSON.as_bytes())
+    );
+    assert_eq!(artifact.artifact_hash().unwrap().kind(), HashKind::Generic);
+    let stored = Artifact {
+        hash: Hash::content_sha256(GOLDEN_EVA_JSON.as_bytes()),
+        kind: ArtifactKind::ExternalValidation,
+        media_type: JSON_MEDIA_TYPE.to_owned(),
+        bytes: to_canonical_json(&artifact).unwrap(),
+        created_at: T1.parse().unwrap(),
+    };
+    assert_eq!(stored.hash, artifact.artifact_hash().unwrap());
+    assert_eq!(stored.bytes, GOLDEN_EVA_JSON.as_bytes());
+
+    let mut other = artifact.clone();
+    other.validated_output = CanonicalJson::new(json!({"ok": false}));
+    other.validated_output_hash = other.validated_output.content_hash().unwrap();
+    other.validate().unwrap();
+    assert_ne!(
+        other.artifact_hash().unwrap(),
+        artifact.artifact_hash().unwrap()
+    );
 }
 
 // ---------------------------------------------------------------------------- ArtifactInput / ArtifactSet (§44)

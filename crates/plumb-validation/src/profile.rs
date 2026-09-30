@@ -106,7 +106,12 @@ impl ValidationProfile {
 
     fn validate_standards_catalog(&self) -> Result<(), ValidationError> {
         let mut seen = BTreeSet::new();
-        for definition in self.standards.values() {
+        for (key, definition) in &self.standards {
+            check_text("standards key", key, false)?;
+            let field = |name: &str| format!("standards.{key}.{name}");
+            check_text(&field("standard"), &definition.standard, false)?;
+            check_text(&field("version"), &definition.version, false)?;
+            check_text(&field("note"), &definition.note, false)?;
             if !seen.insert((&definition.standard, &definition.version, definition.role)) {
                 return Err(ValidationError::DuplicateStandardDefinition {
                     standard: definition.standard.clone(),
@@ -213,6 +218,10 @@ impl ValidationProfile {
             check_text(&field("remediation"), remediation, true)?;
         }
         if let Some(reference) = &rule.standard_reference {
+            let field = |name: &str| format!("rules.{}.standard_reference.{name}", rule.id);
+            check_text(&field("standard"), &reference.standard, false)?;
+            check_text(&field("version"), &reference.version, false)?;
+            check_text(&field("note"), &reference.note, false)?;
             let resolves = self.standards.values().any(|definition| {
                 definition.standard == reference.standard
                     && definition.version == reference.version

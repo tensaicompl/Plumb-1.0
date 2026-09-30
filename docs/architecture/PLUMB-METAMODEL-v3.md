@@ -508,6 +508,14 @@ rationale
 supersedes
 ```
 
+**Waiver decisions.** A `ResolutionDecision` is a governed waiver of a validation finding only when its `answer` is exactly this object (unknown fields rejected):
+
+```json
+{"kind": "waiver", "rule_id": "<rule ID>", "finding_key": "sha256:...", "finding_ref": "fnd:..."}
+```
+
+`finding_key` is the generic deterministic finding key and `finding_ref` the deterministic `Finding` node ID derived from it (compiler architecture §29). The waiver is effective only when the decision is `Accepted`, has a non-empty `rationale`, and an `Accepted` `resolves` edge links it to that `Accepted` `Finding`; `decided_by` is the waiver owner and the finding is its scope. Any other `answer` is not a waiver. `ResolutionDecision` has no review or expiry field, so the pilot evaluates no waiver expiry; a time-bounded waiver requires a future versioned schema.
+
 ### 6.4 `Assumption`
 
 Required:
