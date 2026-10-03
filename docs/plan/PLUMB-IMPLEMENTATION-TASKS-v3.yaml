@@ -2370,28 +2370,132 @@ tasks:
   depends_on:
   - S1.1
   files:
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/ears.rs
   - crates/plumb-functional/tests/ears.rs
   - prompts/s1-ears.md
   - schemas/inference/s1-ears.schema.json
   steps:
-  - Store original requirement statement unchanged.
-  - EARS-form normalized text is a Proposal that references the original requirement and evidence.
-  - Accepting an EARS proposal uses SemanticPatch ReplacePayload and records ResolutionDecision when meaning changes materially.
+  - Recover the original statement from segment_origin + EvidenceFragment; do not add a second Requirement truth field.
+  - Build a grounded EARS inference request over existing Proposed/Accepted S1.1-origin Requirements; inference returns only an EARS pattern
+    + grounded component references, and Plumb renders the normalized prose deterministically. Every component must resolve exactly to source_statement
+    text or an exact string from Accepted PSG semantics. Produce one Semantic/HUMAN_CONFIRM ReplacePayload Proposal per changed Requirement,
+    referencing the target Requirement and its evidence.
+  - S1.2 creates no ResolutionDecision. A reviewer who judges a material meaning change must not apply the simple EARS proposal; that change
+    is routed to governed resolution where a valid Finding/Question can be resolved by ResolutionDecision.
   - Reject an EARS output that introduces an actor, trigger, condition, response or numeric constraint not grounded in evidence or already accepted
     PSG semantics.
+  - Scope and boundary (Hotfix 027). S1.2 turns an existing Requirement, its original source evidence and a validated EARS inference structure
+    into a deterministically rendered statement inside a Semantic / HUMAN_CONFIRM Proposal whose patch is ReplacePayload. It never mutates a
+    Graph, applies a proposal, commits, persists inference, calls an LLM/provider, accepts a Requirement or creates a ResolutionDecision, Finding,
+    Question, governance edge (resolves, raises, conflicts_with), AcceptanceCriterion, Actor/Stakeholder/BusinessRole node, relation, split
+    or merge. The current PSG registry requires every ResolutionDecision to resolve a Question or Finding, which S1.2 neither has nor may invent;
+    human confirmation asserts that the normalized wording preserves the intended meaning, no materiality is classified by the model or by a
+    heuristic, and a rewrite judged to change meaning materially must not be applied through this path. The allowlist adds crates/plumb-functional/src/lib.rs;
+    no Cargo.toml or Cargo.lock change is needed (existing plumb-core, plumb-psg, plumb-patch, plumb-inference, serde, serde_json, jsonschema
+    and thiserror; no NLP or EARS library), and any unexpected dependency need blocks the task. lib.rs exports EARS_CONTEXT_VERSION, EARS_OUTPUT_VERSION,
+    EARS_TASK_KIND, EarsPattern, EarsGrounding, EarsAcceptedSemantic, EarsRequirementContext, EarsContext, EarsRequest, EarsInference, EarsIssue,
+    EarsNormalizationResult, EarsError, build_ears_request and evaluate_ears_normalization; renderer internals stay private.
+  - 'Targets and original statement (Hotfix 027). Targets are existing Requirement nodes with status exactly Proposed or Accepted (Rejected,
+    Superseded, Deprecated and Suspect are InvalidInput) carrying a valid plumb_functional:segment_origin; other Requirements are outside the
+    pilot and rejected, with no fallback to Requirement.statement, revision history, display names or source_identifier guessing. Requirement
+    keeps exactly one statement field: no original_statement, ears_statement or normalized_statement field, extension, tag, title or rationale
+    is added. The source_statement is recovered by parsing the SegmentOrigin, requiring origin.fragment_ref in Node.evidence, resolving it in
+    the Graph to an EvidenceFragment with extracted_text Some, validating start < end <= text byte length on UTF-8 boundaries, taking text[start..end]
+    and applying the existing crate-local requirements::parse_statement (no second prefix parser); it must be non-empty. All source-range grounding
+    is relative to source_statement, never to the current Requirement.statement (which may already be normalized) or global fragment offsets,
+    and the two may differ.'
+  - 'EARS request (Hotfix 027). Constants EARS_CONTEXT_VERSION: u32 = 1, EARS_OUTPUT_VERSION: u32 = 1 and EARS_TASK_KIND = "ears_normalization".
+    EarsContext { version, project_id, requirements: Vec<EarsRequirementContext>, accepted_semantics: Vec<EarsAcceptedSemantic> } with EarsRequirementContext
+    { requirement_ref, status, current_statement, source_statement, requirement_kind, level, modality, source_identifier, evidence_refs (sorted
+    unique), segment_origin } and EarsAcceptedSemantic { semantic_ref, values }, all deny_unknown_fields; version 1, requirements non-empty
+    and strictly sorted, accepted_semantics strictly sorted. The accepted-semantic catalog holds exactly the nodes with status Accepted whose
+    node type contributes to the semantic hash, excluding the target Requirements; values are every non-empty string scalar found recursively
+    in value positions of the serialized NodePayload (property names ignored), exact bytes, sorted unique, and nodes without values are omitted
+    (no case folding, singularization or tokenization). context_hash is the Generic SHA-256 of the RFC 8785 context. build_ears_request(graph,
+    requirement_refs, provider_policy) reads targets from the Graph (duplicate refs are InvalidInput, never deduplicated) and builds EarsRequest
+    { request, context } with stage StageId::S1, task_kind ears_normalization, input_refs the sorted unique target and catalog IDs (no evidence,
+    proposal or derivation IDs), evidence_refs the sorted unique union of the targets'' Node.evidence, the context hash, prompt_template_hash
+    and schema_hash as the Generic SHA-256 of the exact committed bytes of prompts/s1-ears.md and schemas/inference/s1-ears.schema.json (include_bytes!/include_str!,
+    no filesystem read; not added to SUPPORTING-DOCS.sha256) and the caller''s ProviderPolicy (no production default). Construction and evaluation
+    validate the complete binding, and evaluation rebuilds the context from the Graph and the request''s requirement IDs and requires exact
+    equality (InvalidInput otherwise, never a silent rebuild).'
+  - 'EARS output, grounding and rendering (Hotfix 027). The model never returns normalized prose: the Draft 2020-12 schema (additionalProperties
+    false at every object level, oneOf variants, no external $ref, no network; compiled with Draft::Draft202012) has root {version: 1, requirements}
+    and one entry {requirement_ref, suggestion} per target, where suggestion is null or {pattern, actor, trigger, condition, response} with
+    pattern exactly one of ubiquitous, event_driven, state_driven, optional_feature, unwanted_behavior (no complex, custom, free_form or other),
+    actor and response required groundings, and trigger/condition a grounding or null as the pattern requires (event_driven: trigger only; state_driven,
+    optional_feature, unwanted_behavior: condition only; ubiquitous: neither), re-checked deterministically after decoding. A grounding is exactly
+    {kind: source_range, start, end} (zero-based end-exclusive UTF-8 byte offsets into source_statement, start < end <= length, both on character
+    boundaries) or {kind: accepted_semantic, semantic_ref, text} (semantic_ref in the context catalog and text byte-identical to one of its
+    values; no fuzzy, case-insensitive, synonym, stemming, embedding, Jaccard or LLM-verified matching). There is no normalized_statement, normalized_text,
+    ears_text, modality, requirement_kind, level, priority, verification_method, source_identifier or confidence field. Resolved components
+    must be non-empty with no leading/trailing ASCII whitespace or ASCII control characters; the actor must not end in , ; : . ? !, trigger
+    and condition must not begin or end in them, and the response must not end in . ? ! (InvalidComponent; nothing is trimmed or stripped).
+    One pure renderer produces exactly ''<actor> <modal> <response>.'', ''When <trigger>, <actor> <modal> <response>.'', ''While <condition>,
+    <actor> <modal> <response>.'', ''Where <condition>, <actor> <modal> <response>.'' and ''If <condition>, then <actor> <modal> <response>.''
+    with the target''s existing modality rendered shall, shall not, should or may (never strengthened or weakened). Because rendered prose consists
+    only of grounded strings, fixed connectives and the existing modality, any actor, trigger, condition, response or numeric constraint not
+    present in source_statement or an Accepted semantic string is rejected; Proposed, Suspect, Rejected, Superseded and Deprecated semantics
+    and the targets themselves cannot ground text.'
+  - 'Evaluation and proposals (Hotfix 027). evaluate_ears_normalization(graph, ears_request, inference: Option<EarsInference { artifact: &InferenceArtifact,
+    derivation_ref: DerivationRef }>) takes no audit and validates in order: request validation and context rebuild, InferenceArtifact::validate_for,
+    schema, typed decode, version 1, output coverage (unknown requirement refs, then duplicates, then missing), pattern checks, grounding resolution,
+    rendering and proposal construction; any failure of a supplied inference is a typed EarsError (at least InvalidInput, InferenceConstruction,
+    InvalidInferenceArtifact, SchemaCompilation, SchemaInvalid, OutputCoverage, UnknownRequirement, DuplicateRequirementOutput, InvalidPattern,
+    InvalidGrounding, InvalidComponent, InvalidProposal, Core; no stable external codes) and no partial output is used. Absent inference gives
+    zero proposals and one InferenceUnavailable per target (no deterministic rewrite fallback); a null suggestion gives NoSuggestion; a rendering
+    byte-identical to the current statement gives AlreadyNormalized and no no-op patch. EarsIssue { InferenceUnavailable, NoSuggestion, AlreadyNormalized
+    } (each with requirement_ref; not Findings, no rule IDs) is sorted by requirement_ref then issue name. Each changed Requirement gets its
+    own Proposal::new with stage S1, PatchSet { base_semantic_hash: graph.semantic_hash(), patch: SemanticPatch::ReplacePayload { target: ElementPrecondition
+    { id, expected_hash: node_element_hash(target node) }, payload: the cloned Requirement with only statement replaced } }, evidence_refs the
+    target''s Node.evidence, derivation_refs [derivation_ref], materiality Semantic, acceptance_policy HumanConfirm and confidence None (never
+    MaterialDecision, HumanDecision or AutoDerivation, never one compound patch); EarsNormalizationResult { proposals, issues } has proposals
+    sorted by target Requirement ID. Applying the patch (only in tests) preserves the node ID, status (Proposed stays Proposed, Accepted stays
+    Accepted), evidence, derivations, standards, tags, extensions including segment_origin and audit, the patch engine finalizes the revision,
+    and no node is constructed by S1.2; a changed target fails the element precondition and changed accepted semantics fail the base semantic
+    hash. No EARS structure is stored on the Requirement or as a NodePayload; it stays in the inference artifact.'
+  - Source guard and tests (Hotfix 027). Production ears.rs contains no std::fs, File::open, ArtifactStore, rusqlite, SystemClock, Clock::now,
+    Utc::now, Instant::now, reqwest, InferenceProvider::execute, MockProvider, apply_patch, revision store, branch commit or unsafe; MockProvider
+    is used only in tests/ears.rs. Tests (all selected by the filter ears) cover the schema (Draft 2020-12, the five valid patterns and a null
+    suggestion; rejection of a normalized_statement field, unknown pattern, unknown grounding kind, missing response, wrong range type, accepted_semantic
+    without text and unknown fields), independently computed goldens (Python hashlib and canonical JSON, never the helpers under test) for the
+    prompt and schema hashes, one context hash and one InferenceRequest.id for a fixed synthetic graph with ProviderPolicy(mock, {}); context-order
+    determinism, the accepted-semantic catalog (status and semantic-hash filter, target exclusion, exact sorted unique values), provider sensitivity
+    and request tampering; target status, missing and broken segment_origin; source recovery with an S1.1 prefix ('12. **REQ-123** [functional]
+    The system shall export the report.' recovers 'The system shall export the report.'); exact ranges, a UTF-8-cutting range, all five renderings
+    and Shall, ShallNot, Should and May preservation; punctuation boundaries; invented numeric ('respond within 2 seconds'), actor, trigger,
+    condition and response groundings rejected and source- or Accepted-grounded numbers and actors accepted, with exact-byte matching (Employee
+    vs employee) and Proposed semantics rejected; null, absent, invalid-artifact, schema-invalid, missing, duplicate and unknown outputs, a
+    mixed batch, AlreadyNormalized and current/source divergence; proposal metadata, ReplacePayload and precondition, preservation of every
+    other payload field and the envelope, original recovery after applying the patch in test code, stale element and stale base checks, ordering
+    and serialization determinism, absence of governance objects, and the end-to-end path S0.4 candidate, S1.1 proposal applied in test code,
+    S1.2 proposal applied in test code for both Proposed and Accepted targets.
   tests:
   - cargo test -p plumb-functional ears
+  - cargo test -p plumb-functional
+  - cargo test --workspace --no-fail-fast
   acceptance:
   - A crafted inference that invents a numeric threshold is rejected; original text remains retrievable after accepted normalization.
+  - 'Inference cannot supply normalized prose: every EARS component resolves exactly to source_statement text or an exact Accepted PSG semantic
+    string, and invented actors, triggers, conditions and responses are rejected before any Proposal exists.'
+  - Each changed Proposed or Accepted S1.1-origin Requirement gets one Semantic / HUMAN_CONFIRM ReplacePayload Proposal that changes only the
+    statement, preserves modality, the node ID and envelope, and leaves the original statement recoverable from evidence and segment_origin;
+    S1.2 creates no ResolutionDecision, Finding or Question and performs no provider call, persistence or graph mutation.
   source_refs:
   - SRCREF-397E123D2C
   - SRCREF-91B589D90C
-  forbidden: []
+  forbidden:
+  - Do not add an original or normalized statement field, extension or EARS-specific payload to Requirement.
+  - Do not accept free-form model prose, fuzzy grounding, a materiality classifier or a deterministic EARS fallback.
+  - Do not create a ResolutionDecision, Finding, Question, relation or Accepted node, apply a patch, call a provider or persist anything in
+    S1.2.
   commands:
   - cargo test -p plumb-functional ears
+  - cargo test -p plumb-functional
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test --workspace --no-fail-fast
   commit_message: 'S1.2: Implement EARS normalization as non-authoritative proposal'
 - id: S1.3
   title: Implement duplicate detection and supersession proposals
