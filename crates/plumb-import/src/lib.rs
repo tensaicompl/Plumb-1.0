@@ -2,10 +2,15 @@
 //! the source artifacts from caller-supplied bytes (compiler architecture §6). Importing reads
 //! no clock and persists nothing; acquisition stores the returned artifacts.
 
+// Declared first: segment.rs reuses the importer closed-vocabulary macro.
+#[macro_use]
+pub mod source;
+
 pub mod docx;
+mod fallback;
 pub mod manifest;
 pub mod md;
-pub mod source;
+pub mod segment;
 pub mod text;
 
 pub use docx::import_docx;
@@ -15,6 +20,13 @@ pub use manifest::{
     ManifestError, EVIDENCE_MANIFEST_VERSION,
 };
 pub use md::{import_markdown, table_cells};
+pub use segment::{
+    build_segmentation_request, evaluate_segmentation, FallbackReason, SegmentCandidate,
+    SegmentClassification, SegmentFlag, SegmentGap, SegmentationAudit, SegmentationContext,
+    SegmentationContextFragment, SegmentationError, SegmentationMode, SegmentationRequest,
+    SegmentationResult, E_INTAKE_UNCOVERED, SEGMENTATION_CONTEXT_VERSION,
+    SEGMENTATION_OUTPUT_VERSION, SEGMENTATION_TASK_KIND,
+};
 pub use source::{
     source_parse_metadata, ExtractedTextArtifact, FragmentKind, FragmentMetadata, ImportAudit,
     ImportError, ImportWarning, ImportWarningCode, ImportedSource, ParseMetadata, ParseStatus,

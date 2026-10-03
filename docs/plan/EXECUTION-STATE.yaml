@@ -40,7 +40,7 @@ tasks:
 - id: S0.3
   status: done
 - id: S0.4
-  status: pending
+  status: done
 - id: S1.1
   status: pending
 - id: S1.2
