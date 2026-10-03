@@ -14,7 +14,7 @@ pub mod waiver;
 pub use evaluator::{
     violation_state, Applicability, EvaluationError, EvaluatorFailure, EvaluatorRegistry,
     GateReport, GateResult, GateSummary, RuleEvaluation, RuleEvaluator, RuleResult,
-    ValidationContext, ValidationPolicy,
+    ValidationArtifactInput, ValidationContext, ValidationPolicy, EVIDENCE_ARTIFACT_KINDS,
 };
 pub use external::{
     ExternalValidationArtifact, ExternalValidationError, ExternalValidationRequest,

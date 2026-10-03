@@ -137,6 +137,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** DerivationRecord references a known Agent and activity kind.
 - **Pass condition:** DerivationRecord references a known Agent and activity kind.
 - **Waiver:** `profile_allow`
+- **Pilot interpretation:** the Agent of a `DerivationRecord` node is its envelope `audit.created_by`, which must resolve to a baseline `Agent` node; the activity kind is `DerivationRecord.kind`. Evidence acquisition (source import) is not a derivation, so a baseline without `DerivationRecord` nodes makes this rule `NOT_APPLICABLE`, never a vacuous `PASS`.
 
 ### `PLUMB.I0.BASELINE.HASHABLE` — Evidence baseline is reproducibly hashable
 
@@ -147,6 +148,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Evidence hash can be recomputed from scoped sources and equals the baseline evidence_hash.
 - **Pass condition:** Evidence hash can be recomputed from scoped sources and equals the baseline evidence_hash.
 - **Waiver:** `forbidden`
+- **Pilot interpretation:** the recomputed value is the graph's existing evidence hash; the expected value is the baseline evidence hash supplied with the evaluation, and a supplied canonical evidence manifest must match both and the graph exactly. A mismatch, or a missing or stale manifest, fails the rule; it is not a context error.
 
 ## F1 — Requirements are grounded, interpretable and free of unresolved blocking quality defects.
 

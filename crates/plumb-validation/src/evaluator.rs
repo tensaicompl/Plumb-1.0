@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use plumb_artifacts::{Artifact, ArtifactKind};
 use plumb_core::{canonical_hash, CoreError, GateId, Hash, HashKind, Id};
 use plumb_psg::Graph;
 use serde::{Deserialize, Serialize};
@@ -130,12 +131,122 @@ impl ValidationPolicy {
     }
 }
 
+// ============================================================================ ValidationArtifactInput
+
+/// An already-acquired immutable evidence artifact supplied to evaluation. It has no
+/// `created_at`: acquisition time is unobservable to rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, try_from = "ValidationArtifactInputFields")]
+pub struct ValidationArtifactInput {
+    pub hash: Hash,
+    pub kind: ArtifactKind,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ValidationArtifactInputFields {
+    hash: Hash,
+    kind: ArtifactKind,
+    media_type: String,
+    bytes: Vec<u8>,
+}
+
+impl TryFrom<ValidationArtifactInputFields> for ValidationArtifactInput {
+    type Error = EvaluationError;
+
+    fn try_from(f: ValidationArtifactInputFields) -> Result<Self, Self::Error> {
+        let input = ValidationArtifactInput {
+            hash: f.hash,
+            kind: f.kind,
+            media_type: f.media_type,
+            bytes: f.bytes,
+        };
+        input.validate()?;
+        Ok(input)
+    }
+}
+
+/// The artifact kinds evidence evaluation currently reads.
+pub const EVIDENCE_ARTIFACT_KINDS: [ArtifactKind; 3] = [
+    ArtifactKind::SourceOriginal,
+    ArtifactKind::SourceExtracted,
+    ArtifactKind::EvidenceManifest,
+];
+
+impl ValidationArtifactInput {
+    /// The hash is Generic and is the SHA-256 of the exact bytes; the media type is clean.
+    pub fn validate(&self) -> Result<(), EvaluationError> {
+        let invalid = EvaluationError::InvalidContext;
+        if self.hash.kind() != HashKind::Generic {
+            return Err(invalid(format!(
+                "evidence artifact {} is not a Generic hash",
+                self.hash
+            )));
+        }
+        if Hash::content_sha256(&self.bytes) != self.hash {
+            return Err(invalid(format!(
+                "evidence artifact {} does not match its bytes",
+                self.hash
+            )));
+        }
+        if !is_clean_text(&self.media_type) {
+            return Err(invalid(format!(
+                "evidence artifact {} has invalid media type {:?}",
+                self.hash, self.media_type
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl From<&Artifact> for ValidationArtifactInput {
+    /// Copies hash, kind, media type and bytes; deliberately drops `created_at`.
+    fn from(artifact: &Artifact) -> Self {
+        ValidationArtifactInput {
+            hash: artifact.hash.clone(),
+            kind: artifact.kind,
+            media_type: artifact.media_type.clone(),
+            bytes: artifact.bytes.clone(),
+        }
+    }
+}
+
+/// Validates evidence inputs: each valid, of an evidence kind, strictly sorted by hash.
+fn validate_evidence_artifacts(inputs: &[ValidationArtifactInput]) -> Result<(), EvaluationError> {
+    for input in inputs {
+        input.validate()?;
+        if !EVIDENCE_ARTIFACT_KINDS.contains(&input.kind) {
+            return Err(EvaluationError::InvalidContext(format!(
+                "evidence artifact {} has kind {}, which evidence evaluation does not read",
+                input.hash, input.kind
+            )));
+        }
+    }
+    let refs: Vec<&Hash> = inputs.iter().map(|i| &i.hash).collect();
+    require_strictly_sorted("evidence artifact", &refs).map_err(EvaluationError::InvalidContext)
+}
+
+fn require_evidence_hash(hash: &Hash) -> Result<(), EvaluationError> {
+    if hash.kind() == HashKind::Evidence {
+        Ok(())
+    } else {
+        Err(EvaluationError::InvalidContext(format!(
+            "baseline_evidence_hash {hash} is not an Evidence hash"
+        )))
+    }
+}
+
 // ============================================================================ ValidationContext
 
 /// Everything an evaluation depends on besides the graph and the rule metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ValidationContext {
     pub baseline_semantic_hash: Hash,
+    /// The expected evidence baseline, supplied by orchestration. Whether the graph reproduces
+    /// it is a rule result, not a context invariant.
+    pub baseline_evidence_hash: Hash,
 
     pub profile_id: Id,
     pub profile_hash: Hash,
@@ -144,19 +255,28 @@ pub struct ValidationContext {
     pub policy: ValidationPolicy,
 
     pub external_validation_artifacts: Vec<ExternalValidationArtifact>,
+
+    /// Already-acquired evidence artifacts, sorted by hash and unique.
+    pub evidence_artifacts: Vec<ValidationArtifactInput>,
 }
 
 impl ValidationContext {
     /// Binds a context to `graph` and `registry`. The artifacts are validated, stored in
-    /// artifact-hash order and must be distinct.
+    /// hash order and must be distinct. Missing evidence a rule needs is that rule's violation,
+    /// not a context error.
     pub fn new(
         graph: &Graph,
         registry: &ValidationRegistry,
         policy: ValidationPolicy,
+        baseline_evidence_hash: Hash,
+        mut evidence_artifacts: Vec<ValidationArtifactInput>,
         external_validation_artifacts: Vec<ExternalValidationArtifact>,
     ) -> Result<ValidationContext, EvaluationError> {
         require_graph_profile(graph, registry)?;
         policy.validate(registry)?;
+        require_evidence_hash(&baseline_evidence_hash)?;
+        evidence_artifacts.sort_by(|a, b| a.hash.cmp(&b.hash));
+        validate_evidence_artifacts(&evidence_artifacts)?;
         let mut keyed: Vec<(Hash, ExternalValidationArtifact)> = Vec::new();
         for artifact in external_validation_artifacts {
             artifact.validate()?;
@@ -172,12 +292,30 @@ impl ValidationContext {
         let profile = registry.profile();
         Ok(ValidationContext {
             baseline_semantic_hash: graph.semantic_hash()?,
+            baseline_evidence_hash,
             profile_id: profile.profile_id.clone(),
             profile_hash: profile.profile_hash()?,
             rule_pack_hash: profile.rule_pack_hash()?,
             policy,
             external_validation_artifacts: keyed.into_iter().map(|(_, a)| a).collect(),
+            evidence_artifacts,
         })
+    }
+
+    /// The evidence artifact with `hash`, if supplied. No I/O.
+    pub fn evidence_artifact(&self, hash: &Hash) -> Option<&ValidationArtifactInput> {
+        self.evidence_artifacts
+            .binary_search_by(|input| input.hash.cmp(hash))
+            .ok()
+            .map(|index| &self.evidence_artifacts[index])
+    }
+
+    /// The hashes of the evidence artifacts, in canonical hash order.
+    pub fn evidence_artifact_refs(&self) -> Vec<Hash> {
+        self.evidence_artifacts
+            .iter()
+            .map(|input| input.hash.clone())
+            .collect()
     }
 
     /// The Generic hashes of the external validation artifacts, in stored order.
@@ -196,6 +334,8 @@ impl ValidationContext {
     ) -> Result<(), EvaluationError> {
         let invalid = EvaluationError::InvalidContext;
         require_graph_profile(graph, registry)?;
+        require_evidence_hash(&self.baseline_evidence_hash)?;
+        validate_evidence_artifacts(&self.evidence_artifacts)?;
         if self.baseline_semantic_hash != graph.semantic_hash()? {
             return Err(invalid(
                 "baseline_semantic_hash is not the graph's semantic hash".into(),
@@ -704,6 +844,7 @@ pub struct GateReport {
     pub gate: GateId,
 
     pub baseline_semantic_hash: Hash,
+    pub baseline_evidence_hash: Hash,
 
     pub profile_id: Id,
     pub profile_hash: Hash,
@@ -712,6 +853,7 @@ pub struct GateReport {
     pub policy: ValidationPolicy,
 
     pub validation_artifact_refs: Vec<Hash>,
+    pub evidence_artifact_refs: Vec<Hash>,
 
     pub result: GateResult,
 
@@ -738,6 +880,13 @@ impl GateReport {
                 "baseline_semantic_hash is not a Semantic hash".into(),
             ));
         }
+        if self.baseline_evidence_hash.kind() != HashKind::Evidence {
+            return Err(invalid(
+                "baseline_evidence_hash is not an Evidence hash".into(),
+            ));
+        }
+        require_strictly_sorted("evidence artifact ref", &self.evidence_artifact_refs)
+            .map_err(invalid)?;
         for (what, hash) in [
             ("profile_hash", &self.profile_hash),
             ("rule_pack_hash", &self.rule_pack_hash),
@@ -746,6 +895,7 @@ impl GateReport {
         .chain(
             self.validation_artifact_refs
                 .iter()
+                .chain(&self.evidence_artifact_refs)
                 .map(|h| ("artifact ref", h)),
         ) {
             if hash.kind() != HashKind::Generic {
@@ -852,11 +1002,13 @@ impl fmt::Display for WaiverOrder<'_> {
 struct GateReportFields {
     gate: GateId,
     baseline_semantic_hash: Hash,
+    baseline_evidence_hash: Hash,
     profile_id: Id,
     profile_hash: Hash,
     rule_pack_hash: Hash,
     policy: ValidationPolicy,
     validation_artifact_refs: Vec<Hash>,
+    evidence_artifact_refs: Vec<Hash>,
     result: GateResult,
     rules: Vec<RuleResult>,
     findings: Vec<GeneratedFinding>,
@@ -871,11 +1023,13 @@ impl TryFrom<GateReportFields> for GateReport {
         let report = GateReport {
             gate: f.gate,
             baseline_semantic_hash: f.baseline_semantic_hash,
+            baseline_evidence_hash: f.baseline_evidence_hash,
             profile_id: f.profile_id,
             profile_hash: f.profile_hash,
             rule_pack_hash: f.rule_pack_hash,
             policy: f.policy,
             validation_artifact_refs: f.validation_artifact_refs,
+            evidence_artifact_refs: f.evidence_artifact_refs,
             result: f.result,
             rules: f.rules,
             findings: f.findings,
@@ -998,11 +1152,13 @@ impl EvaluatorRegistry {
         let report = GateReport {
             gate,
             baseline_semantic_hash: ctx.baseline_semantic_hash.clone(),
+            baseline_evidence_hash: ctx.baseline_evidence_hash.clone(),
             profile_id: ctx.profile_id.clone(),
             profile_hash: ctx.profile_hash.clone(),
             rule_pack_hash: ctx.rule_pack_hash.clone(),
             policy: ctx.policy.clone(),
             validation_artifact_refs: ctx.validation_artifact_refs()?,
+            evidence_artifact_refs: ctx.evidence_artifact_refs(),
             result: summary.result(),
             rules,
             findings,

@@ -9,6 +9,7 @@
 mod evaluator_contract {
     use std::collections::BTreeSet;
 
+    use plumb_artifacts::{Artifact, ArtifactKind};
     use plumb_core::{to_canonical_json, CanonicalJson, GateId, Hash, HashKind, Id};
     use plumb_psg::{Edge, FindingSeverity, Graph, Node};
     use plumb_validation::*;
@@ -73,12 +74,21 @@ mod evaluator_contract {
         "sha256:b175e0ef856728ae1e8e4cb5466ee7d9a2edb836359710969ad4aa5c802e28a3";
     const GOLDEN_WAIVED_FINDING: &str = "fnd:b175e0ef856728ae";
 
+    /// Evidence hash of `golden_graph()`, produced by plumb-psg, used as the expected baseline.
+    const GOLDEN_BASELINE_EVIDENCE: &str =
+        "ev:sha256:9eef75643b0d6c5593a7c70e41d5833530ca17796cbc1465e6a62b9578548558";
+    /// The two golden evidence artifact refs (SHA-256 of the literal bytes, calculated outside).
+    const GOLDEN_EVIDENCE_REFS: [&str; 2] = [
+        "sha256:79015f95989cdfa58457a00036ebe6eb74e8333b3dc0e12b510b7f602979080f",
+        "sha256:de22cdde320b9e48b23ec9c021174b934ee10405ed45f35879944c2b469873cf",
+    ];
+
     /// Semantic hash of `golden_graph()`, produced by plumb-psg.
     const GOLDEN_BASELINE: &str =
         "psg:sha256:25787df602640a7532f8d51e223c73cd27df6d9b0cdd7e20e46235ff0ab751b9";
-    const GOLDEN_REPORT: &str = r#"{"baseline_semantic_hash":"psg:sha256:25787df602640a7532f8d51e223c73cd27df6d9b0cdd7e20e46235ff0ab751b9","findings":[{"id":"fnd:6326de72ad5dfba1","key":"sha256:6326de72ad5dfba1735f6064ffccd44ae82643c5e1f64a5b171dad0a982b9742","payload":{"affected_refs":["src:hr-handbook","src:hr-policy"],"code":"PLUMB.I0.SOURCE.CONTENT_ADDRESSED","family":"I0","message":"Source artifacts lack a content hash.","severity":"blocker","standard_rule_ref":null,"status":"Open","suggested_resolution":null,"waiver_ref":null},"semantic_condition_key":"content-hash-missing"},{"id":"fnd:81baae8cb47adb41","key":"sha256:81baae8cb47adb410e1cc5b5bc6d08f07333e9be9dbdb1432bf9edd0b1f25b41","payload":{"affected_refs":["drv:import-1"],"code":"PPMN.I0.PROVENANCE.AGENT_IDENTIFIED","family":"I0","message":"Derivation has no agent.","severity":"blocker","standard_rule_ref":"PPMN.I0.PROVENANCE.AGENT_IDENTIFIED","status":"Open","suggested_resolution":null,"waiver_ref":null},"semantic_condition_key":"agent-missing"},{"id":"fnd:b175e0ef856728ae","key":"sha256:b175e0ef856728ae1e8e4cb5466ee7d9a2edb836359710969ad4aa5c802e28a3","payload":{"affected_refs":["src:hr-policy"],"code":"PLUMB.I0.SOURCE.PARSE_STATUS","family":"I0","message":"Source could not be parsed.","severity":"blocker","standard_rule_ref":null,"status":"Open","suggested_resolution":"Re-import the source.","waiver_ref":"dec:waive-parse"},"semantic_condition_key":"parse-failed"}],"gate":"I0","policy":{"profile_allow_waiver_rule_ids":["PPMN.I0.PROVENANCE.AGENT_IDENTIFIED"],"promoted_to_blocker_rule_ids":["PPMN.I0.PROVENANCE.AGENT_IDENTIFIED"]},"profile_hash":"sha256:08b5b1535eedf401dd002c26ffc7301cfc35a119680f75b664de691b41c3a52f","profile_id":"profile:plumb-software-2026.1","result":"FAIL","rule_pack_hash":"sha256:6677e02dd7740bb294533513a4d5294576c62c65eb8606973ca998b565f1b2e7","rules":[{"applicability":{"state":"APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":null,"evidence":["ev:manifest"],"finding_ref":null,"rule_id":"PLUMB.I0.BASELINE.HASHABLE","semantic_condition_key":null,"state":"PASS","targets":["src:hr-policy"],"waiver_ref":null},{"applicability":{"reason":"no evidence fragments in scope","state":"NOT_APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":null,"evidence":[],"finding_ref":null,"rule_id":"PLUMB.I0.EVIDENCE.HASH_MATCH","semantic_condition_key":null,"state":"NOT_APPLICABLE","targets":[],"waiver_ref":null},{"applicability":{"state":"APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":{"code":"E_LOCATOR","evidence":[],"message":"locator index unavailable","targets":["frag:a1"]},"evidence":[],"finding_ref":null,"rule_id":"PLUMB.I0.EVIDENCE.LOCATABLE","semantic_condition_key":null,"state":"ERROR","targets":["frag:a1"],"waiver_ref":null},{"applicability":{"state":"APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":null,"evidence":["ev:manifest"],"finding_ref":"fnd:6326de72ad5dfba1","rule_id":"PLUMB.I0.SOURCE.CONTENT_ADDRESSED","semantic_condition_key":"content-hash-missing","state":"FAIL","targets":["src:hr-handbook","src:hr-policy"],"waiver_ref":null},{"applicability":{"state":"APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":null,"evidence":[],"finding_ref":"fnd:b175e0ef856728ae","rule_id":"PLUMB.I0.SOURCE.PARSE_STATUS","semantic_condition_key":"parse-failed","state":"WAIVED","targets":["src:hr-policy"],"waiver_ref":"dec:waive-parse"},{"applicability":{"state":"APPLICABLE"},"declared_severity":"error","effective_severity":"blocker","error":null,"evidence":[],"finding_ref":"fnd:81baae8cb47adb41","rule_id":"PPMN.I0.PROVENANCE.AGENT_IDENTIFIED","semantic_condition_key":"agent-missing","state":"FAIL","targets":["drv:import-1"],"waiver_ref":null}],"summary":{"blocker_failed":3,"blocker_waived":1,"warnings":0},"validation_artifact_refs":["sha256:3f55607117f194b351c7dcf035c17dc52b7883953eb70dd47b4a59f5cc970f8a"],"waivers":[{"decision_ref":"dec:waive-parse","finding_key":"sha256:b175e0ef856728ae1e8e4cb5466ee7d9a2edb836359710969ad4aa5c802e28a3","finding_ref":"fnd:b175e0ef856728ae","rule_id":"PLUMB.I0.SOURCE.PARSE_STATUS"}]}"#;
+    const GOLDEN_REPORT: &str = r#"{"baseline_evidence_hash":"ev:sha256:9eef75643b0d6c5593a7c70e41d5833530ca17796cbc1465e6a62b9578548558","baseline_semantic_hash":"psg:sha256:25787df602640a7532f8d51e223c73cd27df6d9b0cdd7e20e46235ff0ab751b9","evidence_artifact_refs":["sha256:79015f95989cdfa58457a00036ebe6eb74e8333b3dc0e12b510b7f602979080f","sha256:de22cdde320b9e48b23ec9c021174b934ee10405ed45f35879944c2b469873cf"],"findings":[{"id":"fnd:6326de72ad5dfba1","key":"sha256:6326de72ad5dfba1735f6064ffccd44ae82643c5e1f64a5b171dad0a982b9742","payload":{"affected_refs":["src:hr-handbook","src:hr-policy"],"code":"PLUMB.I0.SOURCE.CONTENT_ADDRESSED","family":"I0","message":"Source artifacts lack a content hash.","severity":"blocker","standard_rule_ref":null,"status":"Open","suggested_resolution":null,"waiver_ref":null},"semantic_condition_key":"content-hash-missing"},{"id":"fnd:81baae8cb47adb41","key":"sha256:81baae8cb47adb410e1cc5b5bc6d08f07333e9be9dbdb1432bf9edd0b1f25b41","payload":{"affected_refs":["drv:import-1"],"code":"PPMN.I0.PROVENANCE.AGENT_IDENTIFIED","family":"I0","message":"Derivation has no agent.","severity":"blocker","standard_rule_ref":"PPMN.I0.PROVENANCE.AGENT_IDENTIFIED","status":"Open","suggested_resolution":null,"waiver_ref":null},"semantic_condition_key":"agent-missing"},{"id":"fnd:b175e0ef856728ae","key":"sha256:b175e0ef856728ae1e8e4cb5466ee7d9a2edb836359710969ad4aa5c802e28a3","payload":{"affected_refs":["src:hr-policy"],"code":"PLUMB.I0.SOURCE.PARSE_STATUS","family":"I0","message":"Source could not be parsed.","severity":"blocker","standard_rule_ref":null,"status":"Open","suggested_resolution":"Re-import the source.","waiver_ref":"dec:waive-parse"},"semantic_condition_key":"parse-failed"}],"gate":"I0","policy":{"profile_allow_waiver_rule_ids":["PPMN.I0.PROVENANCE.AGENT_IDENTIFIED"],"promoted_to_blocker_rule_ids":["PPMN.I0.PROVENANCE.AGENT_IDENTIFIED"]},"profile_hash":"sha256:08b5b1535eedf401dd002c26ffc7301cfc35a119680f75b664de691b41c3a52f","profile_id":"profile:plumb-software-2026.1","result":"FAIL","rule_pack_hash":"sha256:6677e02dd7740bb294533513a4d5294576c62c65eb8606973ca998b565f1b2e7","rules":[{"applicability":{"state":"APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":null,"evidence":["ev:manifest"],"finding_ref":null,"rule_id":"PLUMB.I0.BASELINE.HASHABLE","semantic_condition_key":null,"state":"PASS","targets":["src:hr-policy"],"waiver_ref":null},{"applicability":{"reason":"no evidence fragments in scope","state":"NOT_APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":null,"evidence":[],"finding_ref":null,"rule_id":"PLUMB.I0.EVIDENCE.HASH_MATCH","semantic_condition_key":null,"state":"NOT_APPLICABLE","targets":[],"waiver_ref":null},{"applicability":{"state":"APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":{"code":"E_LOCATOR","evidence":[],"message":"locator index unavailable","targets":["frag:a1"]},"evidence":[],"finding_ref":null,"rule_id":"PLUMB.I0.EVIDENCE.LOCATABLE","semantic_condition_key":null,"state":"ERROR","targets":["frag:a1"],"waiver_ref":null},{"applicability":{"state":"APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":null,"evidence":["ev:manifest"],"finding_ref":"fnd:6326de72ad5dfba1","rule_id":"PLUMB.I0.SOURCE.CONTENT_ADDRESSED","semantic_condition_key":"content-hash-missing","state":"FAIL","targets":["src:hr-handbook","src:hr-policy"],"waiver_ref":null},{"applicability":{"state":"APPLICABLE"},"declared_severity":"blocker","effective_severity":"blocker","error":null,"evidence":[],"finding_ref":"fnd:b175e0ef856728ae","rule_id":"PLUMB.I0.SOURCE.PARSE_STATUS","semantic_condition_key":"parse-failed","state":"WAIVED","targets":["src:hr-policy"],"waiver_ref":"dec:waive-parse"},{"applicability":{"state":"APPLICABLE"},"declared_severity":"error","effective_severity":"blocker","error":null,"evidence":[],"finding_ref":"fnd:81baae8cb47adb41","rule_id":"PPMN.I0.PROVENANCE.AGENT_IDENTIFIED","semantic_condition_key":"agent-missing","state":"FAIL","targets":["drv:import-1"],"waiver_ref":null}],"summary":{"blocker_failed":3,"blocker_waived":1,"warnings":0},"validation_artifact_refs":["sha256:3f55607117f194b351c7dcf035c17dc52b7883953eb70dd47b4a59f5cc970f8a"],"waivers":[{"decision_ref":"dec:waive-parse","finding_key":"sha256:b175e0ef856728ae1e8e4cb5466ee7d9a2edb836359710969ad4aa5c802e28a3","finding_ref":"fnd:b175e0ef856728ae","rule_id":"PLUMB.I0.SOURCE.PARSE_STATUS"}]}"#;
     const GOLDEN_REPORT_HASH: &str =
-        "sha256:2de2b756d60b5f4fac49118f48798d75a2dbcac12a9740eb783a4cfce05e579b";
+        "sha256:b621cd7e2af02ca92ddf7f3e768fb60d411c3dc96fcc32962cdee677942b7750";
 
     // ------------------------------------------------------------------ builders
 
@@ -246,7 +256,15 @@ mod evaluator_contract {
         registry: &ValidationRegistry,
         policy: ValidationPolicy,
     ) -> ValidationContext {
-        ValidationContext::new(graph, registry, policy, vec![]).unwrap()
+        ValidationContext::new(
+            graph,
+            registry,
+            policy,
+            graph.evidence_hash().unwrap(),
+            vec![],
+            vec![],
+        )
+        .unwrap()
     }
 
     // ------------------------------------------------------------------ test-only fixture evaluators
@@ -517,6 +535,8 @@ mod evaluator_contract {
                 &plain_graph(),
                 &registry,
                 policy(&["ORG.I0.UNKNOWN"], &[]),
+                plain_graph().evidence_hash().unwrap(),
+                vec![],
                 vec![]
             ),
             Err(EvaluationError::InvalidPolicy(_))
@@ -600,7 +620,9 @@ mod evaluator_contract {
         assert_eq!(
             keys,
             BTreeSet::from([
+                "baseline_evidence_hash",
                 "baseline_semantic_hash",
+                "evidence_artifacts",
                 "external_validation_artifacts",
                 "policy",
                 "profile_hash",
@@ -626,6 +648,8 @@ mod evaluator_contract {
             &graph,
             &registry,
             ValidationPolicy::default(),
+            graph.evidence_hash().unwrap(),
+            vec![],
             artifacts.clone(),
         )
         .unwrap();
@@ -635,6 +659,8 @@ mod evaluator_contract {
             &graph,
             &registry,
             ValidationPolicy::default(),
+            graph.evidence_hash().unwrap(),
+            vec![],
             reversed_input,
         )
         .unwrap();
@@ -663,6 +689,8 @@ mod evaluator_contract {
                 &graph,
                 &registry,
                 ValidationPolicy::default(),
+                graph.evidence_hash().unwrap(),
+                vec![],
                 vec![artifact.clone(), artifact.clone()]
             ),
             Err(EvaluationError::InvalidContext(_))
@@ -674,6 +702,8 @@ mod evaluator_contract {
                 &graph,
                 &registry,
                 ValidationPolicy::default(),
+                graph.evidence_hash().unwrap(),
+                vec![],
                 vec![invalid.clone()]
             ),
             Err(EvaluationError::ExternalValidation(
@@ -1972,10 +2002,37 @@ mod evaluator_contract {
             &graph,
             registry.metadata(),
             policy(&[AGENT_IDENTIFIED], &[AGENT_IDENTIFIED]),
+            GOLDEN_BASELINE_EVIDENCE.parse().unwrap(),
+            golden_evidence_artifacts(),
             vec![external_artifact(json!({"ok": true}))],
         )
         .unwrap();
         registry.evaluate_gate(GateId::I0, &graph, &ctx).unwrap()
+    }
+
+    /// The evidence artifacts of the golden scenario, as acquired with an arbitrary time.
+    fn golden_evidence_artifacts() -> Vec<ValidationArtifactInput> {
+        evidence_artifacts_at("2026-10-03T08:00:00.000000000Z")
+    }
+
+    fn evidence_artifacts_at(at: &str) -> Vec<ValidationArtifactInput> {
+        let original = b"Employees may request leave.\n".to_vec();
+        let extracted = br#"{"text":"Employees may request leave.\n","version":1}"#.to_vec();
+        [
+            (ArtifactKind::SourceOriginal, "text/markdown", original),
+            (ArtifactKind::SourceExtracted, "application/json", extracted),
+        ]
+        .into_iter()
+        .map(|(kind, media_type, bytes)| {
+            ValidationArtifactInput::from(&Artifact {
+                hash: Hash::content_sha256(&bytes),
+                kind,
+                media_type: media_type.to_owned(),
+                bytes,
+                created_at: at.parse().unwrap(),
+            })
+        })
+        .collect()
     }
 
     #[test]
@@ -2042,7 +2099,9 @@ mod evaluator_contract {
         assert_eq!(
             keys,
             BTreeSet::from([
+                "baseline_evidence_hash",
                 "baseline_semantic_hash",
+                "evidence_artifact_refs",
                 "findings",
                 "gate",
                 "policy",
@@ -2152,6 +2211,8 @@ mod evaluator_contract {
                 &graph,
                 registry.metadata(),
                 ValidationPolicy::default(),
+                graph.evidence_hash().unwrap(),
+                vec![],
                 input,
             )
             .unwrap();
@@ -2184,6 +2245,242 @@ mod evaluator_contract {
         );
     }
 
+    // ------------------------------------------------------------------ hotfix 022: evidence inputs
+
+    fn context_with(
+        graph: &Graph,
+        baseline_evidence_hash: Hash,
+        evidence: Vec<ValidationArtifactInput>,
+    ) -> Result<ValidationContext, EvaluationError> {
+        ValidationContext::new(
+            graph,
+            &metadata(),
+            ValidationPolicy::default(),
+            baseline_evidence_hash,
+            evidence,
+            vec![],
+        )
+    }
+
+    fn input(kind: ArtifactKind, media_type: &str, bytes: &[u8]) -> ValidationArtifactInput {
+        ValidationArtifactInput {
+            hash: Hash::content_sha256(bytes),
+            kind,
+            media_type: media_type.to_owned(),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn baseline_evidence_hash_must_be_an_evidence_hash_but_need_not_match() {
+        let graph = plain_graph();
+        for wrong_kind in [Hash::content_sha256(b"x"), Hash::semantic_sha256(b"x")] {
+            assert!(matches!(
+                context_with(&graph, wrong_kind, vec![]),
+                Err(EvaluationError::InvalidContext(_))
+            ));
+        }
+        // A different evidence baseline is a rule's concern, not a context error.
+        let other = Hash::evidence_sha256(b"another baseline");
+        assert_ne!(other, graph.evidence_hash().unwrap());
+        let ctx = context_with(&graph, other.clone(), vec![]).unwrap();
+        assert_eq!(ctx.baseline_evidence_hash, other);
+        assert_eq!(ctx.validate_for(&graph, &metadata()), Ok(()));
+        let report = i0_registry(metadata(), &[])
+            .evaluate_gate(GateId::I0, &graph, &ctx)
+            .unwrap();
+        assert_eq!(report.baseline_evidence_hash, other);
+
+        // The semantic hash stays a strict context invariant.
+        let mut stale = context_with(&graph, other, vec![]).unwrap();
+        stale.baseline_semantic_hash = Hash::semantic_sha256(b"stale");
+        assert!(matches!(
+            stale.validate_for(&graph, &metadata()),
+            Err(EvaluationError::InvalidContext(_))
+        ));
+    }
+
+    #[test]
+    fn validation_artifact_inputs_are_validated_sorted_and_unique() {
+        let graph = plain_graph();
+        let evidence = graph.evidence_hash().unwrap();
+        let invalid = |inputs: Vec<ValidationArtifactInput>| {
+            matches!(
+                context_with(&graph, evidence.clone(), inputs),
+                Err(EvaluationError::InvalidContext(_))
+            )
+        };
+        let good = input(ArtifactKind::SourceOriginal, "text/plain", b"alpha");
+        let mut non_generic = good.clone();
+        non_generic.hash = Hash::evidence_sha256(b"alpha");
+        assert!(invalid(vec![non_generic]));
+        let mut mismatch = good.clone();
+        mismatch.bytes = b"beta".to_vec();
+        assert!(invalid(vec![mismatch]));
+        for media in ["", " text/plain", "text/plain ", "text\tplain"] {
+            let mut bad = good.clone();
+            bad.media_type = media.to_owned();
+            assert!(invalid(vec![bad]), "{media:?}");
+        }
+        assert!(invalid(vec![good.clone(), good.clone()]));
+        assert!(invalid(vec![input(
+            ArtifactKind::Projection,
+            "text/plain",
+            b"p"
+        )]));
+        // Deserialization enforces the same invariants and rejects unknown fields.
+        let value = serde_json::to_value(&good).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ValidationArtifactInput>(value.clone()).unwrap(),
+            good
+        );
+        let mut extra = value.clone();
+        extra["created_at"] = json!("2026-10-03T08:00:00.000000000Z");
+        assert!(serde_json::from_value::<ValidationArtifactInput>(extra).is_err());
+        let mut tampered = value;
+        tampered["bytes"] = json!([1, 2, 3]);
+        assert!(serde_json::from_value::<ValidationArtifactInput>(tampered).is_err());
+
+        // Accepted kinds, in any input order, stored in hash order.
+        let inputs = vec![
+            input(ArtifactKind::SourceOriginal, "text/markdown", b"original"),
+            input(
+                ArtifactKind::SourceExtracted,
+                "application/json",
+                br#"{"text":"x","version":1}"#,
+            ),
+            input(
+                ArtifactKind::EvidenceManifest,
+                "application/json",
+                br#"{"manifest":1}"#,
+            ),
+        ];
+        let mut reversed = inputs.clone();
+        reversed.reverse();
+        let a = context_with(&graph, evidence.clone(), inputs.clone()).unwrap();
+        let b = context_with(&graph, evidence, reversed).unwrap();
+        assert_eq!(a, b);
+        let refs = a.evidence_artifact_refs();
+        let mut expected: Vec<Hash> = inputs.iter().map(|i| i.hash.clone()).collect();
+        expected.sort();
+        assert_eq!(refs, expected);
+        for i in &inputs {
+            assert_eq!(a.evidence_artifact(&i.hash), Some(i));
+        }
+        assert_eq!(a.evidence_artifact(&Hash::content_sha256(b"absent")), None);
+    }
+
+    #[test]
+    fn artifact_conversion_drops_created_at() {
+        let early = evidence_artifacts_at("2026-10-03T08:00:00.000000000Z");
+        let late = evidence_artifacts_at("2031-01-01T00:00:00.000000000Z");
+        assert_eq!(early, late);
+        let value = serde_json::to_value(&early[0]).unwrap();
+        let keys: BTreeSet<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from(["bytes", "hash", "kind", "media_type"])
+        );
+        let refs: Vec<&str> = {
+            let mut r: Vec<&str> = early.iter().map(|i| i.hash.as_str()).collect();
+            r.sort();
+            r
+        };
+        assert_eq!(refs, GOLDEN_EVIDENCE_REFS);
+    }
+
+    #[test]
+    fn gate_report_identifies_the_evidence_inputs() {
+        let report = golden_report();
+        assert_eq!(
+            report.baseline_evidence_hash.as_str(),
+            GOLDEN_BASELINE_EVIDENCE
+        );
+        let refs: Vec<&str> = report
+            .evidence_artifact_refs
+            .iter()
+            .map(Hash::as_str)
+            .collect();
+        assert_eq!(refs, GOLDEN_EVIDENCE_REFS);
+        assert!(report
+            .evidence_artifact_refs
+            .windows(2)
+            .all(|w| w[0] < w[1]));
+
+        let graph = golden_graph();
+        let mut registry = EvaluatorRegistry::new(metadata());
+        bind_gate(&mut registry, GateId::I0, ev_golden, &[]);
+        let report_for = |evidence: Hash, inputs: Vec<ValidationArtifactInput>| {
+            let ctx = ValidationContext::new(
+                &graph,
+                registry.metadata(),
+                policy(&[AGENT_IDENTIFIED], &[AGENT_IDENTIFIED]),
+                evidence,
+                inputs,
+                vec![external_artifact(json!({"ok": true}))],
+            )
+            .unwrap();
+            registry.evaluate_gate(GateId::I0, &graph, &ctx).unwrap()
+        };
+        let golden: Hash = GOLDEN_BASELINE_EVIDENCE.parse().unwrap();
+        let base = report_for(golden.clone(), golden_evidence_artifacts());
+        // Insertion order and acquisition time do not matter.
+        let mut reversed = golden_evidence_artifacts();
+        reversed.reverse();
+        assert_eq!(
+            report_for(golden.clone(), reversed).content_hash(),
+            base.content_hash()
+        );
+        assert_eq!(
+            report_for(
+                golden.clone(),
+                evidence_artifacts_at("2031-01-01T00:00:00.000000000Z")
+            )
+            .content_hash(),
+            base.content_hash()
+        );
+        // Different evidence content or baseline changes the report identity.
+        let mut other = golden_evidence_artifacts();
+        other.pop();
+        other.push(input(
+            ArtifactKind::SourceExtracted,
+            "application/json",
+            br#"{"text":"y","version":1}"#,
+        ));
+        assert_ne!(
+            report_for(golden.clone(), other).content_hash(),
+            base.content_hash()
+        );
+        assert_ne!(
+            report_for(Hash::evidence_sha256(b"other"), golden_evidence_artifacts()).content_hash(),
+            base.content_hash()
+        );
+
+        // Inconsistent evidence identity is rejected on deserialization.
+        let value: Value = serde_json::from_str(GOLDEN_REPORT).unwrap();
+        for mutate in [
+            |v: &mut Value| v["baseline_evidence_hash"] = json!(PROFILE_HASH),
+            |v: &mut Value| {
+                v["evidence_artifact_refs"]
+                    .as_array_mut()
+                    .unwrap()
+                    .reverse()
+            },
+            |v: &mut Value| {
+                v.as_object_mut().unwrap().remove("evidence_artifact_refs");
+            },
+        ] {
+            let mut bad = value.clone();
+            mutate(&mut bad);
+            assert!(serde_json::from_value::<GateReport>(bad).is_err());
+        }
+    }
+
     // ------------------------------------------------------------------ hotfix 019: profile binding
 
     #[test]
@@ -2205,6 +2502,8 @@ mod evaluator_contract {
             &other_profile,
             &registry,
             ValidationPolicy::default(),
+            other_profile.evidence_hash().unwrap(),
+            vec![],
             vec![]
         )));
 
@@ -2355,6 +2654,11 @@ mod evaluator_contract {
                 "Timestamp",
                 "plumb_store",
                 "plumb_inference",
+                "rusqlite",
+                "std::fs",
+                "File::open",
+                "commit(",
+                "branch_head",
             ] {
                 assert!(!source.contains(forbidden), "{name} mentions {forbidden}");
             }

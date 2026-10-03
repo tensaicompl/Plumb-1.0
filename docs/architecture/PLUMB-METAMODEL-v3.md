@@ -326,6 +326,8 @@ output_refs[]
 created_at
 ```
 
+The provenance-producing `Agent` of a `DerivationRecord` node is identified by its node envelope `audit.created_by`, which resolves to an `Agent` node; the activity kind is `kind`. No separate agent field exists on `DerivationRecord`. Evidence acquisition by the pilot importers creates `SourceArtifact` and `EvidenceFragment` nodes only, not `DerivationRecord` or `Agent` nodes.
+
 Kinds:
 
 ```text
