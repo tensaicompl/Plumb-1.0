@@ -3,11 +3,17 @@
 //! no clock and persists nothing; acquisition stores the returned artifacts.
 
 pub mod docx;
+pub mod manifest;
 pub mod md;
 pub mod source;
 pub mod text;
 
 pub use docx::import_docx;
+pub use manifest::{
+    build_evidence_manifest, evidence_manifest_artifact, parse_evidence_manifest,
+    validate_evidence_manifest, EvidenceManifest, EvidenceManifestFragment, EvidenceManifestSource,
+    ManifestError, EVIDENCE_MANIFEST_VERSION,
+};
 pub use md::{import_markdown, table_cells};
 pub use source::{
     source_parse_metadata, ExtractedTextArtifact, FragmentKind, FragmentMetadata, ImportAudit,

@@ -1943,31 +1943,70 @@ mod evaluator_contract {
     }
 
     #[test]
-    fn no_production_rule_evaluator_exists() {
+    fn production_rule_modules_require_explicit_registration() {
+        // Routing only: gate module declarations and registration re-exports, no function
+        // bodies, no rule metadata. Future gate modules may be added beside I0.
         let rules = include_str!("../src/rules/mod.rs");
+        assert!(rules.contains("mod i0;"));
+        assert!(!rules.contains("pub mod i0;"));
+        assert!(rules.contains("pub use i0::register_i0_evaluators;"));
         assert!(!rules.contains("fn "));
-        assert!(!rules.contains("mod "));
-        let registry = metadata();
-        let prefixes: BTreeSet<&str> = registry
+        let metadata_registry = metadata();
+        let prefixes: BTreeSet<&str> = metadata_registry
             .profile()
             .rules
             .iter()
             .map(|r| r.id.split('.').next().unwrap())
             .collect();
-        for rule in &registry.profile().rules {
+        for rule in &metadata_registry.profile().rules {
             assert!(!rules.contains(rule.id.as_str()));
         }
         for prefix in prefixes {
             assert!(!rules.contains(&format!("{prefix}.")), "{prefix}");
         }
-        // The framework itself binds nothing.
-        let fresh = EvaluatorRegistry::new(metadata());
-        assert_eq!(fresh.metadata().required_now_rule_ids().len(), 54);
-        assert!(fresh
+
+        // A fresh registry binds nothing, whatever rule modules are compiled in.
+        let mut registry = EvaluatorRegistry::new(metadata());
+        let required: BTreeSet<String> = registry
             .metadata()
             .required_now_rule_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(required.len(), 54);
+        assert!(required.iter().all(|id| !registry.has_evaluator(id)));
+
+        let i0_rules: BTreeSet<String> = registry
+            .metadata()
+            .gate(GateId::I0)
+            .rule_ids
             .iter()
-            .all(|id| !fresh.has_evaluator(id)));
+            .cloned()
+            .collect();
+        let f1_rules: Vec<String> = registry.metadata().gate(GateId::F1).rule_ids.clone();
+        let missing_i0: BTreeSet<String> = registry
+            .missing_for_gate(GateId::I0)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(missing_i0, i0_rules);
+        assert_eq!(i0_rules.len(), 6);
+
+        // Explicit registration binds exactly I0.
+        plumb_validation::rules::register_i0_evaluators(&mut registry).unwrap();
+        assert!(registry.missing_for_gate(GateId::I0).is_empty());
+        for id in &i0_rules {
+            assert!(registry.has_evaluator(id), "{id}");
+        }
+        for id in required.difference(&i0_rules) {
+            assert!(
+                !registry.has_evaluator(id),
+                "{id} was bound by I0 registration"
+            );
+        }
+        let missing_f1: Vec<&str> = registry.missing_for_gate(GateId::F1);
+        assert_eq!(missing_f1, f1_rules);
+        assert_eq!(missing_f1.len(), 11);
     }
 
     // ------------------------------------------------------------------ GateReport golden (§59)
