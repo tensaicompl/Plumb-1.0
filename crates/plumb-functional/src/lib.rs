@@ -1,9 +1,12 @@
 //! Functional semantics over the PSG. F0.14 provides the one-way functional.yaml v2
 //! compatibility projection (compiler architecture §30); the PSG stays canonical and nothing
-//! is imported back from functional.yaml.
+//! is imported back from functional.yaml. S1.1 compiles S0.4 requirement candidates into
+//! HUMAN_CONFIRM proposals of Proposed requirement and intent nodes (compiler architecture §7).
 
+mod intent;
 pub mod model;
 pub mod project;
+pub mod requirements;
 
 pub use model::{
     codes, ActorEntry, AssumptionEntry, AttributeEntry, CalculationEntry, CalendarEntry,
@@ -16,4 +19,13 @@ pub use model::{
 pub use project::{
     project_functional_v2, validate_against_schema, validate_metadata, ProjectionError,
     FUNCTIONAL_V2_SCHEMA,
+};
+pub use requirements::{
+    build_requirement_classification_request, compile_requirement_candidates,
+    RequirementClassificationContext, RequirementClassificationContextCandidate,
+    RequirementClassificationInference, RequirementClassificationRequest,
+    RequirementClassificationStakeholder, RequirementCompilationAudit, RequirementCompilationError,
+    RequirementCompilationIssue, RequirementCompilationResult, SegmentOrigin,
+    REQUIREMENT_CLASSIFICATION_CONTEXT_VERSION, REQUIREMENT_CLASSIFICATION_OUTPUT_VERSION,
+    REQUIREMENT_CLASSIFICATION_TASK_KIND, SEGMENT_ORIGIN_EXTENSION,
 };

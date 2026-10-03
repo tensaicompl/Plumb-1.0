@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "classifications",
+    "intents"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "classifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_ref",
+          "requirement_kind",
+          "level"
+        ],
+        "properties": {
+          "candidate_ref": {
+            "type": "string",
+            "pattern": "^seg:[0-9a-f]{16}$"
+          },
+          "requirement_kind": {
+            "enum": [
+              null,
+              "functional",
+              "quality",
+              "interface",
+              "data",
+              "security",
+              "operational",
+              "compliance",
+              "transition",
+              "constraint"
+            ]
+          },
+          "level": {
+            "enum": [
+              null,
+              "stakeholder",
+              "system",
+              "software",
+              "subsystem",
+              "component",
+              "interface"
+            ]
+          }
+        }
+      }
+    },
+    "intents": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "candidate_ref",
+              "intent_kind"
+            ],
+            "properties": {
+              "candidate_ref": {
+                "type": "string",
+                "pattern": "^seg:[0-9a-f]{16}$"
+              },
+              "intent_kind": {
+                "const": "goal"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "candidate_ref",
+              "intent_kind",
+              "stakeholder_refs"
+            ],
+            "properties": {
+              "candidate_ref": {
+                "type": "string",
+                "pattern": "^seg:[0-9a-f]{16}$"
+              },
+              "intent_kind": {
+                "const": "need"
+              },
+              "stakeholder_refs": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "candidate_ref",
+              "intent_kind",
+              "name",
+              "description"
+            ],
+            "properties": {
+              "candidate_ref": {
+                "type": "string",
+                "pattern": "^seg:[0-9a-f]{16}$"
+              },
+              "intent_kind": {
+                "const": "concern"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "candidate_ref",
+              "intent_kind",
+              "constraint_category",
+              "strength"
+            ],
+            "properties": {
+              "candidate_ref": {
+                "type": "string",
+                "pattern": "^seg:[0-9a-f]{16}$"
+              },
+              "intent_kind": {
+                "const": "constraint"
+              },
+              "constraint_category": {
+                "enum": [
+                  "business",
+                  "technical",
+                  "technology",
+                  "security",
+                  "data",
+                  "integration",
+                  "operational",
+                  "legal",
+                  "regulatory",
+                  "organizational",
+                  "legacy"
+                ]
+              },
+              "strength": {
+                "enum": [
+                  "mandatory",
+                  "preferred",
+                  "prohibited"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

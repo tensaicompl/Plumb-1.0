@@ -1654,6 +1654,7 @@ dependencies = [
  "jsonschema",
  "plumb-core",
  "plumb-expr",
+ "plumb-import",
  "plumb-inference",
  "plumb-patch",
  "plumb-psg",

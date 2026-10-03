@@ -9,6 +9,7 @@ plumb-psg = { path = "../plumb-psg" }
 plumb-patch = { path = "../plumb-patch" }
 plumb-validation = { path = "../plumb-validation" }
 plumb-inference = { path = "../plumb-inference" }
+plumb-import = { path = "../plumb-import" }
 plumb-expr = { path = "../plumb-expr" }
 serde = { workspace = true }
 serde_json = { workspace = true }
