@@ -207,6 +207,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** No open blocking duplicate finding links two accepted requirements with equivalent obligation semantics.
 - **Pass condition:** No open blocking duplicate finding links two accepted requirements with equivalent obligation semantics.
 - **Waiver:** `decision_required`
+- **Detection note:** The deterministic configured lexical detector identifies unresolved duplicate candidates among same-scope Accepted Requirements; an open finding blocks F1 until governed resolution establishes that the requirements are merged, superseded, waived/declared distinct, or otherwise no longer form an active duplicate pair.
 
 ### `PLUMB.F1.REQ.NO_CONTRADICTION` — Accepted requirements have no unresolved blocking contradiction
 
