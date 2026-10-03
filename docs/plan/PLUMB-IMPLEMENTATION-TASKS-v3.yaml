@@ -1994,11 +1994,14 @@ tasks:
   depends_on:
   - S0.3
   files:
+  - crates/plumb-import/Cargo.toml
+  - crates/plumb-import/src/lib.rs
   - crates/plumb-import/src/segment.rs
   - crates/plumb-import/src/fallback.rs
   - crates/plumb-import/tests/segment.rs
   - prompts/s1-segment-requirements.md
   - schemas/inference/s1-segmentation.schema.json
+  - Cargo.lock
   steps:
   - Create an InferenceRequest for semantic segmentation anchored only to EvidenceFragment IDs and extracted text.
   - Validate inference output against the JSON schema before evaluate uses it.
@@ -2008,20 +2011,176 @@ tasks:
   - Segmentation reads EvidenceFragment.extracted_text, its TextRange and the plumb_import:fragment metadata, and may retrieve the
     exact normalized text through FragmentMetadata.extracted_ref; it does not redefine fragment kinds, and non-requirement is a segmentation
     classification, not an S0.1 FragmentKind.
+  - Stage, boundary and dependencies (Hotfix 025). S0.4 is the plan task ID; the segmentation it implements belongs to compiler stage
+    StageId::S1 (S1 — Intent / Requirement Compiler), so the request stage and the fallback provenance stage are S1, never S0. S0.4
+    implements deterministic request construction, validated-inference consumption, segmentation post-validation, deterministic fallback
+    and fallback provenance construction; it does not implement live provider orchestration, artifact persistence, graph mutation,
+    SemanticPatch or Requirement node creation, proposal acceptance, intake application or branch commit (PLAN/request construction
+    -> ACQUIRE outside this module -> supplied InferenceArtifact or absence -> deterministic evaluation). It reuses the existing plumb-inference
+    InferenceRequest, InferenceArtifact, ProviderPolicy, MockProvider and StageId and defines no competing request, artifact, policy
+    or identity model; the SegmentationRequest wrapper below is the only segmentation-specific request type. crates/plumb-import/Cargo.toml
+    adds exactly jsonschema = { workspace = true } (workspace version 0.18, draft202012 feature, unchanged); Cargo.lock changes only
+    as Cargo requires for that dependency; no other schema validator is added. lib.rs adds pub mod segment and the fallback module
+    and exports E_INTAKE_UNCOVERED, SEGMENTATION_CONTEXT_VERSION, SEGMENTATION_OUTPUT_VERSION, SEGMENTATION_TASK_KIND, SegmentationContext,
+    SegmentationContextFragment, SegmentationRequest, SegmentClassification, SegmentFlag, SegmentCandidate, SegmentGap, SegmentationMode,
+    FallbackReason, SegmentationAudit, SegmentationResult, SegmentationError, build_segmentation_request and evaluate_segmentation;
+    fallback internals need not be public. plumb-inference, plumb-psg and plumb-validation are not modified; if S0.4 requires changing
+    one of them the task blocks.
+  - 'Prompt and schema runtime assets (Hotfix 025). prompts/s1-segment-requirements.md contains exactly: the heading ''# Requirement
+    segmentation''; ''You receive evidence fragments. Each fragment contains:'' with the items ''- fragment_ref: the exact Plumb EvidenceFragment
+    ID'' and ''- text: the exact extracted UTF-8 text''; ''Return only JSON matching the supplied segmentation schema.''; ''Partition
+    every fragment independently into non-overlapping ranges that fully cover its exact UTF-8 bytes.''; ''For every range choose exactly
+    one classification:'' with ''- requirement_candidate — the range expresses a requirement-like statement'' and ''- non_requirement
+    — the range does not express a requirement-like statement''; and ''Rules:'' with ''1. Never combine text from different EvidenceFragments.'',
+    ''2. `start` and `end` are zero-based UTF-8 byte offsets within that fragment''s exact `text`; `end` is exclusive.'', ''3. Every
+    byte of every non-empty fragment must be covered exactly once.'', ''4. Do not rewrite, normalize, paraphrase, summarize or invent
+    source text.'', ''5. Do not output candidate IDs. Plumb derives candidate IDs deterministically.'' and ''6. Do not output explanations
+    or Markdown outside the JSON object.'' (a final newline is allowed and is part of the bytes). schemas/inference/s1-segmentation.schema.json
+    declares $schema https://json-schema.org/draft/2020-12/schema and is exactly: an object with additionalProperties false, required
+    [version, segments], version const 1, segments an array of objects with additionalProperties false, required [fragment_ref, start,
+    end, classification], fragment_ref a string with pattern ^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$, start an integer
+    with minimum 0, end an integer with minimum 1, classification a string with enum [requirement_candidate, non_requirement]; it
+    has no confidence, explanation, candidate_id, source text, requirement kind, modality or normalized statement, and no external
+    $ref. Neither file contains placeholder, to-do or example text: both are production runtime inputs. Production code binds both
+    through include_bytes!/include_str! (no runtime filesystem read). prompt_template_hash and schema_hash are the Generic SHA-256
+    of the exact committed file bytes (no trimming, newline normalization, Markdown parsing, JSON parsing, pretty-printing, RFC 8785
+    canonicalization or compiled-schema hashing). Runtime validation compiles the schema explicitly with Draft::Draft202012, no Draft
+    7 mode and no network resolution. The two files are runtime assets, not supporting specification inputs, and are not added to
+    docs/plan/SUPPORTING-DOCS.sha256.'
+  - 'Segmentation context and request (Hotfix 025). Constants SEGMENTATION_CONTEXT_VERSION: u32 = 1, SEGMENTATION_OUTPUT_VERSION:
+    u32 = 1 and SEGMENTATION_TASK_KIND: &str = "requirement_segmentation" (no other spelling). SegmentationContext { version: u32,
+    fragments: Vec<SegmentationContextFragment> } and SegmentationContextFragment { fragment_ref: Id, text: String }, both deny_unknown_fields;
+    version must be 1 and fragments strictly sorted and unique by fragment_ref; the context has no timestamp, source filename, source
+    kind, FragmentKind, confidence or classification (FragmentKind is used only by the fallback, never in the inference context or
+    its hash). context_hash is the Generic SHA-256 of the RFC 8785 canonical JSON of the context, so it changes with fragment IDs,
+    exact text or the fragment set and is independent of input order, timestamps, FragmentKind and provider execution. SegmentationRequest
+    { request: InferenceRequest, context: SegmentationContext } duplicates no InferenceRequest field; construction validates both
+    and requires request.context_hash to equal the context hash. build_segmentation_request(fragments: &[Node], provider_policy: ProviderPolicy)
+    -> Result<SegmentationRequest, SegmentationError> takes only evidence fragment nodes and the caller-supplied policy (no clock,
+    provider object, store or graph write). Every input must be a baseline-participating (plumb_psg::is_baseline) NodePayload::EvidenceFragment
+    with extracted_text Some and non-empty and valid plumb_import:fragment metadata; a wrong node type, Proposed or Rejected status,
+    missing or empty extracted_text, missing or malformed fragment metadata, or a duplicate fragment ID is a typed SegmentationError;
+    input is never repaired and no store is read. The InferenceRequest is built through InferenceRequest::new with stage StageId::S1,
+    task_kind requirement_segmentation, input_refs [] (no source, candidate, Agent or DerivationRecord IDs), evidence_refs = all context
+    fragment_refs, the context hash, the prompt and schema hashes and the exact caller ProviderPolicy. Production code defines no
+    default provider and hard-codes none (openai, anthropic, claude, gpt, mock, null); tests use provider mock with config {} only
+    as a deterministic fixture. The MockProvider test fixture is registered under the complete SegmentationRequest.request.id (not
+    the context, schema, prompt or fragment hash), and the existing plumb-inference validation requires request_hash == request.id
+    and provider == policy provider.'
+  - 'Candidates (Hotfix 025). SegmentClassification { RequirementCandidate, NonRequirement } with wire strings requirement_candidate
+    and non_requirement, and SegmentFlag { UnassignedText } with wire string unassigned_text, follow the importer closed-vocabulary
+    pattern (ALL, as_str(); unknown or wrong-case values reject). UnassignedText means the deterministic fallback did not identify
+    the text as a requirement candidate and retained it as non-requirement to preserve coverage; it is never set on inference-produced
+    segments. SegmentCandidate { id: Id, fragment_ref: Id, start: u64, end: u64, classification, flags: Vec<SegmentFlag> } (deny_unknown_fields);
+    start/end are zero-based, end-exclusive UTF-8 byte offsets relative to EvidenceFragment.extracted_text, not the source-level TextRange,
+    and a candidate belongs to exactly one fragment (no cross-fragment candidate or merging). id = seg:<first 16 lowercase hex of
+    SHA-256 of the RFC 8785 JSON {fragment_ref, start, end, classification (wire string)}>, excluding flags, provider, model, timestamps,
+    prompt/schema hashes and fallback reason; no ULIDs. A valid candidate has start < end, end <= the fragment text byte length, both
+    offsets on UTF-8 boundaries, the recomputed ID, sorted unique flags, and UnassignedText only with NonRequirement; malformed candidates
+    are not repaired. Result candidates are ordered by fragment_ref, start, end, then classification wire value, independent of model
+    output order and of any HashMap iteration.'
+  - 'Inference consumption and post-checks (Hotfix 025). The schema output carries no IDs or flags; it decodes into internal deny_unknown_fields
+    types SegmentationInferenceOutput { version: u32 (must be 1), segments } and SegmentationInferenceSegment { fragment_ref: Id,
+    start: u64, end: u64, classification }. For a supplied artifact: InferenceArtifact::validate_for(&request) first, then its validated_output
+    is validated against the schema under Draft 2020-12, and only then decoded and used; unvalidated output is never used, and the
+    raw provider response is never read. Fallback is used only when no artifact is supplied (missing_inference), validate_for fails,
+    e.g. wrong request_hash, wrong provider or invalid output hash (invalid_inference_artifact, schema validation not attempted),
+    or schema validation or typed decoding fails (schema_invalid). Output that passes all three but violates a post-check returns
+    the deterministic error and never falls back. Post-checks cover for every requested fragment the complete interval [0, text byte
+    length), which the output must partition exactly, in this order per fragment: the fragment exists in the request (otherwise UnknownFragment),
+    each range is valid with UTF-8-safe boundaries (otherwise InvalidRange), ranges sorted by start/end, overlap or duplicate entries
+    (Overlap; identical entries are not deduplicated), then gaps. An invalid range is never reported as a gap and an overlap never
+    becomes a gap. Gaps produce SegmentationError::IntakeUncovered { gaps: Vec<SegmentGap> } with SegmentGap { fragment_ref: Id, start:
+    u64, end: u64 }, start < end, every gap reported, sorted by fragment_ref, start, end, and code() == Some("E_INTAKE_UNCOVERED")
+    from pub const E_INTAKE_UNCOVERED. SegmentationError also has typed variants at least InvalidInput, UnknownFragment, InvalidRange,
+    Overlap, InferenceConstruction and SchemaCompilation, with no other stable external codes. Inference candidates always have flags
+    []. Inference and fallback results pass one shared deterministic partition validator.'
+  - 'Deterministic fallback (Hotfix 025). The fallback lives in crates/plumb-import/src/fallback.rs, callable from segment.rs and
+    tests, with no provider, schema or clock use. A fragment whose FragmentMetadata.kind is list_item becomes exactly one RequirementCandidate
+    over [0, len) whatever its text, with no marker stripping. Heading, TableRow and Paragraph fragments are split into sentence units
+    with no other special-casing: a terminator is ASCII ''.'', ''?'' or ''!'' followed by end of fragment, ASCII space, tab, LF or
+    CR; the sentence includes the terminator and all immediately following ASCII space, tab, LF and CR bytes, and the next sentence
+    begins at the next non-whitespace byte; leading whitespace belongs to the first sentence; the remainder through the fragment end
+    is one unit even without terminal punctuation. No NLP tokenizer, locale library or LLM is used. A unit containing a modal token
+    is a RequirementCandidate with flags []; any other unit, including a whitespace-only unit, is NonRequirement with flags [unassigned_text].
+    Modal tokens are exactly shall, must, should and can, matched ASCII case-insensitively as whole tokens over [A-Za-z0-9_] (so SHALL,
+    Must, can? and should-be match; cannot, scandal, can2 and _can_ do not); no stemming, Unicode case folding or extra vocabulary
+    (may, will, need, required, shall not, must not), and matching never alters, lowercases or trims stored text. Fallback output
+    fully partitions every fragment (first.start = 0, last.end = len, contiguous, no overlap or gap). FragmentKind gains no sentence,
+    requirement_candidate or non_requirement value, and SegmentCandidate is not a PSG node or NodePayload; S1.1 compiles requirement
+    nodes later.'
+  - 'Results and fallback provenance (Hotfix 025). SegmentationMode { Inference, Fallback } (wire inference, fallback); FallbackReason
+    { MissingInference, InvalidInferenceArtifact, SchemaInvalid } (wire missing_inference, invalid_inference_artifact, schema_invalid),
+    with no provider error string. SegmentationAudit { created_by: Id, created_at: Timestamp } is caller-supplied (no clock or environment
+    read); created_by is the Agent ID that will own the fallback provenance and S0.4 creates no Agent and introduces no Agent ID convention.
+    SegmentationResult { candidates, mode, fallback_reason: Option<FallbackReason>, fallback_derivation: Option<Node> }: inference
+    mode has both None and no LLM DerivationRecord is fabricated (materialize_derivation_record needs persisted acquisition refs owned
+    by ACQUIRE/orchestration); fallback mode has both Some. The fallback DerivationRecord has kind recovery, stage "S1", input_refs
+    the sorted unique union of the input EvidenceFragment IDs and request.id, output_refs the sorted unique candidate IDs, created_at
+    = audit.created_at, and provider, model, prompt_template_hash, schema_hash, context_hash, parameters, raw_response_hash and validated_output_hash
+    all None; its id = drv:<first 16 lowercase hex of SHA-256 of the RFC 8785 JSON of the complete record excluding only id>. It is
+    wrapped in a detached Node with id = record id, revision 1, status Accepted, empty evidence, derivations, standards, tags and
+    extensions, audit created_by/created_at from the SegmentationAudit and updated_by/updated_at None, and Node::validate() passes
+    before return. The node is not inserted into a Graph, patched, persisted or committed; a later layer materializes it and ensures
+    created_by resolves to a baseline Agent. evaluate_segmentation(segmentation_request: &SegmentationRequest, fragments: &[Node],
+    inference: Option<&InferenceArtifact>, audit: &SegmentationAudit) -> Result<SegmentationResult, SegmentationError> takes no provider,
+    store, filesystem, clock or network; it first rebuilds the context from the fragments and requires equality with the request context
+    and its hash (otherwise InvalidInput, never a silently rebuilt request). Equal fragments, policy, audit and inference availability
+    give identical request, candidates and derivation; changing only created_at may change the derivation but never the request ID
+    or the candidates.'
+  - 'Source guard and tests (Hotfix 025). Production segment.rs and fallback.rs contain no ArtifactStore, SqliteArtifactStore, SqliteRevisionStore,
+    rusqlite, std::fs, File::open, SystemClock, Clock::now, Utc::now, Instant::now, reqwest, HTTP client, OpenAI, Anthropic, InferenceProvider::execute,
+    MockProvider, persist_inference_bundle, SemanticPatch, PatchSet, Proposal, Graph mutation, branch, commit( or unsafe; MockProvider
+    appears only in tests/segment.rs. crates/plumb-import/tests/segment.rs (every test name or module selected by the filter segment;
+    zero tests does not satisfy acceptance) covers: schema $schema and Draft 2020-12 compilation, a valid example, and rejection of
+    an unknown field, a missing field, a wrong version, a negative start, end 0, an unknown classification and an invalid fragment
+    ID; the mock valid-inference path (provider executed only in test code, only execution.artifact passed to evaluation; inference
+    mode, full coverage, valid IDs, flags []); missing-inference, invalid-artifact and schema-invalid fallback with their reasons;
+    a schema-valid gap returning IntakeUncovered with the exact sorted gap ranges and code E_INTAKE_UNCOVERED; overlap and duplicate
+    segments; a range cutting a multi-byte UTF-8 character (for example in Zażółć or żądanie) as InvalidRange; an unknown fragment;
+    post-check precedence; canonical candidate order for reordered output; independently computed goldens (Python hashlib and canonical
+    JSON, never the Rust helpers under test) for the prompt hash, the schema hash, one InferenceRequest.id for a fixed context with
+    ProviderPolicy(mock, {}), one seg: ID and one drv: ID; different policies giving different request IDs; input-order determinism;
+    a one-byte text change changing context_hash and request ID; invalid input nodes; the list-item rule without a modal (for example
+    ''- Employee leave balance''); modal matches (shall, SHALL, Must, should, CAN) and non-matches (cannot, scandal, can2, _can_);
+    sentence boundaries (period plus space, question mark plus LF, exclamation mark at end, a period inside a token, no terminal punctuation,
+    multiple spaces, tab, multi-byte text) with exact byte coverage; fallback and inference flags; the Recovery derivation fields,
+    ordering, audit, Accepted status, ID and Node::validate(); no Agent node created and created_by preserved; created_at independence
+    of request and candidate IDs; HR Markdown fallback (full coverage, no overlap, valid IDs, list items as requirement candidates);
+    HR DOCX fallback with HR-001..HR-032 Paragraph fragments each inside a RequirementCandidate range through the modal rule and table
+    rows classified by the same algorithm without hard-coded HR semantics; and full HR fallback determinism. Fixtures and existing
+    S0.1-S0.3 IDs, hashes and classifications are unchanged.'
   tests:
   - cargo test -p plumb-import segment
+  - cargo test -p plumb-import
+  - cargo test --workspace --no-fail-fast
   acceptance:
   - Mock artifact path and fallback path produce valid, non-overlapping candidates; a gap produces the declared intake uncovered error.
+  - An exact StageId::S1 requirement_segmentation InferenceRequest is anchored only to EvidenceFragment IDs and their exact text context,
+    with deterministic prompt, schema, context and request hashes, and Draft 2020-12 schema validation precedes use.
+  - A valid mock artifact yields inference candidates; an absent, request-invalid or schema-invalid artifact yields the deterministic
+    fallback with the matching reason; a schema-valid gap yields E_INTAKE_UNCOVERED, and overlap, invalid UTF-8 boundaries and unknown
+    fragments are rejected without fallback.
+  - Fallback fully partitions every fragment (list items without a modal, exact sentence/modal rule, unselected text non_requirement
+    with unassigned_text) and returns a deterministic detached Recovery DerivationRecord node owned by the caller-supplied agent;
+    no Agent is created, no LLM is called and nothing is persisted.
+  - HR Markdown fallback passes, HR DOCX fallback places HR-001..HR-032 in requirement-candidate ranges despite their Paragraph kind,
+    and the full plumb-import and workspace tests pass.
   source_refs:
   - SRCREF-40D69B8FBA
   - SRCREF-563DAF2FEF
   forbidden:
   - Do not call an LLM from segment evaluation.
   - Do not create a requirement without an EvidenceFragment reference.
+  - Do not persist artifacts, mutate a Graph, create a SemanticPatch, Requirement node or Agent, or materialize an LLM DerivationRecord
+    in S0.4.
+  - Do not modify plumb-inference, plumb-psg or plumb-validation.
   commands:
   - cargo test -p plumb-import segment
+  - cargo test -p plumb-import
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test --workspace --no-fail-fast
   commit_message: 'S0.4: Implement segmentation request/artifact pipeline and deterministic fallback'
 - id: S1.1
   title: Implement Requirement, Need, Goal, Concern and Constraint compilation
