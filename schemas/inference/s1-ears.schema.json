@@ -1,0 +1,490 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "requirements"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requirement_ref",
+          "suggestion"
+        ],
+        "properties": {
+          "requirement_ref": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+          },
+          "suggestion": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "pattern",
+                  "actor",
+                  "trigger",
+                  "condition",
+                  "response"
+                ],
+                "properties": {
+                  "pattern": {
+                    "enum": [
+                      "ubiquitous"
+                    ]
+                  },
+                  "actor": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "start",
+                          "end"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "source_range"
+                          },
+                          "start": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "end": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "semantic_ref",
+                          "text"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "accepted_semantic"
+                          },
+                          "semantic_ref": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "trigger": {
+                    "type": "null"
+                  },
+                  "condition": {
+                    "type": "null"
+                  },
+                  "response": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "start",
+                          "end"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "source_range"
+                          },
+                          "start": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "end": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "semantic_ref",
+                          "text"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "accepted_semantic"
+                          },
+                          "semantic_ref": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "pattern",
+                  "actor",
+                  "trigger",
+                  "condition",
+                  "response"
+                ],
+                "properties": {
+                  "pattern": {
+                    "enum": [
+                      "event_driven"
+                    ]
+                  },
+                  "actor": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "start",
+                          "end"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "source_range"
+                          },
+                          "start": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "end": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "semantic_ref",
+                          "text"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "accepted_semantic"
+                          },
+                          "semantic_ref": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "trigger": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "start",
+                          "end"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "source_range"
+                          },
+                          "start": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "end": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "semantic_ref",
+                          "text"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "accepted_semantic"
+                          },
+                          "semantic_ref": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "condition": {
+                    "type": "null"
+                  },
+                  "response": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "start",
+                          "end"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "source_range"
+                          },
+                          "start": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "end": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "semantic_ref",
+                          "text"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "accepted_semantic"
+                          },
+                          "semantic_ref": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "pattern",
+                  "actor",
+                  "trigger",
+                  "condition",
+                  "response"
+                ],
+                "properties": {
+                  "pattern": {
+                    "enum": [
+                      "state_driven",
+                      "optional_feature",
+                      "unwanted_behavior"
+                    ]
+                  },
+                  "actor": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "start",
+                          "end"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "source_range"
+                          },
+                          "start": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "end": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "semantic_ref",
+                          "text"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "accepted_semantic"
+                          },
+                          "semantic_ref": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "trigger": {
+                    "type": "null"
+                  },
+                  "condition": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "start",
+                          "end"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "source_range"
+                          },
+                          "start": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "end": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "semantic_ref",
+                          "text"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "accepted_semantic"
+                          },
+                          "semantic_ref": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "response": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "start",
+                          "end"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "source_range"
+                          },
+                          "start": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "end": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "semantic_ref",
+                          "text"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "accepted_semantic"
+                          },
+                          "semantic_ref": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,13 +1,20 @@
 //! Functional semantics over the PSG. F0.14 provides the one-way functional.yaml v2
 //! compatibility projection (compiler architecture §30); the PSG stays canonical and nothing
 //! is imported back from functional.yaml. S1.1 compiles S0.4 requirement candidates into
-//! HUMAN_CONFIRM proposals of Proposed requirement and intent nodes (compiler architecture §7).
+//! HUMAN_CONFIRM proposals of Proposed requirement and intent nodes, and S1.2 proposes grounded
+//! EARS rewrites of their statements (compiler architecture §7).
 
+pub mod ears;
 mod intent;
 pub mod model;
 pub mod project;
 pub mod requirements;
 
+pub use ears::{
+    build_ears_request, evaluate_ears_normalization, EarsAcceptedSemantic, EarsContext, EarsError,
+    EarsGrounding, EarsInference, EarsIssue, EarsNormalizationResult, EarsPattern, EarsRequest,
+    EarsRequirementContext, EARS_CONTEXT_VERSION, EARS_OUTPUT_VERSION, EARS_TASK_KIND,
+};
 pub use model::{
     codes, ActorEntry, AssumptionEntry, AttributeEntry, CalculationEntry, CalendarEntry,
     EntityEntry, EntityNfr, EventEntry, FunctionalProjection, FunctionalV2, GlossaryEntry,
