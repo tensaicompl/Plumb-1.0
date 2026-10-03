@@ -1894,9 +1894,66 @@ tasks:
     covers zero records (NOT_APPLICABLE), a valid Agent creator (PASS) and a missing or non-Agent creator (FAIL);
     BASELINE.HASHABLE covers a correct hash with exact manifest (PASS), a wrong expected hash, a missing manifest
     and a stale manifest (FAIL).'
+  - 'Manifest API and errors (Hotfix 023). manifest.rs defines exactly one public error type, ManifestError, with
+    the variants Core(CoreError) for canonicalization/hash failures, InvalidJson { reason } when bytes do not deserialize
+    as the exact EvidenceManifest schema (including unknown fields), NonCanonicalBytes when they deserialize but differ
+    from the RFC 8785 serialization, InvalidGraphEvidence { element_ref: Id, reason } when the graph cannot be represented
+    by the pilot manifest (missing or malformed plumb_import:source_artifacts or plumb_import:fragment, or a fragment/source
+    extracted_ref disagreement), and InvalidManifest { reason } when a manifest violates its own invariants or differs
+    from the manifest rebuilt from the graph; reason strings are diagnostic only. It exposes EVIDENCE_MANIFEST_VERSION,
+    EvidenceManifest, EvidenceManifestSource, EvidenceManifestFragment, ManifestError, EvidenceManifest::validate()
+    (version 1, Evidence evidence_hash, Generic source and fragment hashes, content_hash == original_ref, strictly
+    sorted unique sources and fragments; no normalization or repair), build_evidence_manifest(graph) (baseline-participating
+    SourceArtifact and EvidenceFragment nodes by plumb_psg::is_baseline, the existing Graph::evidence_hash(), refs
+    from the persisted extensions, sorted, version 1, passing validate()), validate_evidence_manifest(manifest, graph)
+    (validate, rebuild, require complete equality, otherwise InvalidManifest), parse_evidence_manifest(bytes) (exact
+    deserialization, validate, require canonical re-serialization equal to the bytes; never canonicalizes caller bytes)
+    and evidence_manifest_artifact(manifest, created_at) (validate, canonical bytes, evidence-manifest / application/json,
+    Generic hash, caller created_at). lib.rs adds pub mod manifest and these exports only. The manifest is not filtered
+    by source kind: every baseline evidence element must carry the pilot artifact-link extensions, and evidence that
+    does not makes build_evidence_manifest return InvalidGraphEvidence. No source kind is guessed from media type
+    or filename and no extension is fabricated. PSG hashing is not changed.'
+  - 'Edge cases (Hotfix 023). A SourceArtifact is built-in only when its source_kind parses exactly (case-sensitive,
+    unnormalized) as plumb_import::SourceKind (markdown, plain_text, docx), through one shared helper used by LOCATABLE,
+    HASH_MATCH and PARSE_STATUS. CONTENT_ADDRESSED checks every baseline SourceArtifact whatever its kind (Generic
+    content_hash and a supplied source-original artifact with that hash and the source''s media type), and additionally
+    requires valid SourceArtifactLinks with original_ref == content_hash only for built-in kinds; a non-built-in source
+    without the extension does not fail for that reason. LOCATABLE and HASH_MATCH evaluate only fragments whose source
+    is built-in and PARSE_STATUS only built-in sources; other elements are ignored for checked and violating targets.
+    An empty applicable set makes CONTENT_ADDRESSED, LOCATABLE, HASH_MATCH and PARSE_STATUS PASS with empty targets
+    and evidence, never NOT_APPLICABLE; only the provenance rule is NOT_APPLICABLE with zero baseline DerivationRecords.
+    BASELINE.HASHABLE always evaluates, also for an empty evidence baseline, in this order: graph.evidence_hash()
+    against baseline_evidence_hash; exactly one evidence-manifest artifact (zero or several fail on cardinality before
+    any parsing; none is ever picked or merged); media type application/json; parse_evidence_manifest; manifest.evidence_hash
+    equal to the graph hash and to baseline_evidence_hash; validate_evidence_manifest. Every ordinary failure there,
+    including a graph that cannot be manifested, is the single violation with targets [], key baseline-evidence-hash
+    and the fixed message; ManifestError is translated, never propagated as an EvaluationError or EvaluatorFailure,
+    and error details never enter the condition key. RuleEvaluation evidence carries no timestamps, paths, random
+    values or error dumps. Several distinct evidence-manifest artifacts remain valid context inputs; their cardinality
+    is the rule''s concern. Evaluators and the manifest builder are read-only and use plumb_psg::is_baseline; if a
+    required PSG API were missing the task blocks rather than editing plumb-psg.'
+  - 'Tests (Hotfix 023). Manifest contract tests are unit tests inside crates/plumb-import/src/manifest.rs in a #[cfg(test)]
+    module whose name contains manifest, so cargo test -p plumb-import manifest runs them (a run of zero tests does
+    not satisfy acceptance); no other test file is added. They cover the deterministic manifest of a valid graph (version,
+    evidence_hash, exact entries and sorting, canonical bytes, artifact kind, media type, Generic hash, created_at
+    independence, canonical parse round trip, validation against the graph) and every negative case (wrong version
+    or hash kinds, content_hash != original_ref, unsorted or duplicate entries, unknown field, malformed and non-canonical
+    JSON, missing or malformed source and fragment extensions, extracted_ref disagreement, wrong evidence_hash, missing,
+    extra or wrong sources and fragments versus the graph). crates/plumb-validation/tests/i0.rs uses the real register_i0_evaluators
+    and evaluate_gate path and covers exact registration of the six rules, PASS and FAIL fixtures for every rule,
+    the empty-set result of all six rules (including an empty graph with an exact empty manifest passing BASELINE.HASHABLE),
+    non-built-in applicability (CONTENT_ADDRESSED still checks such a source; LOCATABLE, HASH_MATCH and PARSE_STATUS
+    ignore it; BASELINE.HASHABLE fails when such evidence cannot be manifested), zero, multiple, wrong-media, malformed,
+    non-canonical and stale manifests, a baseline hash mismatch, missing or wrong-kind original and extracted artifacts,
+    wrong media type, bad range, hash mismatch, missing or malformed parse metadata, a valid Agent creator, a missing
+    creator and a non-Agent creator, the HR corpus states and I0 PASS, I0 missing_for_gate empty with F1 unbound,
+    determinism across insertion order and created_at independence.'
   tests:
-  - cargo test -p plumb-validation i0
   - cargo test -p plumb-import manifest
+  - cargo test -p plumb-import
+  - cargo test -p plumb-validation i0
+  - cargo test -p plumb-validation
+  - cargo test --workspace
   acceptance:
   - All six I0 rule fixtures cover PASS and FAIL (and NOT_APPLICABLE for provenance); the HR source corpus of requirements.md
     and requirements.docx yields PASS for five rules, NOT_APPLICABLE for PPMN.I0.PROVENANCE.AGENT_IDENTIFIED and an
@@ -1907,10 +1964,13 @@ tasks:
   - SRCREF-D0FDFF3BDE
   forbidden: []
   commands:
-  - cargo test -p plumb-validation i0
   - cargo test -p plumb-import manifest
+  - cargo test -p plumb-import
+  - cargo test -p plumb-validation i0
+  - cargo test -p plumb-validation
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test --workspace
   commit_message: 'S0.3: Implement evidence manifest and I0 evaluator functions'
 - id: S0.4
   title: Implement segmentation request/artifact pipeline and deterministic fallback

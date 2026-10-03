@@ -85,6 +85,8 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 
 ## I0 — Evidence corpus is reproducible and addressable.
 
+**Pilot evaluation conventions.** `PLUMB.I0.SOURCE.CONTENT_ADDRESSED`, `PLUMB.I0.EVIDENCE.LOCATABLE`, `PLUMB.I0.EVIDENCE.HASH_MATCH` and `PLUMB.I0.SOURCE.PARSE_STATUS` are universal checks: with no applicable element they pass with no targets. Content addressing applies to every baseline source; locator, hash-replay and parse-status checks apply to the built-in import kinds `markdown`, `plain_text` and `docx` and ignore other source kinds. `PPMN.I0.PROVENANCE.AGENT_IDENTIFIED` is the only rule that is not applicable on an empty set. `PLUMB.I0.BASELINE.HASHABLE` always applies and requires exactly one canonical evidence manifest.
+
 **Rules:** 6 total; **5 blocker(s)** in the default profile.
 
 ### `PLUMB.I0.SOURCE.CONTENT_ADDRESSED` — Every source artifact is content-addressed
