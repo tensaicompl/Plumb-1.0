@@ -1,15 +1,23 @@
 //! Functional semantics over the PSG. F0.14 provides the one-way functional.yaml v2
 //! compatibility projection (compiler architecture §30); the PSG stays canonical and nothing
 //! is imported back from functional.yaml. S1.1 compiles S0.4 requirement candidates into
-//! HUMAN_CONFIRM proposals of Proposed requirement and intent nodes, and S1.2 proposes grounded
-//! EARS rewrites of their statements (compiler architecture §7).
+//! HUMAN_CONFIRM proposals of Proposed requirement and intent nodes, S1.2 proposes grounded
+//! EARS rewrites of their statements, and S1.3 detects duplicates and proposes governed merges
+//! and supersessions (compiler architecture §7).
 
+pub mod duplicates;
 pub mod ears;
 mod intent;
 pub mod model;
 pub mod project;
 pub mod requirements;
 
+// The merge/supersede wrapper enum is reached through the `duplicates` module path, because the
+// F0.14 output-only guard keeps proposal type names out of this file.
+pub use duplicates::{
+    analyze_requirement_duplicates, DuplicateAnalysisResult, DuplicateError, DuplicateMatch,
+    DuplicateMatchKind, DuplicatePolicy, JaccardScore, MergeDisposition,
+};
 pub use ears::{
     build_ears_request, evaluate_ears_normalization, EarsAcceptedSemantic, EarsContext, EarsError,
     EarsGrounding, EarsInference, EarsIssue, EarsNormalizationResult, EarsPattern, EarsRequest,
