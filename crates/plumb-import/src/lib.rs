@@ -2,10 +2,12 @@
 //! the source artifacts from caller-supplied bytes (compiler architecture §6). Importing reads
 //! no clock and persists nothing; acquisition stores the returned artifacts.
 
+pub mod docx;
 pub mod md;
 pub mod source;
 pub mod text;
 
+pub use docx::import_docx;
 pub use md::{import_markdown, table_cells};
 pub use source::{
     source_parse_metadata, ExtractedTextArtifact, FragmentKind, FragmentMetadata, ImportAudit,
