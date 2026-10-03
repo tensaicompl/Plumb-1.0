@@ -1400,7 +1400,10 @@ tasks:
     complete canonical GateReport golden with a fixed content hash and byte-identical repetition; external-artifact determinism (same content
     same ref, insertion-order independence, changed output changes the ref, exact sorted refs in the report, no validator execution); and
     source guards that production F0.13 source contains none of SystemClock, Utc::now, Instant::now, reqwest, InferenceProvider, ArtifactStore,
-    SqliteRevisionStore, plumb_compiler and readiness, and that rules/mod.rs contains no rule ID.'
+    SqliteRevisionStore, plumb_compiler and readiness, and that rules/mod.rs contains no rule ID. The no-production-rule-module assertion
+    describes the completed F0.13 bootstrap checkpoint before stage evaluator implementations begin: at completion of F0.13, src/rules contained
+    no production rule evaluator modules. It is superseded by the explicit-registration guard when S0.3 introduces the first production rule
+    module (Hotfix 024).'
   tests:
   - cargo test -p plumb-validation evaluator
   - cargo test -p plumb-validation
@@ -1813,6 +1816,7 @@ tasks:
   - crates/plumb-validation/src/rules/i0.rs
   - crates/plumb-validation/src/rules/mod.rs
   - crates/plumb-validation/tests/i0.rs
+  - crates/plumb-validation/tests/evaluator.rs
   steps:
   - 'Implement exactly the six I0 rules PLUMB.I0.SOURCE.CONTENT_ADDRESSED, PLUMB.I0.EVIDENCE.LOCATABLE, PLUMB.I0.EVIDENCE.HASH_MATCH,
     PLUMB.I0.SOURCE.PARSE_STATUS, PPMN.I0.PROVENANCE.AGENT_IDENTIFIED and PLUMB.I0.BASELINE.HASHABLE from the supplied
@@ -1948,6 +1952,17 @@ tasks:
     wrong media type, bad range, hash mismatch, missing or malformed parse metadata, a valid Agent creator, a missing
     creator and a non-Agent creator, the HR corpus states and I0 PASS, I0 missing_for_gate empty with F1 unbound,
     determinism across insertion order and created_at independence.'
+  - 'Explicit registration guard (Hotfix 024). S0.3 updates crates/plumb-validation/tests/evaluator.rs to replace
+    the obsolete F0.13 bootstrap test no_production_rule_evaluator_exists with production_rule_modules_require_explicit_registration,
+    without circumventing the old assertion and without touching any other F0.13 test or the framework source. rules/mod.rs
+    is a routing layer only: module declarations (mod i0;, private), registration-helper re-exports (pub use i0::register_i0_evaluators;)
+    and documentation, with no function body, rule ID or rule-prefix literal; the I0 evaluators stay in rules/i0.rs
+    and callers use plumb_validation::rules::register_i0_evaluators. The replacement test checks that routing shape
+    without forbidding future gate modules, that a fresh EvaluatorRegistry::new binds none of the 54 required NOW
+    rules, that I0''s missing evaluators are exactly its metadata rule list before registration and none after register_i0_evaluators,
+    that every required NOW rule outside I0 stays unbound and that F1 still misses exactly its eleven metadata rules.
+    Registration is always explicit: no global, lazy, constructor, inventory, link-time or module-initialization registration
+    and no aggregate register_all/register_now helper; one gate''s registration never binds another gate.'
   tests:
   - cargo test -p plumb-import manifest
   - cargo test -p plumb-import
