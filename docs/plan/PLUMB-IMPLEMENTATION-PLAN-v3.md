@@ -1046,7 +1046,7 @@ A task is complete only when every acceptance statement is true and every test/c
 | 21 | `S1.1` — Implement Requirement, Need, Goal, Concern and Constraint compilation | S1 | NOW | S0.4 |
 | 22 | `S1.2` — Implement EARS normalization as non-authoritative proposal | S1 | NOW | S1.1 |
 | 23 | `S1.3` — Implement duplicate detection and supersession proposals | S1 | NOW | S1.2 |
-| 24 | `S1.4` — Implement deterministic requirement lint pack and corpus benchmark | S1 | NOW | S1.3 |
+| 24 | `S1.4` — Implement deterministic requirement lint pack and benchmark framework | S1 | NOW | S1.3 |
 | 25 | `S1.5` — Implement vocabulary normalization and typed concept proposals | S1 | NOW | S1.4 |
 | 26 | `S1.6` — Implement all F1 validation rules | S1 | NOW | S1.5 |
 | 27 | `S2.1` — Implement entity, attribute and domain-relationship proposals | S2 | NOW | S1.6 |
@@ -2613,28 +2613,32 @@ cargo test --workspace --no-fail-fast
 - Do not apply, commit or persist any proposal; apply_patch is used only for in-memory dry-validation.
 
 
-### `S1.4` — Implement deterministic requirement lint pack and corpus benchmark
+### `S1.4` — Implement deterministic requirement lint pack and benchmark framework
 
 **Phase:** `S1`  
 **Scope:** `NOW`  
 **Dependencies:** `S1.3`  
-**Commit:** `S1.4: Implement deterministic requirement lint pack and corpus benchmark`
+**Commit:** `S1.4: Implement deterministic requirement lint pack and benchmark framework`
 
 **Write allowlist**
 
+- `crates/plumb-lint/Cargo.toml`
 - `crates/plumb-lint/src/lib.rs`
 - `crates/plumb-lint/src/rules.rs`
 - `crates/plumb-lint/src/benchmark.rs`
 - `crates/plumb-lint/tests/rules.rs`
-- `fixtures/lint-corpus/corpus.jsonl`
-- `fixtures/lint-corpus/baseline.json`
+- `Cargo.lock`
 
 **Required actions**
 
 1. Implement the 15 pilot lint rules listed in v2 M2.1 with stable IDs.
-2. Each lint result references exact EvidenceFragment range.
-3. Benchmark precision/recall per rule; if measured precision is below 0.85, effective severity is warn through configuration, not code mutation.
+2. Every lint diagnostic has an exact UTF-8 byte range in the current Requirement.statement. When the current statement is byte-identical to an anchored source statement, Plumb additionally records the exact corresponding EvidenceFragment byte range. When no exact one-to-one evidence mapping exists, evidence_range is None. Plumb never fabricates source offsets for transformed text.
+3. Benchmark precision/recall per rule on an externally supplied human-labelled corpus; if measured precision is below 0.85, the benchmark recommends warn as the effective severity through caller configuration, never by code or registry mutation.
 4. Regression test fails if precision drops by more than 0.03 from baseline.
+5. Scope and corpus boundary (Hotfix 029). S1.4 separates implementation qualification from external empirical corpus qualification. It implements the fifteen deterministic lint rules, typed diagnostics, exact statement spans, honest optional evidence spans, the severity policy, the corpus parser/validator, benchmark metrics, agreement counts, the precision-regression check and the severity recommendation, tested on obviously synthetic data inside tests/rules.rs. It does not create or modify fixtures/lint-corpus/* (corpus.jsonl and baseline.json stay reserved for externally supplied human-labelled qualification data, and their absence must not break cargo test -p plumb-lint), and never fabricates sentences, human labels, annotator identities, agreement, precision, recall or baseline values; until a real corpus is run, Plumb claims only that the benchmark framework is implemented and deterministically tested. The 200-sentence / two-domain / two-human-annotator corpus remains a pilot qualification artifact to be supplied externally; its absence does not block S1.5. crates/plumb-lint/Cargo.toml adds exactly serde_json = { workspace = true } (Cargo.lock only as Cargo requires); no other dependency, and in particular no plumb-functional dependency (plumb-validation must later be able to depend on plumb-lint without a cycle) and no plumb-validation dependency. Outputs are deterministic analysis material (LintDiagnostic, LintRuleEvaluation, LintResult, BenchmarkReport), never Finding, Question or ResolutionDecision nodes, SemanticPatch or Proposal; production code has no filesystem, network, LLM/provider/inference, store, clock or graph capability and parses caller-supplied text only.
+6. Input, ranges and policy (Hotfix 029). The lint subject is the current Requirement.statement (after an accepted S1.2 rewrite it is the canonical wording; the original is never silently substituted). LintInput { requirement_ref, statement, evidence_refs (sorted unique), source_anchor: Option<EvidenceStatementAnchor { fragment_ref, fragment_text, statement_start, statement_end }>, term_context: Option<TermLintContext> } and the other wire structs deny unknown fields. A valid anchor has statement_start < statement_end <= fragment_text byte length on UTF-8 boundaries, fragment_text[statement_start..statement_end] equal to the statement and fragment_ref in evidence_refs, otherwise InvalidSourceAnchor; it is None whenever the current statement differs from the evidence-derived source statement (no partial or fuzzy mapping). LintTextRange { start, end } is a valid UTF-8 range of the statement; LintEvidenceRange { fragment_ref, start, end } is the statement range shifted by statement_start and is emitted only after asserting the fragment bytes equal the statement bytes. An empty or whitespace-only statement is InvalidInput (F1 already has ISO29148.F1.REQ.STATEMENT_PRESENT). LintSeverity is exactly info, warn, error; LintPolicy { severity_overrides: BTreeMap<LintRuleId, LintSeverity> } (default empty) gives the effective severity as override else default, and changes nothing but effective_severity. All input is validated before any rule runs. lint_requirement(input, policy) -> Result<LintResult, LintError> and lint_requirements(inputs, policy) (unique requirement_ref, otherwise InvalidInput; results sorted by requirement_ref) are pure. LintResult { requirement_ref, evaluations (exactly fifteen LintRuleEvaluation { rule_id, applicability: Evaluated | NotEvaluated { reason }, diagnostics }, one per rule), diagnostics }; LintDiagnostic { rule_id, default_severity, effective_severity, requirement_ref, statement_range, evidence_range, message } sorted by rule_id wire value, start, end, message and unique (different rules are never suppressed against each other). LintError covers at least InvalidInput, InvalidPolicy, InvalidSourceAnchor, InvalidTermContext, CorpusParse, CorpusValidation, Benchmark and Core.
+7. The fifteen rules (Hotfix 029). LintRuleId is a closed enum whose ALL lists exactly, in order, with default severities: PLUMB.LINT.REQ.VAGUE_TERM warn, PASSIVE_NO_ACTOR warn, UNMEASURABLE_QUALIFIER error, COMPOUND_MODAL warn, NEGATION_STACK warn, ESCAPE_CLAUSE warn, OPEN_LIST error, PRONOUN_NO_ANTECEDENT warn, UI_PHRASED warn, UNDEFINED_TERM error, EARS_ORDER warn, NUMBER_NO_UNIT error, RELATIVE_TIME_NO_ANCHOR error, MISSING_ACTOR error, AMBIGUOUS_QUANTIFIER warn (all prefixed PLUMB.LINT.REQ.); each LintRuleDefinition { id, description, default_severity } is an immutable registry entry. These are lint codes, not validation-rule metadata. Dictionary phrases match ASCII case-insensitively with word characters [A-Za-z0-9_] and match boundaries outside word characters; lexical tokens are maximal [A-Za-z0-9_] runs with exact byte offsets; the persisted statement is never normalized. Vocabularies are exactly those of Hotfix 029 §§43-82 and may not be expanded: VAGUE_TERM appropriate, adequate, reasonable, suitable, sufficient, acceptable, normal; PASSIVE_NO_ACTOR a modal (shall, should, may, must, can), optional not, be and a participle (lowercase token ending in ed or en, or built, done, given, kept, known, made, read, sent, set, shown, taken, written) with no whole-word by before the next ; . ? ! (range be..participle); UNMEASURABLE_QUALIFIER quickly, promptly, rapidly, efficiently, easily, seamlessly, reliably, user-friendly, intuitive; COMPOUND_MODAL each whole-word shall after the first; NEGATION_STACK each of not, no, never, without after the first in a clause split by ; . ? !; ESCAPE_CLAUSE if possible, where possible, if practical, where practical, as applicable, where applicable, unless otherwise specified, unless otherwise stated, as needed, as necessary; OPEN_LIST etc, etc. (longest match, one diagnostic), and so on, and the like, including but not limited to, including without limitation, among others; PRONOUN_NO_ANTECEDENT it, they, them, he, she in subject position (first token, or for a statement beginning When/While/Where/If with a comma before the first modal the first token after that comma, skipping then); UI_PHRASED an action (click, tap, press, swipe as words; double-click as a phrase) together with a noun (button, link, icon, checkbox, dropdown, menu, tab, screen, page, dialog, window), ranged from the action to the nearest following noun or else from the nearest preceding noun to the action; UNDEFINED_TERM only through a supplied TermLintContext { defined_term_keys, mentions: [TermMention { range, normalized_key }] } (mentions valid, clean, sorted, unique; a diagnostic exactly at each mention whose key is undefined; without context NotEvaluated with reason 'term mention context is unavailable until vocabulary analysis', and no heuristic term discovery); EARS_ORDER a when/while/where/if beginning after the first modal, or a then before the first modal with no preceding if; NUMBER_NO_UNIT a [0-9]+ or [0-9]+.[0-9]+ token not followed by optional whitespace and %, not followed (only ASCII whitespace between, no clause punctuation) by a lexical token, and not preceded by version, release, section, id, code, step or phase; RELATIVE_TIME_NO_ANCHOR within, no later than or no earlier than followed by a number and a time unit (ms, s, sec, second(s), min, minute(s), h, hr, hrs, hour(s), day(s), week(s), month(s), year(s), millisecond(s)) with none of of, after, from, following, upon among the next three tokens (range starter..unit); MISSING_ACTOR the first modal when the text since the nearest preceding , ; : . ? ! (or the start) holds no token other than a, an, the, when, while, where, if, then; AMBIGUOUS_QUANTIFIER some, several, many, few, most, various, multiple, numerous, frequently, occasionally, regularly, often. Messages are the exact Hotfix 029 texts. Only UNDEFINED_TERM may be NotEvaluated; the other fourteen are always Evaluated for a valid statement. The S1.4 undefined-term lint is auxiliary; PLUMB.F1.REQ.TERMS_RESOLVED remains the canonical gate rule for unresolved vocabulary.
+8. Benchmark framework (Hotfix 029). parse_corpus_jsonl(&str) -> Result<LintCorpus, LintError> ignores only completely empty lines and requires the first record to be the metadata object {record_type: metadata, version: 1, corpus_id, annotators: [exactly two distinct clean IDs]} and every later record a sentence {record_type: sentence, id (clean, unique), domain (clean), text, annotations (exactly two, one per metadata annotator, each with sorted unique positive_rule_ids), adjudicated_positive_rule_ids (sorted unique)}; unknown fields, unknown rule IDs, other versions, a second or late metadata record and missing metadata are errors. Adjudicated labels are the human-approved benchmark truth (never derived from the annotators); raw annotations are used only for exact binary agreement counts per sentence and rule (AgreementReport { agreements, disagreements, per_rule: RuleAgreement }), with no kappa, alpha or agreement pass threshold. validate_pilot_qualification_corpus requires exactly 200 sentences, two annotators, at least two domains and the fifteen known rule IDs; synthetic test corpora are not padded to qualify. run_benchmark computes per evaluated rule RuleBenchmarkMetrics { rule_id, true_positive, false_positive, false_negative, true_negative } with explicit applicability; UNDEFINED_TERM is NotEvaluated without corpus term context (version 1 carries none) and is never counted as all-negative. Precision TP/(TP+FP) and recall TP/(TP+FN) are undefined (never 0 or 1) when the denominator is zero and are compared by u128 cross-multiplication, never binary floating point. An evaluated rule with defined precision below 85/100 (0.85 itself does not) gets SeverityRecommendation { rule_id, recommended_severity: warn, reason }; nothing is ever upgraded and the registry is never mutated. BenchmarkReport { corpus_id, sentence_count, metrics, agreement, severity_recommendations } and BenchmarkBaseline { version, corpus_id, corpus_sentence_count, per_rule, agreement } are canonical and serializable but never written by S1.4. compare_to_baseline(report, baseline) requires the same corpus_id and rule set and fails a rule when old minus new precision exceeds 3/100 (exactly 0.03 passes); a rule with undefined precision on either side, or not evaluated, is NotComparable. Tests (cargo test -p plumb-lint) cover the registry snapshot, a positive and negative fixture for every rule (UNDEFINED_TERM also NotEvaluated), the Hotfix 029 examples, UTF-8 spans, exact evidence mapping, absent and bad anchors, severity overrides, batch ordering and the synthetic benchmark (corpus_id synthetic-test, annotators test-a and test-b) with hard-coded confusion counts, agreement counts, the 17/20 and 16/20 precision boundary, undefined precision, the 0.03 regression boundary, NotComparable, parser strictness and 199/201-sentence qualification rejection; no wording anywhere claims a measured lint precision.
 
 **Commands**
 
@@ -2642,19 +2646,32 @@ cargo test --workspace --no-fail-fast
 cargo test -p plumb-lint
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --no-fail-fast
 ```
 
 **Tests**
 
 - `cargo test -p plumb-lint`
+- `cargo test --workspace --no-fail-fast`
 
 **Acceptance**
 
-- All 15 rule fixtures pass and the 200-sentence corpus baseline is committed with annotator agreement metadata.
+- All 15 deterministic lint rules have positive/negative fixtures.
+- Every diagnostic reports an exact current-statement UTF-8 byte range.
+- Exact EvidenceFragment subranges are emitted only when a validated byte-identical source anchor exists.
+- Undefined-term lint is explicitly NotEvaluated without vocabulary context.
+- The strict human-corpus parser, benchmark metrics, agreement calculation, 0.85 severity recommendation and >0.03 precision-regression check are implemented and tested on synthetic labelled data.
+- No 200-sentence human corpus or empirical precision claim is fabricated.
 
 **Supporting references**
 
 - `SRCREF-EE31682F6E` — `docs/plan/merged-implementation-plan-v2.md §7:M2.1-M2.3`
+
+**Task-specific prohibitions**
+
+- Do not create or modify fixtures/lint-corpus/*, and do not fabricate corpus sentences, labels, annotators, agreement, precision, recall or baselines.
+- Do not depend on plumb-functional or plumb-validation, and do not create Finding nodes, SemanticPatch or Proposal.
+- Do not expand the Hotfix 029 rule vocabularies or let the benchmark mutate rules or severities.
 
 
 ### `S1.5` — Implement vocabulary normalization and typed concept proposals
@@ -2713,6 +2730,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `crates/plumb-validation/src/rules/f1.rs`
 - `crates/plumb-validation/src/rules/mod.rs`
 - `crates/plumb-validation/tests/f1.rs`
+- `crates/plumb-validation/Cargo.toml`
+- `Cargo.lock`
 
 **Required actions**
 
@@ -2721,6 +2740,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 3. Rules classified external_standard use the supplied metadata only; code must not claim clause-level compliance.
 4. F1 gate result must include unresolved lint blockers, vocabulary blockers, duplicates and contradictions.
 5. The NO_DUPLICATE_ACCEPTED evaluator consumes the canonical open duplicate-finding state established by the S1 duplicate-analysis contract; it must not introduce a second inconsistent lexical similarity algorithm in plumb-validation (Hotfix 028; plumb-functional depends on plumb-validation, so plumb-validation cannot depend back on it).
+6. PLUMB.F1.REQ.QUALITY_FINDINGS_CLEAR may consume deterministic plumb-lint diagnostics for Accepted Requirements; S1.6 may add plumb-lint = { path = "../plumb-lint" } to crates/plumb-validation/Cargo.toml (Cargo.lock as Cargo requires), reuses plumb-lint and does not clone the fifteen lint algorithms. PLUMB.F1.REQ.TERMS_RESOLVED remains the canonical gate rule for unresolved semantic vocabulary; the S1.4 undefined-term lint is an auxiliary post-glossary diagnostic and may be NotEvaluated when term-mention context is unavailable (Hotfix 029).
 
 **Commands**
 
@@ -4726,6 +4746,7 @@ make all
 2. STANDARDS-ALIGNMENT-REPORT reports Plumb Profile Conformant, Standards Aligned, Interchange Valid and Organization Policy Conformant as separate assertions exactly as rulebook §6.
 3. For NOW scope, Interchange Valid may report only formats actually validated; it must not claim BPMN/DMN/OpenAPI semantic completeness beyond implemented validators.
 4. List every waiver separately.
+5. BUILD-REPORT states 'lint corpus qualification: qualified' only when a valid externally supplied human-labelled corpus and baseline were actually run, and otherwise 'lint corpus qualification: not run — external human-labelled corpus not supplied'; it makes no lint-precision claim without that run (Hotfix 029).
 
 **Commands**
 
