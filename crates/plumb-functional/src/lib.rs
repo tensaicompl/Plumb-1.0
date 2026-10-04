@@ -3,7 +3,7 @@
 //! is imported back from functional.yaml. S1.1 compiles S0.4 requirement candidates into
 //! HUMAN_CONFIRM proposals of Proposed requirement and intent nodes, S1.2 proposes grounded
 //! EARS rewrites of their statements, and S1.3 detects duplicates and proposes governed merges
-//! and supersessions (compiler architecture §7).
+//! and supersessions, and S1.5 analyzes span-grounded vocabulary (compiler architecture §7).
 
 pub mod duplicates;
 pub mod ears;
@@ -11,6 +11,8 @@ mod intent;
 pub mod model;
 pub mod project;
 pub mod requirements;
+pub mod vocabulary;
+mod vocabulary_exceptions;
 
 // The merge/supersede wrapper enum is reached through the `duplicates` module path, because the
 // F0.14 output-only guard keeps proposal type names out of this file.
@@ -43,4 +45,14 @@ pub use requirements::{
     RequirementCompilationIssue, RequirementCompilationResult, SegmentOrigin,
     REQUIREMENT_CLASSIFICATION_CONTEXT_VERSION, REQUIREMENT_CLASSIFICATION_OUTPUT_VERSION,
     REQUIREMENT_CLASSIFICATION_TASK_KIND, SEGMENT_ORIGIN_EXTENSION,
+};
+pub use vocabulary::{
+    analyze_vocabulary, build_vocabulary_request, normalize_vocabulary_term,
+    VocabularyAnalysisResult, VocabularyAudit, VocabularyConflict, VocabularyContext,
+    VocabularyCooccurrence, VocabularyError, VocabularyGroundedRange, VocabularyInference,
+    VocabularyIssue, VocabularyLintContext, VocabularyMention, VocabularyOrigin,
+    VocabularyOriginMention, VocabularyPolicy, VocabularyRequest, VocabularyRequirementContext,
+    VocabularyTermCandidate, PILOT_VOCABULARY_LANGUAGE, VOCABULARY_CONTEXT_VERSION,
+    VOCABULARY_NORMALIZATION_VERSION, VOCABULARY_ORIGIN_EXTENSION, VOCABULARY_OUTPUT_VERSION,
+    VOCABULARY_TASK_KIND,
 };

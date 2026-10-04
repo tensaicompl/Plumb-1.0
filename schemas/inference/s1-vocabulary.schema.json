@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "mentions"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "mentions": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "requirement_ref",
+              "start",
+              "end",
+              "concept_kind",
+              "definition"
+            ],
+            "properties": {
+              "requirement_ref": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "concept_kind": {
+                "type": "null"
+              },
+              "definition": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "requirement_ref",
+              "start",
+              "end",
+              "concept_kind",
+              "definition"
+            ],
+            "properties": {
+              "requirement_ref": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "concept_kind": {
+                "enum": [
+                  "object_type",
+                  "fact_type",
+                  "value_type",
+                  "role",
+                  "other"
+                ]
+              },
+              "definition": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "requirement_ref",
+                      "start",
+                      "end"
+                    ],
+                    "properties": {
+                      "requirement_ref": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+                      },
+                      "start": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "end": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

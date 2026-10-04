@@ -1656,6 +1656,7 @@ dependencies = [
  "plumb-expr",
  "plumb-import",
  "plumb-inference",
+ "plumb-lint",
  "plumb-patch",
  "plumb-psg",
  "plumb-validation",
