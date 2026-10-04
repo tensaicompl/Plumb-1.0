@@ -175,6 +175,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** At least one evidenced_by/derived_from path reaches EvidenceFragment, or the requirement carries an explicit human-origin ResolutionDecision.
 - **Pass condition:** At least one evidenced_by/derived_from path reaches EvidenceFragment, or the requirement carries an explicit human-origin ResolutionDecision.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** Canonical `Node.evidence` is direct grounding equivalent to a direct `evidenced_by` provenance relationship for this rule; redundant edge materialization is not required. Accepted `evidenced_by` edges, cycle-protected Accepted `derived_from` paths to an Accepted EvidenceFragment and a governed `human_requirement_origin` decision also ground a requirement.
 - **Typical remediation:** Attach source evidence or record the requirement as an explicit human-origin decision.
 
 ### `ISO29148.F1.REQ.LINEAGE` — Requirements have intent lineage
@@ -186,6 +187,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Requirement addresses/refines/decomposes from at least one Goal, Need, Concern, parent Requirement, or explicit origin decision.
 - **Pass condition:** Requirement addresses/refines/decomposes from at least one Goal, Need, Concern, parent Requirement, or explicit origin decision.
 - **Waiver:** `profile_allow`
+- **Pilot evaluation note:** Accepted stakeholder-level requirements are treated as possible roots and excluded. The representable pilot lineage forms are: `addresses` to an Accepted Goal or Concern, `refines` to an Accepted parent Requirement, an incoming `decomposes_to` from an Accepted parent Requirement, `derived_from` to an Accepted Need, Goal or Concern (the representable Need form), or a governed `human_requirement_origin` decision. Source provenance such as `plumb_functional:segment_origin` is not intent lineage.
 
 ### `PLUMB.F1.REQ.TYPE_KNOWN` — Requirement kind and level are known
 
@@ -196,6 +198,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** requirement_kind and level are set to registered values.
 - **Pass condition:** requirement_kind and level are set to registered values.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** The typed v3 `RequirementKind` and `RequirementLevel` enums make unknown values structurally unrepresentable in a valid PSG, so every Accepted Requirement satisfies this rule.
 - **Typical remediation:** Classify as functional, quality, interface, constraint, data, security, etc., and set stakeholder/system/software/interface level.
 
 ### `PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED` — Accepted requirement set has no unresolved semantic duplicates
@@ -218,6 +221,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** No open blocking conflict finding exists between accepted requirements in the same scope.
 - **Pass condition:** No open blocking conflict finding exists between accepted requirements in the same scope.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** The evaluator checks current open contradiction Finding material; contradiction discovery is an upstream concern and is not performed by validation.
 
 ### `PLUMB.F1.REQ.TERMS_RESOLVED` — Requirement terms needed for interpretation resolve to concepts
 
@@ -228,6 +232,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** All terms classified as semantic dependencies resolve to accepted Term/Concept nodes or are explicitly declared external identifiers.
 - **Pass condition:** All terms classified as semantic dependencies resolve to accepted Term/Concept nodes or are explicitly declared external identifiers.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** Validation consumes neutral F1 vocabulary dependency input (normalized key, current-statement range and resolution) produced upstream; each dependency resolves to an Accepted Term, an Accepted Concept or a governed external identifier decision, and active vocabulary conflict findings also fail the rule. Validation performs no second normalization.
 
 ### `PLUMB.F1.REQ.MODALITY_EXPLICIT` — Normative requirement modality is explicit
 
@@ -238,6 +243,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Requirement obligation strength is classified and contradictions in modality are absent.
 - **Pass condition:** Requirement obligation strength is classified and contradictions in modality are absent.
 - **Waiver:** `profile_allow`
+- **Pilot evaluation note:** The typed modality must be explicitly and consistently present in the current statement under the exact pilot lexical contract: shall, shall not, should and may are the supported readings, and must, can, cannot, should not and may not are unsupported.
 
 ### `PLUMB.F1.REQ.CRITERIA_FOR_BEHAVIOR` — Behavioral requirements have acceptance criteria or executable semantics
 
@@ -248,6 +254,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Requirement has AcceptanceCriterion, specified_by links, or an explicit deferred-verification decision.
 - **Pass condition:** Requirement has AcceptanceCriterion, specified_by links, or an explicit deferred-verification decision.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** The NOW representation is an Accepted AcceptanceCriterion `derived_from` the Requirement, a Requirement `specified_by` an Accepted Operation, Process, Rule or QualityScenario, or a governed `deferred_verification` decision; no relation is invented. The pilot scope is functional, interface and security requirements.
 
 ### `PLUMB.F1.REQ.QUALITY_FINDINGS_CLEAR` — No unresolved high-severity requirement-quality findings
 
@@ -258,6 +265,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** All requirement-quality findings marked blocker/error by active profile are resolved or validly waived.
 - **Pass condition:** All requirement-quality findings marked blocker/error by active profile are resolved or validly waived.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** plumb-lint Error diagnostics are high severity; Warn and Info are non-blocking. The UNDEFINED_TERM lint is excluded from this rule because TERMS_RESOLVED is canonical for vocabulary.
 
 ### `PLUMB.F1.REQ.SUPERSEDED_EXCLUDED` — Superseded requirements do not count as active obligations
 
@@ -268,6 +276,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Superseded requirements are excluded from gate scope, coverage denominators and generated contracts.
 - **Pass condition:** Superseded requirements are excluded from gate scope, coverage denominators and generated contracts.
 - **Waiver:** `forbidden`
+- **Pilot evaluation note:** A requirement targeted by an Accepted `supersedes` relation while still Accepted is invalid active scope; the governed supersession transition marks it Superseded.
 
 ## F2 — Functional/domain/authorization semantics are internally coherent.
 
