@@ -816,6 +816,8 @@ data_classification
 
 The owning entity is the canonical `has_attribute` relation (Entity -> Attribute), not a payload field.
 
+`Attribute.data_classification` remains `Option<String>` in the core PSG. The `plumb:software:2026.1` pilot S2.3 profile emits only `pii`, `financial` and `confidential`. `None` means unresolved. The string `"none"` is not an S2.3 PSG classification; it is used only by the legacy functional-v2 projection when the PSG value is `None` (Hotfix 036).
+
 ### 8.7 `DomainRelationship`
 
 Required:
@@ -2649,7 +2651,7 @@ This section fixes the Rust/JSON binding of every `NodePayload` variant (86 vari
 | `VerificationKind` | `VerificationObligation.verification_kind` | `test`, `scenario`, `analysis`, `inspection`, `review`, `demonstration`, `formal_check`, `architecture_check`, `security_check` |
 | `ScenarioRunResult` | `ScenarioRun.result` | `pass`, `fail`, `undecidable` |
 
-**Fields that remain `String`** (no closed authoritative vocabulary yet; optionality per the metamodel): `SourceArtifact.source_kind`, `SourceArtifact.classification`, `Finding.family`, `Finding.status`, `Question.status`, `Assumption.status`, `Stakeholder.stakeholder_kind`, `AcceptanceCriterion.criterion_kind`, `Term.status`, `Attribute.value_type`, `Attribute.data_classification`, `DomainRelationship.relationship_kind`, `DomainRelationship.cardinality_from`, `DomainRelationship.cardinality_to`, `DomainRelationship.ownership`, `Operation.idempotency`, `Operation.transaction_semantics`, `Process.process_kind`, `DecisionTable.hit_policy`, `Calculation.result_type`, `Calculation.rounding`, `Scenario.confirmation_status`, `Principal.principal_kind`, `ResourceScope.scope_kind`, `Measure.measure_type`, `Measure.aggregation`, `ArchitectureDecision.status`, `Technology.technology_kind`, `DataSchema.schema_kind`, `Migration.migration_kind`, `TestExecution.result`, `TestReceipt.result`, `ArchitectureCheck.result`, `CoverageRecord.coverage_kind`, `CoverageRecord.status`.
+**Fields that remain `String`** (no core Rust closed vocabulary; an active profile may constrain the allowed String values without changing serialization, as the pilot profile does for `Attribute.data_classification` per §8.6; optionality per the metamodel): `SourceArtifact.source_kind`, `SourceArtifact.classification`, `Finding.family`, `Finding.status`, `Question.status`, `Assumption.status`, `Stakeholder.stakeholder_kind`, `AcceptanceCriterion.criterion_kind`, `Term.status`, `Attribute.value_type`, `Attribute.data_classification`, `DomainRelationship.relationship_kind`, `DomainRelationship.cardinality_from`, `DomainRelationship.cardinality_to`, `DomainRelationship.ownership`, `Operation.idempotency`, `Operation.transaction_semantics`, `Process.process_kind`, `DecisionTable.hit_policy`, `Calculation.result_type`, `Calculation.rounding`, `Scenario.confirmation_status`, `Principal.principal_kind`, `ResourceScope.scope_kind`, `Measure.measure_type`, `Measure.aggregation`, `ArchitectureDecision.status`, `Technology.technology_kind`, `DataSchema.schema_kind`, `Migration.migration_kind`, `TestExecution.result`, `TestReceipt.result`, `ArchitectureCheck.result`, `CoverageRecord.coverage_kind`, `CoverageRecord.status`.
 
 **`EvidenceLocator`** (`EvidenceFragment.locator`) is `#[serde(tag = "kind", content = "data")]` with exactly these variants (tag strings equal the variant names); nested locator objects reject unknown fields, and only structural validation happens at this layer:
 
