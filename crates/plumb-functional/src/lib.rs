@@ -13,7 +13,10 @@
 //! decision tables.
 //! S2.7 proposes grounded Operations with typed relations, Outcomes and Events over a closed
 //! scope.
+//! S2.8 compiles explicit structured authorization semantics and analyzes role hierarchy and
+//! static separation of duty.
 
+pub mod authorization;
 pub mod calculation;
 pub mod data_class;
 pub mod decision_table;
@@ -33,6 +36,14 @@ mod vocabulary_exceptions;
 
 // The merge/supersede wrapper enum is reached through the `duplicates` module path, because the
 // F0.14 output-only guard keeps proposal type names out of this file.
+pub use authorization::{
+    accepted_role_hierarchy_cycles, accepted_separation_analysis, analyze_authorization,
+    authorization_facts, effective_security_roles, role_hierarchy_cycles, separation_analysis,
+    AuthorizationAnalysisResult, AuthorizationAudit, AuthorizationDisposition, AuthorizationDraft,
+    AuthorizationError, AuthorizationFacts, AuthorizationIssue, PermissionDraft,
+    PolicyConditionDraft, PrincipalDraft, RoleAssignmentDraft, RoleInheritanceDraft,
+    SecurityRoleDraft, SeparationAnalysis, SeparationConstraintDraft, StaticSodViolation,
+};
 pub use calculation::{
     analyze_calculation_cycles, analyze_calculations, build_calculation_request,
     default_field_binding, default_root_binding, evaluate_calculation,
