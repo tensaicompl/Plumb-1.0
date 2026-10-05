@@ -9,8 +9,12 @@
 //! S2.2 proposes grounded States, triggered Transitions and unqualified Invariants
 //! (compiler architecture §8).
 //! S2.3 classifies Accepted Attributes from a versioned dictionary and inference.
+//! S2.6 qualifies grounded calculations over explicit PlumbExpr scopes and analyzes typed
+//! decision tables.
 
+pub mod calculation;
 pub mod data_class;
+pub mod decision_table;
 pub mod domain;
 pub mod duplicates;
 pub mod ears;
@@ -25,12 +29,24 @@ mod vocabulary_exceptions;
 
 // The merge/supersede wrapper enum is reached through the `duplicates` module path, because the
 // F0.14 output-only guard keeps proposal type names out of this file.
+pub use calculation::{
+    analyze_calculation_cycles, analyze_calculations, build_calculation_request,
+    default_field_binding, default_root_binding, evaluate_calculation,
+    qualify_accepted_calculation, CalculationBindingExposure, CalculationError, CalculationIssue,
+    CalculationScope, CalculationScopeBinding, CALCULATION_CALENDAR_SYMBOL,
+    CALCULATION_CONTEXT_VERSION, CALCULATION_ORIGIN_EXTENSION, CALCULATION_OUTPUT_VERSION,
+    CALCULATION_TASK_KIND,
+};
 pub use data_class::{
     analyze_data_classification, build_data_class_request, dictionary_classification,
     DataClassAnalysisResult, DataClassAttributeContext, DataClassConflict, DataClassContext,
     DataClassDictionaryHit, DataClassError, DataClassInference, DataClassIssue, DataClassRequest,
     DataClassSource, PilotDataClass, DATA_CLASS_CONTEXT_VERSION, DATA_CLASS_DICTIONARY,
     DATA_CLASS_DICTIONARY_VERSION, DATA_CLASS_OUTPUT_VERSION, DATA_CLASS_TASK_KIND,
+};
+pub use decision_table::{
+    analyze_decision_table, DecisionCoverage, DecisionTableAnalysis, DecisionTableSpec,
+    MAX_COVERAGE_WITNESSES, MAX_FINITE_DECISION_POINTS,
 };
 pub use domain::{
     analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,
