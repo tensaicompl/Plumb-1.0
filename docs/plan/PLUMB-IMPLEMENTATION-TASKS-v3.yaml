@@ -3859,6 +3859,7 @@ tasks:
   depends_on:
   - S2.5
   files:
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/calculation.rs
   - crates/plumb-functional/src/decision_table.rs
   - crates/plumb-functional/tests/calculation.rs
@@ -3866,28 +3867,134 @@ tasks:
   - prompts/s2-calculation.md
   - schemas/inference/s2-calculation.schema.json
   steps:
-  - Calculation inference returns PlumbExpr proposal plus target/result metadata; evaluate typechecks before proposal can be accepted.
-  - Detect undefined input, unit mismatch and calculation cycles deterministically.
-  - DecisionTable implements typed input/output columns, rows, default and hit policy.
-  - Implement overlap and completeness checks for boolean/enumeration domains and analyzable numeric intervals.
-  - 'Hotfix 038 forward note. S2.6 consumes S2.5 rather than duplicating it: Calculation.expression parses through the S2.4 parser
-    and type-checks through an S2.5 TypeEnv; Calculation.rounding, when present, uses the canonical S2.5 RoundingSpec string and
-    no second rounding vocabulary or parser; calculation evaluation uses the S2.5 evaluator and a CalendarRef resolves into the
-    caller''s CalendarProvider; no second arithmetic, unit or rounding engine is implemented. A Quantity(U) result must agree
-    with Calculation.unit == U, and a scalar result must not silently acquire a Calculation unit; the exact finding and proposal
-    behavior remains S2.6''s responsibility.'
+  - Scope (Hotfix 040). S2.6 implements calculation inference, the PSG-to-PlumbExpr calculation scope adapter, deterministic calculation
+    qualification, dependency and cycle analysis, Calculation proposals and a deterministic evaluation helper, plus typed DecisionTable
+    structure, overlap and coverage analysis, as specified in the compiler architecture section 'Pilot calculations and decision
+    tables (S2.6, Hotfix 040)'. It emits no F2 Finding (S2.10 owns PLUMB.F2.CALC.TYPECHECK, PLUMB.F2.CALC.NO_CYCLE, PLUMB.F2.TIME.CALENDAR_DEFINED,
+    DMN.F2.TABLE.NO_OVERLAP and DMN.F2.TABLE.COVERAGE), restores no v2 G_* code, adds no RelationKind (calculation dependencies
+    are analysis material, and uses_calculation stays an S2.7 relation), and does no S2.7 work. The Calculation, Calendar and
+    DecisionTable payloads and the metamodel are unchanged; plumb-functional already depends on plumb-expr, so no Cargo file changes.
+    lib.rs adds the modules and selected exports without the exact token Proposal (F0.14 guard).
+  - 'Calculation scope (Hotfix 040). CalculationScope {bindings: [CalculationScopeBinding {node_ref, symbol: String, exposure:
+    Root | Field {owner_ref}}], calendar_refs} is explicit and canonically ordered (Root before Field, then owner_ref, symbol,
+    node_ref). Every symbol must pass the exact S2.4 Symbol constructor; PSG names are never rewritten (no case conversion, whitespace
+    stripping, hyphen replacement, NFKC or S1.5 normalization, no ID-derived alias). A Root binding names an Accepted Entity (Ty::Ref(entity.id)),
+    Attribute (map_pilot_value_type of its value_type and unit, enum identity Attribute.id with its exact enum_values, missing
+    or empty members UnsupportedInputType) or Calculation (its result_type and unit through the same mapper); a Field binding
+    names an Accepted Attribute whose canonical Accepted has_attribute owner is owner_ref and populates that Entity''s Ref field
+    schema; a Calculation cannot be a Field. One Attribute may have both a Root and a Field binding. Exact duplicates, two Root
+    bindings with one symbol and two Field bindings with one owner and symbol are rejected. The root symbol calendar (CALCULATION_CALENDAR_SYMBOL)
+    is reserved: no explicit Root binding may use it (ReservedSymbol), though a Field named calendar is allowed. Every calendar_refs
+    entry must be a unique Accepted Calendar. The helpers default_root_binding and default_field_binding succeed only when the
+    exact payload name already is a valid non-reserved Symbol, otherwise UnbindablePayloadName; payload names that are not symbols
+    are valid PSG labels and simply need explicit bindings.'
+  - 'Calendar binding (Hotfix 040). Calculation.calendar_ref (or a candidate''s proposed calendar_ref) is the only source of the
+    reserved calendar root. For calendar_ref = Some(C) resolving to an Accepted Calendar, the S2.5 TypeEnv gets calendar_ref_type
+    = C and calendar -> Ty::Ref(C), and evaluation injects calendar = RefValue {type_ref: C, value_ref: C, fields: {}} (a conflicting
+    caller calendar root is a reserved-binding conflict); no synthetic calendar type ID, name, region, time-zone, holiday-source
+    or ID-text derivation exists. Without calendar_ref the root is unbound. A working_days call requires calendar_ref = Some(Accepted
+    Calendar), otherwise CalendarRequired or CalendarUnresolved; days_between does not; an unused calendar_ref is not rejected
+    and implies no business-time semantics. The canonical Calendar payload is not converted into a runtime calendar: evaluation
+    always receives an injected CalendarProvider, and no holiday, holiday_source or time-zone interpretation happens.'
+  - 'Inference (Hotfix 040). CALCULATION_CONTEXT_VERSION = 1, CALCULATION_OUTPUT_VERSION = 1, CALCULATION_TASK_KIND = calculation_analysis,
+    stage S2. build_calculation_request(graph, target_requirement_refs, scope, provider_policy) takes explicit Proposed or Accepted
+    target Requirements ({requirement_ref, status, statement}) and the validated scope: each binding becomes an available input
+    {node_ref, symbol, exposure, owner_ref, node_type, expression type}, each allowed Calendar {calendar_ref, time_zone, region};
+    there is no project-wide or name-searched context, the prompt and schema bytes are hashed into the request, and no provider
+    runs. Output {version, calculations: [{name_range, expression, expression_evidence, result_type, unit, rounding, calendar_ref}]}
+    (Draft 2020-12, additionalProperties false everywhere, result_type exactly String, Int, Bool, Date, DateTime or Decimal(0)..Decimal(28),
+    no Enum); the model returns no input refs, dependencies, AST, type, node ID, finding, question or prose. The name is the trimmed
+    exact substring of name_range (UTF-8 boundaries, in range, non-empty, no control characters; it need not be a Symbol); expression
+    evidence is one or more unique valid ranges, canonically sorted. The expression is stored as unparse(parse(expression)) through
+    S2.4. Without inference the analysis succeeds with InferenceUnavailable and no proposal; malformed inference is an error.'
+  - 'Qualification (Hotfix 040). Plumb derives the used bindings from the parsed AST: a root identifier records its Root binding,
+    a dotted identifier its Entity Root and Attribute Field bindings, contextual enum members and the reserved calendar record
+    nothing, and any other unresolved root is UndefinedInput. The actual type (S2.5 typecheck) must match the declared result
+    type and unit: Int needs Int; Decimal(n) accepts Int or Decimal(m <= n); String, Bool, Date and DateTime need the same type;
+    Quantity(U) needs Quantity(U); no scalar gains a unit, no quantity loses one, no conversion. Rounding, when present, parses
+    through the S2.5 RoundingSpec and applies only to Decimal or Quantity results (final value only, unit preserved); elsewhere
+    it is RoundingNotApplicable. Qualification material exposes parse, scope, actual and expected types, undefined inputs, used
+    bindings, calculation dependencies, rounding, calendar and cycle status, with typed categories InvalidGrounding, InvalidName,
+    InvalidScope, ReservedSymbol, UnbindablePayloadName, ScopeBindingConflict, ScopeUnavailable, UnexpectedScopeOverride, StaleScopeBinding,
+    UnknownInputRef, UnsupportedInputType, UndefinedInput, ParseError, TypeCheckError, ResultTypeMismatch, UnitMismatch, InvalidRounding,
+    RoundingNotApplicable, CalendarRequired, CalendarUnresolved, ExistingCalculationConflict and InferenceUnavailable (none is
+    a rule ID). The evaluation helper rebuilds the TypeEnv from the bindings, injects the calendar, evaluates with plumb_expr::eval
+    and applies final rounding with plumb_expr::round_decimal; evaluation is not acceptance.'
+  - Origin, accepted qualification and cycles (Hotfix 040). Proposals carry the extension plumb_functional:calculation_origin
+    {name_range, expression_evidence, used_bindings} with exactly the canonical used bindings (not every available binding, and
+    never calendar). qualify_accepted_calculation(graph, calculation_ref, optional override) replays the TypeEnv of an origin-bearing
+    Accepted Calculation from origin.used_bindings and payload.calendar_ref; a binding now naming a missing, non-Accepted or wrong-type
+    node, the wrong owner or an incompatible type is StaleScopeBinding, and an override for such a node is UnexpectedScopeOverride.
+    An Accepted Calculation without a valid S2.6 origin requires an explicit caller scope override, otherwise ScopeUnavailable.
+    A dependency A -> B exists when A uses a Root binding naming Accepted Calculation B; over Accepted Calculations, self-cycles
+    and multi-node strongly connected components are reported as sorted ID vectors in sorted order, and a calculation whose scope
+    is unavailable is reported as incomplete rather than guessed.
+  - 'Proposals (Hotfix 040). Calculation ID calculation:<first 16 hex of SHA-256(RFC 8785 {project_id, name, node_type: calculation})>.
+    A candidate is proposed only when grounding, name, parse, scope, symbol resolution, type check, declared result type and unit,
+    rounding and required calendar linkage are valid, the deterministic ID does not conflict and the patch dry-runs in memory.
+    The proposal adds a Proposed revision-1 Calculation {name, expression (canonical), result_type, unit, rounding, calendar_ref,
+    examples: None} with evidence the sorted union of the grounding Requirements'' evidence, stage S2, Semantic, HumanConfirm,
+    confidence None and the inference derivation ref only. An identical Proposed node is an idempotent replay, an identical Accepted
+    node is ExistingEquivalent, and different content at the ID is ExistingCalculationConflict; no ReplacePayload, merge or supersession.'
+  - 'Decision tables (Hotfix 040). DecisionTable inference and persistence are out of scope: there is no decision-table prompt
+    or schema, no authoritative HR table and no frozen canonical encoding of DecisionTable.inputs, outputs or rows, so no encoding
+    is invented and no PSG DecisionTable proposal is produced; the deliverable is a typed analysis API over DecisionType {Bool,
+    Enum {members}, Int, Decimal {scale}} columns (numeric input columns may declare a finite NumericDomain {lower, upper}), input
+    cells (Bool: Any, true, false; Enum: Any or a non-empty sorted EnumSet of declared members; numeric: Any or NumericInterval
+    {lower, upper} of optional NumericBound {value, inclusive}), single literal output cells, rows, an optional complete default
+    output and hit policy exactly UNIQUE or FIRST (anything else UnsupportedHitPolicy). Structure checks reject row arity mismatches,
+    unknown or empty enum sets, InvalidInterval (lower > upper) and EmptyInterval (equal bounds not both inclusive); String, Date,
+    DateTime, Quantity, Duration, Ref and List inputs are unsupported. Int intervals are discrete and Decimal intervals continuous
+    and exact, with no floats. Two rows overlap iff every input column intersects; overlaps are sorted (left_row < right_row),
+    illegal under UNIQUE and informational under FIRST, whose row order is never sorted away. Coverage: a valid default gives
+    CompleteByDefault; all Bool or Enum inputs are enumerated exactly (MAX_FINITE_DECISION_POINTS = 4096, beyond that CoverageNotAnalyzable(FiniteDomainTooLarge))
+    and return Complete or Incomplete with at most MAX_COVERAGE_WITNESSES = 32 canonical witnesses; exactly one Int or Decimal
+    input with a finite declared domain gets an exact union and gap analysis (no domain: UnboundedNumericDomain); several numeric
+    inputs are MultiDimensionalNumericDomain and mixed finite and numeric inputs MixedNumericDomain; an analyzable empty table
+    without default is Incomplete. No Finding, mutation, persistence or provider.'
+  - 'Tests (Hotfix 040). crates/plumb-functional/tests/calculation.rs and tests/decision_table.rs run with cargo test -p plumb-functional
+    --test calculation and --test decision_table. Calculation tests hard-code independently computed prompt, schema, context-hash,
+    request-ID and Calculation-ID goldens and cover the scope binding rules (reserved calendar, collisions, owners, defaults and
+    explicit aliases over non-symbol names such as Start Date), calendar injection and identity, the type adapter, result, unit
+    and rounding compatibility, used-binding derivation, origin replay, stale origins, legacy overrides, dependencies and cycles,
+    inference availability and malformed artifacts, idempotency, equivalence, conflict and dry-run. An explicit synthetic scope
+    proves the HR spellings without claiming they derive from PSG names: working_days([start_date, end_date], calendar, inclusive_end)
+    * day_fraction with calendar_ref cal:PL-Office types to Quantity(working_day) and evaluates to 0.5 working_day; Entity Leave
+    Request bound as LeaveRequest with Attribute Start Date as Field start_date makes LeaveRequest.start_date type-check; a Calculation
+    named Requested Working Days bound as RequestedWorkingDays makes if leave_type == Annual then RequestedWorkingDays else 0
+    type-check. No Accepted HR Calculation is fabricated. Decision-table tests use synthetic generic tables only (never the HR
+    prose rules AnnualLeaveEligibility, ManagerDecisionAuthorization or OverlapRule) and cover coverage, overlap, policies, intervals,
+    defaults, arity, unsupported domains and deterministic ordering. Source guards prove no F2 rule IDs, v2 G_* codes, new relations,
+    S2.7 elements, file system, network, clock, persistence, provider execution, randomness or floats in production S2.6 code.'
   tests:
-  - cargo test -p plumb-functional calculation
-  - cargo test -p plumb-functional decision_table
+  - cargo test -p plumb-functional --test calculation
+  - cargo test -p plumb-functional --test decision_table
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - HR half-day/holiday/inclusive-end fixtures raise the expected gap family; complete/incomplete/overlap table fixtures pass.
+  - Calculation inference is evidence-grounded and uses an explicit deterministic PSG-to-PlumbExpr scope binding contract.
+  - Calendar is referenced through the reserved root `calendar`, whose semantic identity comes only from Calculation.calendar_ref;
+    no Calendar name is required or invented.
+  - Payload names are never mechanically rewritten into expression identifiers; explicit scope aliases permit non-symbol PSG names
+    without renaming PSG semantics.
+  - S2.6-created Calculation origins retain exact used scope bindings so Accepted qualification replays the same TypeEnv; legacy
+    Accepted Calculations require an explicit scope override.
+  - Eligible Calculation proposals parse/typecheck through S2.4/S2.5 and satisfy declared result/unit/rounding/calendar semantics.
+  - Calculation dependency/cycle material is deterministic and reusable by S2.10.
+  - DecisionTable typed analysis supports the frozen Bool/Enum/Int/Decimal pilot subset with UNIQUE/FIRST overlap semantics and
+    deterministic coverage where analyzable.
+  - No v2 gap codes or F2 findings are implemented and no HR DecisionTable is fabricated.
   source_refs:
   - SRCREF-E6CF46B968
   - SRCREF-9175A495B9
-  forbidden: []
+  forbidden:
+  - Do not derive PlumbExpr identifiers by rewriting PSG names; do not derive a Calendar symbol from Calendar payload text or
+    ID; do not allow ordinary root binding `calendar`; do not guess scope for legacy Accepted Calculations; do not return model-owned
+    dependencies; do not invent DecisionTable persistence syntax; do not implement F2 or S2.7.
   commands:
-  - cargo test -p plumb-functional calculation
-  - cargo test -p plumb-functional decision_table
+  - cargo test -p plumb-functional --test calculation
+  - cargo test -p plumb-functional --test decision_table
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
   commit_message: 'S2.6: Implement calculations and decision tables'
@@ -4022,6 +4129,12 @@ tasks:
     an Entity root may be bound as Ref(Entity.id) with its owned Attributes as ref fields, the expression scope selection
     belonging to the adapter; a nullable Attribute keeps its ordinary Ty and runtime absence is MissingValue, with no
     Optional or Null.'
+  - 'Hotfix 040 forward note. S2.10 consumes S2.6 accepted-calculation qualification, dependency/cycle and DecisionTable
+    analysis and must not reconstruct a separate PSG-to-PlumbExpr naming adapter: it replays calculation_origin used bindings
+    for S2.6-created Calculations and requires explicit scope material for legacy Calculations. Parse, scope, type, undefined-input,
+    result and unit problems map to PLUMB.F2.CALC.TYPECHECK, cycles to PLUMB.F2.CALC.NO_CYCLE and working_days calendar
+    linkage to PLUMB.F2.TIME.CALENDAR_DEFINED; UNIQUE illegal overlaps map to DMN.F2.TABLE.NO_OVERLAP (not applicable
+    under FIRST) and coverage status to DMN.F2.TABLE.COVERAGE. No v2 G_* code is resurrected.'
   tests:
   - cargo test -p plumb-validation f2
   acceptance:
