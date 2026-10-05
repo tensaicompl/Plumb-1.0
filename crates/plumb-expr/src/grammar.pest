@@ -1,0 +1,104 @@
+// PlumbExpr language v1 (plan S2.4, Hotfix 037). This grammar is the single source of
+// syntactic acceptance; literal values are validated after the structural match.
+//
+// Precedence, lowest to highest: conditional, ->, or, and, comparisons (non-associative),
+// + -, * / %, unary - and not, primaries.
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
+program = { SOI ~ expr ~ EOI }
+
+expr = { conditional | implication }
+
+conditional = { kw_if ~ expr ~ kw_then ~ expr ~ kw_else ~ expr }
+
+// Right-associative.
+implication = { disjunction ~ (implies_op ~ implication)? }
+
+disjunction = { conjunction ~ (kw_or ~ conjunction)* }
+
+conjunction = { comparison ~ (kw_and ~ comparison)* }
+
+// Non-associative: at most one comparison operator without parentheses.
+comparison = { additive ~ (cmp_op ~ additive)? }
+
+additive = { multiplicative ~ (add_op ~ multiplicative)* }
+
+multiplicative = { unary ~ (mul_op ~ unary)* }
+
+unary = { unary_op* ~ primary }
+
+primary = {
+    bool_lit
+  | datetime_lit
+  | date_lit
+  | duration_lit
+  | quantity_lit
+  | number
+  | string
+  | call
+  | list
+  | identifier
+  | "(" ~ expr ~ ")"
+}
+
+call = { symbol ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+
+list = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
+
+identifier = ${ symbol ~ ("." ~ symbol)* }
+
+// ---------------------------------------------------------------- literals
+
+bool_lit = @{ ("true" | "false") ~ !ident_char }
+
+date_lit = { kw_date ~ "(" ~ string ~ ")" }
+
+datetime_lit = { kw_datetime ~ "(" ~ string ~ ")" }
+
+duration_lit = { kw_duration ~ "(" ~ number ~ "," ~ unit ~ ")" }
+
+quantity_lit = { kw_quantity ~ "(" ~ number ~ "," ~ unit ~ ")" }
+
+// Lexically broad; the integer and decimal forms are validated after the match.
+number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? ~ !ident_char }
+
+string = ${ "\"" ~ string_body ~ "\"" }
+
+string_body = @{ string_char* }
+
+string_char = { "\\" ~ ANY | !("\"" | "\\") ~ ANY }
+
+// Lexically broad; the canonical unit symbol is validated after the match.
+unit = @{ ident_char+ }
+
+// ---------------------------------------------------------------- tokens
+
+ident_char = _{ ASCII_ALPHANUMERIC | "_" }
+
+reserved = @{
+    ("true" | "false" | "and" | "or" | "not" | "in" | "if" | "then" | "else"
+     | "datetime" | "date" | "duration" | "quantity") ~ !ident_char
+}
+
+symbol = @{ !reserved ~ (ASCII_ALPHA | "_") ~ ident_char* }
+
+kw_if = @{ "if" ~ !ident_char }
+kw_then = @{ "then" ~ !ident_char }
+kw_else = @{ "else" ~ !ident_char }
+kw_or = @{ "or" ~ !ident_char }
+kw_and = @{ "and" ~ !ident_char }
+kw_date = @{ "date" ~ !ident_char }
+kw_datetime = @{ "datetime" ~ !ident_char }
+kw_duration = @{ "duration" ~ !ident_char }
+kw_quantity = @{ "quantity" ~ !ident_char }
+
+implies_op = @{ "->" }
+
+cmp_op = @{ "==" | "!=" | "<=" | ">=" | "<" | ">" | "in" ~ !ident_char }
+
+add_op = @{ "+" | "-" ~ !">" }
+
+mul_op = @{ "*" | "/" | "%" }
+
+unary_op = @{ "-" ~ !">" | "not" ~ !ident_char }

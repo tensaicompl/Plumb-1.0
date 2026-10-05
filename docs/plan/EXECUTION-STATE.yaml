@@ -60,7 +60,7 @@ tasks:
 - id: S2.3
   status: done
 - id: S2.4
-  status: pending
+  status: done
 - id: S2.5
   status: pending
 - id: S2.6
