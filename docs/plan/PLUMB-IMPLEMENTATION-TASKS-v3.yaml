@@ -3337,24 +3337,163 @@ tasks:
   depends_on:
   - S2.1
   files:
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/state.rs
   - crates/plumb-functional/src/invariant.rs
   - crates/plumb-functional/tests/state.rs
+  - prompts/s2-lifecycle.md
+  - schemas/inference/s2-lifecycle.schema.json
   steps:
-  - Create State and Transition proposals from lifecycle evidence.
-  - Transition requires stateful_ref, from_state, to_state and trigger_ref; missing trigger is a finding/question.
-  - Invariant expressions are PlumbExpr proposals and cannot become Accepted until parse/typecheck succeeds.
-  - No lifecycle state is inferred solely from capitalization or field names.
+  - Scope (Hotfix 035). S2.2 implements grounded State proposals, grounded Transition candidates proposed
+    only when the owner, both endpoint States and exactly one Operation/Event trigger exist, deterministic
+    missing-trigger F2 finding material, a governed trigger-resolution seam, grounded Proposed Invariant
+    proposals, deterministic IDs, proposal dry-runs and idempotent replay. It does not implement PlumbExpr
+    parsing, typechecking or evaluation (S2.4/S2.5), initial, terminal or externally-entered state semantics,
+    state reachability, Operation, Event or Process extraction or creation, Question generation (S3.1)
+    or F2 evaluators (S2.10). crates/plumb-functional/src/lib.rs adds pub mod state; pub mod invariant;
+    and root exports without the exact token Proposal (F0.14 guard); Cargo.toml and Cargo.lock are not
+    changed and plumb-expr APIs that do not exist yet are not used.
+  - 'Lifecycle request (Hotfix 035). Constants LIFECYCLE_CONTEXT_VERSION = 1, LIFECYCLE_OUTPUT_VERSION
+    = 1, LIFECYCLE_TASK_KIND = lifecycle_extraction, STATE_ORIGIN_EXTENSION = plumb_functional:state_origin,
+    INVARIANT_ORIGIN_EXTENSION = plumb_functional:invariant_origin; stage S2. LifecycleContext {version,
+    project_id, requirements: [LifecycleRequirementContext {requirement_ref, statement}] (all and only
+    Accepted Requirements), owners: [LifecycleOwnerContext {stateful_ref, node_type, name}] (all and
+    only Proposed/Accepted nodes of the registry category NodeCategory::StateOwner, currently Entity,
+    Process and all ArchitectureElement types, using the registry API; name from the typed payload,
+    otherwise LifecycleError::InvalidOwner), triggers: [LifecycleTriggerContext {trigger_ref, node_type,
+    name}] (all and only Proposed/Accepted Operation and Event nodes)}, every list strictly sorted,
+    deny_unknown_fields. State, Transition and Invariant nodes are never context, so applying their
+    proposals does not stale the request, while changes to the Accepted Requirement set or statements,
+    the active owner or trigger sets, statuses, names or types, or the project ID do; a new trigger
+    requires a new request and artifact. build_lifecycle_request(graph, provider_policy) returns LifecycleRequest
+    {request, context} with input_refs the sorted union of the Requirement, owner and trigger IDs, evidence_refs
+    the sorted unique union of their Node.evidence, context_hash the Generic SHA-256 of RFC 8785 LifecycleContext,
+    prompt and schema hashes of the exact committed bytes of prompts/s2-lifecycle.md and schemas/inference/s2-lifecycle.schema.json
+    (runtime assets, not in SUPPORTING-DOCS.sha256), and the caller''s provider policy. LifecycleInference
+    {artifact, derivation_ref}; no provider execution, persistence or clock; LifecycleAudit {created_by,
+    created_at}.'
+  - 'Inference output and validation (Hotfix 035). Root {version, states, transitions, invariants};
+    state {stateful_ref, grounding}; transition {stateful_ref, grounding, from_state, to_state, trigger_ref}
+    where from_state and to_state are groundings and trigger_ref is a nullable ID; invariant {scope_ref,
+    grounding, expression}; a grounding is {requirement_ref, start, end}. The schema is Draft 2020-12
+    with additionalProperties false at every object level and only internal $defs references; no model-owned
+    state names. Every grounding names an Accepted Requirement of the context and is a non-empty, end-exclusive
+    UTF-8 byte range on character boundaries whose slice has no leading or trailing whitespace and no
+    control characters (LifecycleError::InvalidGrounding, no repair). Validation order: request validation,
+    context equality, InferenceArtifact::validate_for, schema validation, typed decode, version 1, owner
+    membership and category (LifecycleError::UnknownOwnerRef for an ID outside the context, InvalidOwner
+    for a wrong category), trigger membership (LifecycleError::InvalidTriggerRef for an unknown, inactive
+    or non-Operation/Event reference; a supplied invalid trigger is malformed inference, not a finding),
+    groundings, state keys and IDs, duplicate candidates, endpoint resolution, governed trigger decisions,
+    existing-State reconciliation, State proposals, Transition dependencies, findings and proposals,
+    Invariant reconciliation and proposals, canonical ordering. Without inference the result is issues
+    [InferenceUnavailable] only; with Accepted Requirements but no active owner a valid empty output
+    yields LifecycleIssue::StateOwnerUnavailable and nothing else. There is no deterministic fallback.'
+  - 'States (Hotfix 035). A State candidate exists only because validated inference supplies an exact
+    Accepted Requirement grounding; capitalization, enum-like words, Attribute or field names, suffixes
+    and CamelCase are never detectors, and no Attribute is inspected to synthesize states. state_key
+    = normalize_vocabulary_term(grounded slice) (the S1.5 implementation) and State.name = state_key.
+    State ID state:<16 hex of SHA-256(RFC 8785 {project_id, stateful_ref, state_key, node_type: state})>,
+    so equal text under different owners gives different States; the same owner and key twice in the
+    output is LifecycleError::DuplicateCandidate. The State proposal is a Compound of AddNode(State
+    {name}) and AddEdge(stateful_ref -has_state-> State), both Proposed, with origin plumb_functional:state_origin
+    {kind: state, stateful_ref, state_key, grounding} (provenance only; no initial, terminal, external,
+    description or kind semantics). An existing State is reused only when Proposed or Accepted with
+    a matching state_origin owner and key, name equal to state_key and exactly one active has_state
+    owner equal to stateful_ref; several active States with one owner and key are LifecycleConflict::DuplicateStateOrigin
+    with no keeper, no merge and dependent Transitions LifecycleIssue::StateDependencyConflicted. No
+    initial, terminal or externally-entered semantics are inferred from in-degree, out-degree or names.'
+  - 'Transitions (Hotfix 035). The Transition payload has no trigger field: Transition {stateful_ref,
+    from_state, to_state, guard_expr: None, effect_refs: None}, with the trigger only as exactly one
+    Transition -transitions_via-> Operation/Event edge. from_key and to_key are normalized from the
+    endpoint groundings and map to State IDs under the same owner; each endpoint must be a State candidate
+    of the same output or one compatible active existing State, otherwise LifecycleError::UnknownStateCandidate,
+    and a State owned by another owner is LifecycleError::StateOwnerMismatch. Self-transitions are allowed.
+    Transition ID transition:<16 hex of SHA-256(RFC 8785 {project_id, stateful_ref, from_state, to_state,
+    grounding: {requirement_ref, start, end}, node_type: transition})>, trigger excluded. If an endpoint
+    State is not yet in the graph the result is LifecycleIssue::StateDependencyPending with no proposal
+    and no finding; after the State proposals are applied the same request and artifact are replayed.
+    With both States present, a resolved trigger gives a Compound of AddNode(Transition) and AddEdge(transitions_via)
+    (exactly one trigger edge; origin plumb_functional:state_origin {kind: transition, stateful_ref,
+    grounding, from_state_grounding, to_state_grounding, trigger_ref, trigger_decision_ref}); a null
+    trigger gives no Transition node and PLUMB.F2.STATE.TRANSITION_COMPLETE GeneratedFinding material
+    from load_builtin_software_profile() metadata and GeneratedFinding::for_violation (profile identity
+    required only then, else LifecycleError::ValidationProfile) with condition key state_transition_trigger_unresolved:<transition-candidate-id>,
+    message ''State transition candidate <transition-candidate-id> has no resolved Operation/Event trigger.'',
+    suggested resolution ''Provide or select the Operation/Event that triggers this state transition.''
+    and targets the sorted unique Accepted Requirements of the transition, from-state and to-state groundings.
+    No Question is created and no other code is invented.'
+  - 'Governed trigger decision (Hotfix 035). A qualifying decision is an Accepted ResolutionDecision
+    with clean non-empty rationale, decided_by an Accepted human Agent, an Accepted resolves edge to
+    the deterministic TRANSITION_COMPLETE Finding of the candidate or to an Accepted Question whose
+    finding_ref is that Finding, and answer exactly {kind: state_transition_trigger, candidate_ref:
+    <transition-candidate-id>, trigger_ref} naming an active Operation or Event. Only decisions whose
+    candidate_ref names a current validated transition candidate are validated (others are ignored;
+    F3 owns global decision correctness); for those the binding is two-way (no cross-candidate Finding
+    resolution), a malformed claim is LifecycleError::InvalidGovernedDecision, an inactive or non-Operation/Event
+    trigger is InvalidTriggerRef, and two qualifying decisions are LifecycleError::AmbiguousTriggerDecision.
+    A qualifying decision is authoritative over the model trigger without a conflict; the origin then
+    records trigger_decision_ref and does not claim model provenance for the trigger.'
+  - 'Invariants (Hotfix 035). An invariant item names an active StateOwner of the context as scope_ref,
+    an exact grounding and a proposed PlumbExpr expression string that must be non-empty with no leading
+    or trailing whitespace and no control characters; it is not required to be a substring of the requirement
+    and is not parsed, typechecked or evaluated (S2.4/S2.5 own that; no private parser, AST, type or
+    regex validity check). Invariant ID invariant:<16 hex of SHA-256(RFC 8785 {project_id, scope_ref,
+    grounding: {requirement_ref, start, end}, node_type: invariant})>, expression excluded. The proposal
+    is AddNode(Invariant {scope_ref, expression}) with origin plumb_functional:invariant_origin {scope_ref,
+    grounding} and no parsed, typechecked, valid, AST or type flags; a Proposed Invariant is a review
+    proposal, not qualification, and PLUMB.F2.INVARIANT.EXPRESSIBLE qualifies it later.'
+  - Envelopes and reconciliation (Hotfix 035). New nodes and edges have revision 1, status Proposed,
+    evidence the sorted unique union of the grounding Requirements' Node.evidence, empty derivations
+    and standards (and tags for nodes), empty relation properties for edges and the caller's LifecycleAudit;
+    edge IDs rel:<16 hex of SHA-256(RFC 8785 {kind, from, to})>. Proposals have stage S2, Semantic materiality,
+    HumanConfirm, confidence None, base graph.semantic_hash(), evidence_refs the patch evidence union
+    and derivation_refs [the lifecycle derivation_ref], and every returned proposal is dry-run in memory
+    with plumb_patch::apply_patch. An existing node at a deterministic ID that matches type, payload
+    and origin is reused without a duplicate AddNode; a different type, payload or origin is LifecycleError::ExistingCandidateConflict.
+    S2.2 never replaces payloads of existing States, Transitions or Invariants, never uses MergeNodes
+    and never mutates or persists a graph.
+  - Tests (Hotfix 035). Every test in crates/plumb-functional/tests/state.rs is named s2_state_*, and
+    cargo test -p plumb-functional s2_state_ runs a non-zero S2.2-specific set. prompts/s2-lifecycle.md
+    instructs to use only supplied Accepted Requirement text and owner IDs, identify states only from
+    lifecycle, status or state semantics (capitalization or field-like names are not enough), return
+    exact UTF-8 groundings and no state names, ground transitions and their from/to mentions, use trigger_ref
+    only from the supplied Operation/Event list or null without inventing one, return no guards or effects,
+    return invariants with owner scope, grounding and a proposed PlumbExpr expression without claiming
+    it parses or typechecks, and return only schema-valid JSON. Tests hard-code independently computed
+    prompt, schema, request-ID, State, Transition, Invariant, has_state and transitions_via edge and
+    missing-trigger finding key/ID goldens and cover the schema, context, staleness, grounding, normalization,
+    owner, duplicate, two-pass, trigger, decision, invariant, idempotency, conflict, capitalization-negative
+    and Attribute-name-negative contracts. The real single-source HR pipeline has no StateOwner and
+    must report StateOwnerUnavailable with zero proposals and findings and no accuracy claim; a separate
+    synthetic fixture with an Entity owner and a pre-existing Operation or Event proves the State to
+    Transition path and the Invariant path as structural conformance.
   tests:
-  - cargo test -p plumb-functional state
+  - cargo test -p plumb-functional s2_state_
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - State graph rejects missing endpoints/trigger; HR state fixture validates.
+  - Grounded State proposals derive deterministic names/IDs and exactly one canonical has_state owner.
+  - Transition proposals are emitted only after both endpoint States exist and exactly one Operation/Event
+    trigger is resolved; unresolved trigger candidates produce deterministic PLUMB.F2.STATE.TRANSITION_COMPLETE
+    finding material and no incomplete Transition node.
+  - Invariant expressions remain grounded Proposed/HumanConfirm semantics; S2.2 makes no parse/typecheck
+    claim before S2.4/S2.5.
+  - The real HR pipeline does not fabricate StateOwners and honestly reports StateOwnerUnavailable when
+    none exist.
+  - A synthetic fixture proves the State -> Transition two-pass path and Invariant proposal path.
   source_refs:
   - SRCREF-B04CD24E97
   - SRCREF-48F010D7D1
-  forbidden: []
+  forbidden:
+  - Do not invent v2-style codes (G_STATE_NO_TRIGGER, G_TRANSITION_TRIGGER, I_STATE_TRIGGER), a trigger_ref
+    Transition field, an incomplete Transition node, or initial/terminal/externally-entered state semantics.
+  - Do not implement or approximate a PlumbExpr parser, AST, typechecker or evaluator, and do not claim
+    an invariant expression parses or typechecks.
+  - Do not fabricate StateOwners, Operations, Events, Processes or Questions, and do not modify Cargo
+    files, fixtures, rules YAML, the metamodel or plumb-store.
   commands:
-  - cargo test -p plumb-functional state
+  - cargo test -p plumb-functional s2_state_
+  - cargo test -p plumb-functional --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
   commit_message: 'S2.2: Implement states, transitions and invariants'
@@ -3590,6 +3729,16 @@ tasks:
     DomainRelationship nodes, whose endpoints must be valid Entities and whose cardinalities must each be one of 0..1,
     1, 0..* and 1..*. S2.10 must not re-run domain inference and must not resurrect G_REL_NO_CARD. The exact F2 supplemental-input
     binding must be frozen before S2.10 if it is not already representable as canonical Finding state.
+  - Hotfix 035 forward notes. PLUMB.F2.STATE.TRANSITION_COMPLETE must be able to consume current deterministic S2.2 missing-trigger
+    finding material (condition key prefix state_transition_trigger_unresolved:) in addition to validating Accepted Transition
+    nodes, without rerunning lifecycle inference; the exact F2 supplemental-input mechanism may be frozen together with
+    the S2.1 cardinality input. Before implementing PLUMB.F2.INVARIANT.EXPRESSIBLE, freeze the mapping from PSG domain
+    elements and types into the PlumbExpr type environment after S2.5 has defined Ty and the typechecker; do not infer
+    it ad hoc. An Accepted Invariant passes only if its expression parses under the actual PlumbExpr grammar and is type-valid
+    under that frozen environment, or a future rule contract recognizes an explicit governed manual/formal verification
+    route. PLUMB.F2.STATE.REACHABILITY must not be implemented until an explicit representable pilot contract for initial,
+    terminal and externally-entered semantics is frozen; the current State payload and relation set do not encode them,
+    and graph-theoretic substitutes must not be invented to make the rule evaluatable.
   tests:
   - cargo test -p plumb-validation f2
   acceptance:
@@ -3622,6 +3771,10 @@ tasks:
   - 'Hotfix 033 forward note. A current PLUMB.F2.DOMAIN.RELATION_TYPED Finding whose semantic condition key begins
     domain_relationship_cardinality_unresolved: maps to QuestionKind::Cardinality; its answer is consumed by
     S2.1 as the governed domain_relationship_cardinality decision marker.'
+  - 'Hotfix 035 forward note. A current PLUMB.F2.STATE.TRANSITION_COMPLETE Finding whose semantic condition key
+    begins state_transition_trigger_unresolved: is eligible for trigger-resolution question generation; S3.1
+    owns its Question kind, prompt, answer schema, routing and batching, and its answer is consumed by S2.2 as
+    the governed state_transition_trigger decision marker. S2.2 creates no Question.'
   tests:
   - cargo test -p plumb-functional question
   acceptance:

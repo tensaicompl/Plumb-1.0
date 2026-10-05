@@ -312,6 +312,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Each Transition has source state, target state and exactly one trigger via Operation/Event.
 - **Pass condition:** Each Transition has source state, target state and exactly one trigger via Operation/Event.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** A Transition node is proposed only with existing source/target State nodes and exactly one `transitions_via` Operation/Event edge. A grounded transition candidate lacking a resolved trigger is not represented as an incomplete Transition; S2.2 emits deterministic finding material using `state_transition_trigger_unresolved:<candidate-id>`.
 
 ### `PLUMB.F2.STATE.REACHABILITY` — State models have no unreachable accepted states
 
@@ -322,6 +323,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Every accepted non-terminal state is reachable from an initial state unless explicitly marked externally-entered.
 - **Pass condition:** Every accepted non-terminal state is reachable from an initial state unless explicitly marked externally-entered.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** The current v3 State payload does not yet encode initial, terminal or externally-entered markers. The F2 evaluator must not invent those semantics; the representable pilot contract must be frozen before S2.10 implementation.
 
 ### `PLUMB.F2.OPERATION.PERFORMER` — Executable operations have a performer or owning system
 
@@ -512,6 +514,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Invariant has a valid PlumbExpr AST or a declared manual/formal verification method.
 - **Pass condition:** Invariant has a valid PlumbExpr AST or a declared manual/formal verification method.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** S2.2 may create grounded Proposed Invariant expressions before PlumbExpr grammar/typechecking exists. Expressibility qualification is performed only after the S2.4/S2.5 PlumbExpr implementation exists. S2.2 proposal creation is not proof that an expression parses/typechecks.
 
 ### `PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER` — No unresolved blocking functional-semantic finding remains
 
