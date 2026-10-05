@@ -4182,24 +4182,160 @@ tasks:
   depends_on:
   - S2.7
   files:
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/authorization.rs
   - crates/plumb-functional/tests/authorization.rs
   steps:
-  - Implement Principal, SecurityRole, Permission, ResourceScope, PolicyCondition and SeparationConstraint using metamodel fields.
-  - Keep Actor and BusinessRole in domain semantics; no type alias or shared enum may collapse BusinessRole and SecurityRole.
-  - Permission must resolve through typed relations to operation and resource scope.
-  - Implement role-hierarchy cycle detection and static separation-of-duty validation.
+  - 'Scope (Hotfix 042). S2.8 is not an inference stage: there is no authorization prompt, inference schema or provider call.
+    It is a deterministic compiler and validator for explicitly supplied structured authorization semantics (whose source may
+    later be UI input, a human decision, an import adapter, organization policy, a fixture adapter or session intake), as specified
+    in the compiler architecture section ''Pilot authorization semantics (S2.8, Hotfix 042)''. It owns Principal, SecurityRole,
+    Permission, ResourceScope, PolicyCondition and SeparationConstraint construction; the assigned_role, inherits_role, grants,
+    permits, scoped_to and conditioned_by relations; deterministic SecurityRole hierarchy-cycle and static separation-of-duty
+    analysis; reconciliation against existing authorization semantics; HumanConfirm SemanticPatch proposals; and fixture role_specs
+    compatibility tests. It does not own BusinessRole, Actor or Operation extraction, any BusinessRole -> SecurityRole name
+    matching or implicit mapping, authentication, OIDC, sessions, login, API middleware, runtime policy or ABAC evaluation,
+    a PlumbExpr authorization scope or PolicyCondition execution, dynamic separation-of-duty session semantics, F2 evaluators
+    or findings, question generation, decision application, processes, scenarios or live LLM inference. The existing plumb-psg
+    payloads (Principal {name, principal_kind}, SecurityRole {name, description?}, Permission {name}, ResourceScope {resource_ref,
+    scope_kind}, PolicyCondition {expression}, SeparationConstraint {constraint_kind, role_refs[]} with kinds static_separation_of_duty,
+    dynamic_separation_of_duty, mutual_exclusion and required_combination) and relations (assigned_role: Principal/Actor ->
+    SecurityRole; inherits_role: SecurityRole -> SecurityRole, acyclic; grants: SecurityRole -> Permission; permits: Permission
+    -> Operation, exactly one outgoing; scoped_to: Permission -> ResourceScope, exactly one outgoing; conditioned_by: Permission
+    -> PolicyCondition) are authoritative; plumb-psg is not modified and no relation is added. BusinessRole and SecurityRole
+    stay distinct payload types that are never aliased, never share one Rust enum and never reuse each other''s nodes; the same
+    display name may exist in both namespaces as two nodes with distinct IDs. There is no BusinessRole -> SecurityRole relation
+    and none is invented: security membership is expressed only by Principal/Actor -> assigned_role -> SecurityRole, and no
+    name or suffix matching occurs. lib.rs adds pub mod authorization with selected exports and keeps the F0.14 guard (no exact
+    token Proposal). No Cargo file changes; if a dependency is genuinely needed, stop and report a blocker.'
+  - 'Structured draft (Hotfix 042). AuthorizationDraft {security_roles, principals, permissions, assignments, inheritances,
+    separation_constraints}. SecurityRoleDraft {name, description?, evidence}; PrincipalDraft {name, principal_kind (metamodel
+    String, no invented closed enum), evidence}; PermissionDraft {security_role_ref, operation_ref, resource_ref, scope_kind,
+    conditions: [PolicyConditionDraft {expression, evidence}], evidence}; RoleAssignmentDraft {subject_ref, security_role_ref,
+    evidence}; RoleInheritanceDraft {role_ref, inherited_role_ref, evidence}; SeparationConstraintDraft {constraint_kind, role_refs,
+    evidence}. Names, descriptions, principal kinds, scope kinds and condition expressions must be trimmed, non-empty and free
+    of control characters and are preserved exactly (no normalization). All semantic references are explicit IDs with no free
+    names and no graph search. A SecurityRole ref resolves to an existing active SecurityRole or to the deterministic ID of
+    a SecurityRoleDraft in the same draft, and an assignment subject may resolve to the deterministic ID of a PrincipalDraft
+    in the same draft (deterministic local linking, not name matching). operation_ref must be an Accepted Operation (no Proposed
+    Operation, BusinessRole, Process or name), so S2.8 runs after S2.7 Operations are human-accepted. resource_ref must be an
+    Accepted Operation, Entity or Attribute (the pilot resource subset) and is never inferred from the operation. scope_kind
+    is only validated and preserved (owned, direct_reports, organizational_unit, relationship_based, expression and others may
+    appear when explicitly supplied; direct_reports is never rewritten to relationship_based); S2.8 evaluates no ownership,
+    reporting line, organizational boundary or expression. PolicyCondition.expression is opaque: it is not claimed to be PlumbExpr
+    and is never parsed, type-checked, executed or generated from a scope kind. An assignment subject is an Accepted Principal,
+    an Accepted Actor or a Principal declared in the draft, never a BusinessRole, SecurityRole or Entity, and its target is
+    an existing or declared SecurityRole. Inheritance endpoints are both SecurityRoles and self-inheritance is invalid; A -inherits_role->
+    B means SecurityRole A inherits the permissions and effective role membership of B, so effective-role closure follows outgoing
+    inherits_role edges. SeparationConstraint role_refs are strictly sorted, unique, at least two and all SecurityRoles (existing
+    active or declared). Evidence lists may be empty for an explicit human or structured edit; when non-empty they are strictly
+    sorted, unique and resolving, and no EvidenceFragment or DerivationRecord is fabricated. Without inference, proposal derivation_refs
+    and element derivations are empty unless an existing generic caller contract supplies a persisted DerivationRecord; there
+    are no prompt or schema hashes. Audit metadata comes from the caller; no clock is read.'
+  - 'Identities and compilation (Hotfix 042). IDs are <prefix>:<first 16 hex of SHA-256(RFC 8785 JSON)>: security_role {project_id,
+    name, node_type: security_role}; principal {project_id, name, principal_kind, node_type: principal}; resource_scope {project_id,
+    resource_ref, scope_kind, node_type: resource_scope}; policy_condition {project_id, expression, node_type: policy_condition};
+    permission {project_id, security_role_ref, operation_ref, resource_scope_ref, node_type: permission} (conditions are not
+    part of the identity; a different conditioned_by set is a relation difference of the same Permission); separation_constraint
+    {project_id, constraint_kind, role_refs (sorted), node_type: separation_constraint}; relations rel {kind, from, to} (the
+    established edge identity). Permission.name is rendered exactly as ''<SecurityRole.name> -> <Operation.name> [<scope_kind>]''
+    with no inferred or caller-supplied alternative. A SecurityRoleDraft compiles to a SecurityRole node and a PrincipalDraft
+    to a Principal node (never a BusinessRole). Each PermissionDraft compiles to a Permission, a ResourceScope, zero or more
+    PolicyConditions and the edges SecurityRole -grants-> Permission (exactly one owning role per permission row), Permission
+    -permits-> Operation, Permission -scoped_to-> ResourceScope and Permission -conditioned_by-> PolicyCondition per condition.
+    An assignment compiles to subject -assigned_role-> SecurityRole, an inheritance to role -inherits_role-> inherited_role,
+    and a separation constraint to a SeparationConstraint node whose governed roles are exactly its role_refs (no relation to
+    an Operation). Core relation properties stay empty and no authorization semantics go into extensions or JSON blobs. New
+    nodes and edges are Proposed revision 1.'
+  - 'Hierarchy and separation of duty (Hotfix 042). A pure deterministic role-hierarchy analyzer, reusable by S2.10, supports
+    Accepted-only baseline analysis and an active candidate overlay (existing Proposed and Accepted SecurityRoles and inherits_role
+    edges plus the draft''s; Rejected, Superseded and Deprecated edges are inactive). Self-cycles and multi-role cycles are
+    reported as sorted role-ID vectors in sorted order (RoleHierarchyCycle); a candidate cycle blocks the proposal because the
+    registry declares inherits_role acyclic. All four SeparationConstraint kinds are structurally supported, but only static_separation_of_duty
+    has executable semantics: a subject''s effective SecurityRoles are its direct active assigned_role targets plus the transitive
+    closure of outgoing inherits_role edges, and a subject violates a static constraint with role_refs R iff at least two roles
+    of R are effective for it. A pure static-SOD analyzer, reusable by S2.10, reports StaticSodViolation {constraint_ref, subject_ref,
+    conflicting_role_refs (sorted)} globally sorted per constraint and subject; inheritance can create a violation, a constraint
+    without a subject holding the combination is no violation (assignments are checked, not assignability), and the operations
+    a constraint protects are not inferred because no SeparationConstraint -> Operation relation exists. dynamic_separation_of_duty,
+    mutual_exclusion and required_combination are reported as NotEvaluated, never as passing, with no invented session semantics.
+    A static violation is analysis material: it does not discard the SeparationConstraint or make the patch invalid, and no
+    ResolutionDecision, waiver or Assumption is created.'
+  - 'Reconciliation and proposals (Hotfix 042). Active means Proposed or Accepted. An existing SecurityRole, Principal, ResourceScope,
+    PolicyCondition or SeparationConstraint at its deterministic ID with an identical payload is reused; a different payload
+    is ExistingSecurityRoleConflict, ExistingPrincipalConflict, ExistingResourceScopeConflict, ExistingPolicyConditionConflict
+    or ExistingSeparationConstraintConflict. An active SecurityRole with the same exact name under another ID is ExistingSecurityRoleNameConflict;
+    principals are never matched by display name. An existing Permission is equivalent only with an identical payload, the expected
+    grants owner, exactly one permits edge to the expected Operation, exactly one scoped_to edge to the expected ResourceScope
+    and exactly the candidate conditioned_by target set; otherwise ExistingPermissionConflict, with no incremental repair. An
+    existing active edge with identical kind, from and to is reused, never duplicated; conflicting cardinality material is a
+    semantic conflict. No ReplacePayload, MergeNodes, Supersede or SetStatus is used. One validated draft yields at most one
+    Compound proposal holding all missing elements in the order: new Principals, SecurityRoles, ResourceScopes, PolicyConditions,
+    Permissions and SeparationConstraints (each sorted by ID), then all new edges sorted by ID; stage S2, Semantic, HumanConfirm,
+    confidence None, derivation_refs empty. The sequence is: compile, reject a candidate hierarchy cycle, dry-run through the
+    existing patch engine in memory with PSG and relation-registry validation (the graph is discarded and nothing is persisted),
+    then analyze the candidate overlay for static SOD. The result exposes the proposal material, hierarchy cycles, static SOD
+    violations, unevaluated separation constraints and typed issues including InvalidName, InvalidPrincipalKind, InvalidScopeKind,
+    InvalidConditionExpression, UnknownReference, WrongTargetType, NonAcceptedOperation, NonAcceptedResource, DuplicateDraftIdentity,
+    the existing-conflict categories, RoleHierarchyCycle, InvalidSeparationConstraint and InvalidProposal (none is a rule ID).
+    Canonical results do not depend on the order of draft collections, evidence or graph insertion. No F2 Finding (RBAC.F2.PERMISSION.CONCRETE,
+    RBAC.F2.ROLE.HIERARCHY_ACYCLIC, PLUMB.F2.ROLE.SEPARATION, PLUMB.F2.SOD.NO_VIOLATION) is instantiated.'
+  - HR fixture reference (Hotfix 042). Tests may adapt the immutable fixtures/hr-leave/fixture-contract.yaml role_specs; production
+    code contains no fixture path or HR literal. The fixture business roles EmployeeRole, ManagerRole and HRPolicyOwner are
+    BusinessRoles and are not compiled into SecurityRoles. The adapter creates exactly the two SecurityRoleDrafts EmployeeUser
+    and ManagerUser and compiles all nine permission rows (role, operation, scope) against synthetic Accepted Operations named
+    exactly as the fixture operations (this does not claim the live HR graph already has Accepted S2.7 Operations); each row's
+    role owns its Permission through grants. Because the fixture gives no protected resource beyond the operation, the test-only
+    adapter binds resource_ref = operation_ref for each row; this compatibility convention is not a production default. Scope
+    strings owned and direct_reports are preserved exactly, direct_reports is not mapped to relationship_based and no PolicyCondition
+    simulates it. The fixture has no Principal, role assignment, role hierarchy or separation constraint, so the adapter creates
+    zero assigned_role edges, zero inherits_role edges and zero SeparationConstraints; EmployeeRole -> EmployeeUser and ManagerRole
+    -> ManagerUser are not inferred, and the self-decision invariant is not converted into a static SOD constraint.
+  - Tests (Hotfix 042). crates/plumb-functional/tests/authorization.rs runs with cargo test -p plumb-functional --test authorization
+    and hard-codes independently computed SecurityRole, Principal, ResourceScope, PolicyCondition, Permission and SeparationConstraint
+    ID goldens, assigned_role, inherits_role, grants, permits and scoped_to edge-ID goldens and the rendered Permission name.
+    It covers the same-name BusinessRole/SecurityRole distinction (different payload variants and IDs, no alias), valid Principal,
+    SecurityRole, Permission, ResourceScope and PolicyCondition (an opaque expression such as region == "EU" round-trips exactly),
+    all four SeparationConstraint kinds, wrong assignment source (BusinessRole) and target, wrong inheritance endpoints (BusinessRole,
+    Actor, Principal), non-Accepted Operation targets, invalid resources (SecurityRole, BusinessRole, EvidenceFragment, missing,
+    Proposed Operation), valid Operation, Entity and Attribute resources, invalid scope strings and condition expressions, exact
+    Permission relation cardinality, acyclic hierarchy with effective closure (Admin -> Manager -> Employee), self-cycle, two-role
+    and three-role cycles, direct, inherited, multi-role and multi-subject static SOD, non-violation, NotEvaluated kinds, reconciliation
+    of every node kind including Permission conflicts (operation, scope, condition set, grant owner), the compound proposal
+    dry-run, canonical ordering, reversed-input determinism and exact HR role_specs compatibility (two SecurityRoles, nine Permissions,
+    nine grants, permits and scoped_to edges, zero assigned_role, inherits_role and SeparationConstraints, preserved scope strings
+    and fixture operation targets). Source guards prove no file system, network, clock, persistence, store, inference request
+    or artifact, prompt or schema loading, provider execution, randomness, floats, fixture paths, HR role or operation literals
+    or F2 evaluator registration in production S2.8 code.
   tests:
-  - cargo test -p plumb-functional authorization
+  - cargo test -p plumb-functional --test authorization
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - BusinessRole and SecurityRole serialize to distinct NodePayload variants; hierarchy cycles and SOD violations are detected.
+  - S2.8 deterministically compiles explicitly supplied authorization semantics into HumanConfirm PSG proposals using separate
+    Principal, SecurityRole, Permission, ResourceScope, PolicyCondition and SeparationConstraint nodes.
+  - BusinessRole and SecurityRole remain distinct and no name-based mapping is inferred.
+  - Each compiled Permission has one SecurityRole grants edge, exactly one permits edge to an Accepted Operation and exactly
+    one scoped_to edge to a ResourceScope.
+  - SecurityRole inheritance has explicit A-inherits-B direction and candidate cycles are rejected.
+  - Static separation-of-duty violations are deterministically detected from Principal/Actor assigned_role plus transitive SecurityRole
+    inheritance.
+  - The HR fixture's two SecurityRoles and nine permission rows compile exactly without inventing principals, role assignments,
+    role hierarchy or SOD constraints.
   source_refs:
   - SRCREF-FFC4E55C45
   - SRCREF-3CF65C8502
   - SRCREF-482A7F2096
-  forbidden: []
+  - SRCREF-0E7CBD4996
+  - SRCREF-E51F20A226
+  - SRCREF-34CA4A60BC
+  forbidden:
+  - Do not use LLM inference, match BusinessRole and SecurityRole by name, infer security assignments from performer relations,
+    infer protected resources, rewrite scope kinds, treat PolicyCondition as PlumbExpr, infer SOD from domain invariants, evaluate
+    dynamic SOD/mutual-exclusion/required-combination semantics, create F2 findings, or mutate plumb-psg.
   commands:
-  - cargo test -p plumb-functional authorization
+  - cargo test -p plumb-functional --test authorization
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
   commit_message: 'S2.8: Implement separate business-role and security authorization semantics'
@@ -4295,6 +4431,23 @@ tasks:
     audit-only and terminal events is not frozen: before S2.10 implements Event producer/consumer applicability that depends
     on such classifications it must freeze an explicit representable pilot contract, never inferring those semantics from
     Event names.'
+  - 'Hotfix 042 forward notes. RBAC.F2.PERMISSION.CONCRETE consumes canonical Accepted Permission, permits and scoped_to
+    semantics produced by S2.8: for the core profile an Accepted Permission passes only when exactly one Accepted permits
+    edge targets a concrete Accepted Operation and exactly one Accepted scoped_to edge targets a valid Accepted ResourceScope;
+    S2.10 does not rerun S2.8 compilation and does not infer permission edges from role or operation names. RBAC.F2.ROLE.HIERARCHY_ACYCLIC
+    reuses the accepted-only S2.8 hierarchy analyzer and must not implement a second role-hierarchy algorithm. PLUMB.F2.ROLE.SEPARATION
+    verifies that BusinessRole and SecurityRole remain distinct PSG types and that security membership uses assigned_role
+    from Principal/Actor to SecurityRole; the current PSG has no BusinessRole -> SecurityRole mapping relation, so the
+    evaluator must not require or invent a direct mapping edge and must not correlate role names. PLUMB.F2.SOD.NO_VIOLATION
+    reuses the S2.8 accepted-only static-SOD analyzer: pilot applicability is an Accepted SeparationConstraint of kind
+    static_separation_of_duty; for each Accepted Principal/Actor the effective SecurityRoles are the direct Accepted assigned_role
+    targets plus the transitive Accepted inherits_role targets; the rule fails when at least two role_refs of one Accepted
+    static SOD constraint are effective for the same subject; no security-sensitive operation attachment is inferred because
+    no SeparationConstraint -> Operation relation is representable. dynamic_separation_of_duty, mutual_exclusion and required_combination
+    are structurally representable but acquire no invented executable F2 semantics from S2.8; a separate explicit contract
+    must be frozen before S2.10 evaluates any of them. S2.8 stores PolicyCondition.expression as explicit opaque authorization
+    semantics, and S2.10 must not claim PlumbExpr parse, type or evaluation coverage for PolicyCondition unless a separate
+    contract is frozen.'
   tests:
   - cargo test -p plumb-validation f2
   acceptance:

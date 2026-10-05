@@ -852,6 +852,24 @@ S2.3 classifies Accepted Attributes only. A versioned deterministic dictionary (
 
 **Downstream boundaries.** S2.10 validates the canonical relations and payload references that S2.7 proposals produce once accepted, without rerunning S2.7 inference or inferring Event relations from names. S2.8 maps authorization separately; BusinessRole and SecurityRole stay distinct. S2.9 must not assume Operation preconditions or postconditions exist.
 
+### Pilot authorization semantics (S2.8, Hotfix 042)
+
+**Boundary.** Authorization is security-sensitive, so S2.8 runs no inference: it deterministically compiles explicitly supplied, structured authorization intent (from a UI, a human decision, an import or a fixture adapter) into HumanConfirm proposals and provides reusable hierarchy and separation-of-duty analysis. It uses the existing Principal, SecurityRole, Permission, ResourceScope, PolicyCondition and SeparationConstraint payloads and the relations `assigned_role`, `inherits_role`, `grants`, `permits`, `scoped_to` and `conditioned_by` unchanged. It does not do authentication, runtime policy evaluation, ABAC, condition execution, dynamic separation of duty or F2 findings.
+
+**Separate role namespaces.** BusinessRole (who does the work) and SecurityRole (what a subject may do) are distinct node types that are never aliased or merged, even when their names coincide. There is no relation from BusinessRole to SecurityRole and none is inferred, by name or otherwise; security membership exists only as `assigned_role` from a Principal or Actor to a SecurityRole.
+
+**Structured drafts.** A draft lists security roles, principals, permissions, assignments, inheritances and separation constraints. Every reference is an explicit ID: an existing node or a node declared in the same draft under its deterministic ID. A permission names its owning SecurityRole, an Accepted Operation, an explicit resource (an Accepted Operation, Entity or Attribute in the pilot), a scope kind and optional conditions. Scope kinds such as `owned` or `direct_reports` are preserved verbatim and never evaluated; condition expressions are opaque text, not PlumbExpr. Each permission compiles to one Permission (named `<role> -> <operation> [<scope kind>]`) granted by exactly one SecurityRole, with exactly one `permits`, exactly one `scoped_to` and one `conditioned_by` per condition.
+
+**Hierarchy.** `A inherits_role B` means role A inherits B's permissions and membership, so effective roles follow outgoing inheritance transitively. Self-cycles and longer cycles are reported deterministically; a cycle in the candidate overlay blocks the proposal, since inheritance must stay acyclic.
+
+**Separation of duty.** All four constraint kinds can be represented, but only static separation of duty is evaluated: a subject violates a constraint when at least two of its roles are among the subject's direct or inherited roles. Violations are reported, not resolved, and do not remove the constraint; the other kinds are reported as not evaluated, and no protected operations are inferred.
+
+**Reconciliation and proposals.** Existing identical nodes and edges are reused; any difference at a deterministic identity, or an existing SecurityRole with the same name under another ID, is a conflict that is never repaired in place. One draft yields at most one compound proposal containing every missing element in a fixed order, dry-run against the full graph and registry validation.
+
+**HR reference.** The HR fixture's two security roles and nine permission rows compile exactly. Its business roles stay business roles; it has no principals, assignments, hierarchy or separation constraints, and none is invented (in particular, no business-to-security role mapping and no separation constraint derived from the self-decision invariant). Because the fixture names no protected resource, its test adapter uses each row's operation as the resource; production input always states the resource explicitly.
+
+**Downstream.** S2.10 reuses these analyzers and the canonical relations for the RBAC and separation rules instead of re-implementing them, and must freeze explicit contracts before evaluating the other separation kinds or policy conditions.
+
 ### Gate
 
 `F2`
