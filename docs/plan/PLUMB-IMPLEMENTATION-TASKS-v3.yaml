@@ -3061,16 +3061,21 @@ tasks:
     and governed ExternalIdentifier are resolved; evidence term:<requirement_ref>:<start>:<end>:<normalized_key> and finding
     IDs; accepted_requirement_terms_unresolved; ''Accepted requirements contain unresolved semantic vocabulary dependencies.'';
     ''Accept or govern the required vocabulary concepts, or declare the dependency as a governed external identifier.'').
-    PLUMB.F1.REQ.MODALITY_EXPLICIT scans whole ASCII case-insensitive words shall, should, may, must, can, not and cannot,
-    recognizes shall, shall not (shall, only whitespace, not), should and may, treats should not, may not, must, must
-    not, can, can not and cannot as unsupported, and fails a requirement with no supported reading, any unsupported reading
-    or a supported reading other than its typed modality (Shall shall, ShallNot shall not, Should should, May may); repeated
-    compatible readings pass (accepted_requirement_modality_inconsistent; ''Accepted requirements must express the same
-    explicit modality as their typed Requirement.modality.''; ''Correct the requirement wording or its governed modality
-    classification.''). PLUMB.F1.REQ.CRITERIA_FOR_BEHAVIOR applies to Accepted functional, interface and security Requirements
-    (otherwise NOT_APPLICABLE: ''No accepted behavioral requirement is in the F1 implementation scope.'') and requires
-    an Accepted AcceptanceCriterion with an Accepted derived_from edge to the Requirement, an Accepted specified_by edge
-    to an Accepted Operation, Process, Rule or QualityScenario, or a governed deferred_verification decision (behavior_requirement_criteria_missing;
+    PLUMB.F1.REQ.MODALITY_EXPLICIT (as revised by Hotfix 032) tokenizes the statement into maximal ASCII word runs [A-Za-z0-9_]
+    in byte order and takes the first token whose ASCII-lowercase form is shall, should, may, must or can as the controlling
+    modal, exactly as S1.1 does; scanning stops there and later modal words (shall, should, may, must, can, not, cannot)
+    do not participate. The controlling modal is negated only when the immediately following token is not (ASCII case-insensitive)
+    with only space, tab, CR or LF between them. Supported readings are shall (Shall), shall not (ShallNot, atomically),
+    should (Should) and may (May); should not, may not, must, must not, can and can not are unsupported; cannot is not
+    a candidate token, so a statement whose only modal-like word is cannot has no controlling modal. A requirement fails
+    when it has no controlling modal, an unsupported controlling reading, or a supported controlling reading other than
+    its typed modality. Multi-clause deontic contradictions are not inferred here; they reach F1 only as NO_CONTRADICTION
+    finding material (accepted_requirement_modality_inconsistent; ''Accepted requirements must express the same explicit
+    modality as their typed Requirement.modality.''; ''Correct the requirement wording or its governed modality classification.'').
+    PLUMB.F1.REQ.CRITERIA_FOR_BEHAVIOR applies to Accepted functional, interface and security Requirements (otherwise
+    NOT_APPLICABLE: ''No accepted behavioral requirement is in the F1 implementation scope.'') and requires an Accepted
+    AcceptanceCriterion with an Accepted derived_from edge to the Requirement, an Accepted specified_by edge to an Accepted
+    Operation, Process, Rule or QualityScenario, or a governed deferred_verification decision (behavior_requirement_criteria_missing;
     ''Accepted behavioral requirements in implementation scope need acceptance criteria, executable semantics, or an explicit
     deferred-verification decision.''; ''Add governed acceptance criteria or executable semantics, or record a governed
     deferred-verification decision.''). PLUMB.F1.REQ.QUALITY_FINDINGS_CLEAR runs the real plumb_lint::lint_requirement
@@ -3098,13 +3103,30 @@ tasks:
     (decision_required, profile_allow and forbidden), registration counts, a real single-source HR graph (fixtures/hr-leave/requirements.md
     through S0.1 import, S0.4 segmentation and S1.1 compilation in test code, all 32 Requirements set Accepted, mock S1.5
     vocabulary dependencies, LintPolicy::default()) with the Hotfix 031 per-rule expectations (STATEMENT_PRESENT, GROUNDED
-    and TYPE_KNOWN PASS with 32 targets; NO_DUPLICATE_ACCEPTED, NO_CONTRADICTION, MODALITY_EXPLICIT and SUPERSEDED_EXCLUDED
-    PASS; LINEAGE FAIL on all 32 software-level requirements; CRITERIA_FOR_BEHAVIOR FAIL on the 29 functional and security
-    requirements, verified against the compiled payloads; TERMS_RESOLVED FAIL because the S1.5 Term proposals are only
-    Proposed; QUALITY_FINDINGS_CLEAR FAIL with its complete actual target set including HR-030's error-severity RELATIVE_TIME_NO_ANCHOR
-    on 'within 2 seconds') and the honest F1 GateResult FAIL, and a separate minimal synthetic fully-resolved graph (one
-    Accepted operational stakeholder-level shall Requirement with evidence and clean lint) whose F1 gate passes. fixtures/hr-leave/expert-answers.yaml
-    answers downstream functional ambiguities and is not used as F1 resolution.
+    and TYPE_KNOWN PASS with 32 targets; NO_DUPLICATE_ACCEPTED, NO_CONTRADICTION, MODALITY_EXPLICIT (all 32, including
+    HR-010, whose controlling shall precedes a subordinate can) and SUPERSEDED_EXCLUDED PASS; LINEAGE FAIL on all 32 software-level
+    requirements; CRITERIA_FOR_BEHAVIOR FAIL on the 29 functional and security requirements, verified against the compiled
+    payloads; TERMS_RESOLVED FAIL because the S1.5 Term proposals are only Proposed; QUALITY_FINDINGS_CLEAR FAIL with
+    its complete actual target set including HR-030's error-severity RELATIVE_TIME_NO_ANCHOR on 'within 2 seconds') and
+    the honest F1 GateResult FAIL, and a separate minimal synthetic fully-resolved graph (one Accepted operational stakeholder-level
+    shall Requirement with evidence and clean lint) whose F1 gate passes. fixtures/hr-leave/expert-answers.yaml answers
+    downstream functional ambiguities and is not used as F1 resolution.
+  - 'Hotfix 032 test and dependency clarifications. The MODALITY tests cover the HR-010 statement (typed Shall, PASS),
+    ''The system shall ensure the request can become Approved.'' (Shall, PASS), ''The system can ensure that the request
+    shall be stored.'' and ''The system must ensure that the request shall be stored.'' (FAIL), ''The system should not
+    log.'', ''The system may not export.'', ''The system must log.'', ''The system must not log.'', ''The system can log.''
+    and ''The system can not log.'' (FAIL for every typed modality), ''The system shall not log.'' (ShallNot PASS, Shall
+    FAIL), a typed mismatch (FAIL), ''The system shall validate and should store.'' typed Shall (PASS: only the primary
+    controlling modal is the pilot contract; secondary-clause contradiction detection is upstream and out of scope), ''The
+    system shall validate and shall store.'' (PASS), ''The system logs the request.'' and ''The system cannot export.''
+    (FAIL: no controlling modal) and ''The system shall ensure the user cannot export restricted data.'' typed Shall (PASS).
+    crates/plumb-validation/tests/evaluator.rs gains evaluator_f1_requires_supplemental_inputs, evaluator_f1_input_hash_is_bound_to_f1_report
+    and evaluator_i0_ignores_attached_f1_inputs, so cargo test -p plumb-validation evaluator exercises the F1 context
+    extension. The no-plumb-functional rule concerns production dependencies only: plumb-validation''s production dependencies
+    add only plumb-lint, while plumb-functional and plumb-patch are allowed as test-only dev-dependencies to build the
+    real HR pipeline; plumb-inference stays forbidden even as a dev-dependency (F0.13 guard), and tests obtain inference
+    wire values through serde type inference. Cargo.lock lists all three in plumb-validation''s resolved dependencies
+    because it does not distinguish dev-dependencies.'
   tests:
   - cargo test -p plumb-validation evaluator
   - cargo test -p plumb-validation f1

@@ -243,7 +243,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Requirement obligation strength is classified and contradictions in modality are absent.
 - **Pass condition:** Requirement obligation strength is classified and contradictions in modality are absent.
 - **Waiver:** `profile_allow`
-- **Pilot evaluation note:** The typed modality must be explicitly and consistently present in the current statement under the exact pilot lexical contract: shall, shall not, should and may are the supported readings, and must, can, cannot, should not and may not are unsupported.
+- **Pilot evaluation note:** The primary controlling obligation strength must be explicit and agree with the typed `Requirement.modality`. The statement is tokenized into ASCII word runs; the first token among shall, should, may, must and can controls, exactly as in S1.1 requirement compilation, and is negated only by an immediately following `not` separated by spaces, tabs, CR or LF. shall, shall not, should and may are the supported readings; should not, may not, must, must not, can and can not are unsupported; `cannot` is not a candidate token. A missing, unsupported or mismatching controlling reading fails the rule. Modal words after the controlling reading are not evaluated, so secondary-clause contradictions are not inferred by this evaluator and must come through deterministic conflict finding material.
 
 ### `PLUMB.F1.REQ.CRITERIA_FOR_BEHAVIOR` — Behavioral requirements have acceptance criteria or executable semantics
 

@@ -52,7 +52,7 @@ tasks:
 - id: S1.5
   status: done
 - id: S1.6
-  status: blocked
+  status: pending
 - id: S2.1
   status: pending
 - id: S2.2
