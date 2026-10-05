@@ -301,6 +301,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Relationship endpoints exist and any required cardinality/optionality constraints are resolved.
 - **Pass condition:** Relationship endpoints exist and any required cardinality/optionality constraints are resolved.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** An Accepted pilot `DomainRelationship` must have valid `Entity` endpoints, and both `cardinality_from` and `cardinality_to` must be one of the four canonical pilot values `0..1`, `1`, `0..*` and `1..*`. A relationship candidate whose cardinality is unresolved is not a node with a sentinel value; S2.1 reports it as deterministic finding material for this rule with semantic condition key `domain_relationship_cardinality_unresolved:<domainrel-id>`.
 
 ### `PLUMB.F2.STATE.TRANSITION_COMPLETE` — State transitions are complete
 

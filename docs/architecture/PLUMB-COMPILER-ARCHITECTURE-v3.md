@@ -774,6 +774,10 @@ Calculation/Calendar
 SecurityRole/Permission/ResourceScope
 ```
 
+### Pilot domain extraction (S2.1, Hotfix 033)
+
+Accepted Concepts form the closed vocabulary of domain extraction. AI returns Accepted Concept IDs plus exact requirement byte groundings, never new names; Plumb derives every domain name and type from the Accepted Concepts. An Entity derives from an ObjectType Concept. An Attribute has exactly one `has_attribute` owner Entity, a grounded ValueType Concept as its value type and a grounded nullable proposal; nullable is never defaulted. A DomainRelationship derives from a FactType Concept. Cardinality uses the four canonical values `0..1`, `1`, `0..*` and `1..*`, and there is no unresolved sentinel: a missing cardinality yields deterministic `PLUMB.F2.DOMAIN.RELATION_TYPED` finding material until grounded evidence or a governed human decision resolves it. Domain extraction is iterative, so dependent proposals never reference nodes absent from the current Graph; the same inference artifact is replayed after Entity proposals are applied. All domain semantics remain human-confirmed proposals.
+
 ### Gate
 
 `F2`

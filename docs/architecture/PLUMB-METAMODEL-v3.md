@@ -836,6 +836,8 @@ snapshot_semantics
 ownership
 ```
 
+In the pilot profile (Hotfix 033), `cardinality_from` and `cardinality_to` use exactly `0..1`, `1`, `0..*` and `1..*`: standard multiplicity, with `cardinality_from` stated at the `from_entity` end and `cardinality_to` at the `to_entity` end. The payload fields remain required. An unresolved relationship candidate is not represented by inserting a sentinel into `DomainRelationship`; it stays a candidate with deterministic `PLUMB.F2.DOMAIN.RELATION_TYPED` finding material until grounded evidence or a governed human decision resolves both values.
+
 ### 8.8 `State`
 
 Required:
