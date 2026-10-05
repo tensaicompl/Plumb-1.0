@@ -3617,20 +3617,96 @@ tasks:
   - crates/plumb-expr/src/parser.rs
   - crates/plumb-expr/tests/parser.rs
   steps:
-  - Implement literals, dotted identifiers, arithmetic, comparisons, boolean operators, calls, in and lists exactly as v2 M5.1.
-  - Implement Ty variants exactly as inherited v2 type contract unless contradicted by metamodel; preserve Decimal precision, Date, DateTime,
-    Duration, Quantity, Enum, Ref and List.
-  - Parser never executes code and exposes no scripting escape.
+  - Scope (Hotfix 037). S2.4 owns the PlumbExpr lexical grammar, the pest parser, the strong Rust AST (explicit typed syntax variants,
+    not semantically typed nodes), literal parsing, identifier/path and Unit representations, the Ty definitions, the canonical unparser
+    and the parser/property/precedence tests. TypeEnv, semantic type checking, identifier resolution, function signatures, unit arithmetic
+    or conversion, evaluation, CalendarProvider, rounding, working_days, days_between, aggregates, PSG validation, F2 rules and findings
+    belong to S2.5 and later. PLUMB_EXPR_LANGUAGE_VERSION = 1; any incompatible lexical, grammar, precedence or canonical-printing change
+    increments it. The language contract is fixed in the compiler architecture section 'Pilot PlumbExpr language v1 (S2.4, Hotfix 037)'.
+    Cargo files, the HR fixture and every other crate stay unchanged; a genuinely missing dependency is a blocker.
+  - 'Lexical grammar (Hotfix 037). A symbol is [A-Za-z_][A-Za-z0-9_]* (case-sensitive); a dotted identifier is symbol (''.'' symbol)*
+    and is a static symbolic path (no reflection, method call, dynamic lookup or PSG traversal). The exact lowercase reserved words true,
+    false, and, or, not, in, if, then, else, date, datetime, duration and quantity cannot be identifiers or function names; recognition
+    needs a token boundary, so index, android and notified are symbols and Date, If and Annual are ordinary identifiers. ASCII space,
+    tab, CR and LF are insignificant between tokens; whitespace-only input is an Empty error; there are no comments. Literals: Int 0
+    | [1-9][0-9]* as i64 (overflow is a typed error; no leading zeros, suffixes or radix forms); Decimal 0.[0-9]+ | [1-9][0-9]*.[0-9]+
+    as rust_decimal::Decimal preserving scale (no .5, 1., leading zeros, exponents, underscores, NaN or Infinity); Bool true | false;
+    String in double quotes with direct UTF-8 except quote, backslash and ASCII controls, and exactly the escapes \" \\ \n \r \t \b \f;
+    date("YYYY-MM-DD") as a real Gregorian time::Date with year 0000..=9999; datetime("<RFC 3339>") reusing plumb_core::Timestamp (offsets
+    normalized to UTC); duration(<unsigned int or decimal>, <unit>) and quantity(<unsigned int or decimal>, <unit>) with a Decimal value
+    and a Unit, where negative forms use unary minus outside the constructor. A Unit is an open canonical symbol [a-z][a-z0-9_]* compared
+    by exact equality, with no conversions or dimensional algebra. There is no enum, ref or null literal: Annual, Approved or LeaveRequest.employee
+    are identifiers whose meaning S2.5 resolves.'
+  - 'Syntax and precedence (Hotfix 037). Lists [] | [e (, e)*] and calls f() | f(e (, e)*) with no trailing comma; a callee is one simple
+    non-reserved symbol (no a.b(), (a)(b) or first-class functions), any syntactically valid symbol parses, and parsing a call claims
+    nothing about its existence, typing or execution. Unary - and not (right-associative); + - * / %; == != < <= > >= in (no =, <>, ===,
+    not in, &&, ||, !, **, ^ or unary +); and, or; implication -> (right-associative, required by the HR invariant LeaveRequest.status
+    == Approved -> exists(ApprovalRecord)); if <c> then <e> else <e> with mandatory else (no ?:, switch, match or case). Precedence from
+    lowest: 1 if/then/else, 2 ->, 3 or, 4 and, 5 comparisons and in, 6 + -, 7 * / %, 8 unary - and not, 9 primary (literal, identifier,
+    list, call, parenthesized expression). Associativity: -> right; or, and, + -, * / % left; comparisons non-associative, so unparenthesized
+    chains such as a < b < c, a == b == c and a in b in c are rejected; unary right; conditionals nest through their branches. Parentheses
+    group without creating an AST node. There are no assignments, declarations, lambdas, loops, imports, modules, reflection, eval, shell,
+    file, network or environment access, method invocation, indexing, statement separators or blocks.'
+  - 'AST and types (Hotfix 037). Ast is exactly Literal(Literal), Identifier(Identifier), List(Vec<Ast>), Call {function: Symbol, args},
+    Unary {op: UnaryOp, expr}, Binary {op: BinaryOp, left, right} and Conditional {condition, then_expr, else_expr}; Literal is Int(i64),
+    Decimal(Decimal), Bool(bool), String(String), Date(time::Date), DateTime(Timestamp), Duration {value: Decimal, unit: Unit} and Quantity
+    {value: Decimal, unit: Unit} (no Null); UnaryOp {Negate, Not}; BinaryOp {Add, Subtract, Multiply, Divide, Remainder, Equal, NotEqual,
+    LessThan, LessThanOrEqual, GreaterThan, GreaterThanOrEqual, In, And, Or, Implies}. Symbol (one valid non-reserved simple identifier),
+    Identifier (one or more Symbols, displayed dotted without whitespace) and Unit are validated value types with non-public contents
+    exposing parse/new, as_str or segments and Display. Ty is exactly Int, Decimal(u8) (fractional scale 0..=28), Bool, String (added
+    by Hotfix 037 to bind the existing HR String value type), Date, DateTime, Duration(Unit), Quantity(Unit), Enum(Id), Ref(Id) and List(Box<Ty>),
+    with a recursive Ty::validate; there is no Optional, Null, Unknown, Any or Object type and S2.4 decides no assignability or coercion.
+    Expressions in the PSG stay String; the canonical persisted form is the canonical source text, and no AST JSON wire contract, schema
+    or PSG node is introduced.'
+  - 'Parser, unparser and errors (Hotfix 037). grammar.pest is the single source of syntactic acceptance and parser.rs converts pairs
+    to the AST, validating literal values (i64 range, Decimal, Date, Timestamp, Unit, string unescape) after the structural match; no
+    second handwritten expression parser exists. pub fn parse(input: &str) -> Result<Ast, ParseError> and pub fn unparse(ast: &Ast) ->
+    String are pure, plus canonicalize(input) = unparse(parse(input)). Canonical output has no leading or trailing whitespace, one space
+    around binary operators, -a, not a, '', '' separators, no spaces inside () or [], decimals with their stored scale, date("YYYY-MM-DD"),
+    datetime("...000000000Z") with nine fractional digits, duration(5, day) and quantity(0.50, working_day), and emits exactly the parentheses
+    needed for the AST to reparse identically. parse(unparse(ast)) == ast for every parser-produced AST and canonicalization is idempotent.
+    ParseError is a stable typed error distinguishing at least Empty, Syntax, InvalidInteger, InvalidDecimal, InvalidString, InvalidDate,
+    InvalidDateTime and InvalidUnit, each non-Empty class carrying a zero-based UTF-8 byte offset into the input; pest errors are translated
+    and never exposed, and diagnostic prose is not part of the contract. Parsing never evaluates, resolves, calls functions, reads graphs,
+    clocks, files, network or environment, or loads plugins; behavior is deterministic and locale-independent; plumb-expr depends on
+    no graph, functional, validation, inference, patch or store crate.'
+  - Tests (Hotfix 037). All S2.4 acceptance tests live in crates/plumb-expr/tests/parser.rs and run with cargo test -p plumb-expr --test
+    parser. They prove that the HR expressions LeaveRequest.start_date <= LeaveRequest.end_date, LeaveBalance.remaining_days >= 0, LeaveRequest.status
+    == Approved -> exists(ApprovalRecord), ApproveLeaveRequest.actor != LeaveRequest.employee and direct_manager(actor, employee), working_days([start_date,
+    end_date], calendar, inclusive_end) * day_fraction and if leave_type == Annual then RequestedWorkingDays else 0 parse (syntax only;
+    the descriptive no_overlap(...) fixture line is prose and the fixture is not changed), and cover the precedence shapes, chained-comparison
+    and operator rejections, identifiers, keywords, calls, lists, numerics, strings, dates, date-times (datetime("2027-01-20T10:00:00+01:00")
+    canonicalizes to datetime("2027-01-20T09:00:00.000000000Z")), units, durations and quantities, every Ty variant with Decimal(28)
+    valid and Decimal(29) invalid, error classes and byte offsets, a depth-bounded proptest of parse(unparse(ast)) == ast over valid
+    generated ASTs, canonicalization idempotence and that arbitrary UTF-8 input never panics. No test asserts semantic validity of syntactically
+    valid expressions such as 1 + true or foo().
   tests:
-  - cargo test -p plumb-expr parser
+  - cargo test -p plumb-expr --test parser
+  - cargo test -p plumb-expr --no-fail-fast
   acceptance:
-  - Parse/unparse property tests pass and precedence table is covered.
+  - PlumbExpr language v1 has a fully frozen grammar, AST, precedence, associativity and canonical unparser.
+  - The grammar represents the inherited arithmetic/comparison/boolean/call/in/list surface plus the HR-required implication and conditional
+    forms.
+  - Ty retains Int, Decimal, Bool, Date, DateTime, Duration, Quantity, Enum, Ref and List and adds String to represent the existing HR
+    String value type.
+  - Decimal scale is 0..=28; Unit is an open canonical lowercase symbol and no unit conversion is invented.
+  - DateTime literals reuse plumb_core::Timestamp.
+  - Parser and unparser are pure and non-executing; arbitrary call symbols are syntax only and never host-language execution.
+  - parse(unparse(ast)) round-trip property tests pass and the normative precedence table is explicitly tested.
+  - Representative HR invariant/calculation expressions parse without claiming type validity or execution.
+  - No Cargo, fixture, PSG, validation or graph changes occur.
   source_refs:
   - SRCREF-D23EBEA264
   - SRCREF-43093678EA
-  forbidden: []
+  - SRCREF-34CA4A60BC
+  forbidden:
+  - Do not invent a scripting language, execute Call nodes, add assignments, loops, lambdas, dynamic calls, method calls, comments or
+    interpolation; do not silently add operator aliases; do not implement typechecking/evaluation early; do not omit Int/Bool or the
+    Hotfix-037 String type; do not introduce unit conversion; do not persist AST JSON as canonical PSG; do not change Cargo files or
+    the HR fixture.
   commands:
-  - cargo test -p plumb-expr parser
+  - cargo test -p plumb-expr --test parser
+  - cargo test -p plumb-expr --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
   commit_message: 'S2.4: Implement PlumbExpr grammar and typed AST'
@@ -3653,6 +3729,10 @@ tasks:
   - Implement working_days(period, calendar, inclusive), days_between and aggregates using injected CalendarProvider.
   - Do not implement as_of(version) in NOW scope.
   - Implement deterministic plain-English example renderer.
+  - Hotfix 037 forward note. S2.5 must define TypeEnv and semantic type rules over the frozen S2.4 AST, including mappings for PSG value_type
+    strings covering at least the HR types String, Enum, Date, DateTime, Int, Bool and Decimal(n); freeze callable signatures and evaluation
+    rather than dynamically executing arbitrary Call names; and define the exact type semantics of in, implication, conditional, numeric operators,
+    lists, Date/DateTime, Duration/Quantity and unit equality. It must not change the S2.4 grammar merely for implementation convenience.
   tests:
   - cargo test -p plumb-expr eval
   acceptance:
