@@ -3212,10 +3212,15 @@ tasks:
     decided_by an Accepted Agent with agent_kind human, with an Accepted resolves edge to an Accepted Finding whose code is PLUMB.F2.DOMAIN.RELATION_TYPED
     or to an Accepted Question whose finding_ref is such a Finding, and whose answer is exactly {kind: domain_relationship_cardinality,
     candidate_ref: <domainrel-id>, cardinality_from, cardinality_to} with both canonical values and no other field. candidate_ref must
-    equal the recomputed candidate ID (no name or order matching); a malformed claimed decision is DomainError::InvalidGovernedDecision,
-    more than one qualifying decision for one candidate is DomainError::AmbiguousCardinalityDecision, and a qualifying decision is authoritative
-    over inferred cardinalities without creating a conflict. decision.patch_ref and proposal_ref are not reinterpreted; F3 owns decision/application
-    consistency.'
+    equal the recomputed candidate ID (no name or order matching). Scope (Hotfix 034): S2.1 validates only decisions whose candidate_ref
+    names a DomainRelationship candidate of the current validated inference; a domain_relationship_cardinality decision naming any other
+    candidate is ignored by the run and not validated (F3 owns global decision correctness), so a stale or malformed unrelated decision
+    cannot fail analysis of a current candidate. For a current candidate the binding is two-way: a decision naming candidate C must
+    resolve the deterministic RELATION_TYPED Finding of C directly or through a Question whose finding_ref is that Finding, and a qualifying
+    decision resolving that Finding must name C. A malformed claimed current-candidate decision is DomainError::InvalidGovernedDecision,
+    a non-canonical cardinality value in it is DomainError::InvalidCardinality, more than one qualifying decision for one candidate
+    is DomainError::AmbiguousCardinalityDecision, and a qualifying decision is authoritative over inferred cardinalities without creating
+    a conflict. decision.patch_ref and proposal_ref are not reinterpreted; F3 owns decision/application consistency.'
   - 'Request (Hotfix 033). Constants DOMAIN_CONTEXT_VERSION = 1, DOMAIN_OUTPUT_VERSION = 1, DOMAIN_TASK_KIND = domain_extraction, DOMAIN_ORIGIN_EXTENSION
     = plumb_functional:domain_origin; stage S2. DomainContext {version, project_id, requirements: [DomainRequirementContext {requirement_ref,
     statement}], concepts: [DomainConceptContext {concept_ref, name, definition, concept_kind}]} (deny_unknown_fields) contains all
@@ -3261,19 +3266,26 @@ tasks:
     yields DomainIssue::EntityDependencyPending {candidate_ref, concept_refs} and no dependent proposal or cardinality finding, an Entity
     AddNode is never copied into dependent proposals, and after the Entity proposals are applied the same request and inference artifact
     are rerun against the newer Graph.'
-  - Reconciliation and consolidation (Hotfix 033). The active Entity for a Concept is the Proposed or Accepted Entity whose valid domain_origin
-    names that Concept (never name matching); exactly one compatible node is reused, an existing node with the deterministic ID and
-    identical type, payload and origin is already present (no duplicate AddNode), and a node at the deterministic ID with different
-    type, payload or origin identity is DomainError::ExistingCandidateConflict. Several active nodes with the same domain-origin identity
-    are DomainConflict::DuplicateDomainOrigin; differing payloads, or for Attributes differing owners, are DomainConflict::ExistingOriginSemanticConflict
-    with no merge. Otherwise a MergeNodes proposal (keep the single Accepted node, else the lexicographically smallest ID; exact element
-    hashes; MergePolicy::KeepPayloadUnionMetadata; stage S2, MaterialDecision, HumanDecision, confidence None) is returned only if it
-    dry-runs; a refused merge is DomainMergeDisposition::UnavailablePatchConstraint and no edges are rewired, removed or moved. Consolidation
-    never merges distinct Concepts with equal names or malformed inference records. DomainAnalysisResult {proposals, findings, issues,
-    conflicts, merge_dispositions} is canonically ordered; analyze_domain(graph, request, inference, audit) is the analysis API, and
-    DomainError covers at least InvalidInput, InferenceConstruction, InvalidInferenceArtifact, SchemaCompilation, SchemaInvalid, UnknownConceptRef,
+  - 'Reconciliation and duplicate-origin handling (Hotfix 033, revised by Hotfix 034). The active Entity for a Concept is the Proposed
+    or Accepted Entity whose valid domain_origin names that Concept (never name matching); exactly one compatible active node is reused
+    (DomainMergeDisposition::ExistingEquivalent {node_ref}), an existing node with the deterministic ID and identical type, payload
+    and origin is already present (no duplicate AddNode), and a node at the deterministic ID with different type, payload or origin
+    identity is DomainError::ExistingCandidateConflict. Several active nodes with the same domain-origin identity are DomainConflict::DuplicateDomainOrigin
+    with DomainMergeDisposition::UnavailablePatchConstraint {reason: ''MergeNodes is restricted to Requirement or Term nodes; domain-node
+    consolidation is unavailable in S2.1.''} (diagnostic only, never part of any identity or hash); differing payloads are DomainConflict::ExistingOriginSemanticConflict
+    with UnavailablePayloadDifference, and for Attributes differing canonical owners are ExistingOriginSemanticConflict with UnavailableOwnerDifference.
+    S2.1 never emits MergeNodes for Entity, Attribute or DomainRelationship because canonical MergeNodes (metamodel §20.4) is Requirement/Term-only:
+    no domain merge patch is built or dry-run, no keep node is selected or exposed, and no node is deleted, rewritten or rewired. A
+    dependent Attribute or DomainRelationship whose owner or endpoint Entity origin is duplicated or conflicted gets DomainIssue::EntityDependencyConflicted
+    {candidate_ref, concept_refs} and no proposal or cardinality finding until governed repair. DomainMergeDisposition is exactly NotDuplicate,
+    ExistingEquivalent {node_ref}, UnavailablePayloadDifference, UnavailableOwnerDifference and UnavailablePatchConstraint {reason},
+    carried in DomainMergeOutcome {candidate_ref, node_refs (sorted unique), disposition} ordered by candidate_ref. DomainCardinality
+    (wire values exactly 0..1, 1, 0..*, 1..*) and DomainOrigin (exactly the provenance contract) may be public. Distinct Concepts with
+    equal names and malformed inference records are never consolidated. DomainAnalysisResult {proposals, findings, issues, conflicts,
+    merge_dispositions} is canonically ordered; analyze_domain(graph, request, inference, audit) is the analysis API, and DomainError
+    covers at least InvalidInput, InferenceConstruction, InvalidInferenceArtifact, SchemaCompilation, SchemaInvalid, UnknownConceptRef,
     ConceptNotAccepted, WrongConceptKind, InvalidGrounding, GroundingConceptMismatch, DuplicateCandidate, InvalidCardinality, InvalidGovernedDecision,
-    AmbiguousCardinalityDecision, ExistingCandidateConflict, InvalidProposal, ValidationProfile, GeneratedFinding and Core.
+    AmbiguousCardinalityDecision, ExistingCandidateConflict, InvalidProposal, ValidationProfile, GeneratedFinding and Core.'
   - 'Prompt and tests (Hotfix 033). prompts/s2-domain.md instructs: use only supplied Accepted Concept IDs and invent no vocabulary;
     Entity candidates use object_type, relationships fact_type and attribute value types value_type Concepts; ground every Concept use
     with exact UTF-8 byte ranges; return no free names; return an Attribute only when owner, value type and nullable are grounded and
@@ -3281,11 +3293,13 @@ tasks:
     roots, units, precision, enumeration values, data classification, states, transitions or invariants; return only schema-valid JSON.
     Tests hard-code independently computed prompt, schema, request-ID, entity, attribute, domainrel, edge and finding key/ID goldens
     and cover the schema, request, staleness, artifact, grounding, ConceptKind, proposal-structure, two-pass, cardinality-finding, governed-decision,
-    idempotency, conflict, merge, determinism, audit-independence and provider-policy contracts. The real single-source HR pipeline
-    is evaluated without fabricating Accepted Concepts and must report zero Accepted Concepts, AcceptedVocabularyUnavailable and zero
-    domain proposals; a separate synthetic accepted-vocabulary fixture proves the two-pass path as structural conformance, not an accuracy
-    benchmark. Production domain.rs has no file system, network, clock, persistence, provider execution or unsafe code, contains no
-    fixture vocabulary, and constructs no State, Transition, Invariant, Actor or role elements.'
+    idempotency, conflict, duplicate-origin (Entity, Attribute and DomainRelationship duplicates produce DuplicateDomainOrigin, the
+    exact unavailable diagnostic and no proposal, keeper or repair patch; payload and owner disagreement; reversed IDs, statuses and
+    insertion order stay deterministic), unrelated-decision, determinism, audit-independence and provider-policy contracts. The real
+    single-source HR pipeline is evaluated without fabricating Accepted Concepts and must report zero Accepted Concepts, AcceptedVocabularyUnavailable
+    and zero domain proposals; a separate synthetic accepted-vocabulary fixture proves the two-pass path as structural conformance,
+    not an accuracy benchmark. Production domain.rs has no file system, network, clock, persistence, provider execution or unsafe code,
+    contains no fixture vocabulary, and constructs no State, Transition, Invariant, Actor or role elements.'
   tests:
   - cargo test -p plumb-functional domain
   acceptance:
@@ -3296,7 +3310,9 @@ tasks:
     decision.
   - Missing cardinality produces deterministic PLUMB.F2.DOMAIN.RELATION_TYPED finding material; no G_REL_NO_CARD code or unresolved
     sentinel exists.
-  - Safe existing-node consolidation uses canonical MergeNodes only when the generic patch is lossless/applicable.
+  - Existing same-origin domain duplicates are detected deterministically and never auto-selected or merged; because canonical MergeNodes
+    is Requirement/Term-only, Entity/Attribute/DomainRelationship duplicates produce DuplicateDomainOrigin plus an unavailable-patch
+    disposition, while dependent proposals remain blocked until governed repair.
   - The real HR pipeline does not fabricate Accepted Concepts or an entity survival percentage.
   - A synthetic accepted-vocabulary fixture proves the complete two-pass domain proposal path.
   source_refs:
