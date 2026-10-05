@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "classifications"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "classifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attribute_ref",
+          "classification"
+        ],
+        "properties": {
+          "attribute_ref": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+          },
+          "classification": {
+            "enum": [
+              "pii",
+              "financial",
+              "confidential"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -8,7 +8,9 @@
 //! Accepted Concepts (compiler architecture §8).
 //! S2.2 proposes grounded States, triggered Transitions and unqualified Invariants
 //! (compiler architecture §8).
+//! S2.3 classifies Accepted Attributes from a versioned dictionary and inference.
 
+pub mod data_class;
 pub mod domain;
 pub mod duplicates;
 pub mod ears;
@@ -23,6 +25,13 @@ mod vocabulary_exceptions;
 
 // The merge/supersede wrapper enum is reached through the `duplicates` module path, because the
 // F0.14 output-only guard keeps proposal type names out of this file.
+pub use data_class::{
+    analyze_data_classification, build_data_class_request, dictionary_classification,
+    DataClassAnalysisResult, DataClassAttributeContext, DataClassConflict, DataClassContext,
+    DataClassDictionaryHit, DataClassError, DataClassInference, DataClassIssue, DataClassRequest,
+    DataClassSource, PilotDataClass, DATA_CLASS_CONTEXT_VERSION, DATA_CLASS_DICTIONARY,
+    DATA_CLASS_DICTIONARY_VERSION, DATA_CLASS_OUTPUT_VERSION, DATA_CLASS_TASK_KIND,
+};
 pub use domain::{
     analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,
     DomainConceptContext, DomainConflict, DomainContext, DomainError, DomainGrounding,
