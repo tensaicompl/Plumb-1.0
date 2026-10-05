@@ -8,6 +8,7 @@ plumb-core = { path = "../plumb-core" }
 plumb-artifacts = { path = "../plumb-artifacts" }
 plumb-psg = { path = "../plumb-psg" }
 plumb-import = { path = "../plumb-import" }
+plumb-lint = { path = "../plumb-lint" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -17,6 +18,8 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+plumb-functional = { path = "../plumb-functional" }
+plumb-patch = { path = "../plumb-patch" }
 
 [features]
 default = []

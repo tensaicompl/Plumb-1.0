@@ -1942,6 +1942,154 @@ mod evaluator_contract {
         }
     }
 
+    // ------------------------------------------------------------------ F1 context extension
+
+    /// Valid F1 inputs for `graph`: one lint input per Accepted Requirement, no vocabulary
+    /// dependencies, no analysis findings.
+    fn f1_inputs(graph: &Graph, policy: plumb_lint::LintPolicy) -> F1ValidationInputs {
+        let requirements = graph
+            .nodes()
+            .values()
+            .filter(|n| n.status == plumb_psg::ElementStatus::Accepted)
+            .filter_map(|n| match &n.payload {
+                plumb_psg::NodePayload::Requirement(r) => Some(F1RequirementValidationInput {
+                    requirement_ref: n.id.clone(),
+                    vocabulary_dependencies: vec![],
+                    lint_input: plumb_lint::LintInput {
+                        requirement_ref: n.id.clone(),
+                        statement: r.statement.clone(),
+                        evidence_refs: n.evidence.iter().map(|e| e.as_id().clone()).collect(),
+                        source_anchor: None,
+                        term_context: None,
+                    },
+                }),
+                _ => None,
+            })
+            .collect();
+        F1ValidationInputs::new(requirements, vec![], policy)
+    }
+
+    fn f1_registry() -> EvaluatorRegistry {
+        let mut registry = EvaluatorRegistry::new(metadata());
+        rules::register_i0_evaluators(&mut registry).unwrap();
+        rules::register_f1_evaluators(&mut registry).unwrap();
+        registry
+    }
+
+    #[test]
+    fn evaluator_f1_requires_supplemental_inputs() {
+        let graph = plain_graph();
+        let registry = f1_registry();
+        assert!(registry.missing_for_gate(GateId::F1).is_empty());
+        let ctx = context(&graph, registry.metadata(), ValidationPolicy::default());
+        // A fully bound F1 gate still refuses to run without the supplemental inputs.
+        assert_eq!(
+            registry.evaluate_gate(GateId::F1, &graph, &ctx),
+            Err(EvaluationError::InvalidContext(
+                "F1 validation inputs are required".into()
+            ))
+        );
+        // Inputs must cover exactly the Accepted Requirements.
+        let empty = F1ValidationInputs::new(vec![], vec![], plumb_lint::LintPolicy::default());
+        assert!(matches!(
+            ctx.clone().with_f1_inputs(&graph, empty),
+            Err(EvaluationError::InvalidContext(_))
+        ));
+        // A stale lint statement is rejected.
+        let mut stale = f1_inputs(&graph, plumb_lint::LintPolicy::default());
+        stale.requirements[0].lint_input.statement = "The system shall drift.".into();
+        assert!(matches!(
+            ctx.clone().with_f1_inputs(&graph, stale),
+            Err(EvaluationError::InvalidContext(_))
+        ));
+        let ctx = ctx
+            .with_f1_inputs(&graph, f1_inputs(&graph, plumb_lint::LintPolicy::default()))
+            .unwrap();
+        let report = registry.evaluate_gate(GateId::F1, &graph, &ctx).unwrap();
+        assert_eq!(report.gate, GateId::F1);
+        assert_eq!(report.rules.len(), 11);
+    }
+
+    #[test]
+    fn evaluator_f1_input_hash_is_bound_to_f1_report() {
+        let graph = plain_graph();
+        let registry = f1_registry();
+        let base = context(&graph, registry.metadata(), ValidationPolicy::default());
+        let inputs = f1_inputs(&graph, plumb_lint::LintPolicy::default());
+        let expected = inputs.content_hash().unwrap();
+        assert_eq!(expected.kind(), HashKind::Generic);
+        let ctx = base.clone().with_f1_inputs(&graph, inputs).unwrap();
+        let report = registry.evaluate_gate(GateId::F1, &graph, &ctx).unwrap();
+        assert_eq!(report.f1_input_hash, Some(expected.clone()));
+        let wire = serde_json::to_value(&report).unwrap();
+        assert_eq!(wire["f1_input_hash"], json!(expected.to_string()));
+
+        // Different inputs bind a different hash.
+        let mut policy = plumb_lint::LintPolicy::default();
+        policy.severity_overrides.insert(
+            plumb_lint::LintRuleId::NumberNoUnit,
+            plumb_lint::LintSeverity::Warn,
+        );
+        let other = f1_inputs(&graph, policy);
+        let other_hash = other.content_hash().unwrap();
+        assert_ne!(other_hash, expected);
+        let other_ctx = base.with_f1_inputs(&graph, other).unwrap();
+        let other_report = registry
+            .evaluate_gate(GateId::F1, &graph, &other_ctx)
+            .unwrap();
+        assert_eq!(other_report.f1_input_hash, Some(other_hash));
+        assert_ne!(
+            other_report.content_hash().unwrap(),
+            report.content_hash().unwrap()
+        );
+
+        // An F1 report without the hash, or with a non-Generic hash, is malformed.
+        let mut missing = report.clone();
+        missing.f1_input_hash = None;
+        assert!(missing.validate().is_err());
+        let mut wire_missing = wire.clone();
+        wire_missing
+            .as_object_mut()
+            .unwrap()
+            .remove("f1_input_hash");
+        assert!(serde_json::from_value::<GateReport>(wire_missing).is_err());
+        let mut wrong_kind = report.clone();
+        wrong_kind.f1_input_hash = Some(graph.semantic_hash().unwrap());
+        assert!(wrong_kind.validate().is_err());
+        assert_eq!(serde_json::from_value::<GateReport>(wire).unwrap(), report);
+    }
+
+    #[test]
+    fn evaluator_i0_ignores_attached_f1_inputs() {
+        let graph = plain_graph();
+        let registry = f1_registry();
+        let ctx = context(&graph, registry.metadata(), ValidationPolicy::default());
+        let plain = registry.evaluate_gate(GateId::I0, &graph, &ctx).unwrap();
+        let with_inputs = ctx
+            .with_f1_inputs(&graph, f1_inputs(&graph, plumb_lint::LintPolicy::default()))
+            .unwrap();
+        let attached = registry
+            .evaluate_gate(GateId::I0, &graph, &with_inputs)
+            .unwrap();
+        assert_eq!(attached.f1_input_hash, None);
+        assert!(serde_json::to_value(&attached)
+            .unwrap()
+            .get("f1_input_hash")
+            .is_none());
+        assert_eq!(
+            serde_json::to_vec(&attached).unwrap(),
+            serde_json::to_vec(&plain).unwrap()
+        );
+        // A non-F1 report carrying an F1 input hash is malformed.
+        let mut tampered = plain.clone();
+        tampered.f1_input_hash = Some(
+            f1_inputs(&graph, plumb_lint::LintPolicy::default())
+                .content_hash()
+                .unwrap(),
+        );
+        assert!(tampered.validate().is_err());
+    }
+
     #[test]
     fn production_rule_modules_require_explicit_registration() {
         // Routing only: gate module declarations and registration re-exports, no function

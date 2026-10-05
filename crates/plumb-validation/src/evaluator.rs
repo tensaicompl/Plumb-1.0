@@ -11,12 +11,14 @@ use std::fmt;
 
 use plumb_artifacts::{Artifact, ArtifactKind};
 use plumb_core::{canonical_hash, CoreError, GateId, Hash, HashKind, Id};
-use plumb_psg::Graph;
+use plumb_lint::{LintInput, LintPolicy, LintTextRange};
+use plumb_psg::{AgentKind, ElementStatus, Graph, NodePayload, NodeType};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::external::{ExternalValidationArtifact, ExternalValidationError};
-use crate::finding::{is_clean_text, GeneratedFinding, ViolationFacts};
+use crate::finding::{finding_id, finding_key, is_clean_text, GeneratedFinding, ViolationFacts};
 use crate::model::{
     RuleMetadata, RuleResultState, Severity, UnknownVocabularyValue, ValidationError, WaiverPolicy,
 };
@@ -258,6 +260,10 @@ pub struct ValidationContext {
 
     /// Already-acquired evidence artifacts, sorted by hash and unique.
     pub evidence_artifacts: Vec<ValidationArtifactInput>,
+
+    /// The deterministic F1 supplemental inputs; required by F1 and ignored by other gates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub f1_inputs: Option<F1ValidationInputs>,
 }
 
 impl ValidationContext {
@@ -299,6 +305,20 @@ impl ValidationContext {
             policy,
             external_validation_artifacts: keyed.into_iter().map(|(_, a)| a).collect(),
             evidence_artifacts,
+            f1_inputs: None,
+        })
+    }
+
+    /// Validates `inputs` against `graph` and installs them as the F1 supplemental inputs.
+    pub fn with_f1_inputs(
+        self,
+        graph: &Graph,
+        inputs: F1ValidationInputs,
+    ) -> Result<ValidationContext, EvaluationError> {
+        inputs.validate_for(graph)?;
+        Ok(ValidationContext {
+            f1_inputs: Some(inputs),
+            ..self
         })
     }
 
@@ -366,7 +386,11 @@ impl ValidationContext {
             "external validation artifact",
             &self.validation_artifact_refs()?,
         )
-        .map_err(invalid)
+        .map_err(invalid)?;
+        if let Some(inputs) = &self.f1_inputs {
+            inputs.validate_for(graph)?;
+        }
+        Ok(())
     }
 }
 
@@ -863,6 +887,10 @@ pub struct GateReport {
     pub waivers: Vec<AppliedWaiver>,
 
     pub summary: GateSummary,
+
+    /// The hash of the F1 supplemental inputs: present exactly for F1 reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub f1_input_hash: Option<Hash>,
 }
 
 impl GateReport {
@@ -904,6 +932,19 @@ impl GateReport {
         }
         require_strictly_sorted("validation artifact ref", &self.validation_artifact_refs)
             .map_err(invalid)?;
+        match (&self.f1_input_hash, self.gate == GateId::F1) {
+            (Some(hash), true) if hash.kind() == HashKind::Generic => {}
+            (None, false) => {}
+            (Some(hash), true) => {
+                return Err(invalid(format!(
+                    "f1_input_hash {hash} is not a Generic hash"
+                )))
+            }
+            (None, true) => return Err(invalid("an F1 report has no f1_input_hash".into())),
+            (Some(_), false) => {
+                return Err(invalid("only F1 reports carry an f1_input_hash".into()))
+            }
+        }
 
         for rule in &self.rules {
             rule.validate()?;
@@ -1014,6 +1055,8 @@ struct GateReportFields {
     findings: Vec<GeneratedFinding>,
     waivers: Vec<AppliedWaiver>,
     summary: GateSummary,
+    #[serde(default)]
+    f1_input_hash: Option<Hash>,
 }
 
 impl TryFrom<GateReportFields> for GateReport {
@@ -1035,6 +1078,7 @@ impl TryFrom<GateReportFields> for GateReport {
             findings: f.findings,
             waivers: f.waivers,
             summary: f.summary,
+            f1_input_hash: f.f1_input_hash,
         };
         report.validate()?;
         Ok(report)
@@ -1131,6 +1175,17 @@ impl EvaluatorRegistry {
                 rule_ids: missing.into_iter().map(str::to_owned).collect(),
             });
         }
+        // F1 reads its supplemental inputs; every other gate ignores them entirely.
+        let f1_input_hash = if gate == GateId::F1 {
+            let Some(inputs) = &ctx.f1_inputs else {
+                return Err(EvaluationError::InvalidContext(
+                    "F1 validation inputs are required".into(),
+                ));
+            };
+            Some(inputs.content_hash()?)
+        } else {
+            None
+        };
 
         let mut rules = Vec::new();
         let mut findings = Vec::new();
@@ -1164,6 +1219,7 @@ impl EvaluatorRegistry {
             findings,
             waivers,
             summary,
+            f1_input_hash,
         };
         report.validate()?;
         Ok(report)
@@ -1270,4 +1326,361 @@ fn evaluate_rule(
         finding,
         waiver,
     })
+}
+
+// ============================================================================ F1 supplemental inputs
+
+/// The deterministic F1 supplemental inputs compiled before validation (plan S1.6): one entry
+/// per Accepted Requirement, the current upstream finding material and the lint policy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F1ValidationInputs {
+    pub requirements: Vec<F1RequirementValidationInput>,
+    pub analysis_findings: Vec<GeneratedFinding>,
+    pub lint_policy: LintPolicy,
+}
+
+// Every field compares structurally without floating point, so equality is reflexive.
+impl Eq for F1ValidationInputs {}
+
+/// The F1 inputs of one Accepted Requirement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F1RequirementValidationInput {
+    pub requirement_ref: Id,
+    pub vocabulary_dependencies: Vec<F1VocabularyDependency>,
+    pub lint_input: LintInput,
+}
+
+/// One semantic vocabulary dependency of the current statement, resolved upstream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F1VocabularyDependency {
+    pub normalized_key: String,
+    pub range: LintTextRange,
+    pub resolution: F1VocabularyResolution,
+}
+
+/// How a vocabulary dependency resolves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum F1VocabularyResolution {
+    AcceptedTerm {
+        term_ref: Id,
+    },
+    AcceptedConcept {
+        concept_ref: Id,
+    },
+    ExternalIdentifier {
+        decision_ref: Id,
+        identifier: String,
+    },
+    Unresolved,
+}
+
+/// The analysis-finding codes F1 supplemental inputs may carry.
+pub const F1_ANALYSIS_FINDING_CODES: [&str; 3] = [
+    "PLUMB.F1.REQ.NO_CONTRADICTION",
+    "PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED",
+    "PLUMB.F1.REQ.TERMS_RESOLVED",
+];
+
+impl F1ValidationInputs {
+    /// Builds canonical inputs: requirements sorted by ID, dependencies by start, end and key,
+    /// findings by ID. Validation against a graph happens in
+    /// [`ValidationContext::with_f1_inputs`].
+    pub fn new(
+        mut requirements: Vec<F1RequirementValidationInput>,
+        mut analysis_findings: Vec<GeneratedFinding>,
+        lint_policy: LintPolicy,
+    ) -> F1ValidationInputs {
+        for requirement in &mut requirements {
+            requirement
+                .vocabulary_dependencies
+                .sort_by(|a, b| dependency_key(a).cmp(&dependency_key(b)));
+        }
+        requirements.sort_by(|a, b| a.requirement_ref.cmp(&b.requirement_ref));
+        analysis_findings.sort_by(|a, b| a.id.cmp(&b.id));
+        F1ValidationInputs {
+            requirements,
+            analysis_findings,
+            lint_policy,
+        }
+    }
+
+    /// Generic SHA-256 of the RFC 8785 canonical JSON of the complete inputs.
+    pub fn content_hash(&self) -> Result<Hash, CoreError> {
+        canonical_hash(HashKind::Generic, self)
+    }
+
+    /// Requires exact Accepted Requirement coverage, current statements and evidence, valid
+    /// canonical dependencies and resolutions, valid governed decisions and exact finding
+    /// identities. Stale or malformed inputs are a context error, never a rule result.
+    pub fn validate_for(&self, graph: &Graph) -> Result<(), EvaluationError> {
+        let invalid = EvaluationError::InvalidContext;
+        let markers = governed_markers(graph).map_err(invalid)?;
+        let accepted: Vec<&Id> = graph
+            .node_ids_by_type(NodeType::Requirement)
+            .iter()
+            .filter(|id| {
+                graph
+                    .node(id)
+                    .is_some_and(|n| n.status == ElementStatus::Accepted)
+            })
+            .collect();
+        let supplied: Vec<&Id> = self
+            .requirements
+            .iter()
+            .map(|r| &r.requirement_ref)
+            .collect();
+        require_strictly_sorted("F1 requirement input", &supplied).map_err(invalid)?;
+        if supplied != accepted {
+            return Err(invalid(
+                "F1 requirement inputs must cover exactly the Accepted Requirements".into(),
+            ));
+        }
+        for input in &self.requirements {
+            validate_requirement_input(graph, input, &markers).map_err(invalid)?;
+        }
+        let finding_ids: Vec<&Id> = self.analysis_findings.iter().map(|f| &f.id).collect();
+        require_strictly_sorted("F1 analysis finding", &finding_ids).map_err(invalid)?;
+        for finding in &self.analysis_findings {
+            validate_analysis_finding(graph, finding).map_err(invalid)?;
+        }
+        Ok(())
+    }
+}
+
+fn dependency_key(d: &F1VocabularyDependency) -> (u64, u64, &str) {
+    (d.range.start, d.range.end, d.normalized_key.as_str())
+}
+
+fn validate_requirement_input(
+    graph: &Graph,
+    input: &F1RequirementValidationInput,
+    markers: &[GovernedMarker],
+) -> Result<(), String> {
+    let id = &input.requirement_ref;
+    let node = graph
+        .node(id)
+        .ok_or_else(|| format!("requirement {id} does not exist"))?;
+    let NodePayload::Requirement(requirement) = &node.payload else {
+        return Err(format!("{id} is not a Requirement"));
+    };
+    let lint = &input.lint_input;
+    if &lint.requirement_ref != id {
+        return Err(format!("lint input of {id} names {}", lint.requirement_ref));
+    }
+    if lint.statement != requirement.statement {
+        return Err(format!("lint input statement of {id} is stale"));
+    }
+    let evidence: BTreeSet<&Id> = node.evidence.iter().map(|e| e.as_id()).collect();
+    if lint.evidence_refs.iter().collect::<Vec<_>>() != evidence.into_iter().collect::<Vec<_>>() {
+        return Err(format!("lint input evidence_refs of {id} are stale"));
+    }
+    if lint.term_context.is_some() {
+        return Err(format!(
+            "lint input of {id} carries a term context; TERMS_RESOLVED owns vocabulary"
+        ));
+    }
+    let statement = &requirement.statement;
+    let deps = &input.vocabulary_dependencies;
+    for pair in deps.windows(2) {
+        if dependency_key(&pair[0]) >= dependency_key(&pair[1]) {
+            return Err(format!(
+                "vocabulary dependencies of {id} are not strictly sorted"
+            ));
+        }
+        if pair[1].range.start < pair[0].range.end {
+            return Err(format!("vocabulary dependencies of {id} overlap"));
+        }
+    }
+    for dep in deps {
+        if !is_clean_text(&dep.normalized_key) {
+            return Err(format!(
+                "vocabulary key {:?} of {id} is not clean",
+                dep.normalized_key
+            ));
+        }
+        let (start, end) = (
+            usize::try_from(dep.range.start).map_err(|e| e.to_string())?,
+            usize::try_from(dep.range.end).map_err(|e| e.to_string())?,
+        );
+        if start >= end
+            || end > statement.len()
+            || !statement.is_char_boundary(start)
+            || !statement.is_char_boundary(end)
+        {
+            return Err(format!(
+                "vocabulary range {start}..{end} of {id} is invalid"
+            ));
+        }
+        match &dep.resolution {
+            F1VocabularyResolution::AcceptedTerm { term_ref } => {
+                accepted_payload(graph, term_ref, |p| matches!(p, NodePayload::Term(_)))?;
+            }
+            F1VocabularyResolution::AcceptedConcept { concept_ref } => {
+                accepted_payload(graph, concept_ref, |p| matches!(p, NodePayload::Concept(_)))?;
+            }
+            F1VocabularyResolution::ExternalIdentifier {
+                decision_ref,
+                identifier,
+            } => {
+                if !is_clean_text(identifier) {
+                    return Err(format!("external identifier {identifier:?} is not clean"));
+                }
+                let governed = markers.iter().any(|m| {
+                    &m.decision_ref == decision_ref
+                        && m.marker
+                            == Marker::ExternalVocabularyIdentifier {
+                                requirement_ref: id.clone(),
+                                normalized_key: dep.normalized_key.clone(),
+                                identifier: identifier.clone(),
+                            }
+                });
+                if !governed {
+                    return Err(format!(
+                        "{decision_ref} is not a governed external identifier decision for {id}"
+                    ));
+                }
+            }
+            F1VocabularyResolution::Unresolved => {}
+        }
+    }
+    Ok(())
+}
+
+fn accepted_payload(
+    graph: &Graph,
+    id: &Id,
+    expected: impl Fn(&NodePayload) -> bool,
+) -> Result<(), String> {
+    match graph.node(id) {
+        Some(node) if node.status == ElementStatus::Accepted && expected(&node.payload) => Ok(()),
+        _ => Err(format!(
+            "{id} is not an Accepted node of the claimed vocabulary type"
+        )),
+    }
+}
+
+fn validate_analysis_finding(graph: &Graph, finding: &GeneratedFinding) -> Result<(), String> {
+    let payload = &finding.payload;
+    let id = &finding.id;
+    if !F1_ANALYSIS_FINDING_CODES.contains(&payload.code.as_str()) {
+        return Err(format!("analysis finding {id} has code {}", payload.code));
+    }
+    if payload.family != "F1" {
+        return Err(format!("analysis finding {id} is not of family F1"));
+    }
+    if finding.key.kind() != HashKind::Generic {
+        return Err(format!("analysis finding {id} key is not Generic"));
+    }
+    require_strictly_sorted("affected ref", &payload.affected_refs)?;
+    let key = finding_key(
+        &payload.code,
+        &payload.affected_refs,
+        &finding.semantic_condition_key,
+    )
+    .map_err(|e| e.to_string())?;
+    if key != finding.key || finding_id(&key).map_err(|e| e.to_string())? != *id {
+        return Err(format!(
+            "analysis finding {id} identity does not match its content"
+        ));
+    }
+    for target in &payload.affected_refs {
+        if !graph
+            .node(target)
+            .is_some_and(|n| matches!(n.payload, NodePayload::Requirement(_)))
+        {
+            return Err(format!(
+                "analysis finding {id} targets non-Requirement {target}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================ governed decisions
+
+/// The S1.6 decision markers, decoded exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum Marker {
+    HumanRequirementOrigin {
+        requirement_ref: Id,
+    },
+    ExternalVocabularyIdentifier {
+        requirement_ref: Id,
+        normalized_key: String,
+        identifier: String,
+    },
+    DeferredVerification {
+        requirement_ref: Id,
+    },
+}
+
+const MARKER_KINDS: [&str; 3] = [
+    "human_requirement_origin",
+    "external_vocabulary_identifier",
+    "deferred_verification",
+];
+
+/// A governed S1.6 decision marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GovernedMarker {
+    pub(crate) decision_ref: Id,
+    pub(crate) marker: Marker,
+}
+
+/// Every Accepted decision claiming an S1.6 marker kind, validated by the common governance
+/// check: exact marker, clean rationale and an Accepted human Agent as decider. Unrelated
+/// decision kinds and non-Accepted decisions are ignored; a malformed or ungoverned claim is
+/// an error.
+pub(crate) fn governed_markers(graph: &Graph) -> Result<Vec<GovernedMarker>, String> {
+    let mut out = Vec::new();
+    for id in graph.node_ids_by_type(NodeType::ResolutionDecision) {
+        let Some(node) = graph.node(id) else {
+            continue;
+        };
+        let NodePayload::ResolutionDecision(decision) = &node.payload else {
+            continue;
+        };
+        let claimed = decision
+            .answer
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| MARKER_KINDS.contains(&kind));
+        if node.status != ElementStatus::Accepted || !claimed {
+            continue;
+        }
+        let marker: Marker = serde_json::from_value(decision.answer.clone())
+            .map_err(|e| format!("decision {id} has a malformed marker: {e}"))?;
+        if let Marker::ExternalVocabularyIdentifier {
+            normalized_key,
+            identifier,
+            ..
+        } = &marker
+        {
+            if !is_clean_text(normalized_key) || !is_clean_text(identifier) {
+                return Err(format!("decision {id} has unclean marker text"));
+            }
+        }
+        if !decision.rationale.as_deref().is_some_and(is_clean_text) {
+            return Err(format!("decision {id} lacks a clean rationale"));
+        }
+        let human = graph.node(&decision.decided_by).is_some_and(|agent| {
+            agent.status == ElementStatus::Accepted
+                && matches!(&agent.payload, NodePayload::Agent(a) if a.agent_kind == AgentKind::Human)
+        });
+        if !human {
+            return Err(format!(
+                "decision {id} is not decided by an Accepted human Agent"
+            ));
+        }
+        out.push(GovernedMarker {
+            decision_ref: id.clone(),
+            marker,
+        });
+    }
+    Ok(out)
 }
