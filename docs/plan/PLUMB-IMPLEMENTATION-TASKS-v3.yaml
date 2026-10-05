@@ -3723,6 +3723,7 @@ tasks:
   - crates/plumb-expr/src/calendar.rs
   - crates/plumb-expr/src/render.rs
   - crates/plumb-expr/tests/eval.rs
+  - crates/plumb-expr/tests/parser.rs
   steps:
   - 'Scope and boundary (Hotfix 038). S2.5 implements TypeEnv, type checking over the frozen S2.4 AST, the runtime Value model, ValueEnv, deterministic
     evaluation, Ref navigation, numeric coercion, unit-aware typing, enum membership, the frozen callable set, date arithmetic, CalendarProvider,
@@ -3731,7 +3732,10 @@ tasks:
     store or inference crate, does not inspect graphs, search by names, infer enum IDs, read fixtures, configuration or the clock, persist anything
     or call external code; TypeEnv, ValueEnv, calendars and predicate services are explicit inputs. Not in S2.5: PSG adapters, calculations,
     decision tables, scenarios, F2, findings, questions, graph mutation, dynamic function execution and as_of. lib.rs declares and exports the
-    new modules; the S2.4 modules and Cargo files are unchanged, and a needed language change or dependency is a blocker.'
+    new modules; the S2.4 modules and Cargo files are unchanged, and a needed language change or dependency is a blocker. Hotfix 039: S2.5 may
+    modify crates/plumb-expr/tests/parser.rs only to maintain parser_source_guard across the intentional S2.4 -> S2.5 stage boundary (lib.rs
+    stays under the common capability/dependency guard, while typecheck, TypeEnv, CalendarProvider and working_days( stay forbidden only in
+    ast.rs, types.rs, parser.rs and grammar.pest); grammar, parser behavior, parser assertions, AST tests and parser properties remain frozen.'
   - 'Types and environments (Hotfix 038). TypeEnv holds root bindings Symbol -> Ty (rebinding with a different Ty is a BindingConflict, identical
     rebinding is idempotent), Ref field schemas ref type Id -> Symbol -> Ty, enum members enum Id -> set of Symbols, and an optional calendar
     ref type. A dotted identifier resolves its root binding and then requires every preceding type to be Ref(R) with the next symbol in R''s
@@ -3780,22 +3784,26 @@ tasks:
     an unknown calendar is UnknownCalendar with no fallback; there is no clock, file, timezone or holiday-service lookup, and working_days is
     Date-only (the HR Europe/Warsaw time zone is not consulted and no DateTime calendar conversion exists). RoundingSpec is HalfUp {scale},
     HalfEven {scale}, Floor {scale}, Ceil {scale} (scale 0..=28, else InvalidScale) or ToStep {step} (step > 0 and representable, else InvalidStep).
-    HalfUp rounds midpoints away from zero (-1.235 at 2 -> -1.24), HalfEven to the even final digit, Floor toward negative infinity, Ceil toward
-    positive infinity, ToStep to the nearest multiple of the step with ties away from zero, rescaled to the step's scale. round_decimal(value,
-    spec) -> Result<Decimal, RoundingError> uses no floats. The canonical Calculation.rounding string is exactly half_up(<scale>), half_even(<scale>),
-    floor(<scale>), ceil(<scale>) or to_step(<positive decimal>), case-sensitive without whitespace, with parse(display(spec)) == spec and every
-    other form rejected.
+    Scale-based results carry exactly the requested scale (1.2 with half_up(2) is 1.20). In to_step(<positive-decimal>), decimal means rust_decimal
+    value syntax, so an integer-valued step such as to_step(5) is valid; exponential notation stays forbidden (Hotfix 039). HalfUp rounds midpoints
+    away from zero (-1.235 at 2 -> -1.24), HalfEven to the even final digit, Floor toward negative infinity, Ceil toward positive infinity,
+    ToStep to the nearest multiple of the step with ties away from zero, rescaled to the step's scale. round_decimal(value, spec) -> Result<Decimal,
+    RoundingError> uses no floats. The canonical Calculation.rounding string is exactly half_up(<scale>), half_even(<scale>), floor(<scale>),
+    ceil(<scale>) or to_step(<positive decimal>), case-sensitive without whitespace, with parse(display(spec)) == spec and every other form
+    rejected.
   - 'Evaluation and rendering (Hotfix 038). EvalContext {types, values, calendars: &dyn CalendarProvider, predicates: &dyn PredicateProvider};
     eval(ast, context) -> Result<Value, EvalError> type-checks before evaluating and never proceeds dynamically typed. EvalError distinguishes
     at least Type, MissingValue, ValueTypeMismatch, DivisionByZero, Overflow, UnitMismatch, InvalidPeriod, InvalidPeriodLength, NonIntegralDateDuration,
     DateOutOfRange, Calendar, Predicate and EmptyAggregate; nothing panics on user input and nothing falls back to NaN, null, zero, empty strings
     or a default calendar. Contextual enum members evaluate to Value::Enum without a ValueEnv binding; enums compare only within one enum Id
-    and Refs by value_ref within one type. render_example(ast, values, result) renders exactly ''Given <id> = <value>, ...; <canonical expression>
-    evaluates to <result>.'' with every referenced identifier deduplicated and sorted by dotted text (absent values as <missing>), or ''<canonical
-    expression> evaluates to <result>.'' without identifiers; values render as Int, Decimal with its scale, true/false, S2.4-escaped double-quoted
-    strings, YYYY-MM-DD, canonical timestamps, ''<decimal> <unit>'' for durations and quantities, the member symbol for enums, value_ref for
-    refs and [v1, v2] for lists. There is no LLM, translation or randomness. TypeEnv, ValueEnv, Value and RoundingSpec are not a persisted wire
-    contract.'
+    and Refs by value_ref within one type. render_example(ast, types, values, result) (Hotfix 039) renders exactly ''Given <id> = <value>, ...;
+    <canonical expression> evaluates to <result>.'' or ''<canonical expression> evaluates to <result>.'' when no input is listed; a referenced
+    identifier is a Given input iff its root symbol is an explicit TypeEnv root binding (even if the same spelling is an enum member elsewhere),
+    inputs are deduplicated and sorted by dotted text, a known input without a runtime value renders as <missing>, and a simple identifier without
+    a root binding that typing resolves as a contextual enum member is a constant and is never listed (LeaveRequest.status == Approved lists
+    no Approved = <missing>); values render as Int, Decimal with its scale, true/false, S2.4-escaped double-quoted strings, YYYY-MM-DD, canonical
+    timestamps, ''<decimal> <unit>'' for durations and quantities, the member symbol for enums, value_ref for refs and [v1, v2] for lists. There
+    is no LLM, translation or randomness. TypeEnv, ValueEnv, Value and RoundingSpec are not a persisted wire contract.'
   - 'Tests (Hotfix 038). All S2.5 acceptance tests live in crates/plumb-expr/tests/eval.rs and run with cargo test -p plumb-expr --test eval;
     cargo test -p plumb-expr --no-fail-fast keeps the S2.4 parser tests green. Tests compile the immutable HR fixture values directly (no runtime
     YAML): calendar cal:PL-Office with Saturday and Sunday weekends and holidays 2027-01-01, 2027-01-06, 2027-05-03, 2027-11-11, 2027-12-25
@@ -3809,9 +3817,10 @@ tasks:
     remaining_days and RequestedWorkingDays as Quantity(working_day), person refs, calendar ref) type-checks the six S2.4 HR expressions to
     Bool, Bool, Bool, Bool, Quantity(working_day) and Quantity(working_day), rejects remaining_days >= 1 and the conditional with else 1, evaluates
     the half-day formula to exactly 0.5 working_day and the conditional to 2 or 0 working_day, and covers exists, direct_manager with a test
-    PredicateProvider, short-circuit and missing-value cases, aggregates, renderer snapshots, unknown functions, as_of, at least 256 generated
-    well-typed expressions evaluating without type errors, unit-mismatch rejection and a source guard. No end-to-end scenario (SCN-004..SCN-008)
-    is claimed.'
+    PredicateProvider, short-circuit and missing-value cases, aggregates, renderer snapshots (Hotfix 039: leave_type == Annual lists only leave_type
+    and never Annual = <missing>, while exists(ApprovalRecord) with a known but absent root still lists ApprovalRecord = <missing>), the explicit
+    to_step(5) round trip and the 1.2 half_up(2) -> 1.20 padding, unknown functions, as_of, at least 256 generated well-typed expressions evaluating
+    without type errors, unit-mismatch rejection and a source guard. No end-to-end scenario (SCN-004..SCN-008) is claimed.'
   tests:
   - cargo test -p plumb-expr --test eval
   - cargo test -p plumb-expr --no-fail-fast

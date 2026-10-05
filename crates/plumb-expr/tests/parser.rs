@@ -801,14 +801,16 @@ fn parser_ty_variants() {
 
 #[test]
 fn parser_source_guard() {
-    let sources = [
-        ("lib.rs", include_str!("../src/lib.rs")),
+    let syntax_modules = [
         ("ast.rs", include_str!("../src/ast.rs")),
         ("types.rs", include_str!("../src/types.rs")),
         ("parser.rs", include_str!("../src/parser.rs")),
         ("grammar.pest", include_str!("../src/grammar.pest")),
     ];
-    for (name, source) in sources {
+    // Common capability/dependency guard: lib.rs and the S2.4 syntax modules.
+    let mut guarded = vec![("lib.rs", include_str!("../src/lib.rs"))];
+    guarded.extend(syntax_modules);
+    for (name, source) in guarded {
         for forbidden in [
             "std::fs",
             "File::open",
@@ -834,15 +836,18 @@ fn parser_source_guard() {
             "plumb_inference",
             "plumb_patch",
             "plumb_store",
-            "typecheck",
-            "TypeEnv",
-            "CalendarProvider",
-            "working_days(",
             "LeaveRequest",
             "ApprovalRecord",
             "Approved",
             "Annual",
         ] {
+            assert!(!source.contains(forbidden), "{name} contains {forbidden}");
+        }
+    }
+    // S2.4 syntax-layer-only guard (Hotfix 039): the later-stage semantic tokens stay out of
+    // the syntax modules; lib.rs legitimately declares and exports the S2.5 modules.
+    for (name, source) in syntax_modules {
+        for forbidden in ["typecheck", "TypeEnv", "CalendarProvider", "working_days("] {
             assert!(!source.contains(forbidden), "{name} contains {forbidden}");
         }
     }
