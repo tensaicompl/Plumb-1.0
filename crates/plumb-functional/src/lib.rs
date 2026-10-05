@@ -11,6 +11,8 @@
 //! S2.3 classifies Accepted Attributes from a versioned dictionary and inference.
 //! S2.6 qualifies grounded calculations over explicit PlumbExpr scopes and analyzes typed
 //! decision tables.
+//! S2.7 proposes grounded Operations with typed relations, Outcomes and Events over a closed
+//! scope.
 
 pub mod calculation;
 pub mod data_class;
@@ -18,9 +20,11 @@ pub mod decision_table;
 pub mod domain;
 pub mod duplicates;
 pub mod ears;
+pub mod event;
 mod intent;
 pub mod invariant;
 pub mod model;
+pub mod operation;
 pub mod project;
 pub mod requirements;
 pub mod state;
@@ -64,6 +68,7 @@ pub use ears::{
     EarsGrounding, EarsInference, EarsIssue, EarsNormalizationResult, EarsPattern, EarsRequest,
     EarsRequirementContext, EARS_CONTEXT_VERSION, EARS_OUTPUT_VERSION, EARS_TASK_KIND,
 };
+pub use event::{event_id, EventOrigin, EVENT_ORIGIN_EXTENSION};
 pub use invariant::{InvariantOrigin, INVARIANT_ORIGIN_EXTENSION};
 pub use model::{
     codes, ActorEntry, AssumptionEntry, AttributeEntry, CalculationEntry, CalendarEntry,
@@ -72,6 +77,14 @@ pub use model::{
     OutcomeEntry, ProcessEntry, ProjectionMetadata, ProjectionNotice, RelationshipEntry,
     RequirementEntry, RoleEntry, RoundingEntry, RuleEntry, ScenarioEntry, StateEntry, StepEntry,
     TransitionEntry, TriggerEntry, FUNCTIONAL_V2_PROJECTION_VERSION, FUNCTIONAL_V2_VERSION,
+};
+pub use operation::{
+    analyze_operations, build_operation_request, CalculationReadAnalysis, OperationAnalysisResult,
+    OperationAudit, OperationCandidateAnalysis, OperationContext, OperationDisposition,
+    OperationError, OperationGroundedRange, OperationInference, OperationIssue, OperationOrigin,
+    OperationRequest, OperationScope, OutcomeOrigin, OPERATION_CONTEXT_VERSION,
+    OPERATION_ORIGIN_EXTENSION, OPERATION_OUTPUT_VERSION, OPERATION_TASK_KIND,
+    OUTCOME_ORIGIN_EXTENSION,
 };
 pub use project::{
     project_functional_v2, validate_against_schema, validate_metadata, ProjectionError,
