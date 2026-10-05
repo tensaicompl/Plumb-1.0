@@ -6,14 +6,18 @@
 //! and supersessions, and S1.5 analyzes span-grounded vocabulary (compiler architecture §7).
 //! S2.1 proposes closed-vocabulary Entity, Attribute and DomainRelationship nodes grounded in
 //! Accepted Concepts (compiler architecture §8).
+//! S2.2 proposes grounded States, triggered Transitions and unqualified Invariants
+//! (compiler architecture §8).
 
 pub mod domain;
 pub mod duplicates;
 pub mod ears;
 mod intent;
+pub mod invariant;
 pub mod model;
 pub mod project;
 pub mod requirements;
+pub mod state;
 pub mod vocabulary;
 mod vocabulary_exceptions;
 
@@ -35,6 +39,7 @@ pub use ears::{
     EarsGrounding, EarsInference, EarsIssue, EarsNormalizationResult, EarsPattern, EarsRequest,
     EarsRequirementContext, EARS_CONTEXT_VERSION, EARS_OUTPUT_VERSION, EARS_TASK_KIND,
 };
+pub use invariant::{InvariantOrigin, INVARIANT_ORIGIN_EXTENSION};
 pub use model::{
     codes, ActorEntry, AssumptionEntry, AttributeEntry, CalculationEntry, CalendarEntry,
     EntityEntry, EntityNfr, EventEntry, FunctionalProjection, FunctionalV2, GlossaryEntry,
@@ -55,6 +60,13 @@ pub use requirements::{
     RequirementCompilationIssue, RequirementCompilationResult, SegmentOrigin,
     REQUIREMENT_CLASSIFICATION_CONTEXT_VERSION, REQUIREMENT_CLASSIFICATION_OUTPUT_VERSION,
     REQUIREMENT_CLASSIFICATION_TASK_KIND, SEGMENT_ORIGIN_EXTENSION,
+};
+pub use state::{
+    analyze_lifecycle, build_lifecycle_request, LifecycleAnalysisResult, LifecycleAudit,
+    LifecycleConflict, LifecycleContext, LifecycleError, LifecycleExisting, LifecycleGrounding,
+    LifecycleInference, LifecycleIssue, LifecycleOwnerContext, LifecycleRequest,
+    LifecycleRequirementContext, LifecycleTriggerContext, StateOrigin, LIFECYCLE_CONTEXT_VERSION,
+    LIFECYCLE_OUTPUT_VERSION, LIFECYCLE_TASK_KIND, STATE_ORIGIN_EXTENSION,
 };
 pub use vocabulary::{
     analyze_vocabulary, build_vocabulary_request, normalize_vocabulary_term,

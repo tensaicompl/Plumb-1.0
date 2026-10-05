@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "states",
+    "transitions",
+    "invariants"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "states": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stateful_ref",
+          "grounding"
+        ],
+        "properties": {
+          "stateful_ref": {
+            "$ref": "#/$defs/id"
+          },
+          "grounding": {
+            "$ref": "#/$defs/grounding"
+          }
+        }
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stateful_ref",
+          "grounding",
+          "from_state",
+          "to_state",
+          "trigger_ref"
+        ],
+        "properties": {
+          "stateful_ref": {
+            "$ref": "#/$defs/id"
+          },
+          "grounding": {
+            "$ref": "#/$defs/grounding"
+          },
+          "from_state": {
+            "$ref": "#/$defs/grounding"
+          },
+          "to_state": {
+            "$ref": "#/$defs/grounding"
+          },
+          "trigger_ref": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope_ref",
+          "grounding",
+          "expression"
+        ],
+        "properties": {
+          "scope_ref": {
+            "$ref": "#/$defs/id"
+          },
+          "grounding": {
+            "$ref": "#/$defs/grounding"
+          },
+          "expression": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+    },
+    "grounding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirement_ref",
+        "start",
+        "end"
+      ],
+      "properties": {
+        "requirement_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
