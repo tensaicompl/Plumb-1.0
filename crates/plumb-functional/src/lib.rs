@@ -4,7 +4,10 @@
 //! HUMAN_CONFIRM proposals of Proposed requirement and intent nodes, S1.2 proposes grounded
 //! EARS rewrites of their statements, and S1.3 detects duplicates and proposes governed merges
 //! and supersessions, and S1.5 analyzes span-grounded vocabulary (compiler architecture §7).
+//! S2.1 proposes closed-vocabulary Entity, Attribute and DomainRelationship nodes grounded in
+//! Accepted Concepts (compiler architecture §8).
 
+pub mod domain;
 pub mod duplicates;
 pub mod ears;
 mod intent;
@@ -16,6 +19,13 @@ mod vocabulary_exceptions;
 
 // The merge/supersede wrapper enum is reached through the `duplicates` module path, because the
 // F0.14 output-only guard keeps proposal type names out of this file.
+pub use domain::{
+    analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,
+    DomainConceptContext, DomainConflict, DomainContext, DomainError, DomainGrounding,
+    DomainInference, DomainIssue, DomainMergeDisposition, DomainMergeOutcome, DomainOrigin,
+    DomainRequest, DomainRequirementContext, DOMAIN_CONTEXT_VERSION, DOMAIN_ORIGIN_EXTENSION,
+    DOMAIN_OUTPUT_VERSION, DOMAIN_TASK_KIND,
+};
 pub use duplicates::{
     analyze_requirement_duplicates, DuplicateAnalysisResult, DuplicateError, DuplicateMatch,
     DuplicateMatchKind, DuplicatePolicy, JaccardScore, MergeDisposition,

@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "entities",
+    "attributes",
+    "relationships"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "concept_ref",
+          "grounding"
+        ],
+        "properties": {
+          "concept_ref": {
+            "$ref": "#/$defs/concept_ref"
+          },
+          "grounding": {
+            "$ref": "#/$defs/grounding"
+          }
+        }
+      }
+    },
+    "attributes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "concept_ref",
+          "grounding",
+          "owner_concept_ref",
+          "owner_grounding",
+          "value_type",
+          "nullable"
+        ],
+        "properties": {
+          "concept_ref": {
+            "$ref": "#/$defs/concept_ref"
+          },
+          "grounding": {
+            "$ref": "#/$defs/grounding"
+          },
+          "owner_concept_ref": {
+            "$ref": "#/$defs/concept_ref"
+          },
+          "owner_grounding": {
+            "$ref": "#/$defs/grounding"
+          },
+          "value_type": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "concept_ref",
+              "grounding"
+            ],
+            "properties": {
+              "concept_ref": {
+                "$ref": "#/$defs/concept_ref"
+              },
+              "grounding": {
+                "$ref": "#/$defs/grounding"
+              }
+            }
+          },
+          "nullable": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "value",
+              "grounding"
+            ],
+            "properties": {
+              "value": {
+                "type": "boolean"
+              },
+              "grounding": {
+                "$ref": "#/$defs/grounding"
+              }
+            }
+          }
+        }
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "concept_ref",
+          "grounding",
+          "from_concept_ref",
+          "from_grounding",
+          "to_concept_ref",
+          "to_grounding",
+          "cardinality_from",
+          "cardinality_to"
+        ],
+        "properties": {
+          "concept_ref": {
+            "$ref": "#/$defs/concept_ref"
+          },
+          "grounding": {
+            "$ref": "#/$defs/grounding"
+          },
+          "from_concept_ref": {
+            "$ref": "#/$defs/concept_ref"
+          },
+          "from_grounding": {
+            "$ref": "#/$defs/grounding"
+          },
+          "to_concept_ref": {
+            "$ref": "#/$defs/concept_ref"
+          },
+          "to_grounding": {
+            "$ref": "#/$defs/grounding"
+          },
+          "cardinality_from": {
+            "$ref": "#/$defs/cardinality"
+          },
+          "cardinality_to": {
+            "$ref": "#/$defs/cardinality"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "concept_ref": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+    },
+    "grounding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirement_ref",
+        "start",
+        "end"
+      ],
+      "properties": {
+        "requirement_ref": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "cardinality": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value",
+            "grounding"
+          ],
+          "properties": {
+            "value": {
+              "enum": [
+                "0..1",
+                "1",
+                "0..*",
+                "1..*"
+              ]
+            },
+            "grounding": {
+              "$ref": "#/$defs/grounding"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

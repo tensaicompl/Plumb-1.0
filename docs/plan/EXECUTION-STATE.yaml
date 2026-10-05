@@ -54,7 +54,7 @@ tasks:
 - id: S1.6
   status: done
 - id: S2.1
-  status: pending
+  status: done
 - id: S2.2
   status: pending
 - id: S2.3
