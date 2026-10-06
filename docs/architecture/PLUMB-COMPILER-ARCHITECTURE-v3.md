@@ -870,6 +870,22 @@ S2.3 classifies Accepted Attributes only. A versioned deterministic dictionary (
 
 **Downstream.** S2.10 reuses these analyzers and the canonical relations for the RBAC and separation rules instead of re-implementing them, and must freeze explicit contracts before evaluating the other separation kinds or policy conditions.
 
+### Pilot process semantics (S2.9, Hotfix 043)
+
+**Boundary.** S2.9 proposes AI-assisted Processes as HumanConfirm proposals over a closed scope of Accepted Operations, performers, Events, Outcomes and Transitions, and provides a reusable structural analyzer. It is not a process engine: no interpreter, BPMN XML, Mermaid, scenario execution, authorization or F2 findings.
+
+**What the current PSG can represent.** `next` links two ProcessNodes and carries no properties, and `condition_expr` is a single optional string on a node, so distinct conditions on the outgoing flows of an exclusive gateway cannot be expressed. Error events have no error reference and subprocesses have no reference to the called process. S2.9 therefore supports starts (manual, Event-triggered or timer-triggered), ends, human and service tasks backed by an Operation, operation-less human activities that have both a performer and a produced Outcome or Event, Event waits, timer waits and simple structured parallel split/join. Exclusive gateways, error events and subprocesses are recognized but never proposed, nodes created by S2.9 carry no condition, and an existing node with a condition marks its Process as not fully qualified. Nothing is added to the metamodel to work around these limits.
+
+**Membership and flow.** A ProcessNode belongs to the Process named by its `process_ref`; there is no containment relation. Control flow is `next` between members of the same Process. Tasks and waits have exactly one incoming and one outgoing flow, starts only an outgoing one and ends only incoming ones; branching and joining happen only at explicit parallel split and join nodes. Every node must be reachable from a start and every node without successors must be an end. `message_ref` names a functional Event (not a technical Message) that the start or wait consumes; timer text is preserved and never parsed.
+
+**Parallel structure.** For each split, the matched join is the unique nearest join reachable from all of its branches. Each branch must reach that join without merging into another branch first, branches may not contain further splits or joins (no nesting in the pilot), every join must belong to exactly one split, and parallel flow with a cycle is not supported.
+
+**Where the analyzer lives.** The pure process analyzer sits in `plumb-validation`, below `plumb-functional`, with an Accepted-only mode for later validation and an active (Proposed plus Accepted) mode used to qualify S2.9 proposals on an in-memory dry-run. It contains no evaluator. S2.10 consumes it directly instead of writing a second analyzer, must not report a Process whose correctness depends on unsupported semantics as proven, and must first resolve the fact that the S2.6 and S2.8 analysis kernels live in `plumb-functional`, which `plumb-validation` cannot import without a dependency cycle.
+
+**Order is not sequence.** Sequence comes only from grounded inference confirmed by a human. Requirement and paragraph order never create, remove or reorder `next` relations, and the inference context contains no document positions, so reordering requirements cannot change accepted process flow.
+
+**HR reference.** The immutable fixture's `process_specs` (six processes with ordered operation lists) is the current HR process reference and compiles to linear processes, read literally, including UpdateLeaveBalance as reserve then restore. The inherited v2 expectation of a contractor branch is superseded for current HR reference testing and is not fabricated.
+
 ### Gate
 
 `F2`

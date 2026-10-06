@@ -4346,32 +4346,173 @@ tasks:
   depends_on:
   - S2.8
   files:
+  - crates/plumb-validation/src/lib.rs
+  - crates/plumb-validation/src/process_analysis.rs
+  - crates/plumb-validation/tests/process_analysis.rs
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/process.rs
   - crates/plumb-functional/tests/process.rs
   - prompts/s2-process.md
   - schemas/inference/s2-process.schema.json
   steps:
-  - Implement Process and ProcessNode controlled kinds from metamodel §9.5.
-  - Validate one or more start semantics as allowed by profile, reachable end semantics, executable task resolution, exclusive conditions and
-    balanced parallel split/join.
-  - Build sequence proposals from explicit pre/postconditions, events, accepted state transitions and explicit source evidence.
-  - Requirement document order may be attached only as weak evidence metadata and must never create an accepted next relation without human confirmation.
-  - Mermaid import/export is deferred until the UI/process projection task.
-  - Hotfix 041 forward note. Because S2.7 deliberately leaves Operation preconditions and postconditions empty in the pilot, S2.9 may use accepted
-    events, accepted state transitions and explicit evidence for sequence proposals and must not assume pre/postconditions exist; if S2.9 later
-    requires executable pre/postcondition semantics, that contract must be frozen separately.
+  - 'Scope (Hotfix 043). S2.9 implements AI-assisted Process proposal discovery, Process node construction, safe next relations, operation-backed
+    human and service tasks, explicit operation-less human activities, manual, Event and timer starts, intermediate Event and timer waits, simple
+    structured parallel split/join, deterministic process structural analysis, safe reconciliation and HumanConfirm Process proposals, as specified
+    in the compiler architecture section ''Pilot process semantics (S2.9, Hotfix 043)''. It does not implement F2 evaluators or findings, scenario
+    execution, a process interpreter, BPMN XML, Mermaid, authorization, technical Message contracts, full BPMN, boundary events, exclusive-flow
+    conditions, error-flow semantics, subprocess invocation or a process-variable expression environment. The metamodel is unchanged: next (ProcessNode
+    -> ProcessNode) carries no properties and ProcessNode.condition_expr is one optional String on the source node, which cannot represent distinct
+    conditions on several outgoing flows, so no condition-on-target semantics, condition properties on next or synthetic branch-condition nodes
+    are invented. The ProcessNodeKind enum is unchanged; S2.9 proposals support start, end, human_task, service_task, parallel_split, parallel_join,
+    message_event and timer_event, while exclusive_gateway (ExclusiveGatewayUnrepresentable: no edge-specific branch semantics), error_event
+    (ErrorEventUnrepresentable: no error reference or catch semantics; message_ref is not overloaded) and subprocess (SubprocessUnrepresentable:
+    no called-process reference; process_ref is the owning Process) are recognized but proposal-ineligible. Every ProcessNode created by S2.9
+    has condition_expr = None, the schema does not expose it and no condition parser or PlumbExpr process scope exists; an existing Accepted
+    ProcessNode with a non-null condition_expr is recorded as ConditionSemanticsUnqualified and its Process is never claimed fully executable.
+    Membership is exactly ProcessNode.process_ref == Process.id with no containment relation; every next edge used by a Process connects two
+    members of that Process, otherwise ProcessBoundaryViolation.'
+  - 'Analyzer (Hotfix 043). The reusable pure Process graph analyzer lives in crates/plumb-validation/src/process_analysis.rs and is exported
+    through crates/plumb-validation/src/lib.rs, because plumb-functional depends on plumb-validation and the reverse import would create a crate
+    cycle; plumb-functional::process uses it and S2.10 uses the same kernel directly. It is not an F2 evaluator: no RuleEvaluator, GeneratedFinding,
+    EvaluatorRegistry registration, rules/f2.rs or rules/mod.rs change, gate evaluation or canonical finding. analyze_process(graph, process_ref,
+    mode) with ProcessAnalysisMode AcceptedOnly (Accepted Process, ProcessNodes and relations only; used by S2.10) or ActiveOverlay (Proposed
+    and Accepted; used by S2.9 on an in-memory dry-run graph) requires the Process to exist with the status the mode needs, performs no name
+    search or inference and returns canonically sorted material: process_ref, node_refs, start_refs, end_refs, unreachable_refs, invalid_terminal_refs,
+    unresolved_task_refs, unsupported_nodes, boundary_violations, node_shape_violations and parallel_analysis. Start: at least one per Process
+    (several allowed); operation_ref, condition_expr, performed_by and produces absent; indegree 0 and outdegree exactly 1; manual (no message_ref
+    or timer_expr), Event-triggered (message_ref an Accepted Event, not a Message, as in the existing v2 projection''s reading of start.message_ref,
+    with Start -consumes-> Event) or timer-triggered (timer_expr trimmed, non-empty, no control characters, preserved and never parsed); both
+    is AmbiguousStartTrigger. End: at least one per Process; all optional payload fields None; indegree >= 1 and outdegree 0. Every member with
+    outdegree 0 must be an End (InvalidTerminal), and every member must be reachable from the union of Starts (unreachable refs sorted). service_task:
+    operation_ref an Accepted Operation, other optionals None, in 1/out 1, no node-level performed_by or produces (UnresolvedServiceTask otherwise).
+    human_task: either operation-backed (as service_task) or operation-less with at least one Accepted performed_by target (Actor or BusinessRole;
+    else UnresolvedHumanResponsibility) and at least one Accepted produces target (Outcome or Event; else UnresolvedHumanOutcome), all optionals
+    None, in 1/out 1. message_event is a functional Event wait/catch (never an outbound throw): message_ref an Accepted Event with ProcessNode
+    -consumes-> Event, other optionals None, in 1/out 1. timer_event: valid opaque timer_expr, other optionals None, in 1/out 1, no relation.
+    Branching and joining happen only at parallel_split (in 1, out >= 2, optionals None) and parallel_join (in >= 2, out 1, optionals None).
+    Without parallel nodes parallel analysis is NotApplicable; with them, a directed cycle in the member next graph is ParallelCyclicFlow. For
+    a split S with immediate successors as branch roots, a join J is a common candidate when reachable from every branch root; the nearest common
+    joins are candidates with no distinct candidate K reaching J; exactly one is required (zero ParallelJoinMissing, several ParallelJoinAmbiguous).
+    Each branch region is the set of nodes reached from its root without expanding J; every region node must reach J (ParallelBranchDoesNotJoin),
+    regions must be pairwise disjoint before J (ParallelBranchesMergeEarly), no region may contain another split or join (NestedParallelUnsupported),
+    and every join must be the matched join of exactly one split (ParallelJoinUnmatched). Parallel results expose split_ref, matched_join_ref,
+    branch_root_refs, issue kind and affected refs, sorted. Existing Accepted exclusive_gateway, error_event, subprocess and non-null condition_expr
+    nodes are recorded as unqualified executable semantics, never mutated or reinterpreted.'
+  - 'Inference (Hotfix 043). Whole-process sequence is semantic inference: next adjacency is never derived from requirement, operation-ID, event-ID,
+    transition-ID or graph insertion order, and Events and Transitions are context and evidence only. Production analysis builds a deterministic
+    InferenceRequest and context and validates a supplied persisted artifact without executing a provider; without an artifact the result is
+    Ok with InferenceUnavailable and zero proposals, and a malformed artifact is a hard error. PROCESS_CONTEXT_VERSION = 1, PROCESS_OUTPUT_VERSION
+    = 1, PROCESS_TASK_KIND = process_analysis, stage S2, runtime assets prompts/s2-process.md and schemas/inference/s2-process.schema.json (hashed
+    into the request, not added to SUPPORTING-DOCS). ProcessScope {operation_refs (Accepted Operation), performer_refs (Accepted Actor or BusinessRole,
+    never SecurityRole), event_refs (Accepted Event), outcome_refs (Accepted Outcome), transition_refs (Accepted Transition, support context
+    only)} is sorted and unique. Target Requirements are Proposed or Accepted {requirement_ref, status, statement}, canonicalized by ID, with
+    no paragraph, sentence, source, document or import ordinal. Context summarizes each Operation {operation_ref, name, operation_kind, Accepted
+    performed_by, produced Outcome/Event and consumed Event targets}, each Transition {transition_ref, stateful_ref, from_state, to_state, Accepted
+    transitions_via targets}, each Event {event_ref, name} and each scoped Outcome and performer, all sorted, with no guessed classifications.
+    input_refs is the sorted union of target Requirements and all scope refs; evidence_refs come from the target Requirements and accepted semantic
+    context only; the context hash is SHA-256 of the RFC 8785 JSON. The output root is exactly {version, processes}; each Process candidate is
+    {name, evidence, nodes, next} (no description, process_kind, order, confidence, IDs, findings or questions); the name is trimmed, non-empty,
+    without control characters and preserved exactly. Ranges {requirement_ref, start, end} are UTF-8 byte offsets in a target Requirement with
+    start < end on char boundaries, duplicates rejected, canonically sorted; Process and node evidence are non-empty. Each node is {node_key
+    (exactly ^[A-Za-z][A-Za-z0-9_-]{0,63}$, never normalized, unique per Process), node_kind (exact ProcessNodeKind wire values; unknown is schema-invalid,
+    deferred kinds are typed issues), operation?, performers, produces, message_ref?, timer_expr?, evidence} with every semantic choice a GroundedSemanticRef
+    {target_ref, evidence} into the matching scope list (operation: operation_refs; performers: performer_refs; produces: outcome_refs or event_refs;
+    message_ref: event_refs) and no condition_expr. Each next is {from_key, to_key, evidence} between existing keys of the same candidate; self-edges
+    and duplicate directed edges are rejected. The prompt states that direct sequence is proposed only when semantic evidence supports it, that
+    requirement or paragraph order is never used, that only supplied semantic refs may be used and no Operation, Event, Outcome, Actor or BusinessRole
+    is invented, that condition_expr is not emitted, that exclusive_gateway, error_event and subprocess are not proposed in the pilot, that manual,
+    Event-triggered and timer-triggered starts are allowed, that parallel_split/parallel_join express only explicit parallel semantics, and that
+    A producing an Event that B consumes may support but does not prove direct adjacency. The schema is Draft 2020-12 with additionalProperties
+    false throughout and no external refs; Rust validates again.'
+  - 'Identity, proposals and reconciliation (Hotfix 043). Process ID process:<first 16 hex of SHA-256(RFC 8785 {project_id, name, node_type:
+    process})>; ProcessNode ID process_node:<... {project_id, process_ref, node_key, node_type: process_node}> (the kind is deliberately not
+    part of the identity, so changing a key''s kind is a conflict); relation ID rel:<... {kind, from, to}>. Extensions: plumb_functional:process_origin
+    {evidence} and plumb_functional:process_node_origin {node_key, evidence}; the sequence is not duplicated in origins. As accepted for S2.7,
+    proposal derivation_refs carry the supplied inference derivation ref and node and edge derivations stay empty; no DerivationRecord is fabricated.
+    Payloads: Process {name, description: None, process_kind: None}; Start {process_ref, start, message_ref?, timer_expr?, other optionals None};
+    End, parallel_split and parallel_join with all optionals None; operation-backed tasks with operation_ref only; operation-less human_task
+    with all optionals None and responsibility and outcome only as performed_by and produces edges; message_event with message_ref only plus
+    a consumes edge; timer_event with timer_expr only. For each candidate a temporary Compound patch (Process, ProcessNodes, explicit-human performed_by
+    and produces, Start and message_event consumes, next) is applied in memory; PSG or registry failure is InvalidProposal. ActiveOverlay process
+    analysis on the temporary graph must then show valid start/end semantics, full reachability, End-only terminals, valid supported shapes,
+    resolved tasks, no cross-process next, no unsupported semantics and valid parallel structure where present, otherwise no proposal and the
+    typed analysis is retained. An eligible candidate is one proposal (stage S2, Semantic, HumanConfirm, confidence None) ordered Process, ProcessNodes
+    by ID, edges by ID. An existing Process at the same ID is compared as a canonical semantic subgraph (Process payload, member payloads, node_key
+    origins, active next edges among members and member performed_by, produces and consumes edges): identical Proposed is IdempotentReplay, identical
+    Accepted ExistingEquivalent, any difference ExistingProcessConflict, all without proposal or repair; an active Process with the same name
+    under another ID is ExistingProcessNameConflict; an existing ProcessNode ID with a different payload or node_key origin is ExistingProcessNodeConflict.
+    No ReplacePayload, MergeNodes, Supersede or SetStatus. The result exposes candidates, analyses, dispositions, proposals and typed issues
+    including InferenceUnavailable, InvalidName, InvalidNodeKey, InvalidGrounding, UnknownSemanticRef, WrongSemanticRefType, NonAcceptedSemanticRef,
+    DuplicateProcess, DuplicateNodeKey, DuplicateNext, SelfNext, InvalidNodeShape, ProcessBoundaryViolation, MissingStart, MissingEnd, InvalidTerminal,
+    UnreachableNode, UnresolvedServiceTask, UnresolvedHumanResponsibility, UnresolvedHumanOutcome, AmbiguousStartTrigger, ExclusiveGatewayUnrepresentable,
+    ErrorEventUnrepresentable, SubprocessUnrepresentable, ConditionSemanticsUnqualified, the parallel categories, ExistingProcessConflict, ExistingProcessNameConflict,
+    ExistingProcessNodeConflict and InvalidProposal (none is a rule ID).'
+  - 'Requirement order and HR reference (Hotfix 043). Requirement order never creates next, never changes reachability and never creates a Start
+    or End; process production code inspects no segment origin, paragraph, sentence, source or document position. Reversing the caller''s target
+    Requirement list yields the same context, context hash and InferenceRequest, and with the same persisted artifact identical candidate material,
+    Process, ProcessNode and next IDs and proposal. S2.9 never mutates the graph, so paragraph order alone can never alter Accepted next relations;
+    every inferred sequence remains HumanConfirm, which is the meaning of the original paragraph-order acceptance condition. The immutable fixtures/hr-leave/fixture-contract.yaml
+    process_specs is the current HR process reference (test-only): CreateAndSubmitLeave, ManagerApproval, ManagerRejection, WithdrawSubmittedLeave,
+    CancelApprovedLeave and UpdateLeaveBalance, each with operation sequence exactly its array order (explicit structured fixture semantics,
+    not paragraph order); UpdateLeaveBalance is read literally as ReserveLeaveBalance then RestoreLeaveBalance and the fixture is not modified.
+    The test adapter builds a manual Start (key start), one operation-backed task per listed Operation (key = the exact Operation name, which
+    satisfies the node_key grammar) and an End (key end) in a linear next sequence; it may classify operations performed by a fixture BusinessRole
+    as human_task and by SystemActor as service_task as test scaffolding only; the fixture oracle is process names, operation membership and
+    operation order, not node kinds. Every fixture Process has one Start, one End, its Operations in exact sequence, no unreachable node, only
+    End terminals, resolved tasks, no unsupported semantics, no parallel error and a clean dry-run. The inherited v2 M8.1 contractor-branch expectation
+    is superseded for current HR reference testing and is not fabricated.'
+  - Tests (Hotfix 043). crates/plumb-validation/tests/process_analysis.rs (cargo test -p plumb-validation --test process_analysis) and crates/plumb-functional/tests/process.rs
+    (cargo test -p plumb-functional --test process) cover manual, Event and timer Starts, message plus timer ambiguity, Start with incoming next
+    or several outgoing, invalid Event refs; valid End, End with outgoing, unreachable End, non-End terminal, missing End and Start; valid and
+    missing ServiceTask Operation, non-Accepted Operation, operation-backed HumanTask, explicit HumanTask with performer plus Outcome or Event,
+    missing explicit-human performer or outcome, SecurityRole performer rejection; message_event consuming an Accepted Event, wrong ref and wrong
+    degree; valid, empty and wrong-degree timer_event; exclusive_gateway, error_event and subprocess unrepresentable and non-null existing condition_expr
+    unqualified; linear reachability, unreachable task, multiple Starts and Ends and cross-process next; balanced two- and three-branch parallel,
+    missing and ambiguous joins, a branch ending before its join, early merge, unmatched join, split and join degree errors, nested parallel,
+    parallel with a cycle and branch-order reversal; AcceptedOnly versus ActiveOverlay; reconciliation (idempotent Proposed replay, Accepted
+    equivalent, Process payload and graph conflicts, same-name Process, ProcessNode conflict); InferenceUnavailable; malformed artifacts (wrong
+    version, unknown field, unknown target Requirement, bad UTF-8 range, unknown, out-of-scope and wrongly typed semantic refs, duplicate Process,
+    duplicate node_key, duplicate next, unknown next key, self next, bare ungrounded ID, request hash mismatch); independently computed prompt,
+    schema, context-hash, request-ID, Process-ID, ProcessNode-ID, next-relation-ID and consumes-relation-ID goldens; requirement-order reversal;
+    and the six HR process_specs. Source guards prove no file system, network, clock, persistence, provider execution, BPMN engine, Mermaid,
+    BPMN XML, next property map, paragraph ordering, randomness, floats, fixture paths, HR process literals or F2 evaluator registration in production
+    S2.9 code. No Cargo file changes (Cargo.toml, Cargo.lock, crates/plumb-functional/Cargo.toml, crates/plumb-validation/Cargo.toml); if a dependency
+    is genuinely required, stop and report a blocker. plumb-functional's lib.rs adds the process module and selected exports without the token
+    Proposal (F0.14); plumb-validation's lib.rs exports only the stable process-analysis types and functions and no F2 evaluator types.
   tests:
-  - cargo test -p plumb-functional process
+  - cargo test -p plumb-validation --test process_analysis
+  - cargo test -p plumb-functional --test process
+  - cargo test -p plumb-validation --no-fail-fast
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - A fixture that differs only in requirement paragraph order produces no accepted process-order change; unreachable node and unbalanced parallel
-    fixtures fail validation.
+  - S2.9 creates evidence-grounded HumanConfirm Process proposals over an explicit closed Accepted semantic scope and never derives process sequence
+    from requirement/document order.
+  - Process membership is ProcessNode.process_ref and control flow is canonical next edges within one Process.
+  - The executable pilot supports manual/Event/timer Starts, Ends, operation-backed human/service tasks, explicit human activities, message/timer
+    waits and simple non-nested structured parallel split/join.
+  - Exclusive branch conditions, error events, subprocess invocation and condition_expr execution are not invented where the current PSG cannot
+    represent the required semantics.
+  - Every eligible candidate has valid start/end semantics, full reachability, resolved executable tasks and structurally balanced supported
+    parallel flow.
+  - The pure graph analyzer lives below plumb-functional in plumb-validation and is reusable directly by S2.10.
+  - The current HR process_specs six ordered operation lists compile as linear reference Processes without fabricating the retired v2 contractor
+    branch.
   source_refs:
   - SRCREF-21ED0F2039
   - SRCREF-B87594D03C
   - SRCREF-8FF7BA8981
-  forbidden: []
+  - SRCREF-0E7CBD4996
+  - SRCREF-34CA4A60BC
+  forbidden:
+  - Do not derive next from requirement order; add conditions to next relations; reinterpret condition_expr as per-edge condition; invent exclusive/error/subprocess
+    semantics; use technical Message for message_ref; parse timer text or process conditions as PlumbExpr; fabricate the old HR contractor branch;
+    implement F2 evaluators; or duplicate the reusable Process analyzer.
   commands:
-  - cargo test -p plumb-functional process
+  - cargo test -p plumb-validation --test process_analysis
+  - cargo test -p plumb-functional --test process
+  - cargo test -p plumb-validation --no-fail-fast
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
   commit_message: 'S2.9: Implement process model and safe process proposals'
@@ -4448,6 +4589,26 @@ tasks:
     must be frozen before S2.10 evaluates any of them. S2.8 stores PolicyCondition.expression as explicit opaque authorization
     semantics, and S2.10 must not claim PlumbExpr parse, type or evaluation coverage for PolicyCondition unless a separate
     contract is frozen.'
+  - 'Hotfix 043 forward notes. BPMN.F2.PROCESS.START_END, BPMN.F2.PROCESS.REACHABLE, PLUMB.F2.PROCESS.TASK_RESOLVES and
+    PLUMB.F2.PROCESS.GATEWAY_BALANCED must consume the AcceptedOnly result of the S2.9 process-analysis kernel in plumb-validation;
+    S2.10 must not implement a second Process graph analyzer. Prospective mapping: MissingStart, MissingEnd, invalid Start
+    or End shape and InvalidTerminal map to BPMN.F2.PROCESS.START_END; non-empty unreachable_refs is a BPMN.F2.PROCESS.REACHABLE
+    failure (no name-based reachability); non-empty unresolved_task_refs is a PLUMB.F2.PROCESS.TASK_RESOLVES failure,
+    with the human-task alternative using only canonical ProcessNode performed_by and produces relations; parallel structural
+    issues map to PLUMB.F2.PROCESS.GATEWAY_BALANCED failure or error according to the frozen rule contract, without a
+    second pairing algorithm. An Accepted Process containing S2.9-unqualified control-flow semantics (exclusive_gateway,
+    error_event, subprocess or non-null condition_expr) must not be reported as fully proven merely because graph reachability
+    can still be calculated: S2.10 must surface ERROR for process proof obligations whose correctness depends on unsupported
+    executable semantics rather than guessing branch, error or subprocess behavior, and the exact per-rule behavior is
+    frozen before S2.10 if still ambiguous; unsupported executable process semantics are never silently PASS.'
+  - Hotfix 043 dependency-boundary note. S2.6 Calculation/DecisionTable analysis and S2.8 authorization hierarchy/SOD
+    analysis currently live in plumb-functional. plumb-functional depends on plumb-validation, so plumb-validation cannot
+    import plumb-functional::calculation, plumb-functional::decision_table or plumb-functional::authorization in production,
+    and the earlier reuse forward notes are semantic requirements, not permission to create a Cargo dependency cycle.
+    Before S2.10 implementation begins, freeze and execute a dependency-safe relocation or shared-kernel hotfix if those
+    kernels have not already been moved; the preferred direction is to move the pure graph-analysis kernels behind a lower
+    dependency boundary that both plumb-functional and plumb-validation can consume, preserving public semantics and existing
+    tests. Do not duplicate those algorithms inside plumb-validation. This relocation is not performed in S2.9.
   tests:
   - cargo test -p plumb-validation f2
   acceptance:
