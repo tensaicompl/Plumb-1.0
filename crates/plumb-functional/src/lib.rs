@@ -15,6 +15,8 @@
 //! scope.
 //! S2.8 compiles explicit structured authorization semantics and analyzes role hierarchy and
 //! static separation of duty.
+//! S2.9 proposes grounded Processes with safe control flow, qualified by the plumb-validation
+//! process-analysis kernel.
 
 pub mod authorization;
 pub mod calculation;
@@ -28,6 +30,7 @@ mod intent;
 pub mod invariant;
 pub mod model;
 pub mod operation;
+pub mod process;
 pub mod project;
 pub mod requirements;
 pub mod state;
@@ -96,6 +99,14 @@ pub use operation::{
     OperationRequest, OperationScope, OutcomeOrigin, OPERATION_CONTEXT_VERSION,
     OPERATION_ORIGIN_EXTENSION, OPERATION_OUTPUT_VERSION, OPERATION_TASK_KIND,
     OUTCOME_ORIGIN_EXTENSION,
+};
+pub use process::{
+    analysis_issues, analyze_processes, build_process_request, ProcessAudit,
+    ProcessCandidateAnalysis, ProcessCompilationResult, ProcessContext, ProcessDisposition,
+    ProcessError, ProcessGroundedRange, ProcessInference, ProcessIssue, ProcessNodeOrigin,
+    ProcessOrigin, ProcessRequest, ProcessScope, PROCESS_CONTEXT_VERSION,
+    PROCESS_NODE_ORIGIN_EXTENSION, PROCESS_ORIGIN_EXTENSION, PROCESS_OUTPUT_VERSION,
+    PROCESS_TASK_KIND,
 };
 pub use project::{
     project_functional_v2, validate_against_schema, validate_metadata, ProjectionError,
