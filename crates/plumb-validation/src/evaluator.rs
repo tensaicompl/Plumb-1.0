@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::calculation_analysis::{calculation_origin_of, CalculationScope};
+use crate::decision_table_analysis::DecisionTableSpec;
+use crate::expression_scope::{validate_expression_bindings, ExpressionScopeBinding};
 use crate::external::{ExternalValidationArtifact, ExternalValidationError};
 use crate::finding::{finding_id, finding_key, is_clean_text, GeneratedFinding, ViolationFacts};
 use crate::model::{
@@ -264,6 +267,10 @@ pub struct ValidationContext {
     /// The deterministic F1 supplemental inputs; required by F1 and ignored by other gates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub f1_inputs: Option<F1ValidationInputs>,
+    /// The deterministic F2 supplemental inputs; required by the F2 rules that need them and
+    /// ignored by other gates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub f2_inputs: Option<F2ValidationInputs>,
 }
 
 impl ValidationContext {
@@ -306,6 +313,7 @@ impl ValidationContext {
             external_validation_artifacts: keyed.into_iter().map(|(_, a)| a).collect(),
             evidence_artifacts,
             f1_inputs: None,
+            f2_inputs: None,
         })
     }
 
@@ -318,6 +326,19 @@ impl ValidationContext {
         inputs.validate_for(graph)?;
         Ok(ValidationContext {
             f1_inputs: Some(inputs),
+            ..self
+        })
+    }
+
+    /// Validates `inputs` against `graph` and installs them as the F2 supplemental inputs.
+    pub fn with_f2_inputs(
+        self,
+        graph: &Graph,
+        inputs: F2ValidationInputs,
+    ) -> Result<ValidationContext, EvaluationError> {
+        inputs.validate_for(graph)?;
+        Ok(ValidationContext {
+            f2_inputs: Some(inputs),
             ..self
         })
     }
@@ -388,6 +409,9 @@ impl ValidationContext {
         )
         .map_err(invalid)?;
         if let Some(inputs) = &self.f1_inputs {
+            inputs.validate_for(graph)?;
+        }
+        if let Some(inputs) = &self.f2_inputs {
             inputs.validate_for(graph)?;
         }
         Ok(())
@@ -1595,6 +1619,294 @@ fn validate_analysis_finding(graph: &Graph, finding: &GeneratedFinding) -> Resul
             return Err(format!(
                 "analysis finding {id} targets non-Requirement {target}"
             ));
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================ F2 supplemental inputs
+
+/// The deterministic F2 supplemental inputs (Hotfix 044): current upstream analysis findings,
+/// explicit scopes of legacy Calculations, typed specifications of Accepted DecisionTables and
+/// explicit expression scopes of Accepted Invariants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F2ValidationInputs {
+    pub analysis_findings: Vec<GeneratedFinding>,
+    pub calculation_scope_overrides: Vec<F2CalculationScopeOverride>,
+    pub decision_tables: Vec<F2DecisionTableInput>,
+    pub invariants: Vec<F2InvariantInput>,
+}
+
+// Every field compares structurally without floating point, so equality is reflexive.
+impl Eq for F2ValidationInputs {}
+
+/// The explicit scope of an Accepted Calculation without a valid S2.6 origin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F2CalculationScopeOverride {
+    pub calculation_ref: Id,
+    pub scope: CalculationScope,
+}
+
+/// The typed analysis specification bound to one Accepted DecisionTable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F2DecisionTableInput {
+    pub decision_table_ref: Id,
+    pub spec: DecisionTableSpec,
+}
+
+/// The explicit expression scope of one Accepted Invariant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F2InvariantInput {
+    pub invariant_ref: Id,
+    pub bindings: Vec<ExpressionScopeBinding>,
+}
+
+/// The analysis-finding codes F2 supplemental inputs may carry, with their required semantic
+/// condition prefixes.
+pub const F2_ANALYSIS_FINDINGS: [(&str, &str); 2] = [
+    (
+        "PLUMB.F2.DOMAIN.RELATION_TYPED",
+        "domain_relationship_cardinality_unresolved:",
+    ),
+    (
+        "PLUMB.F2.STATE.TRANSITION_COMPLETE",
+        "state_transition_trigger_unresolved:",
+    ),
+];
+
+impl F2ValidationInputs {
+    /// Builds canonical inputs: findings by ID, overrides, tables and invariants by node ID,
+    /// scope bindings and calendars sorted. Decision-table rows keep their order (FIRST tables
+    /// depend on it). Validation against a graph happens in
+    /// [`ValidationContext::with_f2_inputs`].
+    pub fn new(
+        mut analysis_findings: Vec<GeneratedFinding>,
+        mut calculation_scope_overrides: Vec<F2CalculationScopeOverride>,
+        mut decision_tables: Vec<F2DecisionTableInput>,
+        mut invariants: Vec<F2InvariantInput>,
+    ) -> F2ValidationInputs {
+        analysis_findings.sort_by(|a, b| a.id.cmp(&b.id));
+        for o in &mut calculation_scope_overrides {
+            o.scope.bindings.sort();
+            o.scope.calendar_refs.sort();
+        }
+        calculation_scope_overrides.sort_by(|a, b| a.calculation_ref.cmp(&b.calculation_ref));
+        decision_tables.sort_by(|a, b| a.decision_table_ref.cmp(&b.decision_table_ref));
+        for i in &mut invariants {
+            i.bindings.sort();
+        }
+        invariants.sort_by(|a, b| a.invariant_ref.cmp(&b.invariant_ref));
+        F2ValidationInputs {
+            analysis_findings,
+            calculation_scope_overrides,
+            decision_tables,
+            invariants,
+        }
+    }
+
+    /// Generic SHA-256 of the RFC 8785 canonical JSON of the complete inputs.
+    pub fn content_hash(&self) -> Result<Hash, CoreError> {
+        canonical_hash(HashKind::Generic, self)
+    }
+
+    /// The scope override of a Calculation, if supplied.
+    pub fn calculation_scope_override(&self, calculation_ref: &Id) -> Option<&CalculationScope> {
+        self.calculation_scope_overrides
+            .binary_search_by(|o| o.calculation_ref.cmp(calculation_ref))
+            .ok()
+            .map(|i| &self.calculation_scope_overrides[i].scope)
+    }
+
+    /// The typed specification of a DecisionTable, if supplied.
+    pub fn decision_table(&self, decision_table_ref: &Id) -> Option<&DecisionTableSpec> {
+        self.decision_tables
+            .binary_search_by(|t| t.decision_table_ref.cmp(decision_table_ref))
+            .ok()
+            .map(|i| &self.decision_tables[i].spec)
+    }
+
+    /// The expression bindings of an Invariant, if supplied.
+    pub fn invariant_bindings(&self, invariant_ref: &Id) -> Option<&[ExpressionScopeBinding]> {
+        self.invariants
+            .binary_search_by(|i| i.invariant_ref.cmp(invariant_ref))
+            .ok()
+            .map(|i| self.invariants[i].bindings.as_slice())
+    }
+
+    /// Requires canonical order, valid supplemental findings, exactly one override per Accepted
+    /// Calculation without an S2.6 origin (none for others), exactly one typed specification per
+    /// Accepted DecisionTable with its PSG hit policy and exactly one valid binding set per
+    /// Accepted Invariant. Stale or malformed inputs are a context error, never a rule result.
+    pub fn validate_for(&self, graph: &Graph) -> Result<(), EvaluationError> {
+        let invalid = EvaluationError::InvalidContext;
+        let accepted = |node_type: NodeType| -> Vec<&Id> {
+            graph
+                .node_ids_by_type(node_type)
+                .iter()
+                .filter(|id| {
+                    graph
+                        .node(id)
+                        .is_some_and(|n| n.status == ElementStatus::Accepted)
+                })
+                .collect()
+        };
+        // Findings.
+        let finding_ids: Vec<&Id> = self.analysis_findings.iter().map(|f| &f.id).collect();
+        require_strictly_sorted("F2 analysis finding", &finding_ids).map_err(invalid)?;
+        for finding in &self.analysis_findings {
+            validate_f2_analysis_finding(graph, finding).map_err(invalid)?;
+        }
+        // Calculation overrides.
+        let override_refs: Vec<&Id> = self
+            .calculation_scope_overrides
+            .iter()
+            .map(|o| &o.calculation_ref)
+            .collect();
+        require_strictly_sorted("F2 calculation scope override", &override_refs)
+            .map_err(invalid)?;
+        for o in &self.calculation_scope_overrides {
+            let node = graph
+                .node(&o.calculation_ref)
+                .filter(|n| n.status == ElementStatus::Accepted)
+                .filter(|n| matches!(n.payload, NodePayload::Calculation(_)))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "scope override {} is not an Accepted Calculation",
+                        o.calculation_ref
+                    ))
+                })?;
+            if calculation_origin_of(node).is_some() {
+                return Err(invalid(format!(
+                    "{} has an S2.6 calculation origin; a scope override is forbidden",
+                    o.calculation_ref
+                )));
+            }
+            if o.scope.bindings.windows(2).any(|p| p[0] > p[1])
+                || o.scope.calendar_refs.windows(2).any(|p| p[0] > p[1])
+            {
+                return Err(invalid(format!(
+                    "scope override of {} is not canonically sorted",
+                    o.calculation_ref
+                )));
+            }
+        }
+        for id in accepted(NodeType::Calculation) {
+            let node = graph.node(id).expect("listed node");
+            if calculation_origin_of(node).is_none()
+                && self.calculation_scope_override(id).is_none()
+            {
+                return Err(invalid(format!(
+                    "Accepted Calculation {id} without an S2.6 origin needs a scope override"
+                )));
+            }
+        }
+        // Decision tables.
+        let table_refs: Vec<&Id> = self
+            .decision_tables
+            .iter()
+            .map(|t| &t.decision_table_ref)
+            .collect();
+        require_strictly_sorted("F2 decision-table input", &table_refs).map_err(invalid)?;
+        if table_refs != accepted(NodeType::DecisionTable) {
+            return Err(invalid(
+                "F2 decision-table inputs must cover exactly the Accepted DecisionTables".into(),
+            ));
+        }
+        for t in &self.decision_tables {
+            let Some(NodePayload::DecisionTable(table)) =
+                graph.node(&t.decision_table_ref).map(|n| &n.payload)
+            else {
+                return Err(invalid(format!(
+                    "{} is not a DecisionTable",
+                    t.decision_table_ref
+                )));
+            };
+            if t.spec.hit_policy != table.hit_policy {
+                return Err(invalid(format!(
+                    "decision-table input of {} has hit policy {:?}, the PSG has {:?}",
+                    t.decision_table_ref, t.spec.hit_policy, table.hit_policy
+                )));
+            }
+        }
+        // Invariants.
+        let invariant_refs: Vec<&Id> = self.invariants.iter().map(|i| &i.invariant_ref).collect();
+        require_strictly_sorted("F2 invariant input", &invariant_refs).map_err(invalid)?;
+        if invariant_refs != accepted(NodeType::Invariant) {
+            return Err(invalid(
+                "F2 invariant inputs must cover exactly the Accepted Invariants".into(),
+            ));
+        }
+        for i in &self.invariants {
+            let Some(NodePayload::Invariant(invariant)) =
+                graph.node(&i.invariant_ref).map(|n| &n.payload)
+            else {
+                return Err(invalid(format!("{} is not an Invariant", i.invariant_ref)));
+            };
+            if !graph
+                .node(&invariant.scope_ref)
+                .is_some_and(|n| n.status == ElementStatus::Accepted)
+            {
+                return Err(invalid(format!(
+                    "scope_ref {} of {} is not an Accepted node",
+                    invariant.scope_ref, i.invariant_ref
+                )));
+            }
+            if i.bindings.windows(2).any(|p| p[0] > p[1]) {
+                return Err(invalid(format!(
+                    "bindings of {} are not canonically sorted",
+                    i.invariant_ref
+                )));
+            }
+            validate_expression_bindings(graph, &i.bindings, &[]).map_err(|issue| {
+                invalid(format!(
+                    "expression scope of {} is invalid: {issue:?}",
+                    i.invariant_ref
+                ))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_f2_analysis_finding(graph: &Graph, finding: &GeneratedFinding) -> Result<(), String> {
+    let payload = &finding.payload;
+    let id = &finding.id;
+    let Some((_, prefix)) = F2_ANALYSIS_FINDINGS
+        .iter()
+        .find(|(code, _)| *code == payload.code)
+    else {
+        return Err(format!("analysis finding {id} has code {}", payload.code));
+    };
+    if !finding.semantic_condition_key.starts_with(prefix) {
+        return Err(format!(
+            "analysis finding {id} condition does not start with {prefix}"
+        ));
+    }
+    if payload.family != "F2" {
+        return Err(format!("analysis finding {id} is not of family F2"));
+    }
+    if finding.key.kind() != HashKind::Generic {
+        return Err(format!("analysis finding {id} key is not Generic"));
+    }
+    require_strictly_sorted("affected ref", &payload.affected_refs)?;
+    let key = finding_key(
+        &payload.code,
+        &payload.affected_refs,
+        &finding.semantic_condition_key,
+    )
+    .map_err(|e| e.to_string())?;
+    if key != finding.key || finding_id(&key).map_err(|e| e.to_string())? != *id {
+        return Err(format!(
+            "analysis finding {id} identity does not match its content"
+        ));
+    }
+    for target in &payload.affected_refs {
+        if graph.node(target).is_none() {
+            return Err(format!("analysis finding {id} targets missing {target}"));
         }
     }
     Ok(())

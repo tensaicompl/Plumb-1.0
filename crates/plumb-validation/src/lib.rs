@@ -3,7 +3,11 @@
 //! (compiler architecture §§5.5, 29), plus the pure Process graph-analysis kernel (S2.9), which
 //! is not an evaluator.
 
+pub mod authorization_analysis;
+pub mod calculation_analysis;
+pub mod decision_table_analysis;
 pub mod evaluator;
+pub mod expression_scope;
 pub mod external;
 pub mod finding;
 pub mod model;
@@ -16,9 +20,10 @@ pub mod waiver;
 pub use evaluator::{
     violation_state, Applicability, EvaluationError, EvaluatorFailure, EvaluatorRegistry,
     F1RequirementValidationInput, F1ValidationInputs, F1VocabularyDependency,
-    F1VocabularyResolution, GateReport, GateResult, GateSummary, RuleEvaluation, RuleEvaluator,
+    F1VocabularyResolution, F2CalculationScopeOverride, F2DecisionTableInput, F2InvariantInput,
+    F2ValidationInputs, GateReport, GateResult, GateSummary, RuleEvaluation, RuleEvaluator,
     RuleResult, ValidationArtifactInput, ValidationContext, ValidationPolicy,
-    EVIDENCE_ARTIFACT_KINDS, F1_ANALYSIS_FINDING_CODES,
+    EVIDENCE_ARTIFACT_KINDS, F1_ANALYSIS_FINDING_CODES, F2_ANALYSIS_FINDINGS,
 };
 pub use external::{
     ExternalValidationArtifact, ExternalValidationError, ExternalValidationRequest,

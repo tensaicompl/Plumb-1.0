@@ -15,9 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, CoreError, Hash, Id, StageId, Timestamp};
 use plumb_expr::{
-    eval, map_pilot_value_type, parse, round_decimal, typecheck, unparse, Ast, CalendarProvider,
-    EvalContext, EvalError, Identifier, PredicateProvider, RefValue, RoundingSpec, Symbol, Ty,
-    TypeEnv, Value, ValueEnv,
+    eval, round_decimal, CalendarProvider, EvalContext, EvalError, PredicateProvider, RefValue,
+    Symbol, Ty, Value, ValueEnv,
 };
 use plumb_inference::{InferenceArtifact, InferenceError, InferenceRequest, ProviderPolicy};
 use plumb_patch::{
@@ -25,15 +24,12 @@ use plumb_patch::{
 };
 use plumb_psg::{
     AuditMeta, Calculation, DerivationRef, ElementStatus, EvidenceRef, ExtensionKey, Graph, Node,
-    NodePayload, NodeType, RelationKind,
+    NodePayload,
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use thiserror::Error;
-
-/// The reserved root symbol bound only from `Calculation.calendar_ref`.
-pub const CALCULATION_CALENDAR_SYMBOL: &str = "calendar";
 
 /// Version of [`CalculationContext`].
 pub const CALCULATION_CONTEXT_VERSION: u32 = 1;
@@ -44,13 +40,9 @@ pub const CALCULATION_OUTPUT_VERSION: u32 = 1;
 /// `InferenceRequest.task_kind` of calculation analysis.
 pub const CALCULATION_TASK_KIND: &str = "calculation_analysis";
 
-/// Extension key of the provenance [`CalculationOrigin`].
-pub const CALCULATION_ORIGIN_EXTENSION: &str = "plumb_functional:calculation_origin";
-
 const PROMPT_TEMPLATE: &[u8] = include_bytes!("../../../prompts/s2-calculation.md");
 const SCHEMA_SOURCE: &str = include_str!("../../../schemas/inference/s2-calculation.schema.json");
 const CALCULATION_STAGE: StageId = StageId::S2;
-const WORKING_DAYS: &str = "working_days";
 
 // ============================================================================ errors and issues
 
@@ -87,6 +79,16 @@ pub enum CalculationError {
     Core(#[from] CoreError),
 }
 
+impl From<CalculationAnalysisError> for CalculationError {
+    fn from(e: CalculationAnalysisError) -> CalculationError {
+        match e {
+            CalculationAnalysisError::InvalidInput { reason } => {
+                CalculationError::InvalidInput { reason }
+            }
+        }
+    }
+}
+
 fn invalid_input(reason: impl Into<String>) -> CalculationError {
     CalculationError::InvalidInput {
         reason: reason.into(),
@@ -99,141 +101,18 @@ fn invalid_proposal(e: impl ToString) -> CalculationError {
     }
 }
 
-/// A deterministic qualification problem. These are analysis categories, not rule IDs.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "issue", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CalculationIssue {
-    InvalidGrounding {
-        reason: String,
-    },
-    InvalidName {
-        reason: String,
-    },
-    InvalidScope {
-        reason: String,
-    },
-    ReservedSymbol {
-        node_ref: Id,
-    },
-    UnbindablePayloadName {
-        node_ref: Id,
-        name: String,
-    },
-    ScopeBindingConflict {
-        symbol: String,
-        owner_ref: Option<Id>,
-    },
-    ScopeUnavailable {
-        calculation_ref: Id,
-    },
-    UnexpectedScopeOverride {
-        calculation_ref: Id,
-    },
-    StaleScopeBinding {
-        node_ref: Id,
-        reason: String,
-    },
-    UnknownInputRef {
-        node_ref: Id,
-    },
-    UnsupportedInputType {
-        node_ref: Id,
-        reason: String,
-    },
-    UnsupportedResultType {
-        result_type: String,
-    },
-    UndefinedInput {
-        identifier: String,
-    },
-    ParseError {
-        offset: Option<usize>,
-    },
-    TypeCheckError {
-        reason: String,
-    },
-    ResultTypeMismatch {
-        expected: String,
-        actual: String,
-    },
-    UnitMismatch {
-        expected: String,
-        actual: String,
-    },
-    InvalidRounding {
-        rounding: String,
-    },
-    RoundingNotApplicable {
-        rounding: String,
-    },
-    CalendarRequired,
-    CalendarUnresolved {
-        calendar_ref: Id,
-    },
-    ExistingCalculationConflict {
-        node_ref: Id,
-    },
-    InferenceUnavailable,
-}
+// The pure qualification kernel lives in plumb-validation (Hotfix 044); these are its S2.6
+// public names.
+use plumb_validation::calculation_analysis::CalculationAnalysisError;
+pub use plumb_validation::calculation_analysis::{
+    accepted_calendar, calculation_origin_of, qualify_calculation, validate_calculation_bindings,
+    validate_calculation_scope, AcceptedCalculationQualification, CalculationBindingExposure,
+    CalculationCycleAnalysis, CalculationDraft, CalculationGroundedRange, CalculationIssue,
+    CalculationOrigin, CalculationQualification, CalculationScope, CalculationScopeBinding,
+    PreparedCalculation, CALCULATION_CALENDAR_SYMBOL, CALCULATION_ORIGIN_EXTENSION,
+};
 
-// ============================================================================ scope
-
-/// How a binding exposes its node to a PlumbExpr expression.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CalculationBindingExposure {
-    /// A top-level root symbol.
-    Root,
-    /// A field of one Entity's Ref type.
-    Field { owner_ref: Id },
-}
-
-/// One explicit PSG-to-PlumbExpr binding. The symbol is validated through the exact S2.4
-/// Symbol constructor; it is never derived by rewriting a PSG name.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CalculationScopeBinding {
-    pub node_ref: Id,
-    pub symbol: String,
-    pub exposure: CalculationBindingExposure,
-}
-
-impl CalculationScopeBinding {
-    /// The canonical order: Root before Field, then owner, symbol and node.
-    fn order_key(&self) -> (u8, Option<&Id>, &str, &Id) {
-        match &self.exposure {
-            CalculationBindingExposure::Root => (0, None, &self.symbol, &self.node_ref),
-            CalculationBindingExposure::Field { owner_ref } => {
-                (1, Some(owner_ref), &self.symbol, &self.node_ref)
-            }
-        }
-    }
-}
-
-impl PartialOrd for CalculationScopeBinding {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for CalculationScopeBinding {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.order_key().cmp(&other.order_key())
-    }
-}
-
-/// An explicit calculation scope: the input bindings and the Accepted Calendars inference may
-/// select (which are not symbols).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CalculationScope {
-    pub bindings: Vec<CalculationScopeBinding>,
-    pub calendar_refs: Vec<Id>,
-}
-
-fn is_accepted(node: &Node) -> bool {
-    node.status == ElementStatus::Accepted
-}
+// ============================================================================ default bindings
 
 fn payload_name(node: &Node) -> Option<&str> {
     match &node.payload {
@@ -290,593 +169,6 @@ pub fn default_field_binding(
     })
 }
 
-/// The canonical Accepted Entity owning an Attribute through an Accepted `has_attribute`.
-fn accepted_owner<'g>(graph: &'g Graph, attribute: &Id) -> Option<&'g Id> {
-    let owners: Vec<&Id> = graph
-        .incoming_edge_ids(attribute)
-        .iter()
-        .filter_map(|e| graph.edge(e))
-        .filter(|e| e.kind == RelationKind::HasAttribute && e.status == ElementStatus::Accepted)
-        .map(|e| &e.from)
-        .filter(|from| {
-            graph
-                .node(from)
-                .is_some_and(|n| is_accepted(n) && matches!(n.payload, NodePayload::Entity(_)))
-        })
-        .collect();
-    match owners.as_slice() {
-        [only] => Some(only),
-        _ => None,
-    }
-}
-
-/// The expression type of an Accepted Attribute and, for an enum, its members.
-fn attribute_type(node: &Node) -> Result<(Ty, Option<Vec<Symbol>>), CalculationIssue> {
-    let NodePayload::Attribute(a) = &node.payload else {
-        return Err(CalculationIssue::InvalidScope {
-            reason: format!("{} is not an Attribute", node.id),
-        });
-    };
-    let unsupported = |reason: String| CalculationIssue::UnsupportedInputType {
-        node_ref: node.id.clone(),
-        reason,
-    };
-    let is_enum = a.value_type == "Enum";
-    let ty = map_pilot_value_type(
-        &a.value_type,
-        a.unit.as_deref(),
-        is_enum.then_some(&node.id),
-    )
-    .map_err(|e| unsupported(e.to_string()))?;
-    if !is_enum {
-        return Ok((ty, None));
-    }
-    let members = a
-        .enum_values
-        .as_ref()
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| unsupported("Enum attribute without enum_values".into()))?;
-    let symbols = members
-        .iter()
-        .map(|m| {
-            Symbol::new(m).map_err(|_| unsupported(format!("enum member {m:?} is not a symbol")))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((ty, Some(symbols)))
-}
-
-/// The declared expression type of a Calculation's result.
-fn calculation_result_type(result_type: &str, unit: Option<&str>) -> Result<Ty, CalculationIssue> {
-    if result_type == "Enum" {
-        return Err(CalculationIssue::UnsupportedResultType {
-            result_type: result_type.to_owned(),
-        });
-    }
-    match map_pilot_value_type(result_type, unit, None) {
-        Ok(ty) => Ok(ty),
-        Err(plumb_expr::TypeBindingError::UnitOnNonNumericType(_))
-        | Err(plumb_expr::TypeBindingError::InvalidUnit(_)) => {
-            Err(CalculationIssue::UnitMismatch {
-                expected: result_type.to_owned(),
-                actual: unit.unwrap_or_default().to_owned(),
-            })
-        }
-        Err(_) => Err(CalculationIssue::UnsupportedResultType {
-            result_type: result_type.to_owned(),
-        }),
-    }
-}
-
-/// A validated scope: canonical bindings, the root and field lookups and the base TypeEnv.
-#[derive(Debug, Clone)]
-struct ValidatedScope {
-    bindings: Vec<CalculationScopeBinding>,
-    roots: BTreeMap<String, CalculationScopeBinding>,
-    fields: BTreeMap<(Id, String), CalculationScopeBinding>,
-    env: TypeEnv,
-}
-
-fn conflict(binding: &CalculationScopeBinding) -> CalculationIssue {
-    CalculationIssue::ScopeBindingConflict {
-        symbol: binding.symbol.clone(),
-        owner_ref: match &binding.exposure {
-            CalculationBindingExposure::Root => None,
-            CalculationBindingExposure::Field { owner_ref } => Some(owner_ref.clone()),
-        },
-    }
-}
-
-/// Validates bindings against the graph and builds their TypeEnv (no calendar).
-fn validate_bindings(
-    graph: &Graph,
-    bindings: &[CalculationScopeBinding],
-) -> Result<ValidatedScope, CalculationIssue> {
-    let mut sorted = bindings.to_vec();
-    sorted.sort();
-    let mut scope = ValidatedScope {
-        bindings: Vec::new(),
-        roots: BTreeMap::new(),
-        fields: BTreeMap::new(),
-        env: TypeEnv::new(),
-    };
-    let invalid = |reason: String| CalculationIssue::InvalidScope { reason };
-    for binding in sorted {
-        if scope.bindings.contains(&binding) {
-            return Err(conflict(&binding));
-        }
-        let symbol = Symbol::new(&binding.symbol)
-            .map_err(|_| invalid(format!("{:?} is not a PlumbExpr symbol", binding.symbol)))?;
-        let node =
-            graph
-                .node(&binding.node_ref)
-                .ok_or_else(|| CalculationIssue::UnknownInputRef {
-                    node_ref: binding.node_ref.clone(),
-                })?;
-        if !is_accepted(node) {
-            return Err(invalid(format!("{} is not Accepted", node.id)));
-        }
-        match &binding.exposure {
-            CalculationBindingExposure::Root => {
-                if binding.symbol == CALCULATION_CALENDAR_SYMBOL {
-                    return Err(CalculationIssue::ReservedSymbol {
-                        node_ref: binding.node_ref.clone(),
-                    });
-                }
-                if scope.roots.contains_key(&binding.symbol) {
-                    return Err(conflict(&binding));
-                }
-                let ty = match &node.payload {
-                    NodePayload::Entity(_) => Ty::Ref(node.id.clone()),
-                    NodePayload::Attribute(_) => {
-                        let (ty, members) = attribute_type(node)?;
-                        if let Some(members) = members {
-                            scope
-                                .env
-                                .define_enum(node.id.clone(), members)
-                                .map_err(|e| invalid(e.to_string()))?;
-                        }
-                        ty
-                    }
-                    NodePayload::Calculation(c) => {
-                        calculation_result_type(&c.result_type, c.unit.as_deref()).map_err(|e| {
-                            CalculationIssue::UnsupportedInputType {
-                                node_ref: node.id.clone(),
-                                reason: format!("{e:?}"),
-                            }
-                        })?
-                    }
-                    _ => {
-                        return Err(invalid(format!(
-                            "{} cannot be a Root binding",
-                            node.payload.node_type().as_str()
-                        )))
-                    }
-                };
-                scope
-                    .env
-                    .bind_root(symbol, ty)
-                    .map_err(|_| conflict(&binding))?;
-                scope.roots.insert(binding.symbol.clone(), binding.clone());
-            }
-            CalculationBindingExposure::Field { owner_ref } => {
-                if !matches!(node.payload, NodePayload::Attribute(_)) {
-                    return Err(invalid(format!(
-                        "{} cannot be a Field binding",
-                        node.payload.node_type().as_str()
-                    )));
-                }
-                if accepted_owner(graph, &node.id) != Some(owner_ref) {
-                    return Err(invalid(format!(
-                        "{owner_ref} is not the canonical owner of {}",
-                        node.id
-                    )));
-                }
-                let key = (owner_ref.clone(), binding.symbol.clone());
-                if scope.fields.contains_key(&key) {
-                    return Err(conflict(&binding));
-                }
-                let (ty, members) = attribute_type(node)?;
-                if let Some(members) = members {
-                    scope
-                        .env
-                        .define_enum(node.id.clone(), members)
-                        .map_err(|e| invalid(e.to_string()))?;
-                }
-                scope
-                    .env
-                    .bind_field(owner_ref.clone(), symbol, ty)
-                    .map_err(|_| conflict(&binding))?;
-                scope.fields.insert(key, binding.clone());
-            }
-        }
-        scope.bindings.push(binding);
-    }
-    Ok(scope)
-}
-
-/// Whether `calendar_ref` names an Accepted Calendar.
-fn accepted_calendar(graph: &Graph, calendar_ref: &Id) -> bool {
-    graph
-        .node(calendar_ref)
-        .is_some_and(|n| is_accepted(n) && matches!(n.payload, NodePayload::Calendar(_)))
-}
-
-/// Validates a full scope: its bindings and its allowed Accepted Calendars.
-fn validate_scope(
-    graph: &Graph,
-    scope: &CalculationScope,
-) -> Result<ValidatedScope, CalculationIssue> {
-    let validated = validate_bindings(graph, &scope.bindings)?;
-    let unique: BTreeSet<&Id> = scope.calendar_refs.iter().collect();
-    if unique.len() != scope.calendar_refs.len() {
-        return Err(CalculationIssue::InvalidScope {
-            reason: "duplicate calendar reference".into(),
-        });
-    }
-    for calendar in &scope.calendar_refs {
-        if !accepted_calendar(graph, calendar) {
-            return Err(CalculationIssue::CalendarUnresolved {
-                calendar_ref: calendar.clone(),
-            });
-        }
-    }
-    Ok(validated)
-}
-
-// ============================================================================ qualification
-
-/// An expression ready for deterministic evaluation.
-#[derive(Debug, Clone)]
-pub struct PreparedCalculation {
-    pub ast: Ast,
-    pub type_env: TypeEnv,
-    pub calendar_ref: Option<Id>,
-    pub expected_ty: Ty,
-    pub rounding: Option<RoundingSpec>,
-}
-
-/// Deterministic qualification material of one calculation, reusable by F2 validation.
-#[derive(Debug, Clone)]
-pub struct CalculationQualification {
-    /// The canonical expression `unparse(parse(expression))`, when it parses.
-    pub canonical_expression: Option<String>,
-    pub expected_ty: Option<Ty>,
-    pub actual_ty: Option<Ty>,
-    /// The canonical scope bindings the expression actually uses.
-    pub used_bindings: Vec<CalculationScopeBinding>,
-    pub undefined_inputs: Vec<String>,
-    /// Accepted Calculations used through Root bindings, sorted.
-    pub dependencies: Vec<Id>,
-    /// Whether the expression needs a business calendar (`working_days`).
-    pub requires_calendar: bool,
-    pub issues: Vec<CalculationIssue>,
-    pub prepared: Option<PreparedCalculation>,
-}
-
-impl CalculationQualification {
-    /// Qualified without issues.
-    pub fn is_qualified(&self) -> bool {
-        self.issues.is_empty() && self.prepared.is_some()
-    }
-
-    fn failed(issue: CalculationIssue) -> CalculationQualification {
-        CalculationQualification {
-            canonical_expression: None,
-            expected_ty: None,
-            actual_ty: None,
-            used_bindings: Vec::new(),
-            undefined_inputs: Vec::new(),
-            dependencies: Vec::new(),
-            requires_calendar: false,
-            issues: vec![issue],
-            prepared: None,
-        }
-    }
-}
-
-fn identifiers<'a>(ast: &'a Ast, out: &mut Vec<&'a Identifier>) {
-    match ast {
-        Ast::Literal(_) => {}
-        Ast::Identifier(identifier) => out.push(identifier),
-        Ast::List(items) | Ast::Call { args: items, .. } => {
-            items.iter().for_each(|item| identifiers(item, out))
-        }
-        Ast::Unary { expr, .. } => identifiers(expr, out),
-        Ast::Binary { left, right, .. } => {
-            identifiers(left, out);
-            identifiers(right, out);
-        }
-        Ast::Conditional {
-            condition,
-            then_expr,
-            else_expr,
-        } => {
-            identifiers(condition, out);
-            identifiers(then_expr, out);
-            identifiers(else_expr, out);
-        }
-    }
-}
-
-fn calls(ast: &Ast, name: &str) -> bool {
-    match ast {
-        Ast::Literal(_) | Ast::Identifier(_) => false,
-        Ast::Call { function, args } => {
-            function.as_str() == name || args.iter().any(|a| calls(a, name))
-        }
-        Ast::List(items) => items.iter().any(|a| calls(a, name)),
-        Ast::Unary { expr, .. } => calls(expr, name),
-        Ast::Binary { left, right, .. } => calls(left, name) || calls(right, name),
-        Ast::Conditional {
-            condition,
-            then_expr,
-            else_expr,
-        } => calls(condition, name) || calls(then_expr, name) || calls(else_expr, name),
-    }
-}
-
-/// Resolves every identifier against the explicit scope, the reserved calendar and the
-/// registered enum members; returns the used bindings and the undefined identifiers.
-fn used_bindings(
-    graph: &Graph,
-    ast: &Ast,
-    scope: &ValidatedScope,
-    calendar_bound: bool,
-) -> (Vec<CalculationScopeBinding>, Vec<String>) {
-    let mut found = Vec::new();
-    identifiers(ast, &mut found);
-    let enum_members: BTreeSet<&Symbol> = scope
-        .bindings
-        .iter()
-        .filter_map(|b| scope.env.enum_members(&b.node_ref))
-        .flatten()
-        .collect();
-    let mut used = BTreeSet::new();
-    let mut undefined = BTreeSet::new();
-    for identifier in found {
-        let segments = identifier.segments();
-        let root = segments[0].as_str();
-        if segments.len() == 1 && root == CALCULATION_CALENDAR_SYMBOL && calendar_bound {
-            continue;
-        }
-        let Some(root_binding) = scope.roots.get(root) else {
-            if !(segments.len() == 1 && enum_members.contains(&segments[0])) {
-                undefined.insert(identifier.to_string());
-            }
-            continue;
-        };
-        used.insert(root_binding.clone());
-        if let Some(field) = segments.get(1) {
-            let is_entity = graph
-                .node(&root_binding.node_ref)
-                .is_some_and(|n| matches!(n.payload, NodePayload::Entity(_)));
-            match scope
-                .fields
-                .get(&(root_binding.node_ref.clone(), field.as_str().to_owned()))
-            {
-                Some(field_binding) if is_entity => {
-                    used.insert(field_binding.clone());
-                }
-                _ => {
-                    undefined.insert(identifier.to_string());
-                }
-            }
-        }
-    }
-    (used.into_iter().collect(), undefined.into_iter().collect())
-}
-
-/// Whether the actual type satisfies the declared result type and unit.
-fn result_compatibility(expected: &Ty, actual: &Ty) -> Option<CalculationIssue> {
-    let mismatch = || CalculationIssue::ResultTypeMismatch {
-        expected: format!("{expected:?}"),
-        actual: format!("{actual:?}"),
-    };
-    let unit_mismatch = || CalculationIssue::UnitMismatch {
-        expected: format!("{expected:?}"),
-        actual: format!("{actual:?}"),
-    };
-    match (expected, actual) {
-        (Ty::Quantity(u), Ty::Quantity(v)) if u == v => None,
-        (Ty::Quantity(_), _) | (_, Ty::Quantity(_)) | (_, Ty::Duration(_)) => Some(unit_mismatch()),
-        (Ty::Int, Ty::Int) => None,
-        (Ty::Decimal(_), Ty::Int) => None,
-        (Ty::Decimal(n), Ty::Decimal(m)) if m <= n => None,
-        (Ty::String, Ty::String)
-        | (Ty::Bool, Ty::Bool)
-        | (Ty::Date, Ty::Date)
-        | (Ty::DateTime, Ty::DateTime) => None,
-        _ => Some(mismatch()),
-    }
-}
-
-/// The semantic content of a calculation to qualify.
-struct CalculationDraft<'a> {
-    expression: &'a str,
-    result_type: &'a str,
-    unit: Option<&'a str>,
-    rounding: Option<&'a str>,
-    calendar_ref: Option<&'a Id>,
-}
-
-/// Qualifies an expression under explicit bindings and a calendar reference.
-fn qualify(
-    graph: &Graph,
-    draft: &CalculationDraft<'_>,
-    scope: Result<ValidatedScope, CalculationIssue>,
-) -> CalculationQualification {
-    let ast = match parse(draft.expression) {
-        Ok(ast) => ast,
-        Err(e) => {
-            return CalculationQualification::failed(CalculationIssue::ParseError {
-                offset: e.offset(),
-            })
-        }
-    };
-    let mut qualification = CalculationQualification {
-        canonical_expression: None,
-        expected_ty: None,
-        actual_ty: None,
-        used_bindings: Vec::new(),
-        undefined_inputs: Vec::new(),
-        dependencies: Vec::new(),
-        requires_calendar: false,
-        issues: Vec::new(),
-        prepared: None,
-    };
-    qualification.canonical_expression = Some(unparse(&ast));
-    qualification.requires_calendar = calls(&ast, WORKING_DAYS);
-    let mut scope = match scope {
-        Ok(scope) => scope,
-        Err(issue) => {
-            qualification.issues.push(issue);
-            return qualification;
-        }
-    };
-    let mut issues = Vec::new();
-    let mut calendar_bound = false;
-    if let Some(calendar) = draft.calendar_ref {
-        if accepted_calendar(graph, calendar) {
-            let reserved = Symbol::new(CALCULATION_CALENDAR_SYMBOL)
-                .unwrap_or_else(|_| unreachable!("calendar is a valid symbol"));
-            match scope
-                .env
-                .set_calendar_ref_type(calendar.clone())
-                .and_then(|()| scope.env.bind_root(reserved, Ty::Ref(calendar.clone())))
-            {
-                Ok(()) => calendar_bound = true,
-                Err(e) => issues.push(CalculationIssue::InvalidScope {
-                    reason: e.to_string(),
-                }),
-            }
-        } else {
-            issues.push(CalculationIssue::CalendarUnresolved {
-                calendar_ref: calendar.clone(),
-            });
-        }
-    } else if qualification.requires_calendar {
-        issues.push(CalculationIssue::CalendarRequired);
-    }
-    let (used, undefined) = used_bindings(graph, &ast, &scope, calendar_bound);
-    qualification.dependencies = used
-        .iter()
-        .filter(|b| b.exposure == CalculationBindingExposure::Root)
-        .filter(|b| {
-            graph
-                .node(&b.node_ref)
-                .is_some_and(|n| matches!(n.payload, NodePayload::Calculation(_)))
-        })
-        .map(|b| b.node_ref.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    qualification.used_bindings = used;
-    for identifier in &undefined {
-        issues.push(CalculationIssue::UndefinedInput {
-            identifier: identifier.clone(),
-        });
-    }
-    qualification.undefined_inputs = undefined;
-    let expected = match calculation_result_type(draft.result_type, draft.unit) {
-        Ok(ty) => Some(ty),
-        Err(issue) => {
-            issues.push(issue);
-            None
-        }
-    };
-    qualification.expected_ty = expected.clone();
-    if qualification.undefined_inputs.is_empty() {
-        match typecheck(&ast, &scope.env) {
-            Ok(actual) => {
-                if let Some(issue) = expected
-                    .as_ref()
-                    .and_then(|e| result_compatibility(e, &actual))
-                {
-                    issues.push(issue);
-                }
-                qualification.actual_ty = Some(actual);
-            }
-            Err(e) => issues.push(CalculationIssue::TypeCheckError {
-                reason: e.to_string(),
-            }),
-        }
-    }
-    let rounding = match draft.rounding {
-        None => None,
-        Some(text) => match text.parse::<RoundingSpec>() {
-            Err(_) => {
-                issues.push(CalculationIssue::InvalidRounding {
-                    rounding: text.to_owned(),
-                });
-                None
-            }
-            Ok(spec) => {
-                if !matches!(expected, Some(Ty::Decimal(_) | Ty::Quantity(_))) {
-                    issues.push(CalculationIssue::RoundingNotApplicable {
-                        rounding: text.to_owned(),
-                    });
-                }
-                Some(spec)
-            }
-        },
-    };
-    issues.sort();
-    issues.dedup();
-    qualification.issues = issues;
-    if qualification.issues.is_empty() {
-        if let Some(expected_ty) = expected {
-            qualification.prepared = Some(PreparedCalculation {
-                ast,
-                type_env: scope.env,
-                calendar_ref: draft.calendar_ref.cloned(),
-                expected_ty,
-                rounding,
-            });
-        }
-    }
-    qualification
-}
-
-// ============================================================================ origin and accepted
-
-/// A zero-based, end-exclusive UTF-8 byte range of a target Requirement statement.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CalculationGroundedRange {
-    pub requirement_ref: Id,
-    pub start: u64,
-    pub end: u64,
-}
-
-/// Provenance and replay scope (`plumb_functional:calculation_origin`): the grounding and the
-/// exact canonical bindings the expression uses. The calendar is not a binding; it is
-/// `Calculation.calendar_ref`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CalculationOrigin {
-    pub name_range: CalculationGroundedRange,
-    pub expression_evidence: Vec<CalculationGroundedRange>,
-    pub used_bindings: Vec<CalculationScopeBinding>,
-}
-
-fn origin_of(node: &Node) -> Option<CalculationOrigin> {
-    node.extensions
-        .iter()
-        .find(|(k, _)| k.as_str() == CALCULATION_ORIGIN_EXTENSION)
-        .and_then(|(_, v)| serde_json::from_value(v.clone()).ok())
-}
-
-/// Qualification of one Accepted Calculation.
-#[derive(Debug, Clone)]
-pub struct AcceptedCalculationQualification {
-    pub calculation_ref: Id,
-    /// Whether the replay scope came from a valid S2.6 origin.
-    pub from_origin: bool,
-    pub qualification: CalculationQualification,
-    /// Whether the calculation is a member of a dependency cycle (set by cycle analysis).
-    pub in_cycle: bool,
-}
-
 /// Qualifies an Accepted Calculation. An S2.6 origin is the authoritative replay scope (an
 /// override for such a node is rejected); a calculation without that origin needs an explicit
 /// override, and without one its scope is unavailable rather than guessed.
@@ -885,69 +177,13 @@ pub fn qualify_accepted_calculation(
     calculation_ref: &Id,
     scope_override: Option<&CalculationScope>,
 ) -> Result<AcceptedCalculationQualification, CalculationError> {
-    let node = graph
-        .node(calculation_ref)
-        .filter(|n| is_accepted(n))
-        .ok_or_else(|| invalid_input(format!("{calculation_ref} is not an Accepted node")))?;
-    let NodePayload::Calculation(calculation) = &node.payload else {
-        return Err(invalid_input(format!(
-            "{calculation_ref} is not a Calculation"
-        )));
-    };
-    let origin = origin_of(node);
-    let from_origin = origin.is_some();
-    let done = |qualification: CalculationQualification| AcceptedCalculationQualification {
-        calculation_ref: calculation_ref.clone(),
-        from_origin,
-        qualification,
-        in_cycle: false,
-    };
-    let scope = match (&origin, scope_override) {
-        (Some(_), Some(_)) => {
-            return Ok(done(CalculationQualification::failed(
-                CalculationIssue::UnexpectedScopeOverride {
-                    calculation_ref: calculation_ref.clone(),
-                },
-            )))
-        }
-        (None, None) => {
-            return Ok(done(CalculationQualification::failed(
-                CalculationIssue::ScopeUnavailable {
-                    calculation_ref: calculation_ref.clone(),
-                },
-            )))
-        }
-        (Some(origin), None) => validate_bindings(graph, &origin.used_bindings).map_err(|issue| {
-            CalculationIssue::StaleScopeBinding {
-                node_ref: match &issue {
-                    CalculationIssue::UnknownInputRef { node_ref }
-                    | CalculationIssue::UnsupportedInputType { node_ref, .. }
-                    | CalculationIssue::ReservedSymbol { node_ref } => node_ref.clone(),
-                    _ => calculation_ref.clone(),
-                },
-                reason: format!("{issue:?}"),
-            }
-        }),
-        (None, Some(scope)) => validate_bindings(graph, &scope.bindings),
-    };
-    let draft = CalculationDraft {
-        expression: &calculation.expression,
-        result_type: &calculation.result_type,
-        unit: calculation.unit.as_deref(),
-        rounding: calculation.rounding.as_deref(),
-        calendar_ref: calculation.calendar_ref.as_ref(),
-    };
-    Ok(done(qualify(graph, &draft, scope)))
-}
-
-/// Accepted-calculation qualification with deterministic dependency cycles.
-#[derive(Debug, Clone)]
-pub struct CalculationCycleAnalysis {
-    pub qualifications: Vec<AcceptedCalculationQualification>,
-    /// Self-cycles and multi-node strongly connected components, sorted.
-    pub cycles: Vec<Vec<Id>>,
-    /// Calculations whose scope is unavailable, so their dependencies are unknown.
-    pub incomplete: Vec<Id>,
+    Ok(
+        plumb_validation::calculation_analysis::qualify_accepted_calculation(
+            graph,
+            calculation_ref,
+            scope_override,
+        )?,
+    )
 }
 
 /// Qualifies every Accepted Calculation (with explicit overrides for legacy ones) and
@@ -956,117 +192,7 @@ pub fn analyze_calculation_cycles(
     graph: &Graph,
     overrides: &BTreeMap<Id, CalculationScope>,
 ) -> Result<CalculationCycleAnalysis, CalculationError> {
-    let mut qualifications = Vec::new();
-    for id in graph.node_ids_by_type(NodeType::Calculation) {
-        if graph.node(id).is_some_and(is_accepted) {
-            qualifications.push(qualify_accepted_calculation(graph, id, overrides.get(id))?);
-        }
-    }
-    let ids: Vec<Id> = qualifications
-        .iter()
-        .map(|q| q.calculation_ref.clone())
-        .collect();
-    let index: BTreeMap<&Id, usize> = ids.iter().enumerate().map(|(i, id)| (id, i)).collect();
-    let edges: Vec<Vec<usize>> = qualifications
-        .iter()
-        .map(|q| {
-            q.qualification
-                .dependencies
-                .iter()
-                .filter_map(|d| index.get(d).copied())
-                .collect()
-        })
-        .collect();
-    let mut cycles: Vec<Vec<Id>> = strongly_connected(&edges)
-        .into_iter()
-        .filter(|component| component.len() > 1 || edges[component[0]].contains(&component[0]))
-        .map(|component| {
-            let mut members: Vec<Id> = component.into_iter().map(|i| ids[i].clone()).collect();
-            members.sort();
-            members
-        })
-        .collect();
-    cycles.sort();
-    let in_cycle: BTreeSet<&Id> = cycles.iter().flatten().collect();
-    let incomplete = qualifications
-        .iter()
-        .filter(|q| {
-            q.qualification
-                .issues
-                .iter()
-                .any(|i| matches!(i, CalculationIssue::ScopeUnavailable { .. }))
-        })
-        .map(|q| q.calculation_ref.clone())
-        .collect();
-    let qualifications = qualifications
-        .into_iter()
-        .map(|mut q| {
-            q.in_cycle = in_cycle.contains(&q.calculation_ref);
-            q
-        })
-        .collect();
-    Ok(CalculationCycleAnalysis {
-        qualifications,
-        cycles,
-        incomplete,
-    })
-}
-
-/// Tarjan's strongly connected components over node indices (deterministic order).
-fn strongly_connected(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
-    struct State<'e> {
-        edges: &'e [Vec<usize>],
-        index: Vec<Option<usize>>,
-        low: Vec<usize>,
-        on_stack: Vec<bool>,
-        stack: Vec<usize>,
-        next: usize,
-        components: Vec<Vec<usize>>,
-    }
-    fn visit(s: &mut State<'_>, v: usize) {
-        s.index[v] = Some(s.next);
-        s.low[v] = s.next;
-        s.next += 1;
-        s.stack.push(v);
-        s.on_stack[v] = true;
-        for &w in &s.edges[v] {
-            match s.index[w] {
-                None => {
-                    visit(s, w);
-                    s.low[v] = s.low[v].min(s.low[w]);
-                }
-                Some(iw) if s.on_stack[w] => s.low[v] = s.low[v].min(iw),
-                Some(_) => {}
-            }
-        }
-        if Some(s.low[v]) == s.index[v] {
-            let mut component = Vec::new();
-            while let Some(w) = s.stack.pop() {
-                s.on_stack[w] = false;
-                component.push(w);
-                if w == v {
-                    break;
-                }
-            }
-            s.components.push(component);
-        }
-    }
-    let n = edges.len();
-    let mut state = State {
-        edges,
-        index: vec![None; n],
-        low: vec![0; n],
-        on_stack: vec![false; n],
-        stack: Vec::new(),
-        next: 0,
-        components: Vec::new(),
-    };
-    for v in 0..n {
-        if state.index[v].is_none() {
-            visit(&mut state, v);
-        }
-    }
-    state.components
+    Ok(plumb_validation::calculation_analysis::analyze_calculation_cycles(graph, overrides)?)
 }
 
 // ============================================================================ evaluation
@@ -1233,7 +359,7 @@ fn context_of(
     target_requirement_refs: &[Id],
     scope: &CalculationScope,
 ) -> Result<(CalculationContext, CalculationScope), CalculationError> {
-    let validated = validate_scope(graph, scope).map_err(CalculationError::Scope)?;
+    let validated = validate_calculation_scope(graph, scope).map_err(CalculationError::Scope)?;
     let mut targets = BTreeSet::new();
     let mut requirements = Vec::new();
     for id in target_requirement_refs {
@@ -1588,7 +714,11 @@ pub fn analyze_calculations(
             rounding: candidate.rounding.as_deref(),
             calendar_ref: candidate.calendar_ref.as_ref(),
         };
-        let mut qualification = qualify(graph, &draft, validate_bindings(graph, &scope.bindings));
+        let mut qualification = qualify_calculation(
+            graph,
+            &draft,
+            validate_calculation_bindings(graph, &scope.bindings),
+        );
         if let Some(reason) = name_issue {
             qualification.issues.push(CalculationIssue::InvalidName {
                 reason: reason.to_owned(),
