@@ -886,6 +886,14 @@ S2.3 classifies Accepted Attributes only. A versioned deterministic dictionary (
 
 **HR reference.** The immutable fixture's `process_specs` (six processes with ordered operation lists) is the current HR process reference and compiles to linear processes, read literally, including UpdateLeaveBalance as reserve then restore. The inherited v2 expectation of a contractor branch is superseded for current HR reference testing and is not fabricated.
 
+### F2 validation boundary (S2.10, Hotfix 044)
+
+**Dependency direction.** `plumb-functional` depends on `plumb-validation`, never the reverse. The pure analysis kernels that F2 validation reuses therefore live in `plumb-validation`: the S2.9 process analyzer, an expression-scope adapter (explicit PSG-node-to-PlumbExpr symbol bindings and type environment, exactly the S2.6 binding semantics), calculation qualification and dependency/cycle analysis, typed decision-table analysis, and authorization hierarchy and static separation-of-duty analysis. A prerequisite relocation commit moves the S2.6 and S2.8 kernels there before S2.10; `plumb-functional` keeps inference, requests, proposals and compilation and calls the relocated kernels through source-compatible facades. Each algorithm exists exactly once.
+
+**Supplemental inputs.** Some F2 obligations need material the PSG cannot yet express. The validation context carries optional, content-hashed F2 inputs, validated against the graph like the F1 inputs: the current S2.1 unresolved-cardinality and S2.2 unresolved-trigger findings (and nothing else); explicit scope overrides for Accepted Calculations without an S2.6 origin (forbidden for those with one); one typed decision-table specification per Accepted DecisionTable whose hit policy matches the PSG (the generic row encoding is not frozen and is never decoded); and one explicit binding set per Accepted Invariant. Missing or stale inputs are context errors; rules that need inputs report an error without them, so the gate cannot pass by omission.
+
+**Evaluator semantics.** All 24 F2 rules are registered. Evaluators read Accepted PSG semantics, the supplemental inputs, existing finding state and the shared kernels; they never infer, match by name, mutate or persist. Where the PSG cannot represent what a rule needs, the result is an error with a stable code rather than a pass or an invented convention: state reachability (no initial or terminal markers), event producer and consumer obligations (no internal/external or purpose classification), and processes containing exclusive gateways, error events, subprocesses or conditions. Static separation of duty is the only separation kind evaluated, policy conditions are never claimed as PlumbExpr, and the semantic-blocker rule checks open F2 blocker findings entering the gate rather than results of the same run.
+
 ### Gate
 
 `F2`
