@@ -25,6 +25,8 @@
 //! Question/Finding lifecycle updates in one human-decision proposal.
 //! S3.4 creates governed Accepted assumptions, analyzes their expiry with an injected clock and
 //! wraps plumb-validation's pure waiver material in a human-decision proposal.
+//! S4.1 derives deterministic rule-row, state-transition and boundary Scenario skeletons from
+//! accepted semantics and explicit derivation inputs, filling only bounded literal slots.
 
 pub mod assumption;
 pub mod authorization;
@@ -46,6 +48,7 @@ pub mod question_templates;
 pub mod requirements;
 pub mod resolution;
 pub mod round;
+pub mod scenario;
 pub mod state;
 pub mod vocabulary;
 mod vocabulary_exceptions;
@@ -156,6 +159,18 @@ pub use round::{
     compose_question_rounds, entity_anchor, parse_priority, round_id, QuestionRound,
     QuestionRoundConfig, QuestionRoundDisposition, QuestionRoundGroup, QuestionRoundResult,
     RoundError, StaleReason, MAX_QUESTION_ROUND_SIZE,
+};
+pub use scenario::{
+    analyze_scenarios, build_scenario_request, derive_scenarios, validate_scenario,
+    CalculationExampleInput, CalculationExampleV1, ScenarioAudit, ScenarioBoundaryInput,
+    ScenarioBoundaryKind, ScenarioDecisionTableInput, ScenarioDependency, ScenarioDerivationInputs,
+    ScenarioDerivationResult, ScenarioError, ScenarioExisting, ScenarioFamily, ScenarioGiven,
+    ScenarioIdCollision, ScenarioInference, ScenarioInferenceContext, ScenarioLiteral,
+    ScenarioNumericBound, ScenarioNumericConstraint, ScenarioRequest, ScenarioSemantics,
+    ScenarioSkeleton, ScenarioThen, ScenarioValue, ScenarioValueContract, ScenarioValueSlot,
+    ScenarioWhen, SkeletonValue, CALCULATION_EXAMPLE_VERSION, CALCULATION_RESULT_KEY_PREFIX,
+    HOLIDAY_DATE_KEY, SCENARIO_CONFIRMED, SCENARIO_CONTEXT_VERSION, SCENARIO_DERIVED,
+    SCENARIO_OUTPUT_VERSION, SCENARIO_TASK_KIND, WORKING_DAYS_INCLUSIVE_KEY,
 };
 pub use state::{
     analyze_lifecycle, build_lifecycle_request, LifecycleAnalysisResult, LifecycleAudit,
