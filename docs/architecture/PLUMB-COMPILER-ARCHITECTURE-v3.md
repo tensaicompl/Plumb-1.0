@@ -1039,6 +1039,14 @@ F4 does **not** require every requirement to have a passing scenario.
 
 F4 requires the functional semantics that are executable through the functional VM to be coherent and exercised. Non-scenario verification methods are represented later as `VerificationObligation`s.
 
+### Scenario derivation (S4.1, Hotfix 050)
+
+**Families and inputs.** S4.1 derives deterministic Scenario skeletons of three families only: decision-table rule rows, state transitions and explicit boundaries. Material the graph cannot carry arrives as explicit derivation inputs, never as PSG truth: one typed `DecisionTableSpec` per Accepted DecisionTable (the PSG table Values have no frozen encoding and are never decoded) and boundary inputs that say which semantic boundary deserves a scenario without supplying its answer. Every derived Scenario is a Proposed, human-confirmed proposal.
+
+**Values.** Scenario values are closed literals or explicit semantic references. A literal slot is missing test data that inference may fill within an exact typed contract (enums, units, scales and inclusive or exclusive intervals); a semantic reference is missing business meaning that inference never fills and that later execution reports as undecidable. A resolved half-day fraction lives in the Accepted Calculation's `examples` (pilot encoding v1); inclusive-end semantics are the literal third `working_days` argument; `working_days` with an Accepted calendar already excludes holidays, while concrete holiday dates stay unresolved until an execution-time calendar contract exists.
+
+**Identity and compatibility.** A Scenario ID identifies the obligation (kind, sources, row or boundary key and assertion targets), not resolved or inferred literal values, so answering a semantic dependency keeps the same ID. The operation trigger form and grouped `then` categories keep operation scenarios representable in the legacy functional.yaml projection; other triggers stay intentionally lossy there.
+
 ### Gate
 
 `F4`

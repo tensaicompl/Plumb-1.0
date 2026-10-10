@@ -5530,29 +5530,211 @@ tasks:
   depends_on:
   - S3.5
   files:
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/scenario.rs
   - crates/plumb-functional/tests/scenario.rs
+  - docs/plan/EXECUTION-STATE.yaml
   - prompts/s4-scenario.md
   - schemas/inference/s4-scenario.schema.json
   steps:
-  - Implement Scenario fields/kinds exactly from metamodel §9.10.
-  - Derive rule-row, state-transition and boundary scenario skeletons deterministically from accepted semantics.
-  - Inference may fill realistic values only within accepted enums, units, ranges and types.
-  - Every scenario carries requirement_refs or derived_from_refs sufficient to trace its obligation.
-  - Inference-created expected outcomes require HUMAN_CONFIRM.
+  - 'Boundary (Hotfix 050). Hotfix 050 replaces the earlier S4.1 actions; where they differ, this contract governs. S4.1
+    derives deterministic Scenario skeletons of exactly three families (rule_row, state_transition, boundary) and nothing
+    else: no acceptance, failure, quality, integration or regression scenario, no interpreter execution (S4.2), no answer
+    application and no Scenario confirmation. The PSG Scenario payload and ScenarioKind are unchanged (metamodel 9.10);
+    S4.1 freezes only the controlled pilot JSON stored inside Scenario.given, when and then, and the pilot reading of
+    Calculation.examples. Determinism means: the same Graph and the same canonical ScenarioDerivationInputs give the same
+    skeletons, IDs, requests and proposals; S4.1 does not discover business boundaries from requirement prose without
+    explicit input. Nothing here mutates a graph, persists, reads files or fixtures, reads a clock, calls a provider or
+    decides business semantics; apply_patch only dry-validates proposals in memory.'
+  - 'Supplemental derivation inputs (Hotfix 050). ScenarioDerivationInputs {decision_tables: [ScenarioDecisionTableInput
+    {decision_table_ref, spec: DecisionTableSpec}], boundaries: [ScenarioBoundaryInput]} are deterministic caller-supplied
+    analysis material (like F1/F2/F3 validation inputs), never PSG truth; a Scenario derived with them is still a Proposed
+    HUMAN_CONFIRM proposal. The constructor sorts decision tables by decision_table_ref and boundaries by (boundary_key,
+    subject_ref); validation against the graph rejects duplicates. DecisionTableSpec is the existing typed S2.6 type (plumb_validation::decision_table_analysis,
+    re-exported by plumb_functional::decision_table), reused unchanged; the PSG DecisionTable inputs, outputs and rows
+    Values have no frozen encoding and are never decoded. Each decision-table input names an Accepted DecisionTable whose
+    hit_policy string equals spec.hit_policy, and its spec has no structure issue under analyze_decision_table (InvalidDecisionTableSpec);
+    every Accepted DecisionTable needs exactly one input (MissingDecisionTableInput) and no input may name anything else.'
+  - 'Boundary inputs (Hotfix 050). ScenarioBoundaryInput {boundary_key, source_refs, subject_ref, kind} identifies that
+    a semantic boundary deserves a Scenario; it never supplies the business answer. boundary_key is clean text (non-empty,
+    trimmed, no control characters); (boundary_key, subject_ref) is unique; source_refs is non-empty, strictly sorted
+    and names Accepted Requirement, AcceptanceCriterion, Calculation, Rule, DecisionTable, Transition or Calendar nodes;
+    subject_ref names an Accepted Operation, Event, Transition, Rule, Calculation or DecisionTable and is the scenario''s
+    When anchor; nothing is name-matched. The closed ScenarioBoundaryKind is: Numeric {attribute_ref, value_contract}
+    (an Accepted Attribute of value type Int without unit, giving an Integer contract, or Decimal(n), giving Decimal {scale
+    n, unit = Attribute.unit}; the contract interval is the boundary); CalculationSemantic {calculation_ref, semantic_key,
+    input_symbol, value_contract} (semantic_key clean; input_symbol a Root binding of the Accepted Calculation''s qualified
+    scope naming an Accepted Attribute; the contract must match that Attribute''s type: Bool, Int, Decimal(n) with its
+    unit, String, Date, DateTime or Enum with members drawn from Attribute.enum_values); CalendarHoliday {calculation_ref,
+    calendar_ref} (Calculation.calendar_ref equals calendar_ref, an Accepted Calendar); InclusiveEnd {calculation_ref}.
+    For the three calculation kinds subject_ref equals calculation_ref and the Accepted Calculation must qualify cleanly
+    through qualify_accepted_calculation without override (prepared material and no issue). CalendarHoliday and InclusiveEnd
+    additionally need exactly one working_days call in the parsed expression whose period argument is a list of two distinct
+    identifiers resolving through the qualified used bindings (a Root binding or a single-dot Field binding) to Date Attributes,
+    the period start and end. Any violation is InvalidBoundaryInput.'
+  - 'Scenario values (Hotfix 050). Executable values are a closed ScenarioValue: a ScenarioLiteral, or SemanticRef {owner_ref,
+    key}, an explicit unresolved business-semantic dependency (never a fake value: no null, 0, false, ''unknown'' or ''TODO'').
+    Literal wire objects (deny unknown fields): {kind: bool, value: true|false}; {kind: int, value: JSON integer (i64)};
+    {kind: decimal, value: canonical decimal string, unit: unit symbol or null}; {kind: string, value: clean text}; {kind:
+    date, value: YYYY-MM-DD, a real calendar date}; {kind: datetime, value: canonical Plumb Timestamp}; {kind: enum, value:
+    non-empty member}. A decimal string is canonical when rust_decimal parses it and Display reproduces it exactly (no
+    exponent, sign prefix, leading zeros or float); f64 is never used. SemanticRef wire is {kind: semantic_ref, owner_ref,
+    key} with a clean key and an Accepted owner of the dependency''s type: Calculation for calculation semantics and results,
+    Calendar for a holiday date. Generic pilot keys are WORKING_DAYS_INCLUSIVE_KEY = inclusive_end (the third working_days
+    argument), HOLIDAY_DATE_KEY = holiday_date (a Calendar holiday date) and result:<boundary_key> (the expected Calculation
+    result of a boundary scenario); semantic_key values of CalculationSemantic arrive only through boundary inputs.'
+  - 'Value contracts and slots (Hotfix 050). ScenarioValueContract is closed: Bool; Enum {values: non-empty strictly sorted};
+    Integer {interval}; Decimal {scale (0..=28), interval, unit}; String {values: optional strictly sorted}; Date; DateTime.
+    interval is optional {lower, upper}, each an optional ScenarioNumericBound {value: canonical decimal, inclusive},
+    mirroring NumericInterval and preserving exclusive bounds (lower <= upper; equal bounds must both be inclusive); there
+    is no lossy min/max. A literal satisfies a contract only with the matching literal kind: an enum member exactly in
+    values (case-sensitive, no normalization), an int within the interval, a decimal of scale <= the contract scale with
+    exactly the contract unit (no unit chosen or changed) within the interval, a string in values when present, any valid
+    date or Timestamp. A ScenarioValueSlot {slot_id, contract} marks missing realistic test data that inference may fill;
+    a SemanticRef marks missing business meaning that inference must never fill and is never turned into a slot. Slot
+    IDs are deterministic: decision-input:<table-ref>:<row>:<column>, boundary:<boundary-key>:value and given:attribute:<attribute-ref>.'
+  - 'Scenario wire (Hotfix 050). Scenario.when is exactly one one-key object: {operation: id}, {event: id}, {transition:
+    id}, {rule: id}, {calculation: id} or {decision_table: id} (no kind key; a DecisionTable is never presented as a Rule).
+    Scenario.given is a list of one-key objects, each category at most once, in the order attribute_values {Attribute
+    id: ScenarioValue}, entities_exist [Entity ids], states_active [State ids], decision_inputs {input column index: ScenarioValue},
+    calculation_semantics {Calculation id: {semantic key: ScenarioValue}}. Scenario.then uses the same rules with the
+    order attribute_values, states_active [State ids], outcomes [Outcome ids], events [Event ids], rules_satisfied [Rule
+    ids], decision_outputs {output column index: literal}, calculation_results {Calculation id: ScenarioValue}. Arrays
+    are non-empty, strictly sorted and unique, maps are non-empty, column indexes are zero-based canonical decimal strings,
+    every referenced ID names an Accepted node of the expected type, and no empty category is written. scenario.rs owns
+    local typed Given/When/Then models with one serialization boundary to the PSG Values.'
+  - 'Calculation.examples v1 (Hotfix 050). Calculation.examples (PSG unchanged) is read by S4 as entries of exactly {version:
+    1, key: clean text, inputs: [{symbol, value: ScenarioLiteral}] (non-empty, strictly sorted by symbol), expected_result:
+    ScenarioLiteral or null}, unknown fields rejected. Each symbol is a Root binding of the Accepted Calculation''s qualified
+    scope and its literal conforms to that binding''s type (Bool, Int, Decimal(n): decimal of scale <= n with no unit,
+    Quantity(u): decimal with unit u, String, Date, DateTime, Enum: a member of the bound enum); expected_result conforms
+    to the calculation''s expected type. Examples are consulted only for the calculation of a CalculationSemantic boundary,
+    never injected globally: every example of that calculation must decode and type-check (InvalidCalculationExample),
+    two examples with the boundary''s semantic_key are AmbiguousCalculationExample (never first-wins), none leaves the
+    dependency unresolved, and a matching example that lacks input_symbol or whose literal violates the boundary contract
+    is an error (ExampleContractMismatch), never a fallback. S2.6 still writes examples None and S4.1 never writes examples;
+    adding them is a later governed answer path.'
+  - 'Rule-row family (Hotfix 050). One skeleton per decision-table input and zero-based row index, in the spec''s row
+    order (never sorted away under FIRST). When {decision_table: ref}; given decision_inputs holds every input column:
+    Bool cell, a one-member EnumSet and a point interval (equal bounds, both inclusive) give exact literals; a multi-member
+    EnumSet gives a slot Enum {exactly those members}; another interval gives a slot Integer or Decimal {scale, no unit}
+    with the exact interval; Any gives a slot from the column type (Bool, Enum of all members, Integer or Decimal with
+    the column NumericDomain as an inclusive interval or no interval). No representative value is chosen. then decision_outputs
+    holds every output column as a literal (Bool, Enum member, Int, Decimal canonical, unit null). derived_from_refs =
+    [decision_table_ref]; requirement_refs None (no requirement link is invented). Name: ''Rule row <decision_table_ref>
+    row <index>''.'
+  - 'State-transition family (Hotfix 050). One skeleton per Accepted Transition: from_state and to_state must name Accepted
+    States (InvalidTransition) and exactly one Accepted transitions_via edge must exist (none MissingTrigger, several
+    AmbiguousTrigger) targeting an Accepted Operation or Event (otherwise InvalidTransition). given states_active [from_state];
+    when {operation: id} or {event: id}; then states_active [to_state]; derived_from_refs = [transition_ref]; requirement_refs
+    None. Name: ''Transition <transition_ref>''.'
+  - 'Boundary family (Hotfix 050). One skeleton per boundary input; when is the subject_ref anchor; derived_from_refs
+    is the sorted union of source_refs and subject_ref; requirement_refs holds only the source_refs that are Requirement
+    nodes (None when empty). Numeric: given attribute_values {attribute_ref: slot boundary:<key>:value with the input
+    contract}. CalculationSemantic: given attribute_values {bound Attribute: SemanticRef(calculation_ref, semantic_key)},
+    resolved by the matching example''s input literal. CalendarHoliday: given attribute_values {period start and period
+    end: SemanticRef(calendar_ref, holiday_date)}; the holiday date stays unresolved in S4.1 (Calendar.holiday_source,
+    region and time_zone are never interpreted, no date is inferred or copied; working_days with the Accepted calendar_ref
+    already establishes that holidays are excluded, so no holiday Boolean is stored). InclusiveEnd: given attribute_values
+    {period start and end: Date slots given:attribute:<ref>} and calculation_semantics {calculation_ref: {inclusive_end:
+    value}} where a literal true or false third working_days argument resolves the value and any other argument keeps
+    SemanticRef(calculation_ref, inclusive_end). For every calculation kind and a Numeric boundary whose subject is a
+    Calculation, then calculation_results {calculation_ref: SemanticRef(calculation_ref, result:<boundary_key>)}, resolved
+    only by a matching example''s expected_result; other Numeric boundaries have an empty then. Name: ''Boundary <boundary_key>
+    for <subject_ref>''.'
+  - 'Skeletons and identity (Hotfix 050). A ScenarioSkeleton holds scenario_ref, kind, name, typed given/when/then whose
+    value positions are literals, slots or semantic positions (owner_ref, key, resolved literal or none), traceability,
+    its slots and its dependencies (unresolved semantic positions, sorted). Scenario ID = scenario:<first 16 hex of SHA-256(RFC
+    8785 body)>, body {project_id, scenario_kind, derivation_family (= scenario_kind), source_refs, row_index (rule_row
+    only), boundary_key (boundary only), skeleton_semantics: {given, when, then} in the wire form with every slot as {kind:
+    slot, slot_id} and every semantic position as {kind: semantic_ref, owner_ref, key} whether or not resolved}; source_refs
+    is [decision_table_ref], [transition_ref] or the boundary derived_from_refs. Inference values, resolved example or
+    expression literals, confirmation_status, audit, proposal and provider data never change the ID; kind, family, sources,
+    row, boundary key and assertion targets do. ScenarioSkeleton::content_hash is the Generic SHA-256 of the canonical
+    skeleton including resolution state and slot contracts; it binds inference to the current materialization. Every Scenario
+    has non-empty derived_from_refs or requirement_refs, both sorted and unique.'
+  - 'Proposals and reconciliation (Hotfix 050). A skeleton becomes a Scenario once every slot has a valid literal; SemanticRefs
+    may remain (an unresolved Scenario is legal Proposed material and later Undecidable in S4.2; accepting it accepts
+    the obligation, not an answer). Each new Scenario is one proposal adding a Proposed revision-1 node {name, scenario_kind,
+    given, when, then, requirement_refs, derived_from_refs, confirmation_status ''Derived''} with evidence the sorted
+    union of the evidence of its derived_from and requirement nodes, audit from ScenarioAudit {created_by, created_at},
+    stage S4, Semantic, HumanConfirm, confidence None, derivation refs the inference derivation ref when inference filled
+    a slot and none otherwise, dry-run through apply_patch. Pilot confirmation_status values are exactly Derived and Confirmed;
+    S4.1 writes only Derived. At the ID: no node is new; a Proposed Scenario with status Derived, or an Accepted Scenario
+    with Derived or Confirmed, that matches the skeleton (same name, kind, traceability and structure, literals equal,
+    slot positions holding contract-valid literals, semantic positions holding the same SemanticRef or the resolved literal)
+    is Existing or ExistingAccepted with a current flag; anything else is ScenarioIdCollision. S4.1 never overwrites or
+    replaces a Scenario. Skeletons with unfilled slots and no matching node are returned unresolved, not proposed.'
+  - 'Inference (Hotfix 050). SCENARIO_CONTEXT_VERSION = 1, SCENARIO_OUTPUT_VERSION = 1, SCENARIO_TASK_KIND = scenario_values,
+    stage S4. build_scenario_request(graph, inputs, scenario_ref, provider_policy) needs a skeleton with at least one
+    slot and builds ScenarioInferenceContext {version, project_id, scenario_ref, skeleton_hash, slots} (only slots; SemanticRefs
+    are never fillable), input_refs the sorted unique IDs the skeleton references, evidence_refs the sorted union of its
+    source nodes'' evidence, context_hash its canonical hash and the content_sha256 of the committed prompts/s4-scenario.md
+    and schemas/inference/s4-scenario.schema.json bytes (no interpolation). The output (Draft 2020-12, additionalProperties
+    false throughout) is exactly {version: 1, scenario_ref, values: [{slot_id, value: ScenarioLiteral}]}, with no semantic_ref,
+    answer, outcome, operation, kind or traceability field. Validation order: request validate, request still equal to
+    the current skeleton''s request, artifact validate_for, schema, decode, version, exact scenario_ref, strictly sorted
+    unique slot IDs, known slot IDs, literal shape, exact slot contract, merge into a cloned skeleton, local Scenario
+    validation, proposal, dry run; any failure gives no proposal. Output may omit slots; at most one inference per scenario_ref.
+    The prompt forbids deciding business rules, half-day fractions, holiday behavior, inclusive-end behavior, formulas,
+    rounding, authorization, expected outcomes or unresolved semantic references, and asks for JSON only.'
+  - 'F0.14 compatibility (Hotfix 050). The when operation form {operation: id} keeps operation scenarios representable
+    by the unchanged F0.14 projection; event, transition, rule, calculation and decision-table scenarios stay intentionally
+    lossy there and are omitted with the existing V2_SCENARIO_OPERATION_MISSING warning (scenarios without requirement_refs
+    with V2_SCENARIO_REQUIREMENT_MISSING). Then categories are grouped so no valid S4.1 scenario emits duplicate top-level
+    then keys, avoiding V2_SCENARIO_THEN_CONFLICT merely from the S4 structure. project.rs is not changed; the PSG Scenario
+    stays canonical.'
+  - HR fixture (Hotfix 050). Production code never reads fixtures/hr-leave files and holds no HR constant (no HR requirement
+    ID, half-day key, the half-day number, holiday key, PL-Office or fixture file names); HR behavior emerges only from
+    accepted PSG semantics and explicit boundary inputs. Tests may turn the fixture into boundary inputs and use fixture-contract.yaml
+    and expert-answers.yaml as oracles only. Pre-answer the half-day boundary Scenario exists with SemanticRef(calculation,
+    half_day_fraction); post-answer an Accepted Calculation example {key half_day_fraction, inputs [day_fraction = decimal
+    0.5]} resolves it to the literal with the same Scenario ID. The holiday date stays SemanticRef(calendar, holiday_date).
+    inclusive_end resolves only from a literal working_days argument. The legacy expert answers are never applied.
+  - Files and dependencies (Hotfix 050). Only crates/plumb-functional/src/lib.rs (module and selected exports, without
+    the token Proposal), crates/plumb-functional/src/scenario.rs, crates/plumb-functional/tests/scenario.rs, prompts/s4-scenario.md,
+    schemas/inference/s4-scenario.schema.json and, at successful completion, docs/plan/EXECUTION-STATE.yaml change. No
+    Cargo, plumb-psg, plumb-validation, plumb-expr, calculation.rs, decision_table.rs, project.rs, S3, rules YAML, rulebook
+    or fixture change; a needed file outside this list or a source-guard conflict is a blocker.
+  - Tests (Hotfix 050). crates/plumb-functional/tests/scenario.rs covers every wire shape and rejection (unknown kind
+    or field, bad ID, wrong type), literals, SemanticRef, contracts with inclusive and exclusive bounds, derivation-input
+    canonicalization and every rejection, decision-table input checks, Calculation example decoding and errors, half-day
+    pre and post answer with the same ID, the unresolved holiday date, inclusive_end literal true, false and symbolic,
+    rule rows (literals, EnumSet and interval slots, Any, outputs, identity), operation and event transitions with missing
+    and ambiguous triggers, only rule_row, state_transition and boundary kinds, an independent Python Scenario ID golden
+    and identity invariance, F0.14 operation and multi-category then compatibility through the unchanged project_functional_v2,
+    schema and prompt guards, independent prompt, schema, context and request goldens, provider sensitivity, anti-hallucination
+    rejections, proposals, reconciliation, reverse-insertion determinism and production source guards (no file, store,
+    clock, network, provider execution, fixture read, HR constant or unsafe in scenario.rs).
   tests:
-  - cargo test -p plumb-functional scenario
+  - cargo test -p plumb-functional --test scenario
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - 0.5-day and holiday boundary skeletons are derived deterministically; invalid generated values are rejected.
+  - Rule-row, state-transition and boundary Scenario skeletons are derived deterministically from accepted PSG semantics
+    and explicit typed derivation inputs; identical inputs give identical IDs, requests and proposals.
+  - The half-day and holiday boundary skeletons exist before any answer with explicit SemanticRef dependencies; an accepted
+    Calculation example resolves the half-day value with the same Scenario ID, and the holiday date stays unresolved.
+  - Inference fills only declared literal slots within their exact contracts; values that violate a contract, add slots
+    or answer semantic references are rejected with no proposal.
   source_refs:
   - SRCREF-B79FB10635
   - SRCREF-838C22696F
   - SRCREF-0765F7CC1C
-  forbidden: []
+  forbidden:
+  - Do not change plumb-psg, plumb-validation, plumb-expr, calculation.rs, decision_table.rs, project.rs, S3 code, Cargo
+    files, rules YAML, rulebook or fixtures; decode PSG DecisionTable Values; read fixtures in production; let inference
+    decide business semantics or fill SemanticRefs; write fake values for unresolved semantics; overwrite or replace an
+    existing Scenario; implement S4.2 interpretation; or start S4.2.
   commands:
+  - cargo test -p plumb-functional --test scenario
   - cargo test -p plumb-functional scenario
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test -p plumb-validation --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'S4.1: Implement Scenario model and deterministic scenario derivation'
 - id: S4.2
   title: Implement pure functional interpreter materialization and execution
