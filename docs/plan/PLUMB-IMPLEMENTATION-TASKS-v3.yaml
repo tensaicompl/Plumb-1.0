@@ -4871,6 +4871,15 @@ tasks:
     and choice-node insertion order (routing candidate order is semantic and kept); production source guards against file,
     network, clock, provider, inference, random and float capability, name-based lookup, v2 G_ findings and prompt-text
     answer mapping.'
+  - 'Ratified implementation decisions (Hotfix 046). The accepted S3.1 implementation is baseline. (a) A GeneratedFinding
+    whose payload.waiver_ref is set yields WaivedFinding and no Question regardless of payload.status: a governed waiver
+    means no further human resolution is needed, and S3.1 does not validate Finding lifecycle consistency. (b) For a mapped
+    per-target template, an Accepted affected element of the wrong semantic type (for example PLUMB.F2.OPERATION.PERFORMER
+    targeting a Calculation) is malformed input, a hard InvalidFinding error, not StaleFinding or UnmappedFinding. (c)
+    QuestionGenerationResult.questions includes Questions reconciled as Existing as well as new ones, making rerun idempotence
+    explicit. (d) Because finding_ref is part of the canonical slots, normal generation may never reach duplicate suppression;
+    the public suppress_duplicates contract is tested directly and no artificial generation path is added. (e) The deterministic
+    HR representative question order is asserted directly in Rust; no snapshot file is required. No S3.1 code changes.'
   tests:
   - cargo test -p plumb-patch --test impact
   - cargo test -p plumb-functional --test question
@@ -4914,28 +4923,116 @@ tasks:
   depends_on:
   - S3.1
   files:
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/round.rs
   - crates/plumb-functional/tests/round.rs
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
-  - Compose at most profile.question_round_size questions per stakeholder.
-  - Sort blocking before non-blocking, then descending priority, then stable question ID.
-  - Group by affected entity when grouping does not violate ordering.
-  - A question already answered, superseded or stale is excluded.
-  - Hotfix 045 forward note. S3.2 receives the Accepted Questions materialized by S3.1. Blocking status derives from the
-    linked current Finding (Finding.severity == blocker), not from a new Question field. Priority parses only the canonical
-    unsigned integer string frozen by S3.1, and S3.2 never recomputes blast radius. S3.2 may assign round_ref or status
-    only under its own frozen contract.
+  - Boundary (Hotfix 046). Hotfix 046 replaces the earlier S3.2 actions and the Hotfix 045 forward note; where they differ,
+    this contract governs. S3.2 composes at most one next question round per stakeholder from Accepted Question nodes
+    and assigns membership only through Question.round_ref. plumb_validation::ValidationProfile stays validation-rule
+    metadata and gains no question_round_size; the rules YAML and metamodel are unchanged and no Round PSG node or payload
+    is added. A round is an S3 orchestration composition record whose deterministic ID is stored in Question.round_ref;
+    the Question nodes persist membership. S3.2 never infers, reruns gates or validation, reconstructs GeneratedFinding,
+    recomputes priority or blast radius (no impact_reachable_nodes), reroutes, matches stakeholders or entities by name,
+    reads files, uses a network, provider, randomness, floats or a clock, or creates nodes.
+  - 'Configuration (Hotfix 046). QuestionRoundConfig {question_round_size: usize} is explicit orchestration input supplied
+    by the caller, valid only for 1..=1000, with no implicit production default. Production code never parses fixtures/hr-leave/profile.yaml;
+    tests may read question_round_size: 15 from it (include_str!) through a tiny test-only deserializer.'
+  - 'Question status and eligibility (Hotfix 046). The pilot Question.status vocabulary is Open, Answered, Closed and
+    Superseded; S3.1 creates Open, S3.2 never changes status, Answered, Closed and Superseded are excluded as TerminalQuestion,
+    and any other status of an Accepted Question is the typed error InvalidQuestionStatus (never treated as Open or Closed).
+    Only Accepted Question nodes are read. An Open Question with round_ref set is AlreadyAssigned {question_ref, round_ref}
+    and is never moved or overwritten. An Open unassigned Question with stakeholder_ref None is UnassignedQuestion (no
+    analyst is fabricated and nothing is rerouted). It is StaleQuestion {question_ref, reason} when its stakeholder_ref
+    no longer resolves to an Accepted Stakeholder or its linked Finding is not current: missing, not a Finding, not Accepted,
+    status other than Open, waiver_ref set, or any affected_ref missing or not Accepted; stale Questions are not mutated
+    or closed. Otherwise it is eligible when Question.priority is Some canonical unsigned decimal ("0" or [1-9][0-9]*,
+    fitting u64, with parsed.to_string() equal to the stored string, so 01, +1, 1.0, -1 and " 1" are rejected); a missing
+    or malformed priority of an otherwise eligible Question is the typed error InvalidQuestionPriority.'
+  - Ordering and capacity (Hotfix 046). Blocking derives solely from the linked current Finding (Finding.severity == blocker),
+    never from a Question field, priority or rule ID. Within each stakeholder independently, eligible Questions are ordered
+    blocking before non-blocking, then priority descending numerically, then Question ID ascending, and no grouping changes
+    this order. Each stakeholder receives at most one new round per invocation holding the first question_round_size Questions
+    of that order; the rest are DeferredByCapacity {question_ref, stakeholder_ref} with round_ref unchanged (for example
+    32 eligible with size 15 assigns 15 and defers 17; after those 15 stop being eligible, the next invocation assigns
+    15 and defers 2). Capacity is per stakeholder, not global. Future rounds are never pre-assigned.
+  - 'Round shape and identity (Hotfix 046). QuestionRound {id, stakeholder_ref, question_refs, groups: [QuestionRoundGroup
+    {entity_ref: Option<Id>, question_refs}]} has no timestamp, counter, sequence number or mutable state; question_refs
+    keeps the authoritative order and the groups flatten to exactly that sequence. Round ID = rnd:<first 16 hex of SHA-256(RFC
+    8785 {project_id: graph.project_id, stakeholder_ref, question_refs: [ordered selected Question IDs]})>, so question
+    order is identity-significant; no clock, ULID, UUID or round counter. If the ID is already used by any PSG node or
+    edge, that stakeholder''s round is not assigned (RoundIdCollision) and no other ID is derived.'
+  - 'Entity grouping (Hotfix 046). Grouping is presentation only. The entity anchor of a Question comes from its current
+    linked Finding: candidates are every affected_ref that is an Accepted Entity and, for an affected Accepted Attribute,
+    its unique Accepted Entity owner through an Accepted has_attribute edge; no name matching and no wider traversal.
+    Exactly one distinct candidate gives entity_ref Some(entity); zero or several give None. After ordering and truncation,
+    the selected Questions are walked in order into maximal contiguous runs of equal entity_ref; Questions are never moved
+    (Q1 A, Q2 A, Q3 None, Q4 A gives [A: Q1, Q2], [None: Q3], [A: Q4]).'
+  - Assignment proposal (Hotfix 046). Each selected Question changes only round_ref from None to Some(round id) through
+    ReplacePayload whose precondition is the exact current Question node element hash, so ordinary patch CAS rejects a
+    stale overwrite; finding_ref, question_kind, prompt, status (still Open), answer_schema, stakeholder_ref, priority
+    and context_refs are preserved and no new status exists. No audit parameter is added and no node is created; the patch
+    engine's ReplacePayload and revision behavior is authoritative. Without any non-empty round the proposal is None;
+    otherwise one proposal holds every assignment in Question ID order (a single ReplacePayload for one Question, else
+    Compound) with stage S3, ProposalMateriality::NonSemantic, AcceptancePolicy::AutoNonSemantic and confidence None;
+    Question nodes are excluded from semantic_hash, so applying it leaves semantic_hash unchanged. It is dry-run through
+    the patch engine; failure is InvalidRoundProposal and no proposal.
+  - 'Result (Hotfix 046). QuestionRoundResult {rounds, proposal, dispositions}: rounds ordered by stakeholder_ref then
+    round ID; dispositions AlreadyAssigned, TerminalQuestion {question_ref, status}, StaleQuestion, UnassignedQuestion,
+    DeferredByCapacity and Assigned {question_ref, round_ref}, plus RoundIdCollision, in canonical order by Question ID
+    then disposition kind. No eligible routed Question is a successful empty result (no rounds, no proposal) with explanatory
+    dispositions. Rerunning after the proposal is applied reports the assigned Questions as AlreadyAssigned, never recreates
+    their assignment, keeps their round_ref and may compose the next round from previously deferred Questions.'
+  - HR fixture (Hotfix 046). With question_round_size 15 read from the HR profile fixture in tests, the seven representative
+    S3.1 Questions routed to stakeholder:hr form one round of 7 in deterministic order with no deferral, and a synthetic
+    set of more than 15 HR-routed Questions is truncated to 15. The tests state that this is a synthetic adapter, not
+    a claim that the live compiled HR graph already contains these Questions.
+  - Files and dependencies (Hotfix 046). Only crates/plumb-functional/src/{lib.rs, round.rs}, crates/plumb-functional/tests/round.rs
+    and, at successful completion, docs/plan/EXECUTION-STATE.yaml change; Cargo.toml, Cargo.lock and crates/plumb-functional/Cargo.toml
+    keep an empty diff, and a genuinely required dependency is a blocker.
+  - Tests (Hotfix 046). crates/plumb-functional/tests/round.rs (cargo test -p plumb-functional --test round) covers configuration
+    sizes 1, 15 and 1000 valid and 0 and 1001 rejected; eligibility (eligible Open unassigned Question; Proposed, Answered,
+    Closed and Superseded excluded; unknown status error; round_ref set AlreadyAssigned; no stakeholder Unassigned; stakeholder
+    no longer Accepted, finding missing, not Accepted, not Open or waived and affected target not Accepted all stale;
+    missing, non-canonical and overflowing priority errors); ordering (a blocker with priority 1 before an error with
+    priority 999, then priority descending, then Question ID, blocker class from Finding severity only); capacity (size
+    1, exactly size, size + 1, 32 with size 15 giving 15 assigned and 17 deferred, independent per-stakeholder allowance);
+    grouping (direct Entity, owned Attribute, ownerless Attribute and non-unique owner where constructible None, several
+    Entities None, contiguous runs grouped, separated runs not rejoined, groups flatten to question_refs); independently
+    computed round ID goldens for a single-question and a multi-question round, with order, stakeholder and project changes
+    changing the ID; the proposal (only round_ref changes, status stays Open, stage S3, NonSemantic, AUTO_NON_SEMANTIC,
+    no confidence, single replacement or Compound, Question ID order, dry-run, semantic_hash unchanged, CAS rejects a
+    stale Question); the rerun workflow; the HR fixture; determinism under reversed node, edge, Question and Finding insertion
+    order; and production source guards against file, fixture, network, clock, provider, inference, random, float, blast-radius,
+    name-matching and Round-node capability.
   tests:
-  - cargo test -p plumb-functional round
+  - cargo test -p plumb-functional --test round
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - Round size never exceeds 15 under the default profile and output is deterministic.
+  - Each stakeholder receives at most one round per invocation of at most question_round_size eligible Questions, ordered
+    blocking first, then priority descending, then Question ID.
+  - Round IDs are content-derived from project, stakeholder and ordered Question IDs; grouping never reorders Questions.
+  - The single non-semantic proposal changes only Question.round_ref under CAS preconditions and leaves semantic_hash
+    unchanged.
+  - Reruns keep assigned Questions AlreadyAssigned and may compose the next round from deferred Questions.
+  - The HR fixture adapter with size 15 yields one deterministic round of the seven representative Questions and truncates
+    a larger synthetic set to 15.
   source_refs:
   - SRCREF-674B81DA6A
-  forbidden: []
+  forbidden:
+  - Do not add question_round_size to ValidationProfile or the rules YAML, add a Round PSG node or payload, change Question
+    status, move or overwrite an assigned round_ref, reroute or fabricate stakeholders, recompute priority or blast radius,
+    reorder Questions for grouping, pre-assign future rounds, parse the legacy HR profile in production, change Cargo
+    files or start S3.3.
   commands:
-  - cargo test -p plumb-functional round
+  - cargo test -p plumb-functional --test round
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'S3.2: Implement question rounds'
 - id: S3.3
   title: Implement ResolutionDecision and answer-to-patch application
@@ -4961,6 +5058,9 @@ tasks:
     a submitted invariant expression is parsed and type-checked before any semantic patch. QuestionKind alone is not template
     identity because several templates may share a kind; if S3.3 needs persisted template identity beyond the deterministic
     Question ID and known template reconstruction, it is frozen before S3.3 rather than added as an unversioned extension.
+  - Hotfix 046 forward note. S3.3 answers an Accepted Question that is current and Open whether its round_ref is None
+    or set; round_ref is orchestration context, not semantic authority. When S3.3 changes Question lifecycle it preserves
+    round_ref, and it never deletes or rewrites round composition history (no persisted Round object exists).
   tests:
   - cargo test -p plumb-functional resolution
   acceptance:
@@ -5021,9 +5121,11 @@ tasks:
   - crates/plumb-validation/src/rules/mod.rs
   - crates/plumb-validation/tests/f3.rs
   steps:
-  - Implement all six F3 evaluators exactly from the supplied rule YAML and rulebook. Register only this
-    gate's real evaluators in crates/plumb-validation/src/rules/mod.rs through the F0.13 EvaluatorRegistry;
-    registration is gate-incremental and this gate becomes evaluatable when all of its rules are bound.
+  - Implement all six F3 evaluators exactly from the supplied rule YAML and rulebook. Register only this gate's real evaluators
+    in crates/plumb-validation/src/rules/mod.rs through the F0.13 EvaluatorRegistry; registration is gate-incremental
+    and this gate becomes evaluatable when all of its rules are bound.
+  - Hotfix 046 forward note. For PLUMB.F3.QUESTION.NO_BLOCKING_OPEN the pilot derives blocking from the linked current
+    Finding severity (blocker), as S3.2 does; Question.round_ref has no bearing on whether a blocking Question is resolved.
   tests:
   - cargo test -p plumb-validation f3
   acceptance:

@@ -955,6 +955,18 @@ ResolutionDecision
 
 **Identity and materialization.** Duplicate suppression and the Question ID both use the template ID and the canonical slot object (including choices, priority and route), never text similarity. Missing question-driving Findings and new Questions are added as Accepted governance nodes in one non-semantic, auto-acceptable proposal that leaves `semantic_hash` unchanged. Existing nodes are reused only when their generated content matches exactly; lifecycle fields set by later steps are ignored, and any other mismatch is a conflict rather than a rewrite.
 
+**Ratified question decisions (Hotfix 046).** A finding that already carries a governed waiver produces no question whatever its lifecycle status; an affected element of the wrong type for a per-target template is malformed input; regenerated questions that already exist are reported alongside new ones; and the slot-based duplicate suppression is verified as a contract of its own.
+
+### Question rounds (S3.2, Hotfix 046)
+
+**Configuration and persistence.** Round size is explicit orchestration input from the caller (the HR pilot uses 15), not validation-profile metadata. There is no Round node: a round is a composition record whose content-derived ID (project, stakeholder and ordered question IDs) is written into each member question's `round_ref`.
+
+**Eligibility.** Only Accepted, Open questions without a round are composable, and only when routed to an Accepted Stakeholder and linked to a current Finding (Accepted, Open, unwaived, with Accepted affected elements). Answered, closed or superseded questions, already assigned questions, unrouted questions and stale questions are reported, never rerouted, moved or mutated; an unknown status or a non-canonical priority is an error.
+
+**Ordering and capacity.** Blocking comes from the linked Finding's severity. Per stakeholder, questions are ordered blocking first, then by priority, then by ID, and each stakeholder receives at most one new round per run holding the first `question_round_size` questions; the rest wait for a later run, so resolution proceeds compose, answer, compose next. Grouping by a question's single affected Entity (direct or through an attribute's unique owner) is presentation only and forms contiguous runs without reordering.
+
+**Assignment.** One non-semantic, auto-acceptable proposal sets only `round_ref` on the selected questions under compare-and-swap preconditions; status stays Open and `semantic_hash` is unchanged. Later answering keeps `round_ref`, which never decides whether a blocking question is resolved.
+
 ### Gate
 
 `F3`
