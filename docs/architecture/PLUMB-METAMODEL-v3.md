@@ -541,6 +541,8 @@ expires_at
 risk_ref
 ```
 
+**Pilot note (Hotfix 048).** The pilot `status` vocabulary is Open, Accepted, Resolved, Expired and Superseded; only Accepted assumptions are active, and expiry analysis never changes status. `risk_ref` is present in the v3 payload contract but currently has no legal typed PSG referent because the v3 metamodel defines no Risk node; assumptions created by S3.4 therefore require `risk_ref` to be absent. Introducing Risk semantics requires a separate versioned metamodel and PSG change. There is no review field; an assumption linked to a blocker Finding must carry `expires_at`.
+
 ---
 
 ## 7. Intent and requirements namespace
