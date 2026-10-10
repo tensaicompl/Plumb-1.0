@@ -987,6 +987,14 @@ ResolutionDecision
 
 **Waivers.** Waiver creation builds exactly the decision the existing waiver evaluation already recognizes: the finding identity is derived from the rule, targets and condition, the rule's waiver policy is checked before anything is proposed (forbidden and disabled profile waivers fail with no proposal), and an existing waiver of the same finding blocks a second one. The decision carries the unchanged waiver marker, a deterministic waiver-subject reference, and the hash of a separate waiver artifact; one resolves edge links it to the finding. Waiver governance has two deterministic layers: the validation crate prepares and validates this canonical material without mutation or proposal capabilities, and the functional crate wraps it in a human-decision proposal and dry-runs it through the patch engine, so the validation crate never depends on the patch engine. The finding itself is never closed or edited: the evaluator derives WAIVED from the governance material. Waiver review and expiry remain unsupported until the metamodel can express them, and answers to questions are never treated as waivers.
 
+### Executable F3 semantics (S3.5, Hotfix 049)
+
+**Inputs.** F3 stays pure validation. Material it cannot derive from the graph arrives as validated supplemental inputs, as for F1 and F2: the content-addressed decision artifacts (bound to each decision's `patch_ref`) and the complete set of assumption-expiry findings produced by the S3.4 analyzer at one clock instant. F3 never reads time, replays patches or reaches an artifact store, and without these inputs every F3 rule reports an error rather than a pass.
+
+**Rules.** Blocking questions are those linked to an Accepted F2 blocker finding, and any still Open fails the gate; waivers of the finding do not change question state. A current S3 decision counts as applied when its artifact is present and the graph shows its effect: the relationship or transition the domain or lifecycle compiler builds at the candidate ID, the performer edge, the calendar, the permission bindings, the invariant expression, or for a waiver its resolves edge. Decisions need a human actor, their governance edge and the rationale their family requires (cardinality, trigger, waiver and supersessions), without making S3.3's optional rationale mandatory. Blocker-linked assumptions need an accepted owner and an expiry and must not appear among the supplied expiry findings; architecture-driving assumptions wait for an architecture-driver model. Blocker and error waivers must carry exact, unique, human governance; waiver policy itself remains with the generic evaluator.
+
+**HR.** The legacy expert answers are not reachable through current questions; F3 acceptance uses the current governed S3 state instead.
+
 ### Gate
 
 `F3`

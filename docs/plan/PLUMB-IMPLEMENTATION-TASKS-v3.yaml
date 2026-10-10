@@ -5384,32 +5384,144 @@ tasks:
   depends_on:
   - S3.4
   files:
+  - crates/plumb-validation/src/evaluator.rs
   - crates/plumb-validation/src/rules/f3.rs
   - crates/plumb-validation/src/rules/mod.rs
   - crates/plumb-validation/tests/f3.rs
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
-  - Implement all six F3 evaluators exactly from the supplied rule YAML and rulebook. Register only this gate's real evaluators
-    in crates/plumb-validation/src/rules/mod.rs through the F0.13 EvaluatorRegistry; registration is gate-incremental
-    and this gate becomes evaluatable when all of its rules are bound.
-  - Hotfix 046 forward note. For PLUMB.F3.QUESTION.NO_BLOCKING_OPEN the pilot derives blocking from the linked current
-    Finding severity (blocker), as S3.2 does; Question.round_ref has no bearing on whether a blocking Question is resolved.
-  - Hotfix 048 forward note. S3.5 F3 evaluators consume the existing evaluator and gate waiver mechanism; S3.4 does not
-    special-case F3 rules. Question blocking resolution remains defined by S3.5 and Hotfix 046. A waived Finding is governed
-    through the validation waiver mechanism, not by changing Question.round_ref or rewriting S3.3 decisions. Assumption
-    expiry finding material (PLUMB.S3.ASSUMPTION.EXPIRED) is separate S3 governance material unless a future explicit
-    validation-rule contract promotes it into a gate rule.
+  - 'Boundary (Hotfix 049). Hotfix 049 replaces the earlier S3.5 actions and the Hotfix 046 and 048 forward notes; where
+    they differ, this contract governs. S3.5 implements and registers through register_f3_evaluators exactly the six F3
+    rules of the unchanged rule pack (QUESTION.NO_BLOCKING_OPEN blocker, DECISION.PATCH_APPLIED blocker, DECISION.EVIDENCE
+    error, ASSUMPTION.OWNER error, ASSUMPTION.NOT_EXPIRED blocker, WAIVER.DECISION blocker, all decision_required); registration
+    stays gate-incremental (F3 has six missing evaluators until registered; later gates stay unbound). F3 is part of the
+    F0.13 framework: pure, deterministic and read-only, with no graph mutation, persistence, artifact acquisition, network,
+    LLM, file system, store or ambient clock; plumb-validation gains no plumb-patch, plumb-functional or plumb-store dependency
+    and never replays a SemanticPatch. The rules YAML, rulebook, metamodel payloads and the 133-rule inventory are unchanged;
+    PLUMB.S3.ASSUMPTION.EXPIRED stays S3 governance material, never a registered rule.'
+  - 'F3 supplemental inputs (Hotfix 049). Like F1 and F2, evaluator.rs gains F3ValidationInputs {decision_artifacts: [F3DecisionArtifactInput
+    {decision_ref, hash, bytes}], assumption_expiry_findings: [GeneratedFinding]} (no clock, now, store handle, callback,
+    executable patch, acquisition time, location or applied flag), ValidationContext.f3_inputs: Option<F3ValidationInputs>
+    (skip_serializing_if None) and with_f3_inputs(graph, inputs), canonicalizing (artifacts by decision_ref, findings
+    by ID) and validating them; other gates ignore f3_inputs and I0/F1/F2 behavior is unchanged. Every artifact names
+    an Accepted ResolutionDecision, has a Generic hash equal to SHA-256(bytes) and to decision.patch_ref, and no decision
+    has two artifacts. For the six S3.3 kinds the bytes decode (through an F3-local read-only shape, never plumb_functional
+    types) as {version: 1, question_ref equal to decision.question_ref, base_semantic_hash of Semantic kind, effect_patch
+    null or an object}; for waiver they decode as {version: 1, finding_ref, finding_key, rule_id} equal to the decision''s
+    exact WaiverDecisionMarker. Every expiry finding is exactly S3.4 material: code PLUMB.S3.ASSUMPTION.EXPIRED, family
+    S3, severity blocker, status Open, one affected ref naming an Accepted Assumption whose payload status is Accepted,
+    standard_rule_ref and waiver_ref None, condition assumption_expired:<assumption_ref>:<expires_at> with expires_at
+    equal to the assumption''s, and key and ID recomputed with finding_key/finding_id. Any malformed input is InvalidContext,
+    never a rule result; F3 never computes expiry or reads time, and the completeness of the expiry set is the orchestration
+    contract of the S3.4 analyzer run at one clock instant. Without f3_inputs every F3 evaluator returns EvaluatorFailure
+    F3_INPUTS_MISSING.'
+  - 'QUESTION.NO_BLOCKING_OPEN (Hotfix 049). Applicable Questions are Accepted Questions whose linked Finding is present,
+    Accepted, family F2 and severity blocker; blocking never comes from priority, round_ref, QuestionKind, prompt or stakeholder.
+    Status vocabulary Open, Answered, Closed, Superseded (terminal: the last three); an unknown status of an applicable
+    Question is EvaluatorFailure F3_QUESTION_STATUS, and a finding_ref that names a non-Finding node is EvaluatorFailure
+    F3_QUESTION_LINK (a missing or non-Accepted Finding leaves the Question outside the applicable set). Waivers of the
+    underlying Finding do not change Question state and are not consulted. No applicable Question: PASS with no targets;
+    all terminal: PASS with the sorted applicable IDs; otherwise one Violation over the sorted Open IDs with condition
+    blocking_functional_question_open, message ''Blocking functional questions remain open.'' and resolution ''Answer,
+    close or supersede the blocking questions through governed resolution.'''
+  - 'DECISION.PATCH_APPLIED (Hotfix 049). The generic ''replayable SemanticPatch'' is read in the pilot as: the content-addressed
+    decision artifact is present and the deterministic current-graph postcondition of the known S3 decision holds; no
+    patch is replayed. Applicable decisions are Accepted ResolutionDecisions whose answer.kind is one of domain_relationship_cardinality,
+    state_transition_trigger, operation_performer, calculation_calendar, permission_binding, invariant_formula and waiver
+    (other kinds and non-Accepted decisions are ignored). Each needs its F3 decision artifact and an Accepted resolves
+    edge consistent with its family, and its postcondition: cardinality, an Accepted DomainRelationship at the node ID
+    candidate_ref (the ID the unchanged domain compiler gives the relationship it derives from the decision) whose cardinality_from
+    and cardinality_to equal the marker; trigger, an Accepted Transition at the node ID candidate_ref (the ID the unchanged
+    lifecycle compiler gives it) with exactly one Accepted transitions_via edge, targeting trigger_ref; performer, an
+    Accepted performed_by edge from operation_ref to performer_ref; calendar, the Accepted Calculation''s calendar_ref
+    equal to the marker''s calendar_ref, which names an Accepted Calendar; permission, the Accepted Permission''s unique
+    Accepted baseline permits edge targeting operation_ref and unique Accepted baseline scoped_to edge targeting resource_scope_ref;
+    invariant, the Accepted Invariant''s expression equal to the marker''s expression (expressibility stays F2''s); waiver,
+    an Accepted resolves edge from the decision to marker.finding_ref (no Finding mutation is required or expected). Failing
+    decisions form one Violation over the sorted decision IDs with condition accepted_resolution_decision_not_applied,
+    message ''Accepted resolution decisions are not fully reflected in the current graph.'' and resolution ''Reapply or
+    supersede the governed decision so the current graph reflects its accepted effect.''; no applicable decision is PASS
+    with no targets.'
+  - 'DECISION.EVIDENCE (Hotfix 049). Applicable decisions are the same current S3 decisions. Each needs decided_by an
+    Accepted Human Agent, the closed marker of its family, a matching F3 decision artifact and its governance edge (S3.3:
+    an Accepted resolves edge to its Question or that Question''s Finding; waiver: an Accepted resolves edge to marker.finding_ref);
+    node evidence arrays are not required. A clean rationale is required for cardinality, trigger, waiver and every decision
+    with supersedes set; initial performer, calendar, permission and invariant decisions may omit it, and any present
+    rationale must be clean. Failing decisions form one Violation over the sorted IDs with condition material_resolution_decision_governance_incomplete,
+    message ''Material resolution decisions lack required governance or provenance.'' and resolution ''Repair or supersede
+    the decision with the required human actor, artifact, target and rationale.''; no applicable decision is PASS with
+    no targets.'
+  - 'ASSUMPTION.OWNER (Hotfix 049). Applicable assumptions are Accepted Assumptions with payload status Accepted whose
+    finding_ref names an Accepted Finding of severity blocker (the representable ''blocking'' half; architecture-driving
+    applicability is deferred until an architecture-driver model exists and is never guessed). Each needs an owner_ref
+    naming an Accepted Agent or Stakeholder, expires_at set (no review or permanence field exists) and risk_ref None (a
+    non-null risk_ref is invalid governance; Risk is never approximated). None applicable: NOT_APPLICABLE ''No active
+    assumptions are linked to blocking findings.''; all valid: PASS with the sorted IDs; otherwise one Violation with
+    condition blocking_assumption_governance_incomplete, message ''Blocking assumptions require an accepted owner and
+    explicit expiry.'' and resolution ''Assign an accepted owner and expiry, or resolve/supersede the assumption.'''
+  - 'ASSUMPTION.NOT_EXPIRED (Hotfix 049). The evaluator never reads time; its only expiry source is the validated f3_inputs.assumption_expiry_findings.
+    The blocking scope is the active blocker-linked set above; none: NOT_APPLICABLE ''No active assumptions are linked
+    to blocking findings.''; no supplied finding targets an assumption in scope: PASS with the sorted scope IDs; otherwise
+    one Violation over the sorted expired IDs with condition active_blocking_assumption_expired, message ''Active blocking
+    assumptions have expired.'' and resolution ''Review, resolve, supersede or explicitly replace the expired assumptions.''
+    Findings for assumptions outside the scope must be valid but do not affect the result; no new expiry finding is made.'
+  - 'WAIVER.DECISION (Hotfix 049). Applicable decisions are Accepted ResolutionDecisions with answer.kind waiver that
+    have an Accepted resolves edge to an Accepted Finding of severity blocker or error; none: NOT_APPLICABLE ''No active
+    blocker/error waiver decisions exist.'' Each needs the exact WaiverDecisionMarker, an Accepted Human Agent decided_by,
+    a clean rationale, marker.finding_ref as the target of an Accepted resolves edge naming an Accepted Finding, marker.rule_id
+    equal to Finding.code, a Generic finding_key with finding_id(finding_key) equal to finding_ref, a matching F3 decision
+    artifact, and no second Accepted waiver decision governing the same Finding. Waiver review and expiry are not evaluated,
+    and forbidden, profile_allow and decision_required policy is not re-evaluated here (the generic evaluator and the
+    S3.4 creator own it). Failing decisions form one Violation with condition blocking_waiver_governance_invalid, message
+    ''Blocking or error waivers lack valid explicit governance.'' and resolution ''Replace the waiver with a valid governed
+    ResolutionDecision for the exact finding.'' Every F3 violation may itself be WAIVED only through the unchanged generic
+    decision_required mechanism; no evaluator constructs WAIVED.'
+  - HR fixture (Hotfix 049). fixtures/hr-leave/expert-answers.yaml holds only the legacy half_day, holiday_inside_period
+    and inclusive_end answers, which the six current S3.1 templates do not reach; S3.5 does not apply, reinterpret or
+    claim them, fabricates no Questions for them and does not edit the fixture. The acceptance is that the F3 HR governance
+    fixture passes after the current S3 question, decision, assumption and waiver state is fully governed under the S3.1-S3.4
+    contracts, and fails with an unresolved blocker Question.
+  - Files and dependencies (Hotfix 049). Only crates/plumb-validation/src/evaluator.rs (F3 inputs, their validation, ValidationContext.f3_inputs
+    and with_f3_inputs; no change to GateResult, GateSummary, finding_key, waiver handling, RuleResult derivation, ValidationPolicy
+    or I0/F1/F2 inputs), crates/plumb-validation/src/rules/{f3.rs, mod.rs} (mod.rs only declares f3 and re-exports register_f3_evaluators),
+    crates/plumb-validation/tests/f3.rs and, at successful completion, docs/plan/EXECUTION-STATE.yaml change. No Cargo,
+    plumb-core, plumb-psg, plumb-patch, plumb-functional, rules YAML, rulebook or fixture change; a source-guard conflict
+    or a needed file outside this list is a blocker.
+  - Tests (Hotfix 049). crates/plumb-validation/tests/f3.rs covers input canonicalization and every artifact and expiry-input
+    rejection, with_f3_inputs preserving the other context fields, F3_INPUTS_MISSING, each rule's PASS, FAIL, NOT_APPLICABLE
+    and ERROR fixtures as frozen above (seven PATCH_APPLIED families each passing and failing, optional S3.3 rationale
+    not made mandatory), an independently computed F3 finding key and ID, a generic waiver turning an F3 violation into
+    WAIVED, registration (six IDs, earlier gates unchanged, later gates unbound), full-gate PASS and blocker FAIL variants
+    with error-rule promotion through ValidationPolicy, the HR governance fixture and its failing variant, determinism
+    and source guards against file, store, clock, network, provider, patch and functional-crate capability in f3.rs.
   tests:
-  - cargo test -p plumb-validation f3
+  - cargo test -p plumb-validation --test f3
+  - cargo test -p plumb-validation --no-fail-fast
   acceptance:
-  - All six F3 rules have PASS/FAIL fixtures and the HR fixture passes after expert answers.
+  - All six F3 rules are registered and have fixtures for every result class their frozen contract allows.
+  - 'F3 evaluates purely from the PSG and validated F3 inputs: no clock, patch replay, artifact store or functional-crate
+    dependency.'
+  - The F3 HR governance fixture passes after the current S3 question, decision, assumption and waiver state is fully
+    governed under the S3.1-S3.4 contracts and fails with an unresolved blocker Question; the legacy fixtures/hr-leave/expert-answers.yaml
+    is not applied or claimed as reachable by S3.5.
   source_refs:
   - SRCREF-040CACC2B1
   - SRCREF-F9131DF9AF
-  forbidden: []
+  forbidden:
+  - Do not change the rules YAML or rulebook, add a rule, read time, replay patches, read artifact stores, add production
+    dependencies, import plumb-functional or plumb-patch in plumb-validation, re-evaluate waiver policy in F3, rewrite
+    Question or Finding state, apply or reinterpret the legacy HR expert answers, change unrelated evaluator semantics,
+    or start S4.1.
   commands:
+  - cargo test -p plumb-validation --test f3
   - cargo test -p plumb-validation f3
+  - cargo test -p plumb-validation evaluator
+  - cargo test -p plumb-validation --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'S3.5: Implement all F3 validation rules'
 - id: S4.1
   title: Implement Scenario model and deterministic scenario derivation
