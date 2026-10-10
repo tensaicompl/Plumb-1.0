@@ -4685,6 +4685,22 @@ tasks:
     invariant input and relation insertion order yields identical rule evaluations and gate results. During S2.10 no Cargo
     file changes and crates/plumb-functional, the five plumb-validation kernels, evaluator.rs, plumb-psg, plumb-core,
     plumb-expr, the rules YAML, rulebook, metamodel and fixtures are not modified.'
+  - 'Ratified implementation decisions (Hotfix 045). The accepted S2.10 implementation is baseline. (a) RBAC.F2.ROLE.HIERARCHY_ACYCLIC
+    uses only the shared accepted-role hierarchy kernel; PSG baseline validation already rejects an Accepted inherits_role
+    cycle, so a valid Graph cannot reach the evaluator''s cycle FAIL branch, and qualification is a graph-level test that
+    an Accepted cycle is rejected, a test that a Proposed cycle is ignored by Accepted-only analysis and a shared-kernel
+    test that a cyclic fact set is detected; no unvalidated Graph constructor is introduced to force an impossible fixture.
+    (b) PLUMB.F2.INVARIANT.EXPRESSIBLE requires an Accepted Invariant expression to parse under PlumbExpr, type-check
+    under its explicit scope and produce Ty::Bool; a well-typed non-Boolean expression such as amount + 1 FAILs, because
+    an Invariant is a predicate. (c) When an applicable rule has some deterministically failing material while other applicable
+    material cannot be analyzed reliably, the evaluator returns ERROR: a trustworthy FAIL requires the complete applicable
+    evaluation, and evaluator inability is never downgraded to FAIL or PASS. (d) BPMN.F2.PROCESS.START_END uses the boundary
+    violations relevant to entry or completion (a crossing next edge touching a start or end node); BPMN.F2.PROCESS.REACHABLE
+    considers every cross-process flow boundary violation. (e) A supplemental upstream finding contributes to F2 only
+    while every affected element remains Accepted; otherwise it is stale and does not block, mirroring the F1 current-finding
+    model. (f) For the plumb:software:2026.1 core profile an Accepted Permission passes only with exactly one Accepted
+    permits edge to an Accepted Operation and exactly one Accepted scoped_to edge to an Accepted ResourceScope (Hotfix
+    044 governs over the generic rulebook wording ''at least one''). No S2.10 code changes.'
   tests:
   - cargo test -p plumb-validation --test f2
   - cargo test -p plumb-validation --no-fail-fast
@@ -4717,34 +4733,179 @@ tasks:
   depends_on:
   - S2.10
   files:
+  - crates/plumb-patch/src/lib.rs
+  - crates/plumb-patch/src/impact.rs
+  - crates/plumb-patch/tests/impact.rs
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/question.rs
   - crates/plumb-functional/src/question_templates.rs
   - crates/plumb-functional/tests/question.rs
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
-  - Implement QuestionKind set from metamodel §6.2.
-  - Map each NOW finding code that can be resolved by a question to an explicit template and answer schema.
-  - Suppress duplicates by template ID plus canonical slot values.
-  - Priority equals severity weight multiplied by typed dependency blast-radius count using the impact engine.
-  - Route using stakeholders.yaml; unresolved routing goes to analyst role, not an invented stakeholder.
-  - 'Hotfix 033 forward note. A current PLUMB.F2.DOMAIN.RELATION_TYPED Finding whose semantic condition key begins
-    domain_relationship_cardinality_unresolved: maps to QuestionKind::Cardinality; its answer is consumed by
-    S2.1 as the governed domain_relationship_cardinality decision marker.'
-  - 'Hotfix 035 forward note. A current PLUMB.F2.STATE.TRANSITION_COMPLETE Finding whose semantic condition key
-    begins state_transition_trigger_unresolved: is eligible for trigger-resolution question generation; S3.1
-    owns its Question kind, prompt, answer schema, routing and batching, and its answer is consumed by S2.2 as
-    the governed state_transition_trigger decision marker. S2.2 creates no Question.'
+  - 'Boundary (Hotfix 045). Hotfix 045 replaces the earlier S3.1 actions and forward notes (Hotfixes 033 and 035); where
+    they differ, this contract governs. S3.1 turns current deterministic GeneratedFinding material into Accepted governance
+    Questions with deterministic templates, priority and routing and returns at most one non-semantic proposal. The existing
+    plumb_psg::QuestionKind (metamodel §6.2: YesNo, PickOne, PickMany, Number, Text, Cardinality, Unit, Precision, Rounding,
+    FormulaConfirm, RuleCell, Calendar, RoleAssignment, Permission, QualityThreshold, ArchitectureChoice, TechnologyChoice,
+    InterfaceChoice, VerificationMethod) is authoritative; no second QuestionKind enum is defined and S3.1 uses only the
+    subset frozen below. Production code never evaluates gates, reruns validation or inference, reads condition keys from
+    Finding IDs, reads files, uses the network, a store, a provider, randomness, floats or a clock; the caller supplies
+    current GeneratedFinding material and audit metadata. S3.1 does not reopen, close, answer, round, supersede or waive
+    anything, and creates no ResolutionDecision, Assumption or semantic patch.'
+  - 'Input and finding validation (Hotfix 045). The Finding payload has no semantic_condition_key, so S3.1 consumes GeneratedFinding
+    (never reverse-engineering a condition from a Finding ID): QuestionGenerationInput {findings: [GeneratedFinding],
+    routing: StakeholderRoutingConfig}, audit supplied separately. Every finding must have a Generic key, id == finding_id(key),
+    key == finding_key(payload.code, payload.affected_refs, semantic_condition_key), strictly sorted unique non-empty
+    affected_refs that all exist, payload.status Open and waiver_ref None; duplicate finding IDs in one input are invalid
+    input. A finding whose waiver_ref is set produces no Question. A finding whose affected semantic targets required
+    by its template are not all Accepted is stale: it produces no Question and is reported explicitly, never treated as
+    current.'
+  - Finding materialization (Hotfix 045). GeneratedFinding is material only (compiler architecture §29), so S3.1 materializes
+    each question-driving finding not yet in the PSG as one Accepted Finding node with exactly GeneratedFinding.payload,
+    revision 1, empty evidence, derivations, standards, tags and extensions and the caller-supplied audit; no evidence
+    is invented. An existing node at the finding ID must be an Accepted Finding with the exact current payload; anything
+    else (wrong type, non-Accepted, different payload, a Closed or otherwise different lifecycle) is ExistingFindingConflict
+    and no Question is generated from that finding. A current finding never silently reopens persisted Finding material.
+  - 'Template registry (Hotfix 045). question_templates.rs owns a closed deterministic registry; each template has template_id,
+    matching code and condition contract, QuestionKind, routing_key, slot builder, prompt renderer and answer-schema builder;
+    no LLM templates and no runtime registration. Answer schemas are JSON objects with type object, additionalProperties
+    false, every property required, and choice enums of sorted IDs of Accepted nodes of exactly the stated types (Proposed
+    or wrong-type nodes excluded). Templates: (1) f2.domain.relationship.cardinality.v1, Cardinality, routing default:
+    code PLUMB.F2.DOMAIN.RELATION_TYPED with condition prefix domain_relationship_cardinality_unresolved: whose suffix
+    parses as Id (slot candidate_ref); prompt ''What are the endpoint cardinalities for relationship candidate <candidate_ref>?'';
+    schema properties cardinality_from and cardinality_to, each a string enum of 0..1, 1, 0..*, 1..*. (2) f2.state.transition.trigger.v1,
+    PickOne, routing default: code PLUMB.F2.STATE.TRANSITION_COMPLETE with condition prefix state_transition_trigger_unresolved:
+    (slot candidate_ref); prompt ''Which accepted operation or event triggers transition candidate <candidate_ref>?'';
+    schema property trigger_ref, enum of sorted Accepted Operation and Event IDs. (3) f2.operation.performer.v1, RoleAssignment,
+    routing default: code PLUMB.F2.OPERATION.PERFORMER with condition exactly operation_performer_missing, one Question
+    per affected Accepted Operation; prompt ''Who performs operation <operation_ref>?''; schema property performer_ref,
+    enum of sorted Accepted Actor and BusinessRole IDs (never SecurityRole). (4) f2.time.calendar.v1, Calendar, routing
+    calendar: code PLUMB.F2.TIME.CALENDAR_DEFINED with condition exactly business_time_calendar_missing, one Question
+    per affected Accepted Calculation; prompt ''Which accepted calendar should calculation <calculation_ref> use for business-time
+    evaluation?''; schema property calendar_ref, enum of sorted Accepted Calendar IDs (none is invented). (5) f2.permission.concrete.v1,
+    Permission, routing authorization: code RBAC.F2.PERMISSION.CONCRETE with condition exactly permission_not_concrete,
+    one Question per affected Accepted Permission; prompt ''Which accepted operation and resource scope should permission
+    <permission_ref> reference?''; schema properties operation_ref (sorted Accepted Operation IDs) and resource_scope_ref
+    (sorted Accepted ResourceScope IDs). (6) f2.invariant.formula.v1, FormulaConfirm, routing formula: code PLUMB.F2.INVARIANT.EXPRESSIBLE
+    with condition exactly invariant_not_expressible, one Question per affected Accepted Invariant; prompt ''What boolean
+    PlumbExpr predicate should invariant <invariant_ref> use?''; schema property expression, a string with minLength 1.
+    A choice template whose choice list (either list for permission) is empty yields NoAnswerChoices and no Question.'
+  - 'Unmapped findings (Hotfix 045). Questions are never generated merely because a rule failed. Not mapped in S3.1: all
+    I0 and F1 findings, PLUMB.F2.DOMAIN.ATTRIBUTE_OWNER, the generic domain_relationship_untyped and state_transition_incomplete
+    conditions (they may be endpoint, owner or type defects), PLUMB.F2.OPERATION.IO_TYPED, PLUMB.F2.CALC.TYPECHECK (calculation_not_qualified
+    does not say whether the expression, scope, result type, unit, rounding or an input must change, and evaluator evidence
+    strings are never parsed to invent an answer kind), PLUMB.F2.CALC.NO_CYCLE, both DMN table rules (no canonical editable
+    rule cell exists in the PSG, so no unanswerable RuleCell question), all Process rules, the Event rules, RBAC.F2.ROLE.HIERARCHY_ACYCLIC,
+    PLUMB.F2.ROLE.SEPARATION, PLUMB.F2.SOD.NO_VIOLATION, PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER and every unknown code.
+    Each is returned as an UnmappedFinding {finding_ref, code, semantic_condition_key, reason} in canonical order, never
+    silently discarded.'
+  - 'Impact closure and priority (Hotfix 045). crates/plumb-patch/src/impact.rs gains a pure impact_reachable_nodes(graph,
+    seeds: &BTreeSet<Id>) -> Result<BTreeSet<Id>, ImpactError>: every seed must exist and be baseline-participating (typed
+    ImpactError variants otherwise), the result includes the seeds, only baseline edges are traversed, exactly impact_direction(kind)
+    in the same dependency direction as compute_impact is used, a visited set makes cycles finite and the set is canonical;
+    no synthetic patch, GraphDelta, mutation or alternate dependency registry. compute_impact and the new API may share
+    one traversal helper, but compute_impact behavior and its golden tests are unchanged. A finding''s blast radius is
+    impact_reachable_nodes(graph, payload.affected_refs).len(), identical for every Question expanded from that finding.
+    Severity weights are blocker 4, error 3, warn 2, info 1 from the payload severity (already the effective validation
+    severity); priority = weight * blast radius with checked integer arithmetic, stored as Question.priority Some(canonical
+    base-10 unsigned integer string) with no sign, decimal point or padding.'
+  - 'Routing (Hotfix 045). StakeholderRoutingConfig {stakeholders: [RoutingStakeholder {id, name, roles}], routing: map
+    of routing key to ordered [Id]}, YAML-compatible; a pure parser of supplied YAML text is allowed, but production code
+    never reads fixtures/hr-leave/stakeholders.yaml. Validation: unique stakeholder IDs, clean non-empty names, clean
+    non-empty duplicate-free roles, clean non-empty routing keys, every route target present in the stakeholder directory
+    and no duplicate target in one list; list order is preference order and is preserved. A template resolves routing[routing_key],
+    else routing[''default''], and takes the first candidate in declared order that is an Accepted Stakeholder node in
+    the PSG: one Question per finding target, never one per candidate. Without such a candidate it falls back to the lexicographically
+    smallest routing-directory stakeholder whose roles contain exactly analyst and whose ID is an Accepted Stakeholder
+    (route disposition AnalystFallback); without one stakeholder_ref is None (AnalystRoleUnassigned). No name or organization
+    matching, no stakeholder creation and no synthetic analyst.'
+  - 'Slots, suppression and identity (Hotfix 045). Every candidate has a canonical slot object with finding_ref and affected_refs,
+    target_ref for per-target templates, candidate_ref for prefix templates, the exact sorted choice arrays of choice
+    templates (choice_refs, or operation_refs and resource_scope_refs), then priority and stakeholder_ref (JSON null when
+    unresolved). The suppression key is exactly (template_id, RFC 8785 canonical slot object); equal keys keep one candidate
+    in canonical order and record SuppressedDuplicate; no text, prompt or fuzzy similarity. Question ID = q:<first 16
+    hex of SHA-256(RFC 8785 {project_id: graph.project_id, template_id, slots})>; models never supply Question IDs.'
+  - Question materialization and reconciliation (Hotfix 045). A new Question node is Accepted, revision 1, caller audit,
+    empty evidence, derivations, standards, tags and extensions, with payload finding_ref = GeneratedFinding.id, question_kind
+    = template kind, prompt = template rendering, status Open, answer_schema Some(exact schema), stakeholder_ref = resolved
+    route or None, priority Some(canonical string), round_ref None and context_refs Some(sorted affected_refs); no extension
+    data. An existing Accepted Question at the ID whose finding_ref, question_kind, prompt, answer_schema, stakeholder_ref,
+    priority and context_refs all match is ExistingQuestion with no patch (status and round_ref are lifecycle-managed
+    and ignored, so later rounds and answers stay idempotent); any mismatch, a non-Question or a non-Accepted node is
+    ExistingQuestionConflict; no ReplacePayload.
+  - 'Proposal and result (Hotfix 045). At most one proposal adds every missing question-driving Finding (ID order) and
+    then every new Question (ID order), as one Compound patch when there is more than one add, with stage S3, ProposalMateriality::NonSemantic,
+    AcceptancePolicy::AutoNonSemantic, confidence None and no AI involvement; Finding and Question nodes are excluded
+    from semantic_hash, so applying it leaves semantic_hash unchanged. The proposal is dry-run through the ordinary patch
+    engine; failure is InvalidQuestionProposal and no proposal. QuestionGenerationResult {questions, proposal, dispositions,
+    unmapped, issues}: generated questions ordered by descending numeric priority then Question ID; dispositions, unmapped
+    findings and issues (including NoAnswerChoices, StaleFinding, ExistingFindingConflict, ExistingQuestionConflict, SuppressedDuplicate
+    and route dispositions) in canonical order.'
+  - HR fixture (Hotfix 045). The live HR graph does not yet hold the Accepted semantics needed to emit the historical
+    v2 round-1 question set, and no Accepted HR operations, calculations or roles are fabricated in production. Tests
+    use fixtures/hr-leave/stakeholders.yaml (include_str!, tests only) as the real routing fixture with a synthetic current-v3
+    graph and findings, state explicitly that this is a routing and question-engine fixture adapter rather than a claim
+    that the compiled HR graph emits those findings, prove the representative round-1 set and order are deterministic,
+    never resurrect v2 G_* findings and never modify the fixture.
+  - 'Files and dependencies (Hotfix 045). Only crates/plumb-patch/src/{lib.rs, impact.rs}, crates/plumb-patch/tests/impact.rs,
+    crates/plumb-functional/src/{lib.rs, question.rs, question_templates.rs}, crates/plumb-functional/tests/question.rs
+    and, at successful completion, docs/plan/EXECUTION-STATE.yaml change. No new dependency: Cargo.toml, Cargo.lock and
+    the plumb-patch and plumb-functional manifests keep an empty diff; if a dependency is genuinely required, stop and
+    report a blocker.'
+  - 'Tests (Hotfix 045). plumb-patch tests/impact.rs: a seed without edges returns itself, to->from and from->to propagation,
+    an unsupported relation does not propagate, cycles terminate, two seeds union deterministically, insertion-order independence,
+    missing and non-baseline seed errors, existing compute_impact tests unchanged. plumb-functional tests/question.rs:
+    exact template matching (cardinality and trigger prefixes and their generic conditions not matched, performer, calendar,
+    permission and invariant exact conditions, CALC.TYPECHECK, DecisionTable and unknown codes unmapped); every answer
+    schema with sorted Accepted correctly typed choices only; routing (exact key, default fallback, first and second candidate,
+    analyst fallback with the smallest Accepted analyst, no analyst gives None, no invented person, the authorization
+    route prefers stakeholder:hr over stakeholder:architect when both are Accepted); priority (weights 4/3/2/1, seed included,
+    impact_direction propagation, union of affected refs counted once, larger blast radius raises priority, equal priority
+    for expanded questions, canonical integer string, insertion-order independence); independently computed Question ID
+    goldens for a cardinality, a routed and an analyst-fallback Question, with slot, route, priority and choice-set changes
+    changing the ID; Finding materialization (added once, shared by two Questions, exact existing reuse, payload, type
+    and lifecycle conflicts, waived finding gives no Question); Question reconciliation (new, idempotent Open, idempotent
+    after round_ref or Answered status, field mismatch and wrong type conflict, no lifecycle reset); the proposal (stage
+    S3, NonSemantic, AUTO_NON_SEMANTIC, no confidence, Findings before Questions each ID-sorted, dry-run succeeds, semantic_hash
+    unchanged); determinism under reversed finding, graph insertion, affected-ref construction, stakeholder directory
+    and choice-node insertion order (routing candidate order is semantic and kept); production source guards against file,
+    network, clock, provider, inference, random and float capability, name-based lookup, v2 G_ findings and prompt-text
+    answer mapping.'
   tests:
-  - cargo test -p plumb-functional question
+  - cargo test -p plumb-patch --test impact
+  - cargo test -p plumb-functional --test question
+  - cargo test -p plumb-patch --no-fail-fast
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - HR round-1 question set and order are deterministic; an unmapped stakeholder never becomes a fabricated person.
+  - Six closed templates map exactly the frozen code/condition pairs; every other finding is an explicit UnmappedFinding.
+  - Priority is severity weight times the impact_reachable_nodes blast radius, as a canonical integer string; compute_impact
+    is unchanged.
+  - Routing follows the configured preference order to an Accepted Stakeholder, then the smallest Accepted analyst, else
+    None; no stakeholder is ever fabricated.
+  - Question IDs, payloads, ordering and the single non-semantic proposal are deterministic; semantic_hash is unchanged
+    by applying it.
+  - The HR stakeholders fixture routes a synthetic current-v3 round-1 question set deterministically, stated as a fixture
+    adapter.
   source_refs:
   - SRCREF-02E317763F
   - SRCREF-7E54F3404D
-  forbidden: []
+  - SRCREF-7DDD53DC7B
+  forbidden:
+  - Do not define a second QuestionKind, read Finding conditions from IDs, evaluate gates or rerun inference, parse evaluator
+    evidence strings, generate questions for unmapped rule failures, match stakeholders or semantic targets by name, create
+    or invent stakeholders, fan one Question out per routing candidate, fabricate a patch to compute impact, change compute_impact
+    behavior, reopen or rewrite persisted Finding or Question lifecycle, read fixture files in production, resurrect v2
+    G_* findings, change Cargo files or start S3.2.
   commands:
-  - cargo test -p plumb-functional question
+  - cargo test -p plumb-patch --test impact
+  - cargo test -p plumb-functional --test question
+  - cargo test -p plumb-patch --no-fail-fast
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'S3.1: Implement deterministic Question generation and routing'
 - id: S3.2
   title: Implement question rounds
@@ -4760,6 +4921,10 @@ tasks:
   - Sort blocking before non-blocking, then descending priority, then stable question ID.
   - Group by affected entity when grouping does not violate ordering.
   - A question already answered, superseded or stale is excluded.
+  - Hotfix 045 forward note. S3.2 receives the Accepted Questions materialized by S3.1. Blocking status derives from the
+    linked current Finding (Finding.severity == blocker), not from a new Question field. Priority parses only the canonical
+    unsigned integer string frozen by S3.1, and S3.2 never recomputes blast radius. S3.2 may assign round_ref or status
+    only under its own frozen contract.
   tests:
   - cargo test -p plumb-functional round
   acceptance:
@@ -4782,17 +4947,25 @@ tasks:
   - crates/plumb-functional/src/resolution.rs
   - crates/plumb-functional/tests/resolution.rs
   steps:
-  - Every accepted answer creates ResolutionDecision with question/proposal reference, answer, actor, timestamp, rationale when required and patch
-    artifact ref.
-  - Implement explicit answer mappers for cardinality, state/transition, outcome, actor allowance, permission, unit, precision, rounding, formula,
-    rule cell, calendar and attribute type.
+  - Every accepted answer creates ResolutionDecision with question/proposal reference, answer, actor, timestamp, rationale
+    when required and patch artifact ref.
+  - Implement explicit answer mappers for cardinality, state/transition, outcome, actor allowance, permission, unit, precision,
+    rounding, formula, rule cell, calendar and attribute type.
   - Patch preview is generated before commit.
-  - Superseding a prior decision applies a new explicit patch based on current graph; it does not rely on opaque object inversion.
+  - Superseding a prior decision applies a new explicit patch based on current graph; it does not rely on opaque object
+    inversion.
+  - Hotfix 045 forward note. S3.3 consumes the S3.1 template identity and typed question contract and never infers an
+    answer mapper from prompt text. Answer application preserves explicit mappings at least for the domain cardinality
+    (candidate_ref plus cardinality_from/cardinality_to as the governed domain_relationship_cardinality decision), transition
+    trigger (state_transition_trigger decision), operation performer, calendar, permission and invariant formula templates;
+    a submitted invariant expression is parsed and type-checked before any semantic patch. QuestionKind alone is not template
+    identity because several templates may share a kind; if S3.3 needs persisted template identity beyond the deterministic
+    Question ID and known template reconstruction, it is frozen before S3.3 rather than added as an unversioned extension.
   tests:
   - cargo test -p plumb-functional resolution
   acceptance:
-  - Applying expert-answers.yaml only through answer mappers resolves expected blockers; every graph change has a serialized patch artifact and
-    decision reference.
+  - Applying expert-answers.yaml only through answer mappers resolves expected blockers; every graph change has a serialized
+    patch artifact and decision reference.
   source_refs:
   - SRCREF-AE75140DD6
   - SRCREF-A95FED2B41

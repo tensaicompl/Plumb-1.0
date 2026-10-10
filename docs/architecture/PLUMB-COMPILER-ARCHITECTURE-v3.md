@@ -894,6 +894,8 @@ S2.3 classifies Accepted Attributes only. A versioned deterministic dictionary (
 
 **Evaluator semantics.** All 24 F2 rules are registered. Evaluators read Accepted PSG semantics, the supplemental inputs, existing finding state and the shared kernels; they never infer, match by name, mutate or persist. Where the PSG cannot represent what a rule needs, the result is an error with a stable code rather than a pass or an invented convention: state reachability (no initial or terminal markers), event producer and consumer obligations (no internal/external or purpose classification), and processes containing exclusive gateways, error events, subprocesses or conditions. Static separation of duty is the only separation kind evaluated, policy conditions are never claimed as PlumbExpr, and the semantic-blocker rule checks open F2 blocker findings entering the gate rather than results of the same run.
 
+**Ratified decisions (Hotfix 045).** An Invariant is a predicate: it must parse, type-check under its explicit scope and produce a Boolean, so a well-typed non-Boolean expression fails. When some applicable material fails while other applicable material cannot be analyzed, the rule reports an error, because a trustworthy failure needs the complete applicable evaluation. Process entry and completion consider the boundary violations that touch start or end nodes, while reachability considers every cross-process flow violation. A supplemental finding blocks only while all its affected elements remain Accepted. The core profile narrows a concrete Permission to exactly one Operation and one ResourceScope. Because baseline graph validation already rejects an Accepted role-hierarchy cycle, that rule's failure branch is qualified through the graph-level rejection and the shared kernel rather than an unvalidated graph.
+
 ### Gate
 
 `F2`
@@ -940,6 +942,18 @@ ResolutionDecision
   -> SemanticPatch
   -> new GraphRevision
 ```
+
+### Deterministic question generation (S3.1, Hotfix 045)
+
+**Input.** Question generation consumes current `GeneratedFinding` material, because the persisted Finding payload has no semantic condition key, plus a parsed stakeholder routing configuration and caller audit. It never evaluates gates, reruns inference, reads files or derives conditions from Finding IDs. Waived findings produce no question, and findings whose affected targets are no longer Accepted are reported as stale.
+
+**Templates.** A closed registry maps exactly six typed conditions to questions using the existing `QuestionKind`: unresolved relationship cardinality (Cardinality), unresolved transition trigger (PickOne over Accepted Operations and Events), missing operation performer (RoleAssignment over Accepted Actors and BusinessRoles), missing business calendar (Calendar), non-concrete permission (Permission over Accepted Operations and ResourceScopes) and inexpressible invariant (FormulaConfirm). Each has a versioned template ID, a fixed prompt and a closed JSON answer schema whose choices are sorted Accepted IDs. Aggregate conditions that do not say what the human must decide (for example calculation qualification, decision-table overlap or coverage, process structure) are returned as unmapped rather than turned into unanswerable questions.
+
+**Priority.** Priority is the severity weight (blocker 4, error 3, warn 2, info 1) times the finding's blast radius: the number of nodes reachable from its affected elements through the §22 impact relations and directions, computed by a shared impact-closure function rather than a synthetic patch. It is stored as a canonical integer string.
+
+**Routing.** Each template has a routing key; the configured candidates for that key (else `default`) are a preference list, and the first that is an Accepted Stakeholder receives the question. Otherwise the smallest Accepted stakeholder holding the `analyst` role receives it, and otherwise the question stays unassigned. No stakeholder is created or matched by name.
+
+**Identity and materialization.** Duplicate suppression and the Question ID both use the template ID and the canonical slot object (including choices, priority and route), never text similarity. Missing question-driving Findings and new Questions are added as Accepted governance nodes in one non-semantic, auto-acceptable proposal that leaves `semantic_hash` unchanged. Existing nodes are reused only when their generated content matches exactly; lifecycle fields set by later steps are ignored, and any other mismatch is a conflict rather than a rewrite.
 
 ### Gate
 

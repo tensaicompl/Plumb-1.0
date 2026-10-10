@@ -404,6 +404,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** At least one start/trigger exists and every reachable terminal path ends in an outcome/end node.
 - **Pass condition:** At least one start/trigger exists and every reachable terminal path ends in an outcome/end node.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** Cross-process flow violations count against this rule only when they touch a start or end node of the process.
 
 ### `BPMN.F2.PROCESS.REACHABLE` — Process contains no unreachable executable node
 
@@ -414,6 +415,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** All accepted executable ProcessNodes are reachable from a start/trigger.
 - **Pass condition:** All accepted executable ProcessNodes are reachable from a start/trigger.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** Every cross-process flow violation counts against this rule.
 
 ### `PLUMB.F2.PROCESS.TASK_RESOLVES` — Executable process tasks resolve to operations or explicit human activities
 
@@ -474,6 +476,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** Permission permits at least one concrete Operation and has exactly one ResourceScope.
 - **Pass condition:** Permission permits at least one concrete Operation and has exactly one ResourceScope.
 - **Waiver:** `decision_required`
+- **Pilot evaluation note:** The `plumb:software:2026.1` core profile narrows "at least one concrete Operation" to exactly one: an Accepted `Permission` passes only with exactly one Accepted `permits` edge to an Accepted `Operation` and exactly one Accepted `scoped_to` edge to an Accepted `ResourceScope`.
 
 ### `RBAC.F2.ROLE.HIERARCHY_ACYCLIC` — Security-role hierarchy is acyclic
 
@@ -484,6 +487,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Deterministic check:** inherits_role graph has no cycle.
 - **Pass condition:** inherits_role graph has no cycle.
 - **Waiver:** `forbidden`
+- **Pilot evaluation note:** PSG baseline validation already rejects an Accepted `inherits_role` cycle, so a valid graph cannot reach this rule's failure branch; it is qualified by the graph-level rejection, by Accepted-only analysis ignoring a Proposed cycle and by the shared hierarchy analyzer detecting a cyclic fact set.
 
 ### `PLUMB.F2.ROLE.SEPARATION` — Business roles and security roles remain semantically distinct
 
@@ -515,6 +519,7 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Pass condition:** Invariant has a valid PlumbExpr AST or a declared manual/formal verification method.
 - **Waiver:** `decision_required`
 - **Pilot evaluation note:** S2.2 may create grounded Proposed Invariant expressions before PlumbExpr grammar/typechecking exists. Expressibility qualification is performed only after the S2.4/S2.5 PlumbExpr implementation exists. S2.2 proposal creation is not proof that an expression parses/typechecks.
+- **Pilot evaluation note (predicate):** In the pilot an Accepted Invariant expression must parse under PlumbExpr, type-check under its explicit scope and produce a Boolean. A well-typed non-Boolean expression (for example `amount + 1`) fails, because an invariant is a predicate.
 
 ### `PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER` — No unresolved blocking functional-semantic finding remains
 
