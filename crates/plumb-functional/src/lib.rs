@@ -27,6 +27,8 @@
 //! wraps plumb-validation's pure waiver material in a human-decision proposal.
 //! S4.1 derives deterministic rule-row, state-transition and boundary Scenario skeletons from
 //! accepted semantics and explicit derivation inputs, filling only bounded literal slots.
+//! S4.5 proposes deterministic VerificationObligation applicability links from explicit
+//! scope, mode and accepted methods, without D2 planning.
 
 pub mod assumption;
 pub mod authorization;
@@ -50,6 +52,7 @@ pub mod resolution;
 pub mod round;
 pub mod scenario;
 pub mod state;
+pub mod verification;
 pub mod vocabulary;
 mod vocabulary_exceptions;
 pub mod waiver;
@@ -178,6 +181,12 @@ pub use state::{
     LifecycleInference, LifecycleIssue, LifecycleOwnerContext, LifecycleRequest,
     LifecycleRequirementContext, LifecycleTriggerContext, StateOrigin, LIFECYCLE_CONTEXT_VERSION,
     LIFECYCLE_OUTPUT_VERSION, LIFECYCLE_TASK_KIND, STATE_ORIGIN_EXTENSION,
+};
+pub use verification::{
+    compile_verification_obligations, verification_obligation_id, VerificationAnalysisResult,
+    VerificationApplicabilityInputs, VerificationApplicabilitySnapshot, VerificationAudit,
+    VerificationDisposition, VerificationError, VerificationKind, VerificationObligation,
+    VerificationObligationAnalysis, VerificationSourceInput, VerificationSourceMode,
 };
 pub use vocabulary::{
     analyze_vocabulary, build_vocabulary_request, normalize_vocabulary_term,
