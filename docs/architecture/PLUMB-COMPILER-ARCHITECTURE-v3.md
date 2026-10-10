@@ -1047,6 +1047,14 @@ F4 requires the functional semantics that are executable through the functional 
 
 **Identity and compatibility.** A Scenario ID identifies the obligation (kind, sources, row or boundary key and assertion targets), not resolved or inferred literal values, so answering a semantic dependency keeps the same ID. The operation trigger form and grouped `then` categories keep operation scenarios representable in the legacy functional.yaml projection; other triggers stay intentionally lossy there.
 
+### Functional interpreter execution (S4.2, Hotfix 051)
+
+**Boundary.** The functional interpreter executes one Accepted, Confirmed Scenario against a validated, immutable execution model built from one graph baseline plus explicit supplemental inputs (typed decision-table specs, scope overrides for legacy calculations and explicit expression scopes for operations, rules, transitions and invariants). Execution is pure: the only outside material is invocation context (an optional runtime actor, allowlisted runtime environment values such as a concrete holiday date, and injected calendar and predicate providers). It computes actual semantics and an ordered typed trace; comparing them with the Scenario's expectations, structured diffs and ScenarioRun evidence belong to later steps.
+
+**Three outcomes plus errors.** Execution ends Executed, Failed (accepted semantics explicitly reject execution: authorization, preconditions, guards, source states, postconditions, invariants, missing decision rows, data-dependent evaluation failures) or Undecidable (a business-semantic, runtime or scope value is missing, named by exact owner/key identities). An invalid model, Scenario or runtime input is a typed simulation error. Missing semantics are never defaulted: accepted assumption defaults stay uninterpreted governance material, and calculation examples answer only the exact semantic references they were accepted for.
+
+**Representable effects only.** `writes` relations are effect footprints, not assignments; the pilot changes runtime state only through state transitions, calculation results, decision-table outputs, deterministic outcomes and produced events. Rule actions, transition effect references, policy conditions, resource scope kinds and process control flow are traced or deferred, never guessed. Authorization reuses the accepted role facts and stays role-level; functional performers are never treated as security roles.
+
 ### Gate
 
 `F4`
