@@ -6227,28 +6227,133 @@ tasks:
   depends_on:
   - S4.4
   files:
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/verification.rs
   - crates/plumb-functional/tests/verification.rs
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
-  - Expose VerificationObligation and verification_kind types already present in NodePayload.
-  - For NOW scope generate obligations only as deterministic/proposed links required to express F4 applicability; do not implement D2 planning.
-  - Functional executable behavior may map to scenario obligation; non-executable requirements may map to analysis, inspection, review, demonstration,
-    formal_check, architecture_check or security_check only through explicit human/profile decision.
-  - Do not generate TestCase automatically in NOW scope.
+  - 'Boundary (Hotfix 054). Hotfix 054 replaces the earlier S4.5 actions; where they differ, this contract governs. S4.5
+    is F4 applicability, not D2 planning: it proposes deterministic VerificationObligation nodes with verified_by and
+    implemented_as links so F4 can tell executable from non-executable but verifiable sources. It does no test planning,
+    ownership, environments, procedures, evidence planning, coverage, receipts or release planning, never generates TestCase,
+    ArchitectureCheck, Scenario, Question or ResolutionDecision nodes, never rewrites an Accepted Requirement and implements
+    no F4 evaluator. The PSG is unchanged: VerificationObligation {name, verification_kind, method, acceptance_condition,
+    required_evidence_kind} and VerificationKind (test, scenario, analysis, inspection, review, demonstration, formal_check,
+    architecture_check, security_check) are reused as they are; blocking, source and implementation stay outside the payload.'
+  - 'Relations (Hotfix 054). Exactly the registry directions: source --verified_by--> VerificationObligation and VerificationObligation
+    --implemented_as--> implementation. NOW sources are only Accepted Requirement and Accepted Operation (no ArchitectureElement
+    or TechnicalContract obligations); the only automatically linked implementation is an existing Accepted Confirmed
+    Scenario.'
+  - 'Inputs (Hotfix 054). compile_verification_obligations(graph, inputs: &VerificationApplicabilityInputs, audit: &VerificationAudit)
+    -> Result<VerificationAnalysisResult, VerificationError>. VerificationApplicabilityInputs {sources: Vec<VerificationSourceInput
+    {source_ref, mode: VerificationSourceMode, blocking: bool}>}; VerificationSourceMode is the closed stage enum ExecutableScenario
+    | NonExecutable (not stored in the PSG, not a metamodel enum). Presence of a source means it is implementation-scoped
+    for the current F4/profile evaluation (S4.5 does not decide scope); blocking means blocking under the current resolved
+    profile context and is analysis material only (never persisted, never part of identity). Sources are canonicalized
+    by source_ref; a duplicate is DuplicateSource. VerificationAudit {created_by, created_at} is caller-supplied (no clock)
+    and outside identity.'
+  - 'Applicability rules (Hotfix 054). RequirementKind never determines a verification method or executability by itself
+    (functional, quality, interface, data, security, operational, compliance, transition, constraint; there is no documentation
+    kind). A source that is unknown, not Accepted or not a Requirement or Operation is InvalidSource. An Operation may
+    only be ExecutableScenario. A Requirement may be ExecutableScenario only when its kind is functional; any other kind
+    is InvalidApplicability (no fake Scenario). NonExecutable is allowed only for Requirements of any kind, including
+    functional ones. Hard errors (VerificationError): duplicate source, unknown, non-Accepted or wrong-type source, invalid
+    mode, ID or edge collision, graph corruption and invalid proposals.'
+  - 'Methods (Hotfix 054). For NonExecutable the Accepted Requirement.verification_method is the already-governed human/profile
+    decision, consumed and never created, inferred or rewritten. It is matched exactly and case-sensitively: analysis,
+    inspection, review, demonstration, formal_check, architecture_check and security_check map one-to-one to VerificationKind;
+    absent is the disposition MethodDecisionRequired; test is VerificationKindDeferred (test planning is D2); scenario
+    is IncompatibleVerificationMethod (executable obligations come only from ExecutableScenario plus exact coverage);
+    anything else (for example ''document review'') is UnsupportedVerificationMethod. These dispositions produce no obligation
+    ID and no proposal; no default and no RequirementKind fallback is used.'
+  - Scenario coverage (Hotfix 054). Only Accepted Scenario nodes with confirmation_status Confirmed implement obligations
+    (Derived, Proposed, Suspect, Superseded and Deprecated never do), decoded through the S4.1 validate_scenario. A Scenario
+    covers Operation O iff its when is Operation(O) or its derived_from_refs contain O. It covers Requirement R iff its
+    requirement_refs contain R, or an Accepted R --specified_by--> Accepted Operation O exists and the Scenario covers
+    O. specified_by to Process, Rule or QualityScenario is never promoted. An ExecutableScenario source links every covering
+    Scenario (0..N, Scenario ID order); with none the obligation and verified_by are still proposed so F4 can report missing
+    coverage.
+  - 'Identity and payload (Hotfix 054). obligation ID = verification_obligation:<first 16 hex of SHA-256(RFC 8785 {project_id,
+    source_ref, verification_kind, node_type: verification_obligation})>; blocking, implementations, raw method text,
+    audit, acceptance_condition and required_evidence_kind are not part of it, so a different kind or source is a different
+    obligation. Name ''Verify <source_ref> via <verification_kind>''. ExecutableScenario payload {verification_kind: scenario,
+    method: None, acceptance_condition: None, required_evidence_kind: None}; NonExecutable payload {mapped kind, method:
+    Some(the exact method string), acceptance_condition: None, required_evidence_kind: None}. Edge IDs use the existing
+    relation_id convention rel:<first 16 hex of SHA-256(RFC 8785 {kind, from, to})> for verified_by (source -> obligation)
+    and implemented_as (obligation -> Scenario). Evidence: the obligation and verified_by carry the sorted unique source
+    evidence; implemented_as carries the sorted union of source and Scenario evidence; derivation refs are empty.'
+  - 'Reconciliation and proposals (Hotfix 054). At the obligation ID: no node is new; a Proposed or Accepted VerificationObligation
+    with the exact payload is reused; another node type or a different payload is VerificationIdCollision (never replaced).
+    At each deterministic edge ID: no edge is proposed; a Proposed or Accepted edge with the exact kind and endpoints
+    is reused; anything else is VerificationEdgeCollision. Accepted obligations are never rewritten; vanished Scenarios
+    are left to F4; an existing obligation of another kind for the same source is a different ID and is neither a collision
+    nor removed. Each source with missing material yields exactly one proposal (sources never batched, in source_ref order):
+    stage S4, Semantic, HumanConfirm, confidence None, a Compound of AddNode obligation (if new), AddEdge verified_by
+    (if missing) and AddEdge implemented_as per missing link in Scenario ID order, all Proposed with caller audit, dry-run
+    through apply_patch on a discarded candidate. Nothing is accepted, applied or persisted.'
+  - 'Results (Hotfix 054). VerificationAnalysisResult {items: Vec<VerificationObligationAnalysis> (source_ref order),
+    proposals (source_ref order), applicability: VerificationApplicabilitySnapshot}. VerificationObligationAnalysis {source_ref,
+    mode, obligation_ref: Option<Id>, verification_kind: Option<VerificationKind>, scenario_refs, blocking, disposition};
+    VerificationDisposition is Proposed {proposal_ref}, Existing, MethodDecisionRequired, VerificationKindDeferred, IncompatibleVerificationMethod
+    or UnsupportedVerificationMethod. VerificationApplicabilitySnapshot {source_refs: every valid supplied source, including
+    method gaps; executable_source_refs: every ExecutableScenario source, covered or not; blocking_obligation_refs: obligation
+    IDs of blocking sources whose kind is known; blocking_scenario_refs: the sorted unique union of Scenarios implementing
+    blocking ExecutableScenario sources (a Scenario shared with a non-blocking source is blocking)}. It is read-only analysis
+    material, not PSG and not persisted. Its blocking_scenario_refs is the canonical S4.5 value an orchestrator may pass
+    to the unchanged S4.4 IncrementalScenarioPolicy.blocking_scenario_refs, replacing the temporary manual set; plumb-functional
+    never depends on plumb-sim. S4.6 may consume the snapshot through an explicit F4 input.'
+  - 'Files and dependencies (Hotfix 054). Only crates/plumb-functional/src/lib.rs (pub mod verification and explicit exports:
+    VerificationObligation, VerificationKind, VerificationApplicabilityInputs, VerificationSourceInput, VerificationSourceMode,
+    VerificationAudit, VerificationDisposition, VerificationObligationAnalysis, VerificationApplicabilitySnapshot, VerificationAnalysisResult,
+    VerificationError, compile_verification_obligations, verification_obligation_id), crates/plumb-functional/src/verification.rs,
+    crates/plumb-functional/tests/verification.rs and, at successful completion, docs/plan/EXECUTION-STATE.yaml change.
+    No Cargo, plumb-psg, plumb-validation, plumb-sim, plumb-expr, S4.1-S4.4, rules YAML, rulebook or fixture change; the
+    existing plumb-core, plumb-psg and plumb-patch dependencies suffice.'
+  - 'Tests (Hotfix 054). crates/plumb-functional/tests/verification.rs covers: quality analysis and security security_check
+    obligations without Scenario, TestCase or implemented_as; an executable Operation and an executable functional Requirement
+    via specified_by and via direct requirement_refs; no-Scenario and multi-Scenario sources; the Scenario status matrix;
+    Process, Rule and QualityScenario specified_by non-promotion; every method mapping plus missing, unknown, test and
+    scenario-under-NonExecutable dispositions; invalid sources, modes and applicability; duplicate sources; exact Compound
+    contents; reconciliation (existing obligation, existing verified_by with a new Scenario, all existing, node and edge
+    collisions, different-kind coexistence); applicability snapshots including blocking unions; the no-universal-scenario
+    regression; independent Python goldens for a scenario obligation ID, an analysis obligation ID, a verified_by ID and
+    an implemented_as ID; identity stability; reverse-order determinism; dry-run validity; and source guards (no TestCase,
+    ArchitectureCheck or Scenario construction, no RequirementKind-to-kind table, no removal or replacement patches, no
+    clock, store, network, provider or unsafe).'
   tests:
-  - cargo test -p plumb-functional verification
+  - cargo test -p plumb-functional --test verification
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - A quality/documentation requirement can be F4-verifiable without a fake executable scenario; executable operation requirement receives scenario
-    linkage.
+  - A quality or other explicitly non-executable requirement with an accepted method becomes F4-verifiable through a non-scenario
+    obligation without a fake executable Scenario, TestCase or implementation link; a missing, unknown, test or scenario
+    method is reported as a disposition without a proposal.
+  - An executable Operation or functional Requirement receives a Scenario obligation linked by verified_by and by implemented_as
+    to every covering Accepted Confirmed Scenario (including through specified_by to an Operation), and still receives
+    its obligation when no Scenario covers it yet.
+  - Obligation and edge identities are deterministic (independent goldens) and independent of blocking, audit and implementations;
+    proposals are per-source HumanConfirm, dry-run valid and reconcile existing material, and the applicability snapshot
+    exposes blocking Scenario refs for orchestration.
   source_refs:
   - SRCREF-FFF9705B50
   - SRCREF-441E1C9F5A
   - SRCREF-AD0A0F5D57
-  forbidden: []
+  forbidden:
+  - Do not change Cargo files, plumb-psg, plumb-validation, plumb-sim, plumb-expr, S4.1-S4.4 code, rules YAML, rulebook
+    or fixtures; choose verification methods or executability from RequirementKind or prose; generate TestCase, ArchitectureCheck,
+    Scenario, Question or ResolutionDecision nodes; rewrite Accepted Requirements or obligations; replace or remove existing
+    material; populate acceptance_condition or required_evidence_kind; implement D2 planning or F4 evaluators; accept
+    proposals; or start S4.6.
   commands:
+  - cargo test -p plumb-functional --test verification
   - cargo test -p plumb-functional verification
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test -p plumb-sim --no-fail-fast
+  - cargo test -p plumb-validation --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'S4.5: Implement minimal VerificationObligation model for F4 applicability'
 - id: S4.6
   title: Implement all F4 validation rules

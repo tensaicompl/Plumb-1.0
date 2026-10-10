@@ -1069,6 +1069,12 @@ F4 requires the functional semantics that are executable through the functional 
 
 **Execution findings.** A failed Confirmed Scenario yields a stable scenario-fail finding, and an undecidable Scenario that the caller designates as blocking yields a stable blocking-undecidable finding; identity depends only on the code, the Scenario and the condition, never on trace details. These are execution-governance findings, not validation rules. The blocking designation is a temporary caller policy until verification obligations and profiles can derive it. Findings are returned as current material and are neither persisted nor reconciled here.
 
+### Verification obligation applicability (S4.5, Hotfix 054)
+
+**Applicability, not planning.** Verification obligations are proposed only to let F4 distinguish executable sources from sources that are verifiable by other means. Which requirements and operations are in scope, whether each is executable through scenarios, and whether it is blocking is explicit stage input; a requirement's kind never decides it. A non-executable requirement is verified by the method already recorded in its accepted payload; when that method is absent, unknown or deferred (tests belong to later planning), the gap is reported instead of guessed.
+
+**Linkage.** A source is linked to its obligation by `verified_by`, and a scenario obligation to every accepted, confirmed scenario that exactly covers the source (directly, or through the operation that specifies a requirement) by `implemented_as`. An executable source without any covering scenario still receives its obligation, so missing coverage becomes visible. Obligation identity is the project, the source and the verification kind only; blocking status, implementations and audit never change it. The blocking scenarios derived here are what orchestration hands to incremental re-execution.
+
 ### Gate
 
 `F4`
