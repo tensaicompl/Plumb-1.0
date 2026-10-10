@@ -2838,7 +2838,6 @@ mod evaluator_contract {
                 "plumb_compiler",
                 "readiness",
                 "Clock",
-                "Timestamp",
                 "plumb_store",
                 "plumb_inference",
                 "rusqlite",
@@ -2846,8 +2845,17 @@ mod evaluator_contract {
                 "File::open",
                 "commit(",
                 "branch_head",
+                "SystemTime::now",
+                "OffsetDateTime::now",
             ] {
                 assert!(!source.contains(forbidden), "{name} mentions {forbidden}");
+            }
+            // Explicit S3.4 exception (Hotfix 048): Timestamp in waiver.rs is permitted only as
+            // caller-supplied immutable governance data used for ResolutionDecision.decided_at and
+            // deterministic decision identity. waiver.rs still has no clock capability and cannot
+            // obtain current time (Clock, SystemClock and the *::now calls above stay forbidden).
+            if name != "waiver.rs" {
+                assert!(!source.contains("Timestamp"), "{name} mentions Timestamp");
             }
         }
         let manifest = include_str!("../Cargo.toml");

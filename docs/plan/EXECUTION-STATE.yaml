@@ -80,7 +80,7 @@ tasks:
 - id: S3.3
   status: done
 - id: S3.4
-  status: pending
+  status: done
 - id: S3.5
   status: pending
 - id: S4.1

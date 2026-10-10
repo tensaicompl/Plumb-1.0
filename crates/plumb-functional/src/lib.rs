@@ -23,7 +23,10 @@
 //! Question.round_ref.
 //! S3.3 turns a human answer into a governed ResolutionDecision, an explicit answer effect and
 //! Question/Finding lifecycle updates in one human-decision proposal.
+//! S3.4 creates governed Accepted assumptions, analyzes their expiry with an injected clock and
+//! wraps plumb-validation's pure waiver material in a human-decision proposal.
 
+pub mod assumption;
 pub mod authorization;
 pub mod calculation;
 pub mod data_class;
@@ -46,9 +49,15 @@ pub mod round;
 pub mod state;
 pub mod vocabulary;
 mod vocabulary_exceptions;
+pub mod waiver;
 
 // The merge/supersede wrapper enum is reached through the `duplicates` module path, because the
 // F0.14 output-only guard keeps proposal type names out of this file.
+pub use assumption::{
+    analyze_assumption_expiry, assumption_id, create_assumption, expiry_condition_key,
+    expiry_finding, AssumptionAudit, AssumptionCreation, AssumptionError, AssumptionExpiryResult,
+    AssumptionInput, ASSUMPTION_EXPIRED_CODE, ASSUMPTION_STATUSES,
+};
 pub use authorization::{
     accepted_role_hierarchy_cycles, accepted_separation_analysis, analyze_authorization,
     authorization_facts, effective_security_roles, role_hierarchy_cycles, separation_analysis,
