@@ -1063,6 +1063,12 @@ F4 requires the functional semantics that are executable through the functional 
 
 **Evidence material.** The execution trace is preserved unchanged and followed by a typed comparison trace. Each comparison yields the existing ScenarioRun shape and a versioned scenario-trace artifact body with canonical bytes and a content hash, with no timestamp; persisting either belongs to the caller, not to the interpreter.
 
+### Incremental scenario execution (S4.4, Hotfix 053)
+
+**Selection.** Re-execution follows the finished impact analysis: the dirty set computed for an accepted change is intersected with each Confirmed Scenario's exact execution and proof dependencies (its own definition, traceability, anchor, Given and Then elements, decision tables, calculation closures and calendars, and the authorization, trigger and production relations that impact analysis deliberately does not propagate). Unrelated or view-only changes rerun nothing, and there is no global rerun fallback. Each selected Scenario reruns once, in identifier order, with one caller-supplied runtime context, through the unchanged execution and comparison steps.
+
+**Execution findings.** A failed Confirmed Scenario yields a stable scenario-fail finding, and an undecidable Scenario that the caller designates as blocking yields a stable blocking-undecidable finding; identity depends only on the code, the Scenario and the condition, never on trace details. These are execution-governance findings, not validation rules. The blocking designation is a temporary caller policy until verification obligations and profiles can derive it. Findings are returned as current material and are neither persisted nor reconciled here.
+
 ### Gate
 
 `F4`

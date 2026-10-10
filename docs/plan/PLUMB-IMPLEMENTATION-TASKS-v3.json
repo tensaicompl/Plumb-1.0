@@ -2518,29 +2518,53 @@
         "S4.3"
       ],
       "files": [
+        "Cargo.lock",
+        "crates/plumb-sim/Cargo.toml",
+        "crates/plumb-sim/src/lib.rs",
         "crates/plumb-sim/src/incremental.rs",
-        "crates/plumb-sim/tests/incremental.rs"
+        "crates/plumb-sim/tests/incremental.rs",
+        "docs/plan/EXECUTION-STATE.yaml"
       ],
       "steps": [
-        "Select scenarios for re-execution only when DirtySet reaches a referenced requirement, operation, rule, calculation, state/transition, event or permission.",
-        "Emit stable findings for scenario fail and blocking undecidable using deterministic finding keys.",
-        "A view-only change reruns zero scenarios."
+        "Boundary (Hotfix 053). Hotfix 053 replaces the earlier S4.4 actions; where they differ, this contract governs. S4.4 is orchestration over pure execution: it consumes the finished F0.11 plumb_patch::DirtySet (accepted change -> compute_impact -> ImpactReport.dirty -> S4.4), selects affected Confirmed Scenarios, reruns each through the unchanged S4.2 run() and S4.3 compare_run(), and returns comparisons and current S4 execution-finding material. It never recomputes GraphDelta, ChangedSet, ImpactReport or impact reachability, never modifies the DirtySet, never mutates the graph and persists nothing (no ScenarioRun, artifact or Finding).",
+        "Dependencies (Hotfix 053). S4.4 adds exactly the direct workspace path dependencies plumb-patch (canonical DirtySet) and plumb-validation (canonical finding_key, finding_id, GeneratedFinding and EvaluationError) to crates/plumb-sim/Cargo.toml, with the corresponding Cargo.lock plumb-sim dependency-list update only; neither depends on plumb-sim, so no cycle arises, and no version, registry package or external dependency changes. incremental.rs uses nothing else from them: no compute_impact, impact_reachable_nodes, impact_direction, GraphDelta, ChangedSet, ImpactReport, EvaluatorRegistry, ValidationRegistry, evaluate_gate, violation_state, governed_waiver or GeneratedFinding::for_violation.",
+        "Eligibility (Hotfix 053). Only Accepted Scenario nodes with confirmation_status Confirmed are selected; Proposed, Suspect, Superseded, Deprecated and Accepted Derived Scenarios are never rerun as proof and never confirmed.",
+        "Dependency set (Hotfix 053). For each eligible Scenario S4.4 computes a private ScenarioDependencySet of exact IDs (never names, prose, substrings or ID prefixes), decoded only through the S4.1 ScenarioSemantics: the Scenario itself; Accepted requirement_refs and derived_from_refs; the When anchor; Given Attributes, Entities, States, calculation_semantics Calculations and SemanticRef owners; Then Attributes, States, Outcomes, Events, Rules, Calculations and SemanticRef owners and, for decision_outputs, the S4.3 comparison-source DecisionTable (DecisionTable is a first-class dependency; decision columns add no ID); the Accepted calendar_ref of every included Calculation; the dependency closure of every included Calculation from the ExecutionModel's S2.6 qualification (no re-parsing); for an Operation anchor its Accepted governed_by Rules and DecisionTables, uses_calculation Calculations, produced Outcomes and Events, Permissions with Accepted permits to it, SecurityRoles with Accepted grants to those Permissions and every SecurityRole inheriting one of them through Accepted inherits_role, and Accepted Transitions via it with their from and to States; for an Event anchor the Accepted Transitions via it with their States; for a Rule anchor its uses_calculation Calculations; for a Transition anchor its from and to States; and the runtime actor_ref of the Scenario's runtime entry. F0.11 already propagates reads, writes, governed_by and uses_calculation toward the Operation; S4.4 adds the authorization, trigger and production relations F0.11 deliberately does not propagate (permits, grants, inherits_role, assigned_role, transitions_via, produces).",
+        "Selection (Hotfix 053). A Scenario S is selected iff S is in DirtySet.node_ids or its dependency set intersects DirtySet.node_ids; DirtySet.edge_ids are not traversed (F0.11 already seeds the endpoints of every directly dirty edge). Unrelated node types (View, Viewpoint, Term, Concept, QualityScenario, architecture, release, Finding, Question) select nothing unless they are an exact dependency. An empty or view-only DirtySet selects zero Scenarios and calls no runtime or provider. There is no global rerun fallback. Selection is a set; each selected Scenario runs exactly once, in ascending Scenario ID order.",
+        "Runtime and policy (Hotfix 053). IncrementalScenarioRuntime {scenario_ref, runtime: ExecutionRuntime} supplies exactly one runtime per Scenario (the unit of selection is the Scenario ID): entries are canonicalized by scenario_ref, a duplicate is DuplicateRuntime, entries for unselected Scenarios are allowed and unused, and a selected Scenario without one is MissingRuntime with no partial result. IncrementalScenarioPolicy {blocking_scenario_refs: BTreeSet<Id>} is temporary caller-supplied S4 orchestration input, not PSG truth and never persisted; every ref must be an Accepted Confirmed Scenario (else InvalidBlockingScenario). S4.4 caller-supplied blocking_scenario_refs is the pilot bridge before S4.5. S4.5/S4.6 may later derive blocking executable applicability from accepted VerificationObligation/profile semantics. S4.4 must not anticipate or fabricate those future relations.",
+        "API (Hotfix 053). select_dirty_scenarios(model, dirty: &DirtySet, runtimes: &[IncrementalScenarioRuntime]) -> Result<Vec<Id>, IncrementalError> and rerun_dirty_scenarios(model, dirty, runtimes, policy: &IncrementalScenarioPolicy) -> Result<IncrementalScenarioResult, IncrementalError> with IncrementalScenarioResult {selected_scenario_refs (Scenario ID order), comparisons: Vec<ScenarioComparison> (scenario_ref order), findings: Vec<GeneratedFinding> (Finding ID order)}. IncrementalError is typed: DuplicateRuntime, MissingRuntime, InvalidBlockingScenario, Simulation(SimulationError), Comparison(ComparisonError), Finding(EvaluationError) and Dependency {scenario_ref, ...}. Errors of run() or compare_run() propagate and never become findings.",
+        "Execution findings (Hotfix 053). I_SCENARIO_FAIL and G_SCENARIO_UNDECIDABLE are retained from the M9.4 source contract as deterministic S4 execution-governance findings; they are not F4 ValidationRegistry or EvaluatorRegistry rules, rule YAML or rulebook entries (S4.6 still owns the F4 rules; the rule count stays 133). Material is a plumb_validation::GeneratedFinding built explicitly (not for_violation) with key = finding_key(code, [scenario_ref], condition) and id = finding_id(key), so identity excludes trace, diffs, missing values, hashes and time. Fail: code I_SCENARIO_FAIL, condition scenario_fail, emitted for every Confirmed Scenario whose verdict is Fail regardless of policy. Undecidable: code G_SCENARIO_UNDECIDABLE, condition blocking_scenario_undecidable, emitted only when the verdict is Undecidable and the Scenario is in blocking_scenario_refs; a non-blocking Undecidable and a Pass emit nothing. Both payloads: family S4, severity blocker, status Open, affected_refs [scenario_ref], standard_rule_ref None, waiver_ref None; messages 'Confirmed scenario <ref> failed against its expected semantics.' and 'Blocking confirmed scenario <ref> is undecidable because required semantics are missing.'; suggested resolutions 'Review the scenario trace and resolve the model or confirmed expectation mismatch.' and 'Resolve the missing semantics and re-execute the scenario.'. S4.4 returns current finding material only: it never closes, supersedes, waives or reconciles earlier findings (a later Pass simply returns no fail finding).",
+        "Files (Hotfix 053). Only Cargo.lock, crates/plumb-sim/Cargo.toml, crates/plumb-sim/src/lib.rs (mod incremental and explicit S4.4 exports; S4.2/S4.3 exports unchanged), crates/plumb-sim/src/incremental.rs, crates/plumb-sim/tests/incremental.rs and, at successful completion, docs/plan/EXECUTION-STATE.yaml change. model.rs, materialize.rs, execute.rs, compare.rs, trace.rs, tests/execute.rs, tests/compare.rs and the other crates are unchanged; incremental.rs uses their public and crate-visible contracts as they are. A needed change outside this list is a blocker.",
+        "Tests (Hotfix 053). crates/plumb-sim/tests/incremental.rs covers selection for the Scenario itself, a traced Requirement, a dependent and an unrelated Calculation (HR LeaveBalance acceptance), a Rule and its propagated Operation, a DecisionTable rule-row Scenario, a State, a Transition, an Event, an applicable and an unrelated Permission, a relevant and an unrelated SecurityRole, a boundary Attribute, a Calendar SemanticRef owner, a View, a Viewpoint, an empty DirtySet and multiple Scenarios; runtime presence, MissingRuntime, DuplicateRuntime, unused entries and zero provider calls on zero selection; Pass, Fail, blocking and non-blocking Undecidable and a mixed batch; exact finding payloads, stable keys across differing diffs and missing values, and independent Python key and ID goldens; blocking-policy validation; reverse-insertion determinism of selection, comparisons and findings; and source guards for purity, impact ownership and validation ownership."
       ],
       "tests": [
-        "cargo test -p plumb-sim incremental"
+        "cargo test -p plumb-sim --test incremental",
+        "cargo test -p plumb-sim --no-fail-fast"
       ],
       "acceptance": [
-        "Changing LeaveBalance calculation reruns dependent leave scenarios; unrelated glossary/view change does not."
+        "Changing the LeaveBalance calculation reruns exactly the dependent Confirmed leave Scenarios; an unrelated calculation, a View or Viewpoint change and an empty DirtySet rerun none, and selection uses only the finished F0.11 DirtySet and exact Scenario dependencies.",
+        "Fail emits one stable I_SCENARIO_FAIL and a caller-designated blocking Undecidable one stable G_SCENARIO_UNDECIDABLE finding with identity independent of trace details; Pass and non-blocking Undecidable emit none, and neither code is a registered validation rule.",
+        "Reruns reuse the unchanged S4.2 run() and S4.3 compare_run() in Scenario ID order with one caller-supplied runtime each; results are deterministic and nothing is persisted or mutated."
       ],
       "source_refs": [
         "SRCREF-B1A87347A8",
         "SRCREF-7DDD53DC7B"
       ],
-      "forbidden": [],
+      "forbidden": [
+        "Do not change model.rs, materialize.rs, execute.rs, compare.rs, trace.rs, their tests, plumb-patch, plumb-validation, plumb-functional, plumb-expr, plumb-psg, rules YAML, rulebook or fixtures; add Cargo dependencies other than the two direct workspace path dependencies; recompute impact or traverse dirty edges; register I_SCENARIO_FAIL or G_SCENARIO_UNDECIDABLE as validation rules; infer blocking status or VerificationObligation semantics; rerun all Scenarios as a fallback; persist runs, artifacts or findings; close or reconcile findings; read a clock; or start S4.5."
+      ],
       "commands": [
+        "cargo test -p plumb-sim --test incremental",
         "cargo test -p plumb-sim incremental",
+        "cargo test -p plumb-sim --no-fail-fast",
+        "cargo test -p plumb-patch impact",
+        "cargo test -p plumb-validation --no-fail-fast",
+        "cargo test -p plumb-functional --no-fail-fast",
+        "cargo test --workspace --no-fail-fast",
         "cargo fmt --check",
-        "cargo clippy --workspace --all-targets -- -D warnings"
+        "cargo clippy --workspace --all-targets -- -D warnings",
+        "sha256sum -c docs/plan/SUPPORTING-DOCS.sha256",
+        "python3 scripts/verify-plan-contract.py"
       ],
       "commit_message": "S4.4: Implement dirty-set scenario re-execution and scenario findings"
     },
