@@ -21,6 +21,8 @@
 //! through a closed template registry (compiler architecture §9).
 //! S3.2 composes at most one deterministic question round per stakeholder and assigns it through
 //! Question.round_ref.
+//! S3.3 turns a human answer into a governed ResolutionDecision, an explicit answer effect and
+//! Question/Finding lifecycle updates in one human-decision proposal.
 
 pub mod authorization;
 pub mod calculation;
@@ -39,6 +41,7 @@ pub mod project;
 pub mod question;
 pub mod question_templates;
 pub mod requirements;
+pub mod resolution;
 pub mod round;
 pub mod state;
 pub mod vocabulary;
@@ -134,6 +137,11 @@ pub use requirements::{
     RequirementCompilationIssue, RequirementCompilationResult, SegmentOrigin,
     REQUIREMENT_CLASSIFICATION_CONTEXT_VERSION, REQUIREMENT_CLASSIFICATION_OUTPUT_VERSION,
     REQUIREMENT_CLASSIFICATION_TASK_KIND, SEGMENT_ORIGIN_EXTENSION,
+};
+pub use resolution::{
+    decision_id, relation_id, resolve_question, ResolutionContext, ResolutionError,
+    ResolutionInput, ResolutionPatchArtifact, ResolutionResult, ResolutionTemplate,
+    RESOLUTION_ARTIFACT_VERSION,
 };
 pub use round::{
     compose_question_rounds, entity_anchor, parse_priority, round_id, QuestionRound,

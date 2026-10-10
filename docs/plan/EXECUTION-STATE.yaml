@@ -78,7 +78,7 @@ tasks:
 - id: S3.2
   status: done
 - id: S3.3
-  status: pending
+  status: done
 - id: S3.4
   status: pending
 - id: S3.5
