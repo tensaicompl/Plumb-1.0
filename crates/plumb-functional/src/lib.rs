@@ -19,6 +19,8 @@
 //! process-analysis kernel.
 //! S3.1 generates deterministic, routed governance Questions from current finding material
 //! through a closed template registry (compiler architecture §9).
+//! S3.2 composes at most one deterministic question round per stakeholder and assigns it through
+//! Question.round_ref.
 
 pub mod authorization;
 pub mod calculation;
@@ -37,6 +39,7 @@ pub mod project;
 pub mod question;
 pub mod question_templates;
 pub mod requirements;
+pub mod round;
 pub mod state;
 pub mod vocabulary;
 mod vocabulary_exceptions;
@@ -131,6 +134,11 @@ pub use requirements::{
     RequirementCompilationIssue, RequirementCompilationResult, SegmentOrigin,
     REQUIREMENT_CLASSIFICATION_CONTEXT_VERSION, REQUIREMENT_CLASSIFICATION_OUTPUT_VERSION,
     REQUIREMENT_CLASSIFICATION_TASK_KIND, SEGMENT_ORIGIN_EXTENSION,
+};
+pub use round::{
+    compose_question_rounds, entity_anchor, parse_priority, round_id, QuestionRound,
+    QuestionRoundConfig, QuestionRoundDisposition, QuestionRoundGroup, QuestionRoundResult,
+    RoundError, StaleReason, MAX_QUESTION_ROUND_SIZE,
 };
 pub use state::{
     analyze_lifecycle, build_lifecycle_request, LifecycleAnalysisResult, LifecycleAudit,
