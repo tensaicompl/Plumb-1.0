@@ -447,6 +447,14 @@ fn same_generated_fields(a: &Question, b: &Question) -> bool {
         && a.context_refs == b.context_refs
 }
 
+/// The persisted Question context (Hotfix 047): the exact subject first, then the other affected
+/// refs in ascending ID order.
+pub fn subject_first_context(subject: &Id, affected_refs: &[Id]) -> Vec<Id> {
+    std::iter::once(subject.clone())
+        .chain(affected_refs.iter().filter(|r| *r != subject).cloned())
+        .collect()
+}
+
 /// The candidates of one current, mapped finding.
 fn expand(
     graph: &Graph,
@@ -560,7 +568,7 @@ fn expand(
                 stakeholder_ref: stakeholder_ref.clone(),
                 priority: Some(priority.to_string()),
                 round_ref: None,
-                context_refs: Some(affected.clone()),
+                context_refs: Some(subject_first_context(&subject, affected)),
             },
             priority,
             blast_radius,

@@ -1529,10 +1529,7 @@ mod question_contract {
             };
             assert_eq!(q.status, "Open");
             assert_eq!(q.round_ref, None);
-            assert_eq!(
-                q.context_refs.as_ref(),
-                Some(&generated_affected(&result, &q.finding_ref))
-            );
+            assert_eq!(q.context_refs, Some(expected_context(&result, &n.id)));
         }
         // After applying, generation is idempotent and proposes nothing.
         let again = generate_questions(
@@ -1563,18 +1560,93 @@ mod question_contract {
         );
     }
 
-    fn generated_affected(result: &QuestionGenerationResult, finding_ref: &Id) -> Vec<Id> {
+    /// Subject first (Hotfix 047), then the other affected refs in ID order, computed from the
+    /// slots without the production helper.
+    fn expected_context(result: &QuestionGenerationResult, question_ref: &Id) -> Vec<Id> {
         let q = result
             .questions
             .iter()
-            .find(|q| &q.finding_ref == finding_ref)
+            .find(|q| &q.question_ref == question_ref)
             .unwrap();
-        q.slots["affected_refs"]
-            .as_array()
-            .unwrap()
+        let subject = q
+            .slots
+            .get("target_ref")
+            .or(q.slots.get("candidate_ref"))
+            .unwrap();
+        let subject = id(subject.as_str().unwrap());
+        let mut context = vec![subject.clone()];
+        for v in q.slots["affected_refs"].as_array().unwrap() {
+            let r = id(v.as_str().unwrap());
+            if r != subject {
+                context.push(r);
+            }
+        }
+        context
+    }
+
+    // ------------------------------------------------------------------ subject persistence (Hotfix 047)
+
+    #[test]
+    fn candidate_question_stores_candidate_subject_first() {
+        let q = only(&run(&Fx::new(), vec![cardinality()])).clone();
+        assert_eq!(
+            q.payload.context_refs,
+            Some(ids(&["domainrel:leave-employee", "req:r1"]))
+        );
+        let q = only(&run(&Fx::new(), vec![trigger()])).clone();
+        assert_eq!(
+            q.payload.context_refs,
+            Some(ids(&["transition:approve", "req:r1"]))
+        );
+        // The Question ID is the accepted S3.1 golden.
+        let q = only(&run(&Fx::new(), vec![cardinality()])).clone();
+        assert_eq!(q.question_ref.to_string(), GOLDEN_CARDINALITY_QUESTION);
+    }
+
+    #[test]
+    fn per_target_questions_store_their_own_subject_first() {
+        let result = run(&Fx::new(), vec![performer()]);
+        let mut contexts: Vec<Vec<Id>> = result
+            .questions
             .iter()
-            .map(|v| id(v.as_str().unwrap()))
-            .collect()
+            .map(|q| q.payload.context_refs.clone().unwrap())
+            .collect();
+        contexts.sort();
+        assert_eq!(
+            contexts,
+            [
+                ids(&["operation:approve", "operation:submit"]),
+                ids(&["operation:submit", "operation:approve"]),
+            ]
+        );
+        for q in &result.questions {
+            let context = q.payload.context_refs.as_ref().unwrap();
+            assert_eq!(context[0].as_str(), q.slots["target_ref"].as_str().unwrap());
+            assert!(context[1..].windows(2).all(|w| w[0] < w[1]));
+        }
+        let subjects: BTreeSet<&Id> = result
+            .questions
+            .iter()
+            .map(|q| &q.payload.context_refs.as_ref().unwrap()[0])
+            .collect();
+        assert_eq!(subjects.len(), 2);
+        // A single-target Question's context is just its subject.
+        let q = only(&run(&Fx::new(), vec![calendar_missing()])).clone();
+        assert_eq!(q.payload.context_refs, Some(ids(&["calculation:days"])));
+        assert_eq!(q.question_ref.to_string(), GOLDEN_CALENDAR_QUESTION);
+    }
+
+    #[test]
+    fn subject_first_context_helper_is_canonical() {
+        let affected = ids(&["a:1", "a:2", "a:3"]);
+        assert_eq!(
+            subject_first_context(&id("a:2"), &affected),
+            ids(&["a:2", "a:1", "a:3"])
+        );
+        assert_eq!(
+            subject_first_context(&id("c:9"), &affected),
+            ids(&["c:9", "a:1", "a:2", "a:3"])
+        );
     }
 
     #[test]

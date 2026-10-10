@@ -957,6 +957,8 @@ ResolutionDecision
 
 **Ratified question decisions (Hotfix 046).** A finding that already carries a governed waiver produces no question whatever its lifecycle status; an affected element of the wrong type for a per-target template is malformed input; regenerated questions that already exist are reported alongside new ones; and the slot-based duplicate suppression is verified as a contract of its own.
 
+**Question subject (Hotfix 047).** A generated question's `context_refs` starts with its exact subject (the relationship or transition candidate, or the expanded target) followed by the finding's other affected elements in ID order, so later resolution recovers the subject without reading the prompt; question identity is unchanged.
+
 ### Question rounds (S3.2, Hotfix 046)
 
 **Configuration and persistence.** Round size is explicit orchestration input from the caller (the HR pilot uses 15), not validation-profile metadata. There is no Round node: a round is a composition record whose content-derived ID (project, stakeholder and ordered question IDs) is written into each member question's `round_ref`.
@@ -966,6 +968,16 @@ ResolutionDecision
 **Ordering and capacity.** Blocking comes from the linked Finding's severity. Per stakeholder, questions are ordered blocking first, then by priority, then by ID, and each stakeholder receives at most one new round per run holding the first `question_round_size` questions; the rest wait for a later run, so resolution proceeds compose, answer, compose next. Grouping by a question's single affected Entity (direct or through an attribute's unique owner) is presentation only and forms contiguous runs without reordering.
 
 **Assignment.** One non-semantic, auto-acceptable proposal sets only `round_ref` on the selected questions under compare-and-swap preconditions; status stays Open and `semantic_hash` is unchanged. Later answering keeps `round_ref`, which never decides whether a blocking question is resolved.
+
+### Resolution decisions (S3.3, Hotfix 047)
+
+**Scope.** One human answer to a generated question becomes one human-decision proposal. The answer mapper is identified by the linked finding's rule and the question kind, for exactly the six current templates; broader mapper families wait for their own question producers.
+
+**Validation.** The question must be Open (or Answered, for an explicit supersession), its finding current and its subject recoverable from `context_refs`; the actor is an Accepted human Agent; the answer is checked against the persisted answer schema and then against the current graph. Invariant answers must parse and type-check to a Boolean under explicitly supplied bindings.
+
+**Effects.** Cardinality and transition-trigger answers have no direct effect: the Accepted decision is the governed input that the domain and lifecycle compilers already read, and only they build the relationship or the transition with its trigger. The other answers change exactly one kind of semantic fact: an operation performer is added, a calculation calendar or an invariant expression is replaced, and a permission's existing operation and scope relations are repaired in place (retargeted and, if suspect, re-accepted) without ever adding a second relation. Every initial effect first proves the original gap still exists.
+
+**Governance.** The decision records a closed answer marker, the human actor and time, and `patch_ref`, the hash of a separate content-addressed artifact holding only the semantic effect (which avoids a circular hash). Its ID derives from the project, question, marker, actor, time, `patch_ref` and supersession, not the rationale. Resolves edges link it to the question and the finding; the question becomes Answered (round kept) and the finding closes only when no other question of it stays Open. Superseding a decision builds a fresh patch from the current graph, links new to old and marks the old decision Superseded; nothing is inverted or deleted. The historical HR expert answers are not yet reachable through current questions and are not claimed as applied.
 
 ### Gate
 

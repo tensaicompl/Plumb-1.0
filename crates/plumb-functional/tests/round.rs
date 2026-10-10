@@ -1196,6 +1196,22 @@ mod round_contract {
     }
 
     #[test]
+    fn rounds_preserve_subject_first_context() {
+        let graph = hr_question_graph();
+        let result = compose_question_rounds(&graph, &size(15)).unwrap();
+        let changes = replaced(&result);
+        assert_eq!(changes.len(), 7);
+        for (question_ref, payload) in changes {
+            let NodePayload::Question(before) = &graph.node(&question_ref).unwrap().payload else {
+                unreachable!()
+            };
+            let context = before.context_refs.clone().unwrap();
+            assert!(!context.is_empty());
+            assert_eq!(payload.context_refs, Some(context));
+        }
+    }
+
+    #[test]
     fn hr_synthetic_set_truncates_to_fifteen() {
         let profile: HrRoundProfile = serde_yaml::from_str(HR_PROFILE).unwrap();
         let result = compose(&many(Fx::new(), HR, 1, 20), profile.question_round_size);

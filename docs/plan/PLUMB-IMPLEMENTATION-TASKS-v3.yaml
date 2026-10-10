@@ -4828,11 +4828,11 @@ tasks:
   - Question materialization and reconciliation (Hotfix 045). A new Question node is Accepted, revision 1, caller audit,
     empty evidence, derivations, standards, tags and extensions, with payload finding_ref = GeneratedFinding.id, question_kind
     = template kind, prompt = template rendering, status Open, answer_schema Some(exact schema), stakeholder_ref = resolved
-    route or None, priority Some(canonical string), round_ref None and context_refs Some(sorted affected_refs); no extension
-    data. An existing Accepted Question at the ID whose finding_ref, question_kind, prompt, answer_schema, stakeholder_ref,
-    priority and context_refs all match is ExistingQuestion with no patch (status and round_ref are lifecycle-managed
-    and ignored, so later rounds and answers stay idempotent); any mismatch, a non-Question or a non-Accepted node is
-    ExistingQuestionConflict; no ReplacePayload.
+    route or None, priority Some(canonical string), round_ref None and context_refs Some(subject-first context as frozen
+    by Hotfix 047); no extension data. An existing Accepted Question at the ID whose finding_ref, question_kind, prompt,
+    answer_schema, stakeholder_ref, priority and context_refs all match is ExistingQuestion with no patch (status and
+    round_ref are lifecycle-managed and ignored, so later rounds and answers stay idempotent); any mismatch, a non-Question
+    or a non-Accepted node is ExistingQuestionConflict; no ReplacePayload.
   - 'Proposal and result (Hotfix 045). At most one proposal adds every missing question-driving Finding (ID order) and
     then every new Question (ID order), as one Compound patch when there is more than one add, with stage S3, ProposalMateriality::NonSemantic,
     AcceptancePolicy::AutoNonSemantic, confidence None and no AI involvement; Finding and Question nodes are excluded
@@ -4880,6 +4880,14 @@ tasks:
     explicit. (d) Because finding_ref is part of the canonical slots, normal generation may never reach duplicate suppression;
     the public suppress_duplicates contract is tested directly and no artificial generation path is added. (e) The deterministic
     HR representative question order is asserted directly in Rust; no snapshot file is required. No S3.1 code changes.'
+  - 'Question subject persistence (Hotfix 047). Every S3.1-generated Question persists context_refs as: context_refs[0]
+    = the exact Question subject (the candidate_ref of a candidate template, the expanded target_ref of a per-target template),
+    followed by Finding.affected_refs in ascending ID order excluding the subject when it is one of them. context_refs
+    is therefore never empty and its first element is the governed resolution subject, not incidental ordering; S3.3 recovers
+    the subject only from it and never parses the prompt. No Question extension or payload field is added. The Question
+    ID formula is unchanged (the subject is already in the canonical slots), so existing deterministic Question IDs and
+    goldens stay the same; S3.2 preserves context_refs unchanged. Pilot Question material generated before Hotfix 047
+    is not a supported persisted compatibility boundary and no migration layer is added.'
   tests:
   - cargo test -p plumb-patch --test impact
   - cargo test -p plumb-functional --test question
@@ -5041,40 +5049,176 @@ tasks:
   depends_on:
   - S3.2
   files:
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/resolution.rs
   - crates/plumb-functional/tests/resolution.rs
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
-  - Every accepted answer creates ResolutionDecision with question/proposal reference, answer, actor, timestamp, rationale
-    when required and patch artifact ref.
-  - Implement explicit answer mappers for cardinality, state/transition, outcome, actor allowance, permission, unit, precision,
-    rounding, formula, rule cell, calendar and attribute type.
-  - Patch preview is generated before commit.
-  - Superseding a prior decision applies a new explicit patch based on current graph; it does not rely on opaque object
-    inversion.
-  - Hotfix 045 forward note. S3.3 consumes the S3.1 template identity and typed question contract and never infers an
-    answer mapper from prompt text. Answer application preserves explicit mappings at least for the domain cardinality
-    (candidate_ref plus cardinality_from/cardinality_to as the governed domain_relationship_cardinality decision), transition
-    trigger (state_transition_trigger decision), operation performer, calendar, permission and invariant formula templates;
-    a submitted invariant expression is parsed and type-checked before any semantic patch. QuestionKind alone is not template
-    identity because several templates may share a kind; if S3.3 needs persisted template identity beyond the deterministic
-    Question ID and known template reconstruction, it is frozen before S3.3 rather than added as an unversioned extension.
-  - Hotfix 046 forward note. S3.3 answers an Accepted Question that is current and Open whether its round_ref is None
-    or set; round_ref is orchestration context, not semantic authority. When S3.3 changes Question lifecycle it preserves
-    round_ref, and it never deletes or rewrites round composition history (no persisted Round object exists).
+  - Boundary (Hotfix 047). Hotfix 047 replaces the earlier S3.3 actions and the Hotfix 045 and 046 forward notes; where
+    they differ, this contract governs. S3.3 turns one human answer to an S3.1 Question into an Accepted ResolutionDecision,
+    an explicit semantic answer-effect patch and governance lifecycle patches in one proposal; it never applies the proposal,
+    returns no applied graph, adds no Round node, never parses prompts, matches by name, uses an LLM, reflects over payload
+    fields, registers mappers dynamically, keeps resolution state in extensions, mutates the graph outside SemanticPatch,
+    reruns F2 or regenerates or reroutes Questions, and uses no file system, network, provider, clock, randomness, UUID
+    or ULID.
+  - 'Template identity and mapper scope (Hotfix 047). The mapper is reconstructed only from the exact pair (linked Finding.code,
+    Question.question_kind): PLUMB.F2.DOMAIN.RELATION_TYPED + Cardinality -> f2.domain.relationship.cardinality.v1; PLUMB.F2.STATE.TRANSITION_COMPLETE
+    + PickOne -> f2.state.transition.trigger.v1; PLUMB.F2.OPERATION.PERFORMER + RoleAssignment -> f2.operation.performer.v1;
+    PLUMB.F2.TIME.CALENDAR_DEFINED + Calendar -> f2.time.calendar.v1; RBAC.F2.PERMISSION.CONCRETE + Permission -> f2.permission.concrete.v1;
+    PLUMB.F2.INVARIANT.EXPRESSIBLE + FormulaConfirm -> f2.invariant.formula.v1; any other pair is UnsupportedResolutionTemplate
+    (no QuestionKind fallback, prompt or routing inspection). A future template making the pair ambiguous needs a new
+    persisted template-identity contract first. S3.3 implements exactly these six mapper families; the older list (outcome,
+    actor allowance beyond performer, unit, precision, rounding, rule cell, attribute type) is future mapper inventory
+    that needs its own Question producer and contract, with no speculative production API now.'
+  - 'Input, context and eligibility (Hotfix 047). ResolutionInput {question_ref, answer: JSON, decided_by, decided_at:
+    Timestamp, rationale: Option<String>, supersedes: Option<Id>} and ResolutionContext {invariant_bindings: map of Invariant
+    ID to [ExpressionScopeBinding]} (the only orchestration context, needed only for an invariant answer; F2ValidationInputs
+    is not carried). An initial answer needs an existing Accepted Question node whose payload status is Open and supersedes
+    None; its linked Finding must exist, be an Accepted Finding with status Open and no waiver_ref, and every affected_ref
+    must be Accepted; context_refs must be present and non-empty and context_refs[0] is the subject. round_ref may be
+    None or set and is preserved exactly. A supersession needs payload status Answered (Closed and Superseded Questions
+    are not supersedable) and an existing Accepted ResolutionDecision with question_ref equal to the Question. decided_by
+    must be an Accepted Human Agent (InvalidDecisionActor otherwise; no implicit or compiler actor); decided_at is caller
+    supplied. A clean rationale is mandatory for domain relationship cardinality, state transition trigger and every supersession
+    (the domain.rs and state.rs governed readers require it) and optional for initial performer, calendar, permission
+    and invariant answers; when present it must be non-empty, exactly trimmed and free of control characters (never trimmed
+    automatically). Every failure is a typed error (QuestionMissing, NotAQuestion, QuestionNotAccepted, QuestionNotOpen,
+    QuestionNotAnsweredForSupersession, FindingMissing, NotAFinding, FindingNotAccepted, FindingNotOpen, FindingWaived,
+    AffectedRefNotAccepted, MissingQuestionContext, UnsupportedResolutionTemplate, InvalidQuestionContract, AnswerSchemaInvalid,
+    AnswerReferenceMissing, AnswerReferenceNotAccepted, AnswerReferenceWrongType, InvalidDecisionActor, InvalidRationale,
+    StaleResolutionQuestion, InvariantScopeUnavailable, InvalidInvariantExpression, InvariantNotBoolean, InvalidSupersededDecision,
+    SupersessionStateMismatch, InvalidPermissionStructure, UnsupportedPermissionEdgeLifecycle, ResolutionDecisionIdCollision,
+    InvalidResolutionProposal, AlreadyResolved); stale material is never answered silently.'
+  - 'Answer and subject validation (Hotfix 047). The answer is validated first against the persisted Question.answer_schema
+    with the existing jsonschema dependency (answer_schema None is InvalidQuestionContract); no handwritten looser check,
+    coercion, trimming or alias. Mapper validation then checks referenced IDs against the current graph (missing, not
+    Accepted or wrong type are typed errors) and the subject: the cardinality subject is a domainrel: relationship candidate
+    and the trigger subject a transition: candidate, neither of which needs to exist as a node (each must equal context_refs[0]
+    and be consistent with the linked current Finding); performer an Accepted Operation; calendar an Accepted Calculation;
+    permission an Accepted Permission; invariant an Accepted Invariant. ResolutionDecision.answer is a closed governed
+    marker: {kind: domain_relationship_cardinality, candidate_ref, cardinality_from, cardinality_to} (the marker the existing
+    domain.rs reader consumes), {kind: state_transition_trigger, candidate_ref, trigger_ref} (exactly the strict TriggerMarker
+    of state.rs), {kind: operation_performer, operation_ref, performer_ref}, {kind: calculation_calendar, calculation_ref,
+    calendar_ref}, {kind: permission_binding, permission_ref, operation_ref, resource_scope_ref} and {kind: invariant_formula,
+    invariant_ref, expression}, with the subject as the *_ref/candidate_ref and the answer values copied exactly.'
+  - 'Initial answer effects (Hotfix 047). Cardinality: effect None; the Accepted decision is the governed input of later
+    S2.1 domain analysis (domain.rs) and no DomainRelationship or Entity is fabricated. Trigger: trigger_ref an Accepted
+    Operation or Event; effect None; the Accepted decision is the governed input of S2.2 lifecycle analysis (state.rs),
+    which alone builds the Transition and its transitions_via edge; S3.3 never creates a Transition or adds or replaces
+    transitions_via. Performer: an Accepted Actor or BusinessRole (never SecurityRole) and no current Accepted performed_by
+    from the Operation (else StaleResolutionQuestion); AddEdge Operation -performed_by-> performer. Calendar: an Accepted
+    Calendar and the Calculation''s calendar_ref currently absent (else StaleResolutionQuestion); ReplacePayload of the
+    Calculation changing only calendar_ref. Permission: answer targets an Accepted Operation and an Accepted ResourceScope;
+    S3.3 repairs the Permission''s existing relations and never adds or removes a permits or scoped_to edge. For each
+    kind the unique outgoing baseline edge (Accepted, Suspect, Superseded or Deprecated; Proposed and Rejected alternatives
+    are ignored and untouched) is authoritative, and not exactly one is InvalidPermissionStructure; a Superseded or Deprecated
+    authoritative edge is UnsupportedPermissionEdgeLifecycle. The Question is stale only when both relations are already
+    concrete (Accepted edge to an Accepted target of the right type). Each edge is normalized to status Accepted and the
+    answered target with its ID, kind, from and properties preserved: an Accepted edge already on the target needs no
+    patch, an Accepted edge on another target gets ReplaceEdge, a Suspect edge on the target gets SetStatus Suspect ->
+    Accepted, and a Suspect edge on another target gets ReplaceEdge then SetStatus, the SetStatus precondition being the
+    element hash of the intermediate edge (same edge with the new target, still Suspect); the effect is permits normalization
+    then scoped_to normalization, omitting no-op relations. Invariant: the expression is parsed with plumb-expr and type-checked
+    under the explicit ResolutionContext bindings through the shared expression-scope adapter and must be Ty::Bool (InvalidInvariantExpression,
+    InvariantNotBoolean; a missing binding entry is InvariantScopeUnavailable, never an assumed empty scope) before any
+    patch is built; ReplacePayload of the Invariant changing only expression. New edges (performed_by, resolves, supersedes)
+    have IDs are rel:<first 16 hex of SHA-256(RFC 8785 {kind, from, to})>; edges have RelationProperties::None and decision
+    audit. Every ReplacePayload, ReplaceEdge and SetStatus carries the exact current element hash.'
+  - 'Patch artifact and identity (Hotfix 047). ResolutionPatchArtifact {version: 1, question_ref, base_semantic_hash,
+    effect_patch: Option<SemanticPatch>} holds only the semantic answer effect (never the decision node, resolves or supersedes
+    edges or lifecycle updates), so there is no circular hash: patch_ref = Generic SHA-256 of its RFC 8785 canonical bytes,
+    computed before the decision node exists, and the canonical artifact is returned for persistence outside plumb-functional
+    (plumb-artifacts is not a dependency). The decision ID is dec:<first 16 hex of SHA-256(RFC 8785 {project_id, question_ref,
+    answer: governed marker, decided_by, decided_at, patch_ref, supersedes: ID or null})>; rationale is explanatory and
+    not part of identity. A node or edge already at that ID that is not the exact expected decision is ResolutionDecisionIdCollision
+    (no other ID is derived); an exact existing decision whose Question is already resolved by it is AlreadyResolved and
+    creates nothing.'
+  - Decision and governance material (Hotfix 047). The new Accepted ResolutionDecision node (revision 1, audit created_by
+    = decided_by and created_at = decided_at, no evidence or derivations) has question_ref Some(question), proposal_ref
+    None, the governed marker, decided_by, decided_at, patch_ref, the validated rationale and supersedes. Two Accepted
+    resolves edges link it to the Question and to the linked Finding (deterministic IDs). The Question payload status
+    changes Open -> Answered by ReplacePayload, every other field (including round_ref and context_refs) preserved; the
+    envelope stays Accepted and SetStatus is not used for Question lifecycle. Lifecycle statuses Answered, Closed and
+    Superseded are terminal. The linked Finding payload status changes Open -> Closed by ReplacePayload only when, after
+    this answer, no other Accepted Question linked to it is Open; S3.3 never closes other Findings, never closes by rule
+    code or element, and never handles waivers (S3.4).
+  - 'Proposal (Hotfix 047). One proposal with stage S3, ProposalMateriality::MaterialDecision, AcceptancePolicy::HumanDecision
+    and confidence None on graph.semantic_hash(), its patches in this order: the effect patch when present (itself possibly
+    Compound), AddNode ResolutionDecision, the resolves edge to the Question, the resolves edge to the Finding, the Question
+    lifecycle ReplacePayload, the Finding ReplacePayload when it closes; for supersession the supersedes edge and the
+    old decision SetStatus follow the decision node. It is dry-run through the patch engine (InvalidResolutionProposal
+    and no result on failure). Applying it may change semantic_hash even when effect_patch is None (cardinality, trigger):
+    the ResolutionDecision and its governance material participate, and effect_patch None only means S3.3 makes no direct
+    domain or lifecycle model change. ResolutionResult {decision_ref, decision, patch_artifact, patch_ref, proposal}.'
+  - 'Supersession (Hotfix 047). A superseding decision has supersedes Some(old), an Accepted new -supersedes-> old edge,
+    and SetStatus Accepted -> Superseded on the old decision; the old payload and its resolves edges stay. The Question
+    stays Answered with round_ref unchanged and the Finding stays Closed when no sibling is Open. The new effect is built
+    from the current graph, never SemanticPatch::inverse or a stored object: cardinality and trigger None (the S2.1/S2.2
+    compilers consume the new Accepted decision; S3.3 performs no lifecycle rollback or edge replacement); performer ReplaceEdge
+    of the single Accepted performed_by matching the old marker''s performer_ref; calendar ReplacePayload of calendar_ref;
+    permission requires the unique baseline permits and scoped_to edges to be Accepted on exactly the old marker''s operation_ref
+    and resource_scope_ref (else SupersessionStateMismatch) and ReplaceEdges only those whose target changes, preserving
+    edge IDs; invariant ReplacePayload of expression. When the current state no longer corresponds to the old decision
+    it is SupersessionStateMismatch; a non-ResolutionDecision, non-Accepted or other-Question old decision is InvalidSupersededDecision.'
+  - Acceptance scope and HR fixture (Hotfix 047). The historical fixtures/hr-leave/expert-answers.yaml ambiguities (half_day,
+    holiday_inside_period, inclusive_end) are not produced by the six current S3.1 templates; they remain authoritative
+    fixture expectations but end-to-end application waits for their current-v3 Question producers, and S3.3 never claims
+    to have applied them through Question mappers or fabricates Questions for them; the fixtures are not edited. The S3.3
+    cardinality decision must pass the existing domain.rs reader and the trigger decision the existing state.rs reader
+    unchanged, proven by integration tests in which the applied S3.3 proposal lets domain analysis consume the governed
+    cardinality and lifecycle analysis consume the governed trigger (building the Transition and its transitions_via edge);
+    if compatibility fails the task is blocked and the readers are never weakened.
+  - Files and dependencies (Hotfix 047). Only crates/plumb-functional/src/{lib.rs, resolution.rs}, crates/plumb-functional/tests/resolution.rs
+    and, at successful completion, docs/plan/EXECUTION-STATE.yaml change; question.rs, round.rs, domain.rs, plumb-psg,
+    plumb-patch, plumb-validation, plumb-expr, fixtures, Cargo files and the rules YAML do not. A genuinely required change
+    elsewhere is a blocker.
+  - Tests (Hotfix 047). crates/plumb-functional/tests/resolution.rs covers eligibility (Open with and without round_ref,
+    Proposed, Closed, Superseded, Answered without supersedes, missing or wrong Question, every Finding currentness failure,
+    missing or empty context, unsupported pair); actor and rationale rules; for every template a valid answer and schema
+    failures (missing, unknown, wrong type) and mapper failures (non-Accepted or wrongly typed choices); each mapper's
+    effect, staleness and deterministic edge IDs; independent decision ID goldens for a cardinality and a direct-effect
+    decision with identity sensitivity (rationale excluded); the patch artifact (version, fields, canonical bytes, patch_ref
+    recomputation before the decision exists, insertion-order independence); resolves edges; single- and multi-question
+    Finding lifecycle; proposal metadata, ordering, CAS preconditions, dry-run, semantic_hash change and stale-graph rejection;
+    permission repair (staleness only when both relations are concrete, ReplaceEdge only, SetStatus only, ReplaceEdge
+    then SetStatus with the intermediate-hash precondition and an ElementHashMismatch on a concurrently changed edge,
+    unsupported Superseded/Deprecated edges, untouched Proposed/Rejected alternatives, no AddEdge/RemoveEdge, preserved
+    edge IDs, a final graph with exactly one Accepted baseline edge of each kind); supersession for at least trigger,
+    calendar, cardinality, invariant and permission including state mismatch and invalid old decisions; the domain.rs
+    and state.rs compatibility tests; determinism under reversed node, edge and sibling Question insertion; and production
+    source guards.
   tests:
-  - cargo test -p plumb-functional resolution
+  - cargo test -p plumb-functional --test resolution
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - Applying expert-answers.yaml only through answer mappers resolves expected blockers; every graph change has a serialized
-    patch artifact and decision reference.
+  - All six current S3.1 template families have explicit deterministic resolution fixtures, applied only through their
+    answer mappers.
+  - Semantic effects and governance material dry-run atomically in one HUMAN_DECISION proposal; every answer has a canonical
+    ResolutionPatchArtifact whose hash is the decision patch_ref.
+  - Questions become Answered with round_ref preserved, and a multi-question Finding closes only after its last Open Question.
+  - The cardinality ResolutionDecision is consumed unchanged by the existing domain.rs reader and the trigger ResolutionDecision
+    by the existing state.rs reader; invariant answers are parsed and type-checked before proposal creation.
+  - Permission answers repair the existing unique baseline permits/scoped_to edges in place, never adding or removing
+    one.
+  - Supersession builds explicit current-state patches, marks the old decision Superseded and links it by a supersedes
+    edge.
   source_refs:
   - SRCREF-AE75140DD6
   - SRCREF-A95FED2B41
   - SRCREF-8A575EA9B2
-  forbidden: []
+  forbidden:
+  - Do not parse prompts, infer mappers from QuestionKind alone or names, add speculative mappers, fabricate DomainRelationships,
+    Transitions, transitions_via edges, actors or Questions, add or remove permits or scoped_to edges, weaken the domain.rs
+    or state.rs readers, use SemanticPatch::inverse, close unrelated Findings, implement waivers, claim the legacy HR
+    expert answers were applied, change files outside the allowlist or Cargo files, or start S3.4.
   commands:
-  - cargo test -p plumb-functional resolution
+  - cargo test -p plumb-functional --test resolution
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'S3.3: Implement ResolutionDecision and answer-to-patch application'
 - id: S3.4
   title: Implement assumptions and governed waivers
@@ -5088,13 +5232,18 @@ tasks:
   - crates/plumb-functional/tests/assumption.rs
   - crates/plumb-validation/tests/waiver.rs
   steps:
-  - Assumption requires statement, owner_ref and status; expiry/review is required when it is used to satisfy a blocking gate condition.
+  - Assumption requires statement, owner_ref and status; expiry/review is required when it is used to satisfy a blocking
+    gate condition.
   - Expired assumptions become findings using injected Clock.
   - A waiver is represented by ResolutionDecision and may only satisfy a rule if the YAML waiver_policy permits it.
   - Forbidden waiver attempts return validation error and do not change gate result.
-  - S3.4 may extend the F0.13 waiver helpers but must not change finding-key identity, the waiver marker identity, the Forbidden/ProfileAllow
-    gate semantics or the GateResult semantics without another explicit contract revision. Waiver review or expiry is not evaluated
-    by the F0.13 gate evaluator; assumption expiry uses the explicit Assumption.expires_at and the injected Clock.
+  - S3.4 may extend the F0.13 waiver helpers but must not change finding-key identity, the waiver marker identity, the
+    Forbidden/ProfileAllow gate semantics or the GateResult semantics without another explicit contract revision. Waiver
+    review or expiry is not evaluated by the F0.13 gate evaluator; assumption expiry uses the explicit Assumption.expires_at
+    and the injected Clock.
+  - Hotfix 047 forward note. S3.3 never closes or waives a waived Finding and its lifecycle rules ignore waivers; S3.4
+    owns waiver governance. ResolutionDecisions created by S3.3 carry a question_ref, the closed governed answer markers
+    of S3.3 and the supersession lineage, which S3.4 must not reinterpret.
   tests:
   - cargo test -p plumb-functional assumption
   - cargo test -p plumb-validation waiver
