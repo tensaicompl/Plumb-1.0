@@ -1055,6 +1055,14 @@ F4 requires the functional semantics that are executable through the functional 
 
 **Representable effects only.** `writes` relations are effect footprints, not assignments; the pilot changes runtime state only through state transitions, calculation results, decision-table outputs, deterministic outcomes and produced events. Rule actions, transition effect references, policy conditions, resource scope kinds and process control flow are traced or deferred, never guessed. Authorization reuses the accepted role facts and stays role-level; functional performers are never treated as security roles.
 
+### Scenario comparison and trace material (S4.3, Hotfix 052)
+
+**Verdicts.** Comparison consumes a completed execution of the current Accepted, Confirmed Scenario (a run whose specification hash no longer matches is stale and rejected) and never re-executes behavior. An execution that failed is a failed scenario with one diff naming the failing owner; an undecidable execution, or an expectation that is itself an unresolved semantic reference, is undecidable; otherwise the scenario passes iff its expectations hold. Expectation references resolve only through the same accepted and runtime rules as execution.
+
+**Assertions.** An absent expectation category asserts nothing. Value maps and active states assert their named members only; rule satisfaction requires a true result; outcomes and events, when asserted, are exact sets because unexpected observable behavior matters. Equality is typed (decimals numerically, units exactly, no coercion between kinds), and accepted expectations that contradict their target types are model errors, not mismatches. Diffs are closed, typed and canonically ordered, each naming an exact semantic element.
+
+**Evidence material.** The execution trace is preserved unchanged and followed by a typed comparison trace. Each comparison yields the existing ScenarioRun shape and a versioned scenario-trace artifact body with canonical bytes and a content hash, with no timestamp; persisting either belongs to the caller, not to the interpreter.
+
 ### Gate
 
 `F4`
