@@ -8,6 +8,8 @@ plumb-core = { path = "../plumb-core" }
 plumb-psg = { path = "../plumb-psg" }
 plumb-expr = { path = "../plumb-expr" }
 plumb-functional = { path = "../plumb-functional" }
+plumb-patch = { path = "../plumb-patch" }
+plumb-validation = { path = "../plumb-validation" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
