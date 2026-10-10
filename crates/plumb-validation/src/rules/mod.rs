@@ -5,8 +5,10 @@
 
 mod f1;
 mod f2;
+mod f3;
 mod i0;
 
 pub use f1::register_f1_evaluators;
 pub use f2::register_f2_evaluators;
+pub use f3::register_f3_evaluators;
 pub use i0::register_i0_evaluators;

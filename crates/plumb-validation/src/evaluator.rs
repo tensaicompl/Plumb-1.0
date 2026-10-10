@@ -12,7 +12,7 @@ use std::fmt;
 use plumb_artifacts::{Artifact, ArtifactKind};
 use plumb_core::{canonical_hash, CoreError, GateId, Hash, HashKind, Id};
 use plumb_lint::{LintInput, LintPolicy, LintTextRange};
-use plumb_psg::{AgentKind, ElementStatus, Graph, NodePayload, NodeType};
+use plumb_psg::{AgentKind, ElementStatus, FindingSeverity, Graph, NodePayload, NodeType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -271,6 +271,9 @@ pub struct ValidationContext {
     /// ignored by other gates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub f2_inputs: Option<F2ValidationInputs>,
+    /// The deterministic F3 supplemental inputs (Hotfix 049); read only by the F3 rules.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub f3_inputs: Option<F3ValidationInputs>,
 }
 
 impl ValidationContext {
@@ -314,6 +317,7 @@ impl ValidationContext {
             evidence_artifacts,
             f1_inputs: None,
             f2_inputs: None,
+            f3_inputs: None,
         })
     }
 
@@ -339,6 +343,21 @@ impl ValidationContext {
         inputs.validate_for(graph)?;
         Ok(ValidationContext {
             f2_inputs: Some(inputs),
+            ..self
+        })
+    }
+
+    /// Validates `inputs` against `graph` and installs them as the F3 supplemental inputs.
+    pub fn with_f3_inputs(
+        self,
+        graph: &Graph,
+        inputs: F3ValidationInputs,
+    ) -> Result<ValidationContext, EvaluationError> {
+        let inputs =
+            F3ValidationInputs::new(inputs.decision_artifacts, inputs.assumption_expiry_findings);
+        inputs.validate_for(graph)?;
+        Ok(ValidationContext {
+            f3_inputs: Some(inputs),
             ..self
         })
     }
@@ -412,6 +431,9 @@ impl ValidationContext {
             inputs.validate_for(graph)?;
         }
         if let Some(inputs) = &self.f2_inputs {
+            inputs.validate_for(graph)?;
+        }
+        if let Some(inputs) = &self.f3_inputs {
             inputs.validate_for(graph)?;
         }
         Ok(())
@@ -1908,6 +1930,224 @@ fn validate_f2_analysis_finding(graph: &Graph, finding: &GeneratedFinding) -> Re
         if graph.node(target).is_none() {
             return Err(format!("analysis finding {id} targets missing {target}"));
         }
+    }
+    Ok(())
+}
+
+// ============================================================================ F3 supplemental inputs
+
+/// The S3 governance finding code of an expired assumption (S3.4 material, not a rule).
+pub const S3_ASSUMPTION_EXPIRED_CODE: &str = "PLUMB.S3.ASSUMPTION.EXPIRED";
+
+/// The ResolutionDecision answer kinds of the current S3.3 decision families.
+pub const S3_RESOLUTION_KINDS: [&str; 6] = [
+    "domain_relationship_cardinality",
+    "state_transition_trigger",
+    "operation_performer",
+    "calculation_calendar",
+    "permission_binding",
+    "invariant_formula",
+];
+
+/// One already-acquired content-addressed decision artifact (Hotfix 049): the exact bytes whose
+/// Generic SHA-256 is the decision's `patch_ref`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F3DecisionArtifactInput {
+    pub decision_ref: Id,
+    pub hash: Hash,
+    pub bytes: Vec<u8>,
+}
+
+/// The deterministic F3 supplemental inputs (Hotfix 049): the decision artifacts of current S3
+/// decisions and the complete S3.4 assumption-expiry finding set of one analysis instant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F3ValidationInputs {
+    pub decision_artifacts: Vec<F3DecisionArtifactInput>,
+    pub assumption_expiry_findings: Vec<GeneratedFinding>,
+}
+
+// Every field compares structurally without floating point, so equality is reflexive.
+impl Eq for F3ValidationInputs {}
+
+/// The read-only shape of an S3.3 ResolutionPatchArtifact (plumb-functional is not a dependency).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct S3ResolutionArtifactShape {
+    version: u32,
+    question_ref: Id,
+    base_semantic_hash: Hash,
+    effect_patch: Value,
+}
+
+/// The read-only shape of an S3.4 WaiverPatchArtifact.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct S3WaiverArtifactShape {
+    version: u32,
+    finding_ref: Id,
+    finding_key: Hash,
+    rule_id: String,
+}
+
+impl F3ValidationInputs {
+    /// Builds canonical inputs: artifacts by decision, expiry findings by ID. Validation against
+    /// a graph happens in [`ValidationContext::with_f3_inputs`].
+    pub fn new(
+        mut decision_artifacts: Vec<F3DecisionArtifactInput>,
+        mut assumption_expiry_findings: Vec<GeneratedFinding>,
+    ) -> F3ValidationInputs {
+        decision_artifacts.sort_by(|a, b| a.decision_ref.cmp(&b.decision_ref));
+        assumption_expiry_findings.sort_by(|a, b| a.id.cmp(&b.id));
+        F3ValidationInputs {
+            decision_artifacts,
+            assumption_expiry_findings,
+        }
+    }
+
+    /// Generic SHA-256 of the RFC 8785 canonical JSON of the complete inputs.
+    pub fn content_hash(&self) -> Result<Hash, CoreError> {
+        canonical_hash(HashKind::Generic, self)
+    }
+
+    /// The artifact supplied for a decision, if any.
+    pub fn decision_artifact(&self, decision_ref: &Id) -> Option<&F3DecisionArtifactInput> {
+        self.decision_artifacts
+            .binary_search_by(|a| a.decision_ref.cmp(decision_ref))
+            .ok()
+            .map(|i| &self.decision_artifacts[i])
+    }
+
+    /// Requires canonical order, artifacts bound to Accepted decisions by hash and family shape,
+    /// and expiry findings that are exactly S3.4 material for Accepted active assumptions.
+    /// Malformed inputs are a context error, never a rule result.
+    pub fn validate_for(&self, graph: &Graph) -> Result<(), EvaluationError> {
+        let invalid = EvaluationError::InvalidContext;
+        let refs: Vec<&Id> = self
+            .decision_artifacts
+            .iter()
+            .map(|a| &a.decision_ref)
+            .collect();
+        require_strictly_sorted("F3 decision artifact", &refs).map_err(invalid)?;
+        for artifact in &self.decision_artifacts {
+            validate_f3_artifact(graph, artifact).map_err(invalid)?;
+        }
+        let ids: Vec<&Id> = self
+            .assumption_expiry_findings
+            .iter()
+            .map(|f| &f.id)
+            .collect();
+        require_strictly_sorted("F3 assumption expiry finding", &ids).map_err(invalid)?;
+        for finding in &self.assumption_expiry_findings {
+            validate_f3_expiry_finding(graph, finding).map_err(invalid)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_f3_artifact(graph: &Graph, artifact: &F3DecisionArtifactInput) -> Result<(), String> {
+    let id = &artifact.decision_ref;
+    let node = graph
+        .node(id)
+        .ok_or_else(|| format!("decision artifact names missing decision {id}"))?;
+    let NodePayload::ResolutionDecision(decision) = &node.payload else {
+        return Err(format!("decision artifact names non-decision {id}"));
+    };
+    if node.status != ElementStatus::Accepted {
+        return Err(format!(
+            "decision artifact names non-Accepted decision {id}"
+        ));
+    }
+    if artifact.hash.kind() != HashKind::Generic {
+        return Err(format!("artifact hash of {id} is not a Generic hash"));
+    }
+    if Hash::content_sha256(&artifact.bytes) != artifact.hash {
+        return Err(format!("artifact bytes of {id} do not hash to its hash"));
+    }
+    if artifact.hash != decision.patch_ref {
+        return Err(format!(
+            "artifact hash of {id} is not the decision patch_ref"
+        ));
+    }
+    let kind = decision.answer.get("kind").and_then(Value::as_str);
+    if kind.is_some_and(|k| S3_RESOLUTION_KINDS.contains(&k)) {
+        let shape: S3ResolutionArtifactShape = serde_json::from_slice(&artifact.bytes)
+            .map_err(|e| format!("artifact of {id} is not a resolution artifact: {e}"))?;
+        if shape.version != 1 {
+            return Err(format!("artifact of {id} has version {}", shape.version));
+        }
+        if decision.question_ref.as_ref() != Some(&shape.question_ref) {
+            return Err(format!("artifact of {id} names another question"));
+        }
+        if shape.base_semantic_hash.kind() != HashKind::Semantic {
+            return Err(format!("artifact of {id} has a non-semantic base hash"));
+        }
+        if !(shape.effect_patch.is_null() || shape.effect_patch.is_object()) {
+            return Err(format!("artifact of {id} has a malformed effect_patch"));
+        }
+    } else if kind == Some(crate::waiver::WAIVER_KIND) {
+        let shape: S3WaiverArtifactShape = serde_json::from_slice(&artifact.bytes)
+            .map_err(|e| format!("artifact of {id} is not a waiver artifact: {e}"))?;
+        let marker: crate::waiver::WaiverDecisionMarker =
+            serde_json::from_value(decision.answer.clone())
+                .map_err(|e| format!("decision {id} has a malformed waiver marker: {e}"))?;
+        if shape.version != 1
+            || shape.finding_ref != marker.finding_ref
+            || shape.finding_key != marker.finding_key
+            || shape.rule_id != marker.rule_id
+        {
+            return Err(format!("waiver artifact of {id} does not match its marker"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_f3_expiry_finding(graph: &Graph, finding: &GeneratedFinding) -> Result<(), String> {
+    let id = &finding.id;
+    let p = &finding.payload;
+    if p.code != S3_ASSUMPTION_EXPIRED_CODE
+        || p.family != "S3"
+        || p.severity != FindingSeverity::Blocker
+        || p.status != "Open"
+        || p.standard_rule_ref.is_some()
+        || p.waiver_ref.is_some()
+    {
+        return Err(format!("expiry finding {id} is not S3.4 expiry material"));
+    }
+    let [assumption_ref] = p.affected_refs.as_slice() else {
+        return Err(format!(
+            "expiry finding {id} does not name exactly one assumption"
+        ));
+    };
+    let node = graph
+        .node(assumption_ref)
+        .ok_or_else(|| format!("expiry finding {id} names missing {assumption_ref}"))?;
+    let NodePayload::Assumption(assumption) = &node.payload else {
+        return Err(format!(
+            "expiry finding {id} names non-assumption {assumption_ref}"
+        ));
+    };
+    if node.status != ElementStatus::Accepted || assumption.status != "Accepted" {
+        return Err(format!(
+            "expiry finding {id} names inactive {assumption_ref}"
+        ));
+    }
+    let Some(expiry) = &assumption.expires_at else {
+        return Err(format!(
+            "expiry finding {id} names {assumption_ref} without expiry"
+        ));
+    };
+    let condition = format!("assumption_expired:{assumption_ref}:{expiry}");
+    if finding.semantic_condition_key != condition {
+        return Err(format!("expiry finding {id} condition is not {condition}"));
+    }
+    let key = finding_key(&p.code, &p.affected_refs, &finding.semantic_condition_key)
+        .map_err(|e| e.to_string())?;
+    if key != finding.key || finding_id(&key).map_err(|e| e.to_string())? != *id {
+        return Err(format!(
+            "expiry finding {id} identity does not match its content"
+        ));
     }
     Ok(())
 }
