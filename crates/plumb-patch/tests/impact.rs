@@ -1288,4 +1288,179 @@ mod impact_contract {
             assert!(!code.contains(forbidden), "impact.rs reads {forbidden}");
         }
     }
+
+    // ------------------------------------------------------------------ reachable-node closure (Hotfix 045)
+
+    fn reach(g: &Graph, seeds: &[&str]) -> BTreeSet<Id> {
+        impact_reachable_nodes(g, &ids(seeds)).unwrap()
+    }
+
+    #[test]
+    fn reachable_seed_without_edges_returns_itself() {
+        assert_eq!(reach(&chain(), &["req:unrelated"]), ids(&["req:unrelated"]));
+        assert_eq!(reach(&chain(), &[]), ids(&[]));
+    }
+
+    #[test]
+    fn reachable_follows_to_from_and_from_to() {
+        let g = chain();
+        // uses_calculation is to -> from; verified_by and implemented_as are from -> to.
+        assert_eq!(
+            reach(&g, &["calc:leave-days"]),
+            ids(&[
+                "calc:leave-days",
+                "op:approve",
+                "scn:half-day",
+                "verify:approval"
+            ])
+        );
+        assert_eq!(
+            reach(&g, &["op:approve"]),
+            ids(&["op:approve", "scn:half-day", "verify:approval"])
+        );
+        assert_eq!(
+            reach(&g, &["verify:approval"]),
+            ids(&["scn:half-day", "verify:approval"])
+        );
+        assert_eq!(reach(&g, &["scn:half-day"]), ids(&["scn:half-day"]));
+        for (relation, from_type, to_type, direction) in RELATIONS {
+            let g = graph(
+                vec![
+                    typed("x:from", "Accepted", from_type),
+                    typed("x:to", "Accepted", to_type),
+                ],
+                vec![edge("rel:x", "Accepted", relation, "x:from", "x:to")],
+            );
+            let (dependency, dependent) = match direction {
+                ImpactDirection::ToFrom => ("x:to", "x:from"),
+                ImpactDirection::FromTo => ("x:from", "x:to"),
+            };
+            assert_eq!(
+                reach(&g, &[dependency]),
+                ids(&["x:from", "x:to"]),
+                "{relation}"
+            );
+            assert_eq!(reach(&g, &[dependent]), ids(&[dependent]), "{relation}");
+        }
+    }
+
+    #[test]
+    fn reachable_ignores_unsupported_and_non_baseline_relations() {
+        let g = graph(
+            vec![
+                typed("ent:leave", "Accepted", "Entity"),
+                typed("attr:days", "Accepted", "Attribute"),
+            ],
+            vec![edge(
+                "rel:has",
+                "Accepted",
+                "has_attribute",
+                "ent:leave",
+                "attr:days",
+            )],
+        );
+        assert_eq!(reach(&g, &["ent:leave"]), ids(&["ent:leave"]));
+        assert_eq!(reach(&g, &["attr:days"]), ids(&["attr:days"]));
+        for status in ["Proposed", "Rejected"] {
+            let g = graph(
+                vec![
+                    typed("calc:leave-days", "Accepted", "Calculation"),
+                    typed("op:approve", "Accepted", "Operation"),
+                ],
+                vec![edge(
+                    "rel:uses",
+                    status,
+                    "uses_calculation",
+                    "op:approve",
+                    "calc:leave-days",
+                )],
+            );
+            assert_eq!(reach(&g, &["calc:leave-days"]), ids(&["calc:leave-days"]));
+        }
+    }
+
+    #[test]
+    fn reachable_terminates_on_cycles_and_unions_seeds() {
+        let nodes = vec![
+            typed("req:a", "Accepted", "Requirement"),
+            typed("op:approve", "Accepted", "Operation"),
+            typed("req:other", "Accepted", "Requirement"),
+        ];
+        let edges = vec![
+            edge(
+                "rel:spec",
+                "Accepted",
+                "specified_by",
+                "req:a",
+                "op:approve",
+            ),
+            edge(
+                "rel:derived",
+                "Accepted",
+                "derived_from",
+                "req:a",
+                "op:approve",
+            ),
+        ];
+        let g = graph(nodes.clone(), edges.clone());
+        assert_eq!(reach(&g, &["req:a"]), ids(&["op:approve", "req:a"]));
+        assert_eq!(reach(&g, &["op:approve"]), ids(&["op:approve", "req:a"]));
+        assert_eq!(
+            reach(&g, &["req:a", "req:other"]),
+            ids(&["op:approve", "req:a", "req:other"])
+        );
+        let reversed = graph(
+            nodes.into_iter().rev().collect(),
+            edges.into_iter().rev().collect(),
+        );
+        assert_eq!(
+            reach(&reversed, &["req:other", "req:a"]),
+            reach(&g, &["req:a", "req:other"])
+        );
+        // Overlapping closures count each node once.
+        let c = chain();
+        assert_eq!(
+            reach(&c, &["calc:leave-days", "op:approve"]),
+            reach(&c, &["calc:leave-days"])
+        );
+    }
+
+    #[test]
+    fn reachable_rejects_missing_and_non_baseline_seeds() {
+        let g = graph(
+            vec![
+                typed("op:approve", "Accepted", "Operation"),
+                typed("op:draft", "Proposed", "Operation"),
+                typed("op:old", "Suspect", "Operation"),
+            ],
+            vec![],
+        );
+        assert_eq!(
+            impact_reachable_nodes(&g, &ids(&["op:ghost"])),
+            Err(ImpactError::UnknownSeed(id("op:ghost")))
+        );
+        assert_eq!(
+            impact_reachable_nodes(&g, &ids(&["op:approve", "op:draft"])),
+            Err(ImpactError::NonBaselineSeed(id("op:draft")))
+        );
+        assert_eq!(reach(&g, &["op:old"]), ids(&["op:old"]));
+    }
+
+    #[test]
+    fn reachable_matches_compute_impact_closure() {
+        // The closure of a changed node equals compute_impact's dirty nodes for that change.
+        let g = chain();
+        for seed in [
+            "calc:leave-days",
+            "op:approve",
+            "verify:approval",
+            "req:unrelated",
+        ] {
+            assert_eq!(
+                reach(&g, &[seed]),
+                impact(&g, suspect(&g, seed)).dirty.node_ids,
+                "{seed}"
+            );
+        }
+    }
 }

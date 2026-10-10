@@ -17,6 +17,8 @@
 //! static separation of duty.
 //! S2.9 proposes grounded Processes with safe control flow, qualified by the plumb-validation
 //! process-analysis kernel.
+//! S3.1 generates deterministic, routed governance Questions from current finding material
+//! through a closed template registry (compiler architecture §9).
 
 pub mod authorization;
 pub mod calculation;
@@ -32,6 +34,8 @@ pub mod model;
 pub mod operation;
 pub mod process;
 pub mod project;
+pub mod question;
+pub mod question_templates;
 pub mod requirements;
 pub mod state;
 pub mod vocabulary;
@@ -112,6 +116,13 @@ pub use project::{
     project_functional_v2, validate_against_schema, validate_metadata, ProjectionError,
     FUNCTIONAL_V2_SCHEMA,
 };
+pub use question::{
+    generate_questions, question_id, route_question, severity_weight, GeneratedQuestion,
+    QuestionAudit, QuestionDisposition, QuestionError, QuestionGenerationInput,
+    QuestionGenerationResult, QuestionIssue, QuestionMaterialization, RouteDisposition,
+    RoutingStakeholder, StakeholderRoutingConfig, UnmappedFinding,
+};
+pub use question_templates::{QuestionTemplate, UnmappedReason, QUESTION_TEMPLATES};
 pub use requirements::{
     build_requirement_classification_request, compile_requirement_candidates,
     RequirementClassificationContext, RequirementClassificationContextCandidate,

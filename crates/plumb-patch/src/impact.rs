@@ -3,7 +3,8 @@
 //!
 //! The input is the base graph, the result graph and the exact `GraphDelta` produced by patch
 //! application and supplied by orchestration. The patch is never reapplied and this module has
-//! no revision-store dependency.
+//! no revision-store dependency. [`impact_reachable_nodes`] exposes the same dependency closure
+//! from explicit seed nodes of one graph (Hotfix 045), sharing the traversal.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -40,6 +41,12 @@ pub enum ImpactError {
     MissingBaseElement(Id),
     #[error("element {0} is missing from the result graph")]
     MissingResultElement(Id),
+    /// An impact-closure seed is not a node of the graph.
+    #[error("impact seed {0} is not a node of the graph")]
+    UnknownSeed(Id),
+    /// An impact-closure seed does not participate in the baseline.
+    #[error("impact seed {0} is not baseline-participating")]
+    NonBaselineSeed(Id),
 }
 
 /// Elements whose element-hash projection changed between base and result.
@@ -416,19 +423,7 @@ pub fn compute_impact(
     }
 
     // Deterministic traversal over the union of both graphs' baseline dependency arcs.
-    let arcs = impact_arcs(base, result);
-    let mut queue: VecDeque<Id> = seeds.iter().cloned().collect();
-    let mut visited = seeds;
-    while let Some(id) = queue.pop_front() {
-        if let Some(next) = arcs.get(&id) {
-            for dependent in next {
-                if visited.insert(dependent.clone()) {
-                    queue.push_back(dependent.clone());
-                }
-            }
-        }
-    }
-    dirty.node_ids = visited;
+    dirty.node_ids = reachable(&impact_arcs(&[base, result]), seeds);
 
     let mut affected_projections = AffectedProjectionSet::default();
     let mut affected_gates = AffectedGateNamespaceSet::default();
@@ -468,10 +463,44 @@ fn baseline_in(
     base.is_some_and(is_baseline) || result.is_some_and(is_baseline)
 }
 
-/// `dependency -> dependents` over baseline edges of the 13 impact relations of both graphs.
-fn impact_arcs(base: &Graph, result: &Graph) -> BTreeMap<Id, BTreeSet<Id>> {
+/// Every node reachable from `seeds` (the seeds included) through the baseline dependency arcs
+/// of the §22 impact relations of `graph`, in the `compute_impact` direction. Each seed must be
+/// a baseline-participating node. No patch, delta or mutation is involved.
+pub fn impact_reachable_nodes(
+    graph: &Graph,
+    seeds: &BTreeSet<Id>,
+) -> Result<BTreeSet<Id>, ImpactError> {
+    for seed in seeds {
+        let node = graph
+            .node(seed)
+            .ok_or_else(|| ImpactError::UnknownSeed(seed.clone()))?;
+        if !is_baseline(node.status) {
+            return Err(ImpactError::NonBaselineSeed(seed.clone()));
+        }
+    }
+    Ok(reachable(&impact_arcs(&[graph]), seeds.clone()))
+}
+
+/// Breadth-first closure of `seeds` over `arcs`; the visited set makes cycles finite.
+fn reachable(arcs: &BTreeMap<Id, BTreeSet<Id>>, seeds: BTreeSet<Id>) -> BTreeSet<Id> {
+    let mut queue: VecDeque<Id> = seeds.iter().cloned().collect();
+    let mut visited = seeds;
+    while let Some(id) = queue.pop_front() {
+        if let Some(next) = arcs.get(&id) {
+            for dependent in next {
+                if visited.insert(dependent.clone()) {
+                    queue.push_back(dependent.clone());
+                }
+            }
+        }
+    }
+    visited
+}
+
+/// `dependency -> dependents` over baseline edges of the 13 impact relations of the graphs.
+fn impact_arcs(graphs: &[&Graph]) -> BTreeMap<Id, BTreeSet<Id>> {
     let mut arcs: BTreeMap<Id, BTreeSet<Id>> = BTreeMap::new();
-    for graph in [base, result] {
+    for graph in graphs {
         for edge in graph.edges().values() {
             if !is_baseline(edge.status) {
                 continue;
