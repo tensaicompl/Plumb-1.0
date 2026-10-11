@@ -104,7 +104,7 @@ tasks:
 - id: X1.3
   status: done
 - id: X1.4
-  status: pending
+  status: done
 - id: X1.5
   status: pending
 - id: A0.1

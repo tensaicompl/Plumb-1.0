@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "reply",
+    "proposals",
+    "asked_question_ref"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "reply": {
+      "type": "string",
+      "minLength": 1
+    },
+    "proposals": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "stage",
+          "patch_set",
+          "evidence_refs",
+          "derivation_refs",
+          "materiality",
+          "acceptance_policy",
+          "confidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "S0",
+              "S1",
+              "S2",
+              "S3",
+              "S4",
+              "S5",
+              "S6",
+              "S7",
+              "S8",
+              "S9",
+              "S10",
+              "S11",
+              "S12"
+            ]
+          },
+          "patch_set": {
+            "type": "object"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "derivation_refs": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "materiality": {
+            "enum": [
+              "non_semantic",
+              "semantic",
+              "material_decision"
+            ]
+          },
+          "acceptance_policy": {
+            "enum": [
+              "AUTO_DERIVATION",
+              "AUTO_NON_SEMANTIC",
+              "HUMAN_CONFIRM",
+              "HUMAN_DECISION",
+              "PROFILE_POLICY"
+            ]
+          },
+          "confidence": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    "asked_question_ref": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    }
+  }
+}
