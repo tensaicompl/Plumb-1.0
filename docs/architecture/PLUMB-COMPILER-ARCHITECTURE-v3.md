@@ -1081,6 +1081,12 @@ F4 requires the functional semantics that are executable through the functional 
 
 **Applicability-aware verification.** Every implementation-scoped source needs an accepted verification obligation of some kind; only executable sources need confirmed Scenario coverage. Scenarios are grounded by their derivation sources and anchors, typed by the content-bound S4 check, and a blocking Scenario is acceptable only when its current run passed, since comparison already accounts for expected business failures. Traces must be ordered, bound to their run and carry business-semantic evidence, or the missing semantics of an undecidable run. Active assumptions whose findings touch the covered sources, obligations or Scenarios must be surfaced exactly through the rule results.
 
+### Functional pilot projections and reports (S4.7, Hotfix 056)
+
+**Six artifacts, one baseline.** The functional pilot exports functional.yaml, glossary.md, scenarios.yaml, decisions.jsonl, model-report.md and gate-report.json as returned material for one accepted graph baseline, each accompanied by the source semantic hash and the content hash of its exact bytes (never embedded in its own bytes). functional.yaml is the unchanged compatibility projection; scenarios, decisions and the glossary project accepted semantic truth directly in identifier order; the gate report is the canonical form of an already evaluated F4 report bound to the same semantic, evidence, profile and rule-pack identity.
+
+**Reports never decide.** A failed gate is exported as failed. The model report summarizes the baseline, the supplied gate, accepted counts, compatibility notices, scenarios and decisions; readiness is stated to be advisory and is not calculated, so it cannot change any gate result. Persisting or delivering the artifacts belongs to the caller, and the real compiled HR reference graph and its reference projections belong to the end-to-end fixture work.
+
 ### Gate
 
 `F4`

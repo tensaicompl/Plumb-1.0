@@ -6534,30 +6534,129 @@ tasks:
   depends_on:
   - S4.6
   files:
+  - crates/plumb-functional/src/lib.rs
   - crates/plumb-functional/src/report.rs
   - crates/plumb-functional/src/projections.rs
   - crates/plumb-functional/tests/projections.rs
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
-  - Generate functional.yaml, glossary.md, scenarios.yaml, decisions.jsonl, model-report.md and gate-report JSON from PSG.
-    functional.yaml is produced by running the F0.14 project_functional_v2 projector against the authoritative compiled
-    HR graph; S4.7 does not create a second functional.yaml generator. Its full-HR golden verifies the same projector over
-    the real compiled PSG, the 32-requirement fixture and the functional outputs and reports.
-  - Each machine projection records or accompanies source semantic_hash and projection content hash.
-  - Sort all projected collections deterministically.
-  - Readiness may be reported as advisory only and cannot alter gate result.
+  - 'Boundary (Hotfix 056). Hotfix 056 replaces the earlier S4.7 actions; where they differ, this contract governs. S4.7
+    materializes exactly six deterministic artifacts from one Graph, its ValidationProfile and a supplied current F4 GateReport:
+    functional.yaml, glossary.md, scenarios.yaml, decisions.jsonl, model-report.md and gate-report.json. It returns bytes
+    and metadata only: it writes no file, touches no store or artifact store, reads no clock, environment, network or
+    LLM, mutates no graph and creates no schema, readiness.json, requirements.yaml, BPMN, DMN, architecture, delivery
+    or assurance output. It never evaluates a gate, builds F4ValidationInputs or an EvaluatorRegistry, and never executes
+    or compares Scenarios.'
+  - 'Entry point and artifacts (Hotfix 056). project_functional_pilot(graph, profile, f4_gate_report: &GateReport) ->
+    Result<FunctionalPilotOutputs, PilotProjectionError>. ProjectionArtifactKind is the closed enum FunctionalYaml (functional.yaml,
+    application/yaml), GlossaryMarkdown (glossary.md, text/markdown; charset=utf-8), ScenariosYaml (scenarios.yaml, application/yaml),
+    DecisionsJsonl (decisions.jsonl, application/x-ndjson), ModelReportMarkdown (model-report.md, text/markdown; charset=utf-8)
+    and GateReportJson (gate-report.json, application/json), with file_name() and media_type(). ProjectionArtifact {kind,
+    bytes, source_semantic_hash = graph.semantic_hash() (Semantic), content_hash = Generic SHA-256 of exactly the bytes};
+    no artifact embeds its own content hash and the filenames are labels only. FunctionalPilotOutputs {functional_yaml,
+    glossary_md, scenarios_yaml, decisions_jsonl, model_report_md, gate_report_json, functional_metadata: ProjectionMetadata}
+    always holds all six; artifacts() returns them in exactly that order. PilotProjectionError is typed (core, functional
+    projection, GateReport validation, WrongGate, StaleGateReport, ProfileMismatch, Serialization) with no generic String
+    error and no GateFailed or readiness variant.'
+  - 'GateReport binding (Hotfix 056). The supplied report must have gate F4 (else WrongGate), pass GateReport::validate,
+    and match the current baseline: baseline_semantic_hash = graph.semantic_hash(), baseline_evidence_hash = graph.evidence_hash()
+    (else StaleGateReport), profile_id = profile.profile_id = graph.profile_id(), profile_hash = profile.profile_hash()
+    and rule_pack_hash = profile.rule_pack_hash() (else ProfileMismatch). A FAIL report is legitimate report material
+    and is exported unchanged; nothing in S4.7 changes its result, rules or summary. gate-report.json is the RFC 8785
+    canonical JSON of the supplied report (no wrapper, no pretty-printing, no timestamp), so its content hash equals GateReport::content_hash().'
+  - functional.yaml (Hotfix 056). functional.yaml is exactly the yaml bytes returned by the unchanged F0.14 project_functional_v2(graph,
+    profile), with its ProjectionMetadata returned as functional_metadata unchanged; the artifact content hash equals
+    metadata.content_hash. There is no second functional.yaml generator, no post-processing, no injected metadata and
+    no S4.7-specific mapping.
+  - 'scenarios.yaml (Hotfix 056). A direct accepted-PSG projection, not derived from the lossy FunctionalV2.scenarios:
+    ScenarioProjectionDocument {version: 1, model_hash: graph.semantic_hash(), scenarios: Vec<ScenarioProjectionEntry>}
+    where each entry is the Scenario node id plus the flattened existing Scenario payload (name, scenario_kind, given,
+    when, then, requirement_refs, derived_from_refs, confirmation_status). Only Accepted Scenario nodes are included,
+    both Derived and Confirmed; Proposed, Rejected, Suspect, Superseded and Deprecated are excluded silently. Entries
+    are sorted by node ID; requirement_refs and derived_from_refs are presented sorted and unique when present; given
+    and then keep their order. Serialized by serde_yaml from the typed document with no post-processing. No ScenarioRun,
+    trace artifact, run result, diff or missing semantics is embedded; current proof status belongs to gate-report.json.'
+  - 'decisions.jsonl (Hotfix 056). Only Accepted ResolutionDecision nodes, each as DecisionProjectionEntry {id plus the
+    exact payload: question_ref, proposal_ref, answer, decided_by, decided_at, patch_ref, rationale, supersedes} with
+    no status, audit or evidence envelope; sorted by node ID (not decided_at); each line is the RFC 8785 canonical JSON
+    of one entry followed by exactly one newline; zero decisions give empty bytes (no array, header or metadata record).
+    decided_at is semantic data; no export timestamp is added.'
+  - 'glossary.md (Hotfix 056). Every Accepted Term in node-ID order; the definition is the Concept.definition of an Accepted
+    Concept named by Term.definition_ref, otherwise the fixed text ''_No accepted definition._'' (the Term is never omitted
+    and no definition is inferred by name). The document starts ''# Glossary'', then per Term a heading ''## `<term-id>`
+    — <escaped term>'', the lines ''- Language: `<language>`'', ''- Status: `<status or unspecified>`'' and, only when
+    aliases exist, ''- Aliases: <escaped aliases sorted and unique, joined by ", ">'', then the escaped definition, blocks
+    separated by one blank line and the file ending in exactly one newline. One deterministic escaping helper escapes
+    \ ` * _ [ ] < > # | in semantic strings and normalizes CRLF/CR to LF; semantic text is otherwise unchanged (no lowercasing,
+    trimming, rewriting or translation).'
+  - model-report.md (Hotfix 056). A deterministic summary, not a validator, with exactly the sections '# Model Report',
+    '## Baseline' (project ID, profile ID, semantic hash, evidence hash, profile hash, rule-pack hash), '## F4 Gate' (result,
+    gate-report content hash, blocker failures, blocker waivers, warnings, generated findings, applied waivers from the
+    supplied report), '## Accepted Model Counts' (one row per Accepted NodeType with a positive count ordered by NodeType::as_str,
+    then the Accepted edge count), '## Functional Compatibility Projection' (functional.yaml content hash, projection
+    version, warning and lossy-mapping counts, then '### Warnings' and '### Lossy mappings' when non-empty, each notice
+    with its code, sorted source refs and escaped message in metadata order), '## Scenarios' (Accepted, Confirmed, Derived
+    and other/unspecified counts of Accepted Scenario nodes), '## Decisions' (Accepted ResolutionDecision count) and '##
+    Readiness' with exactly 'Readiness is advisory only and is not calculated by S4.7. It does not alter the F4 gate result.'.
+    S4.7 accepts no readiness input, computes no readiness score and produces no readiness.json (v3 delta §3.12 supersedes
+    the v2 M10.3 readiness.json).
+  - 'HR boundary (Hotfix 056). S4.7 proves the projection machinery on a deterministic representative typed fixture and
+    an HR contract-scale test: the test reads the immutable fixtures/hr-leave/fixture-contract.yaml, asserts the declared
+    32/9/13/6/5/2/3/6/44 counts and materializes its 32 Requirements into a test PSG to show functional.yaml is the unchanged
+    F0.14 projector output. That graph is an HR contract-scale projection fixture, never the real compiled HR PSG. E0.1
+    owns the real compiled reference PSG (tests/support/hr_fixture.rs, reference-psg.yaml, reference-functional.yaml,
+    inference-fixtures.jsonl), the expert answers and the full contract-count reproduction, and must later run project_functional_pilot
+    over that reference PSG. S4.7 creates no reference artifact and applies no expert answer.'
+  - Files and dependencies (Hotfix 056). Only crates/plumb-functional/src/lib.rs (pub mod projections, private mod report,
+    explicit exports and the S4.7 crate-doc line), crates/plumb-functional/src/report.rs (escaping and the two Markdown
+    renderers), crates/plumb-functional/src/projections.rs (artifact kinds, artifacts, outputs, typed projection documents,
+    errors, GateReport binding, hashing and machine serialization), crates/plumb-functional/tests/projections.rs and,
+    at successful completion, docs/plan/EXECUTION-STATE.yaml change. project.rs, model.rs, tests/golden.rs, schemas/functional-v2.schema.json,
+    scenario.rs, verification.rs, plumb-validation, plumb-sim, plumb-psg, plumb-patch, plumb-expr, Cargo files, fixtures,
+    the rules YAML and rulebook (Hotfix 055 hashes) are unchanged; no new dependency or schema is needed.
+  - 'Tests (Hotfix 056). crates/plumb-functional/tests/projections.rs covers: exact F0.14 reuse for functional.yaml; glossary
+    terms with and without accepted definitions, aliases and escaping; scenarios Accepted inclusion (Confirmed and Derived),
+    non-Accepted exclusion and sorting; decisions inclusion, exclusion, canonical lines and the empty file; model-report
+    baseline, PASS and FAIL gates, accepted counts, F0.14 notices, scenario and decision counts and the readiness sentence;
+    exact gate-report canonical JSON; WrongGate, stale semantic and evidence hashes, profile ID, profile hash and rule-pack
+    hash mismatches and an invalid report; kind, filename, media type, source hash and content hash of all six artifacts;
+    repeated, reversed-insertion and view-layout-only determinism; GateReport-only and semantic-change sensitivity with
+    stale-report rejection; the fixture-contract counts and the 32-requirement contract-scale projection; full exact representative
+    goldens and independently computed SHA-256 for all six artifacts; and production source guards.'
   tests:
-  - cargo test -p plumb-functional projections
+  - cargo test -p plumb-functional --test projections
+  - cargo test -p plumb-functional --no-fail-fast
   acceptance:
-  - Golden outputs are byte-identical on repeated runs and every gate report remains independent from readiness.
+  - The six artifacts are byte-identical on repeated runs and under reordered graph insertion, each accompanied by the
+    source semantic hash and the SHA-256 of its exact bytes; functional.yaml is exactly the unchanged F0.14 projector
+    output and gate-report.json is the canonical supplied F4 GateReport.
+  - The supplied GateReport must be a valid F4 report bound to the current semantic, evidence, profile and rule-pack identity;
+    a FAIL report is exported unchanged, readiness is only an advisory sentence with no input, score or readiness.json,
+    and no gate result is altered.
+  - Projections contain Accepted semantic truth only, in deterministic ID order; the HR fixture contract is asserted at
+    its declared scale and its 32 Requirements project through F0.14, while the real compiled HR reference PSG remains
+    owned by E0.1.
   source_refs:
   - SRCREF-027DE8227D
   - SRCREF-6581F3212C
   - SRCREF-A18636D6DA
-  forbidden: []
+  forbidden:
+  - Do not change project.rs, model.rs, tests/golden.rs, schemas, scenario.rs, verification.rs, plumb-validation, plumb-sim,
+    plumb-psg, plumb-patch, plumb-expr, Cargo files, fixtures, the rules YAML or rulebook; generate functional.yaml any
+    other way; evaluate gates or build F4 inputs; execute or compare Scenarios; embed ScenarioRuns; compute readiness
+    or produce readiness.json; write files or stores; read a clock; infer meaning from names or ID prefixes; create HR
+    reference artifacts, reconstruct the compiled HR PSG or apply expert answers; or start X1.1.
   commands:
+  - cargo test -p plumb-functional --test projections
   - cargo test -p plumb-functional projections
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test -p plumb-validation --no-fail-fast
+  - cargo test -p plumb-sim --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'S4.7: Implement functional pilot projections and reports'
 - id: X1.1
   title: Implement Anthropic InferenceProvider behind llm feature
