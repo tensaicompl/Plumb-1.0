@@ -347,8 +347,8 @@ mod openapi {
         assert!(doc["openapi"].as_str().unwrap().starts_with("3.1"));
         assert_eq!(doc["info"]["title"], "Plumb Modeller API");
         assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(doc["x-plumb-contract-version"], json!(2));
-        assert_eq!(CONTRACT_VERSION, 2);
+        assert_eq!(doc["x-plumb-contract-version"], json!(3));
+        assert_eq!(CONTRACT_VERSION, 3);
         assert!(doc.get("servers").is_none());
         let tags: BTreeSet<String> = doc["tags"]
             .as_array()
@@ -449,9 +449,15 @@ mod openapi {
             assert!(!paths.contains_key(absent), "{absent}");
         }
         assert!(paths.keys().all(|p| !p.starts_with("/api/tests")));
+        let step_ops: Vec<Value> = schema(&doc, "ProcessStepRequest")["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["properties"]["op"]["enum"].clone())
+            .collect();
         assert_eq!(
-            schema(&doc, "ProcessStepOp")["enum"],
-            json!(["add", "move", "remove"])
+            step_ops,
+            [json!(["add"]), json!(["move"]), json!(["remove"])]
         );
         assert_eq!(schema(&doc, "ProcessFormat")["enum"], json!(["mermaid"]));
         assert!(!doc.to_string().contains("\"svg\""));
@@ -905,6 +911,7 @@ mod openapi {
             &[
                 "id",
                 "name",
+                "kind",
                 "conditions",
                 "rows",
                 "uncovered_cells",
@@ -923,18 +930,25 @@ mod openapi {
                 "when",
                 "then",
                 "status",
+                "confirmation_status",
                 "derived_from",
                 "run",
             ],
         );
         has("ScenarioRun", &["result", "diff", "missing", "trace"]);
-        has(
-            "Question",
-            &["id", "kind", "text", "slots", "context", "priority"],
-        );
-        has(
-            "QuestionContext",
-            &["sentence", "flow_fragment", "scenario"],
+        assert_eq!(
+            properties(&doc, "Question"),
+            set(&[
+                "id",
+                "kind",
+                "text",
+                "status",
+                "answer_schema",
+                "stakeholder_ref",
+                "priority",
+                "round_ref",
+                "context_refs"
+            ])
         );
         has("IntakeRequest", &["kind", "payload", "evidence"]);
         has(
@@ -1002,45 +1016,32 @@ mod openapi {
                 "ambiguous_term"
             ])
         );
-        // Answer: exactly {value} or {text}, never both.
+        // Answer (Hotfix 065): a JSON object validated against the Question's answer_schema.
         let answer = schema(&doc, "AnswerRequest");
-        assert_eq!(
-            answer["oneOf"],
-            json!([
-                component_ref("AnswerByValue"),
-                component_ref("AnswerByText")
-            ])
-        );
-        assert_eq!(schema(&doc, "AnswerByValue")["additionalProperties"], false);
-        assert_eq!(schema(&doc, "AnswerByText")["additionalProperties"], false);
-        assert!(validate_example(
-            &doc,
-            &component_ref("AnswerRequest"),
-            &json!({"value": 3}),
-            "a"
-        )
-        .is_ok());
-        assert!(validate_example(
-            &doc,
-            &component_ref("AnswerRequest"),
-            &json!({"text": "x"}),
-            "a"
-        )
-        .is_ok());
-        assert!(validate_example(
-            &doc,
-            &component_ref("AnswerRequest"),
-            &json!({"value": 3, "text": "x"}),
-            "a"
-        )
-        .is_err());
-        assert!(validate_example(
-            &doc,
-            &component_ref("AnswerRequest"),
-            &json!({"value": {"x": 1}}),
-            "a"
-        )
-        .is_err());
+        assert_eq!(answer["required"], json!(["answer"]));
+        assert_eq!(answer["additionalProperties"], false);
+        for (example, ok) in [
+            (json!({"answer": {"cardinality_from": "one"}}), true),
+            (
+                json!({"answer": {}, "rationale": "Agreed.", "supersedes": "dec:0000000000000001"}),
+                true,
+            ),
+            (
+                json!({"answer": {}, "rationale": null, "supersedes": null}),
+                true,
+            ),
+            (json!({"answer": 3}), false),
+            (json!({"value": 3}), false),
+            (json!({"text": "x"}), false),
+            (json!({}), false),
+        ] {
+            assert_eq!(
+                validate_example(&doc, &component_ref("AnswerRequest"), &example, "a").is_ok(),
+                ok,
+                "{example}"
+            );
+        }
+        // ScalarValue remains the assumption default projection.
         let value_branches = schema(&doc, "ScalarValue")["oneOf"].clone();
         let types: Vec<&str> = value_branches
             .as_array()
@@ -1054,10 +1055,16 @@ mod openapi {
             "ProposalActionRequest",
             "IntakeRequest",
             "SessionTurnRequest",
-            "ProcessStepRequest",
             "ClassifyRequest",
         ] {
             assert_eq!(schema(&doc, name)["additionalProperties"], false, "{name}");
+        }
+        // The tagged process-step union rejects unknown fields in every branch.
+        for branch in schema(&doc, "ProcessStepRequest")["oneOf"]
+            .as_array()
+            .unwrap()
+        {
+            assert_eq!(branch["additionalProperties"], false, "{branch}");
         }
     }
 
@@ -1450,13 +1457,11 @@ mod openapi {
         assert_eq!(
             open,
             [
+                "AnswerRequest.answer",
                 "AnswerResponse.patch_preview",
                 "CursorConflictResponse.details",
                 "IntakeRequest.payload",
                 "PreconditionFailedResponse.details",
-                "Question.slots",
-                "Sentence.slots",
-                "SentenceEditRequest.slots",
                 "SessionProposalView.payload",
             ]
         );
@@ -1503,9 +1508,9 @@ mod openapi {
             "# Plumb Pilot API\n\n> Generated from the Rust OpenAPI contract. Do not edit by hand.\n"
         ));
         for needle in [
-            "Contract version 2",
+            "Contract version 3",
             "72 operations",
-            "A0.1 defines the pilot contract only; A0.2 and A0.3 provide the runtime handlers.",
+            "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers.",
             "ETag",
             "If-Match",
             "412 Precondition Failed",
@@ -1519,8 +1524,10 @@ mod openapi {
             "E_CURSOR_REQUEST_MISMATCH",
             "E_CURSOR_INVALID",
             "- A0.2: 30 operations (9 POST, 21 GET).",
-            "- A0.3: 42 operations (28 POST, 14 GET).",
-            "A0.3 must not start directly after A0.2",
+            "- A0.3: 40 operations (27 POST, 13 GET).",
+            "- A0.4: 2 operations (1 POST, 1 GET).",
+            "- Hotfix 065 froze the deferred A0.3 compatibility semantics (contract version 3).",
+            "- A0.4 owns `run_stage` and `get_job` and must not start before its separate stage-orchestration contract freeze.",
             "`version` == `revision` and `hash` == `semantic_hash`",
             "D test endpoints are not in the pilot API.",
             "POST calculation edit is not in NOW P-R scope",
@@ -1547,11 +1554,9 @@ mod openapi {
 
     // ------------------------------------------------------------------ Hotfix 063
 
-    /// The 42 operations deferred to A0.3, written independently of the production table.
-    const A03: [&str; 42] = [
+    /// The 40 A0.3 operations (Hotfix 065), written independently of the production table.
+    const A03: [&str; 40] = [
         "search_model",
-        "run_stage",
-        "get_job",
         "list_sentences",
         "accept_sentence",
         "edit_sentence",
@@ -1593,6 +1598,9 @@ mod openapi {
         "get_session_metrics",
     ];
 
+    /// The stage/job operations Hotfix 065 moved to A0.4.
+    const A04: [&str; 2] = ["run_stage", "get_job"];
+
     #[test]
     fn openapi_hotfix_063_ownership() {
         let count = |owner: &str, method: Option<&str>| {
@@ -1615,11 +1623,25 @@ mod openapi {
                 count("A0.3", Some("POST")),
                 count("A0.3", Some("GET"))
             ),
-            (42, 28, 14)
+            (40, 27, 13)
+        );
+        assert_eq!(
+            (
+                count("A0.4", None),
+                count("A0.4", Some("POST")),
+                count("A0.4", Some("GET"))
+            ),
+            (2, 1, 1)
         );
         assert!(OPERATIONS
             .iter()
-            .all(|s| s.owner == "A0.2" || s.owner == "A0.3"));
+            .all(|s| ["A0.2", "A0.3", "A0.4"].contains(&s.owner)));
+        let a04: BTreeSet<&str> = OPERATIONS
+            .iter()
+            .filter(|s| s.owner == "A0.4")
+            .map(|s| s.operation_id)
+            .collect();
+        assert_eq!(a04, A04.iter().copied().collect());
         let a03: BTreeSet<&str> = OPERATIONS
             .iter()
             .filter(|s| s.owner == "A0.3")
@@ -1777,6 +1799,479 @@ mod openapi {
             "ears"
         )
         .is_err());
+    }
+
+    // ------------------------------------------------------------------ Hotfix 065
+
+    fn required(doc: &Value, name: &str) -> BTreeSet<String> {
+        schema(doc, name)["required"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn enum_of(doc: &Value, name: &str) -> Value {
+        schema(doc, name)["enum"].clone()
+    }
+
+    fn query_param(doc: &Value, method: &str, path: &str, name: &str) -> Value {
+        operation(doc, method, path)["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .unwrap_or_else(|| panic!("{path} has no {name}"))
+            .clone()
+    }
+
+    /// The stage/job and round DTOs exactly as frozen by contract version 2.
+    const UNCHANGED_V2: [(&str, &str); 7] = [
+        (
+            "StageName",
+            r#"{"description":"Compatibility stage names of `POST /api/stages/{stage}/run`.","enum":["intake","lint","extract","consolidate","calc","rules","analyse","flows","scenarios","tags","run"],"type":"string"}"#,
+        ),
+        (
+            "StageRunRequest",
+            r#"{"additionalProperties":false,"properties":{"scope":{"items":{"type":"string"},"type":["array","null"]}},"type":"object"}"#,
+        ),
+        (
+            "StageRunResponse",
+            r##"{"additionalProperties":false,"properties":{"events":{"items":{"$ref":"#/components/schemas/DesignEvent"},"type":"array"},"job_id":{"type":"string"},"revision":{"type":"string"},"semantic_hash":{"type":"string"},"version":{"type":"string"}},"required":["version","revision","semantic_hash","events","job_id"],"type":"object"}"##,
+        ),
+        (
+            "JobStatus",
+            r#"{"description":"Stage job status (X1.5); `stale` is a status, not a flag.","enum":["queued","acquiring","evaluating","ready","stale","failed","committed"],"type":"string"}"#,
+        ),
+        (
+            "JobResponse",
+            r##"{"additionalProperties":false,"properties":{"base_revision":{"description":"The branch revision the job captured.","type":"string"},"error":{"type":["string","null"]},"progress":{"format":"double","maximum":1,"minimum":0,"type":"number"},"result_version":{"type":["string","null"]},"status":{"$ref":"#/components/schemas/JobStatus"}},"required":["status","progress","base_revision"],"type":"object"}"##,
+        ),
+        (
+            "CreateRoundRequest",
+            r#"{"additionalProperties":false,"properties":{"max":{"format":"int64","minimum":0,"type":"integer"},"stakeholder":{"type":"string"}},"required":["stakeholder","max"],"type":"object"}"#,
+        ),
+        (
+            "Round",
+            r#"{"additionalProperties":false,"properties":{"id":{"type":"string"},"questions":{"items":{"type":"string"},"type":"array"},"stakeholder":{"type":"string"}},"required":["id","stakeholder","questions"],"type":"object"}"#,
+        ),
+    ];
+
+    #[test]
+    fn openapi_hotfix_065_contract_v3() {
+        let doc = doc();
+        assert_eq!(doc["x-plumb-contract-version"], json!(3));
+        // Inventory and examples.
+        let ops = operations(&doc);
+        assert_eq!(
+            (
+                ops.len(),
+                ops.iter().filter(|o| o.0 == "POST").count(),
+                ops.iter().filter(|o| o.0 == "GET").count()
+            ),
+            (72, 37, 35)
+        );
+        let (_, counts) = example_locations(&doc);
+        assert_eq!(
+            (
+                counts.parameters,
+                counts.request_bodies,
+                counts.responses,
+                counts.headers,
+                counts.websocket
+            ),
+            (135, 32, 122, 34, 1)
+        );
+        let schemas = doc["components"]["schemas"].as_object().unwrap();
+        assert_eq!(schemas.len(), 115);
+        for added in [
+            "CalculationValue",
+            "CreateRoundResponse",
+            "ProposalKind",
+            "QuestionKind",
+            "QuestionStatus",
+            "RuleViewKind",
+            "ScenarioConfirmationStatus",
+            "ScenarioStatus",
+            "SearchScope",
+            "SentenceSlotPatch",
+            "SentenceSlots",
+            "SessionStage",
+        ] {
+            assert!(schemas.contains_key(added), "{added}");
+        }
+        for removed in [
+            "AnswerByText",
+            "AnswerByValue",
+            "ProcessStepOp",
+            "QuestionContext",
+        ] {
+            assert!(!schemas.contains_key(removed), "{removed}");
+        }
+        for (name, frozen) in UNCHANGED_V2 {
+            let frozen: Value = serde_json::from_str(frozen).unwrap();
+            assert_eq!(schema(&doc, name), frozen, "{name}");
+        }
+
+        // Search.
+        let hit = schema(&doc, "SearchHit");
+        assert_eq!(hit["properties"]["path"]["type"], json!(["string", "null"]));
+        assert_eq!(
+            required(&doc, "SearchHit"),
+            set(&["id", "kind", "path", "score", "snippet"])
+        );
+        assert_eq!(
+            enum_of(&doc, "SearchScope"),
+            json!([
+                "requirement",
+                "concept",
+                "rule",
+                "calculation",
+                "scenario",
+                "evidence"
+            ])
+        );
+        assert_eq!(
+            query_param(&doc, "GET", "/api/search", "scope")["schema"],
+            component_ref("SearchScope")
+        );
+
+        // Required reasons.
+        for (name, fields) in [
+            ("SplitRequest", &["parts", "reason"][..]),
+            ("MarkDuplicateRequest", &["of", "reason"][..]),
+            ("GlossaryMergeRequest", &["into", "reason"][..]),
+            ("RuleCellRequest", &["cell", "outcome", "reason"][..]),
+        ] {
+            assert_eq!(required(&doc, name), set(fields), "{name}");
+            assert_eq!(properties(&doc, name), set(fields), "{name}");
+            assert_eq!(schema(&doc, name)["properties"]["reason"]["type"], "string");
+        }
+        let resolve = operation(&doc, "POST", "/api/assumptions/{id}/resolve");
+        assert_eq!(resolve["requestBody"]["required"], true);
+        assert_eq!(
+            resolve["requestBody"]["content"]["application/json"]["schema"],
+            component_ref("ReasonRequest")
+        );
+
+        // Sentences.
+        assert_eq!(
+            schema(&doc, "Sentence")["properties"]["slots"],
+            component_ref("SentenceSlots")
+        );
+        assert_eq!(
+            required(&doc, "SentenceSlots"),
+            set(&["class", "level", "modality"])
+        );
+        assert_eq!(
+            schema(&doc, "SentenceEditRequest")["properties"]["slots"],
+            component_ref("SentenceSlotPatch")
+        );
+        assert_eq!(
+            properties(&doc, "SentenceSlotPatch"),
+            set(&["class", "level", "modality"])
+        );
+        assert!(required(&doc, "SentenceSlotPatch").is_empty());
+        assert_eq!(
+            schema(&doc, "SentenceSlotPatch")["additionalProperties"],
+            false
+        );
+
+        // CRUD.
+        let crud = schema(&doc, "CrudCell");
+        assert_eq!(
+            required(&doc, "CrudCell"),
+            set(&["op", "ent", "c", "r", "u", "d"])
+        );
+        for nullable in ["c", "u", "d"] {
+            assert_eq!(
+                crud["properties"][nullable]["type"],
+                json!(["boolean", "null"])
+            );
+        }
+        assert_eq!(crud["properties"]["r"]["type"], "boolean");
+
+        // Calculation values: exact closed non-recursive variants.
+        assert_eq!(
+            schema(&doc, "CalculationExample")["properties"]["value"],
+            component_ref("CalculationValue")
+        );
+        let variants: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> =
+            schema(&doc, "CalculationValue")["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| {
+                    assert_eq!(b["additionalProperties"], false);
+                    assert!(refs_of(b).is_empty(), "recursive {b}");
+                    let names = |v: &Value| -> BTreeSet<String> {
+                        v.as_object()
+                            .map(|o| o.keys().cloned().collect())
+                            .or_else(|| {
+                                v.as_array().map(|a| {
+                                    a.iter().map(|x| x.as_str().unwrap().to_owned()).collect()
+                                })
+                            })
+                            .unwrap()
+                    };
+                    (
+                        b["properties"]["type"]["enum"][0]
+                            .as_str()
+                            .unwrap()
+                            .to_owned(),
+                        (names(&b["properties"]), names(&b["required"])),
+                    )
+                })
+                .collect();
+        let both = |fields: &[&str]| (set(fields), set(fields));
+        assert_eq!(
+            variants,
+            BTreeMap::from([
+                ("integer".to_owned(), both(&["type", "value"])),
+                ("decimal".to_owned(), both(&["type", "value"])),
+                ("boolean".to_owned(), both(&["type", "value"])),
+                ("string".to_owned(), both(&["type", "value"])),
+                ("date".to_owned(), both(&["type", "value"])),
+                ("date_time".to_owned(), both(&["type", "value"])),
+                ("duration".to_owned(), both(&["type", "value", "unit"])),
+                ("quantity".to_owned(), both(&["type", "value", "unit"])),
+                ("enum".to_owned(), both(&["type", "enum_ref", "member"])),
+            ])
+        );
+        for (example, ok) in [
+            (json!({"type": "decimal", "value": "0.5"}), true),
+            (
+                json!({"type": "quantity", "value": "2", "unit": "day"}),
+                true,
+            ),
+            (
+                json!({"type": "enum", "enum_ref": "enum:x", "member": "a"}),
+                true,
+            ),
+            (json!({"type": "decimal", "value": 0.5}), false),
+            (json!({"type": "integer", "value": 1, "unit": "x"}), false),
+            (json!({"type": "list", "value": []}), false),
+        ] {
+            assert_eq!(
+                validate_example(&doc, &component_ref("CalculationValue"), &example, "v").is_ok(),
+                ok,
+                "{example}"
+            );
+        }
+
+        // Rules.
+        assert_eq!(
+            enum_of(&doc, "RuleViewKind"),
+            json!(["rule", "decision_table"])
+        );
+        let rule = schema(&doc, "Rule");
+        assert_eq!(rule["properties"]["kind"], component_ref("RuleViewKind"));
+        assert_eq!(
+            required(&doc, "Rule"),
+            set(&[
+                "id",
+                "name",
+                "kind",
+                "conditions",
+                "rows",
+                "uncovered_cells",
+                "overlaps"
+            ])
+        );
+        for nullable in ["rows", "uncovered_cells", "overlaps"] {
+            assert_eq!(
+                rule["properties"][nullable]["type"],
+                json!(["array", "null"])
+            );
+        }
+
+        // Process steps: exactly add, move and remove.
+        let steps: BTreeMap<String, BTreeSet<String>> = schema(&doc, "ProcessStepRequest")["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| {
+                (
+                    b["properties"]["op"]["enum"][0]
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
+                    b["required"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|x| x.as_str().unwrap().to_owned())
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            BTreeMap::from([
+                ("add".to_owned(), set(&["op", "operation_ref", "position"])),
+                ("move".to_owned(), set(&["op", "node_ref", "position"])),
+                ("remove".to_owned(), set(&["op", "node_ref"])),
+            ])
+        );
+        assert!(validate_example(
+            &doc,
+            &component_ref("ProcessStepRequest"),
+            &json!({"op": "remove", "node_ref": "process_node:1", "position": 0}),
+            "s"
+        )
+        .is_err());
+
+        // Proposals.
+        assert_eq!(
+            enum_of(&doc, "ProposalKind"),
+            json!(["link", "merge", "supersede", "create", "accept"])
+        );
+        assert_eq!(
+            schema(&doc, "IntakeRequest")["properties"]["kind"],
+            component_ref("ProposalKind")
+        );
+        assert_eq!(
+            required(&doc, "IntakeRequest"),
+            set(&["kind", "payload", "evidence"])
+        );
+        assert_eq!(required(&doc, "AnswerRequest"), set(&["answer"]));
+        assert_eq!(
+            properties(&doc, "AnswerRequest"),
+            set(&["answer", "rationale", "supersedes"])
+        );
+
+        // Sessions.
+        let stages: Vec<String> = (0..=12).map(|i| format!("S{i}")).collect();
+        assert_eq!(enum_of(&doc, "SessionStage"), json!(stages));
+        assert_eq!(
+            required(&doc, "SessionTurnRequest"),
+            set(&["text", "stage"])
+        );
+        assert_eq!(
+            schema(&doc, "SessionTurnRequest")["properties"]["stage"],
+            component_ref("SessionStage")
+        );
+
+        // Questions: the persisted projection.
+        let question = schema(&doc, "Question");
+        let fields = [
+            "id",
+            "kind",
+            "text",
+            "status",
+            "answer_schema",
+            "stakeholder_ref",
+            "priority",
+            "round_ref",
+            "context_refs",
+        ];
+        assert_eq!(properties(&doc, "Question"), set(&fields));
+        assert_eq!(required(&doc, "Question"), set(&fields));
+        assert_eq!(
+            question["properties"]["kind"],
+            component_ref("QuestionKind")
+        );
+        assert_eq!(
+            question["properties"]["status"],
+            component_ref("QuestionStatus")
+        );
+        assert_eq!(
+            question["properties"]["answer_schema"]["type"],
+            json!(["object", "null"])
+        );
+        for nullable in ["stakeholder_ref", "round_ref"] {
+            assert_eq!(
+                question["properties"][nullable]["type"],
+                json!(["string", "null"])
+            );
+        }
+        assert_eq!(
+            question["properties"]["priority"]["type"],
+            json!(["integer", "null"])
+        );
+        assert_eq!(question["properties"]["priority"]["minimum"], 0);
+        assert_eq!(question["properties"]["context_refs"]["type"], "array");
+        assert_eq!(
+            enum_of(&doc, "QuestionKind"),
+            json!([
+                "YesNo",
+                "PickOne",
+                "PickMany",
+                "Number",
+                "Text",
+                "Cardinality",
+                "Unit",
+                "Precision",
+                "Rounding",
+                "FormulaConfirm",
+                "RuleCell",
+                "Calendar",
+                "RoleAssignment",
+                "Permission",
+                "QualityThreshold",
+                "ArchitectureChoice",
+                "TechnologyChoice",
+                "InterfaceChoice",
+                "VerificationMethod"
+            ])
+        );
+        assert_eq!(
+            enum_of(&doc, "QuestionStatus"),
+            json!(["Open", "Answered", "Closed", "Superseded"])
+        );
+        assert_eq!(
+            query_param(&doc, "GET", "/api/questions", "status")["schema"],
+            component_ref("QuestionStatus")
+        );
+
+        // Rounds.
+        let round = operation(&doc, "POST", "/api/rounds");
+        assert_eq!(
+            round["responses"]["200"]["content"]["application/json"]["schema"],
+            component_ref("CreateRoundResponse")
+        );
+        let round_fields = ["version", "revision", "semantic_hash", "events", "round"];
+        assert_eq!(properties(&doc, "CreateRoundResponse"), set(&round_fields));
+        assert_eq!(required(&doc, "CreateRoundResponse"), set(&round_fields));
+        assert_eq!(
+            schema(&doc, "CreateRoundResponse")["properties"]["round"],
+            component_ref("Round")
+        );
+
+        // Scenarios.
+        let scenario = schema(&doc, "Scenario");
+        assert_eq!(
+            scenario["properties"]["status"],
+            component_ref("ScenarioStatus")
+        );
+        assert_eq!(
+            scenario["properties"]["confirmation_status"],
+            component_ref("ScenarioConfirmationStatus")
+        );
+        assert_eq!(scenario["properties"]["derived_from"]["type"], "array");
+        assert!(required(&doc, "Scenario").contains("confirmation_status"));
+        assert!(required(&doc, "Scenario").contains("derived_from"));
+        assert!(required(&doc, "Scenario").contains("run"));
+        assert_eq!(
+            enum_of(&doc, "ScenarioStatus"),
+            json!([
+                "Proposed",
+                "Accepted",
+                "Rejected",
+                "Superseded",
+                "Deprecated",
+                "Suspect"
+            ])
+        );
+        assert_eq!(
+            enum_of(&doc, "ScenarioConfirmationStatus"),
+            json!(["Derived", "Confirmed"])
+        );
+        assert_eq!(
+            query_param(&doc, "GET", "/api/scenarios", "status")["schema"],
+            component_ref("ScenarioStatus")
+        );
     }
 
     // ------------------------------------------------------------------ source guards

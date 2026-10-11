@@ -2,9 +2,9 @@
 
 > Generated from the Rust OpenAPI contract. Do not edit by hand.
 
-Contract version 2, API version 0.1.0, 72 operations. The machine-readable contract is `api/modeller.openapi.json`, the source of the UI client.
+Contract version 3, API version 0.1.0, 72 operations. The machine-readable contract is `api/modeller.openapi.json`, the source of the UI client.
 
-A0.1 defines the pilot contract only; A0.2 and A0.3 provide the runtime handlers. An operation listed here is not operational until its handler task is done.
+A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers. An operation listed here is not operational until its handler task is done.
 
 ## Conventions
 
@@ -33,8 +33,10 @@ A0.1 defines the pilot contract only; A0.2 and A0.3 provide the runtime handlers
 ## Implementation ownership
 
 - A0.2: 30 operations (9 POST, 21 GET).
-- A0.3: 42 operations (28 POST, 14 GET).
-- A0.3 must not start directly after A0.2: its deferred compatibility operations need a separate contract freeze of their wire semantics, supporting domain services and tests first.
+- A0.3: 40 operations (27 POST, 13 GET).
+- A0.4: 2 operations (1 POST, 1 GET).
+- Hotfix 065 froze the deferred A0.3 compatibility semantics (contract version 3).
+- A0.4 owns `run_stage` and `get_job` and must not start before its separate stage-orchestration contract freeze.
 
 ## Operations
 
@@ -48,8 +50,8 @@ A0.1 defines the pilot contract only; A0.2 and A0.3 provide the runtime handlers
 | 6 | POST | `/api/sources` | `create_source` | sources | A0.2 |
 | 7 | GET | `/api/sources/{id}` | `get_source` | sources | A0.2 |
 | 8 | GET | `/api/sources/{id}/spans` | `get_source_spans` | sources | A0.2 |
-| 9 | POST | `/api/stages/{stage}/run` | `run_stage` | stages | A0.3 |
-| 10 | GET | `/api/jobs/{id}` | `get_job` | stages | A0.3 |
+| 9 | POST | `/api/stages/{stage}/run` | `run_stage` | stages | A0.4 |
+| 10 | GET | `/api/jobs/{id}` | `get_job` | stages | A0.4 |
 | 11 | GET | `/api/requirements` | `list_requirements` | requirements | A0.2 |
 | 12 | GET | `/api/requirements/{id}` | `get_requirement` | requirements | A0.2 |
 | 13 | POST | `/api/requirements/{id}/classify` | `classify_requirement` | requirements | A0.2 |

@@ -522,6 +522,16 @@ supersedes
 
 `finding_key` is the generic deterministic finding key and `finding_ref` the deterministic `Finding` node ID derived from it (compiler architecture §29). The waiver is effective only when the decision is `Accepted`, has a non-empty `rationale`, and an `Accepted` `resolves` edge links it to that `Accepted` `Finding`; `decided_by` is the waiver owner and the finding is its scope. Because graph validity does not derive a `Finding` node's ID from its payload, a waiver is accepted only when that `Finding` carries the evaluated identity: `code` equal to the rule ID, `family` equal to the gate and `affected_refs` equal to the sorted violation targets. Any other `answer` is not a waiver. `ResolutionDecision` has no review or expiry field, so the pilot evaluates no waiver expiry; a time-bounded waiver requires a future versioned schema.
 
+**Question and proposal binding (Hotfix 065).** A `ResolutionDecision` references a Question, a proposal or both; `resolves` has no generic minimum cardinality (§17). The binding is a graph-level rule over baseline-participating decisions (§17.9):
+
+- *Question-bound* (`question_ref = Some(q)`, with or without `proposal_ref`): `q` MUST identify a baseline-participating `Question`, and the decision MUST have at least one baseline-participating `resolves` edge whose target is exactly `q`. It MAY additionally resolve `Finding` nodes. `question_ref = Some(q)` with `resolves` edges only to Findings, to another Question or to nothing is invalid.
+- *Proposal-only* (`question_ref = None`, `proposal_ref = Some(..)`): no generic `resolves` minimum. A specific governance semantic MAY still require edges: a waiver decision is proposal-only (`proposal_ref = waiver-subject:<..>`, `answer.kind = waiver`) and keeps its `Accepted` `resolves` edge to its `Finding`.
+- *Finding-bound* decisions have `question_ref = None` and resolve their `Finding` directly.
+
+Relation shape is unchanged: `resolves` runs from `ResolutionDecision` to `Question` or `Finding`. Question resolution governance is not weakened by this rule.
+
+**Proposal-acceptance decisions (Hotfix 065).** Every explicit governed acceptance of a proposal (and every proposal whose intake requires a reason) records a separate companion `ResolutionDecision`: `question_ref = None`, `proposal_ref = Some(<accepted proposal ID>)`, `answer = {"kind": "proposal_acceptance", "reason_codes": [..]}` (the sorted unique wire strings of the intake report that gated the acceptance), `decided_by` = the acting human, `decided_at` = the write timestamp, `patch_ref` = the generic SHA-256 of the RFC 8785 bytes of the *original* proposal `PatchSet` (persisted as a `Patch` artifact), `rationale` = the clean caller-supplied reason when given, `supersedes = None`. It is proposal-only, needs no `resolves` edge, and is added to the accepted revision in the same atomic patch as the original proposal effect. Its ID is `dec:<first 16 hex of SHA-256(RFC 8785 {kind: proposal_acceptance, project_id, proposal_ref, decided_by, decided_at, patch_ref})>`; the rationale and reason codes are not part of identity. A domain decision carried inside the proposal (an S3.3 answer decision, a Hotfix 048 waiver decision) stays the authoritative domain material; the companion only records governed acceptance, and it never satisfies a domain rule (such as a waiver) by itself.
+
 ### 6.4 `Assumption`
 
 Required:
@@ -1991,7 +2001,7 @@ Core relation kinds are closed and typed. Extensions MAY introduce namespaced re
 | `derived_from` | any derived element | semantic/evidence element | 0..* |
 | `supersedes` | versionable semantic element | same compatible type | 0..1 outgoing |
 | `conflicts_with` | semantic element | semantic element | symmetric |
-| `resolves` | ResolutionDecision | Question/Finding | 1..* |
+| `resolves` | ResolutionDecision | Question/Finding | 0..* (a question-bound decision MUST resolve its Question, §6.3) |
 | `raises` | Finding | Question | 0..* |
 
 ### 17.2 Intent and traceability
@@ -2156,7 +2166,7 @@ The Rust variant name never appears in JSON. Every core relation except `schema_
 | `produces_receipt` | TestExecution, ScenarioRun | TestReceipt |
 | `bound_to_code` | SemanticNode | CodeBinding |
 
-**Structural cardinality** (unconditional only): `supersedes` outgoing 0..1; `resolves` outgoing 1..*; `has_attribute` incoming (per Attribute) exactly 1; `transitions_via`, `permits`, `scoped_to`, `characterized_by` and `measured_by` outgoing exactly 1; `workflow_step` outgoing 1..*; `produces_receipt` outgoing 0..1. Every other relation is outgoing 0..* and incoming 0..*. A minimum applies to every node whose type matches the relation's source (outgoing) or target (incoming) predicate. Conditional gate/profile requirements (evidence for requirements, `performed_by` for executable business steps, `allocated_to` by A2, `deployed_to` by a deployment profile, `justified_by` for accepted decisions, `verified_by` by D2/C1) are later validation rules, not structural cardinality.
+**Structural cardinality** (unconditional only): `supersedes` outgoing 0..1; `has_attribute` incoming (per Attribute) exactly 1; `transitions_via`, `permits`, `scoped_to`, `characterized_by` and `measured_by` outgoing exactly 1; `workflow_step` outgoing 1..*; `produces_receipt` outgoing 0..1. Every other relation is outgoing 0..* and incoming 0..*. A minimum applies to every node whose type matches the relation's source (outgoing) or target (incoming) predicate. `resolves` has no unconditional minimum (Hotfix 065); the question binding of a `ResolutionDecision` is the graph-level rule of §6.3 and §17.9. Conditional gate/profile requirements (evidence for requirements, `performed_by` for executable business steps, `allocated_to` by A2, `deployed_to` by a deployment profile, `justified_by` for accepted decisions, `verified_by` by D2/C1) are later validation rules, not structural cardinality.
 
 **Directionality and cycles.** `conflicts_with` is `Symmetric`: one edge represents the unordered pair and no mirrored edge is required or created. Every other core relation is `Directed`. `supersedes`, `refines`, `decomposes_to`, `inherits_role` and `depends_on_slice` are `Acyclic` in the core profile (a future exception requires an explicit plan revision/profile mechanism); every other relation allows cycles unless a later semantic rule forbids them.
 
@@ -2165,6 +2175,8 @@ The Rust variant name never appears in JSON. Every core relation except `schema_
 **Baseline-participating statuses.** `Accepted`, `Suspect`, `Superseded` and `Deprecated` are *baseline-participating*: such elements participate in structural graph constraints (cardinality, cycles), in duplicate-semantic-edge checks, and are candidates for the semantic and evidence hash projections. `Proposed` and `Rejected` elements are still persisted graph elements and MUST still pass local Node/Edge validation, ID validation, endpoint existence, relation source/target type compatibility, relation-property compatibility and typed evidence/derivation reference resolution; they simply do not count toward baseline cardinalities, cycles, duplicate semantic relations or hashes.
 
 **Baseline edge endpoints.** An edge whose status is baseline-participating MUST have both endpoints baseline-participating. A `Proposed` edge may point to `Proposed` or baseline nodes; a `Rejected` edge need only point to existing, structurally valid nodes.
+
+**ResolutionDecision binding (Hotfix 065).** Graph validation enforces §6.3 over every baseline-participating `ResolutionDecision` with `question_ref = Some(q)`: `q` exists, is a `Question` and is baseline-participating, and at least one baseline-participating `resolves` edge from the decision targets exactly `q`. A violation is a typed graph violation naming the decision and `q`, never a panic or a free-text check. `Proposed` and `Rejected` decisions are not bound.
 
 **Shape versus constraints.** Relation *shape* validation (edge local validation, endpoint existence, source/target type, same-node-type, `schema_for` role) runs over all persisted edges regardless of status. Relation *constraint* validation (unconditional cardinality and the five core-acyclic relations) runs over the baseline-participating subset only.
 
@@ -2352,13 +2364,14 @@ pub enum SemanticPatch {
     Supersede { old: ElementPrecondition, new: ElementPrecondition, edge: Edge },
     AttachEvidence { target: ElementPrecondition, evidence: EvidenceRef },
     AttachStandardMapping { target: ElementPrecondition, mapping: StandardMapping },
+    SetNodeExtension { target: ElementPrecondition, key: ExtensionKey, value: serde_json::Value },
     Compound { patches: Vec<SemanticPatch> },
 }
 
 pub enum MergePolicy { KeepPayloadUnionMetadata } // serialized "keep_payload_union_metadata"
 ```
 
-There are exactly 12 variants; the `op` string is the Rust variant name. Unknown variants and unknown fields are rejected; there is no generic operation or property escape hatch.
+There are exactly 13 variants (Hotfix 065 adds `SetNodeExtension`; it is implemented by A0.3); the `op` string is the Rust variant name. Unknown variants and unknown fields are rejected; there is no generic operation or property escape hatch.
 
 ### 20.4 Operation semantics
 
@@ -2370,6 +2383,7 @@ There are exactly 12 variants; the `op` string is the Rust variant name. Unknown
 - **MergeNodes:** only for `Requirement` or `Term`, with keep and every merged node of the same type. `merge` is non-empty, unique and excludes `keep`; every expected hash matches; merged nodes have no incident edges and no surviving element contains their ID as a JSON string value. The result keeps `id`, `status`, `payload` and `audit` of the keep node; `evidence` and `derivations` are the exact union sorted by ID, `standards` the exact union sorted by RFC 8785 canonical bytes, `tags` the set union, and `extensions` the key union (equal values deduplicate; differing values fail with `MergeExtensionConflict`). Merged nodes are removed; MergeNodes never retargets edges or rewrites references.
 - **Supersede:** `old` and `new` are distinct nodes with matching expected hashes; the supplied edge has a fresh ID, revision `1`, kind `supersedes`, `from = new`, `to = old`, status `Accepted`, and passes local validation. The old node's status becomes `Superseded`, the new node is unchanged, and exactly the supplied edge is added (the engine never generates IDs).
 - **AttachEvidence / AttachStandardMapping:** the target is a node or edge with a matching expected hash and the exact reference/mapping is not already attached; it is appended without creating an `evidenced_by` edge or merging mappings.
+- **SetNodeExtension (Hotfix 065):** a typed mutation of exactly one node extension entry, never a JSON Patch, JSON Pointer, generic property, payload, node-replacement or edge mutation. `target` is an `ElementPrecondition` that MUST name an existing node (no element: `ElementNotFound`; an edge: `ExpectedNode`) whose generic `node_element_hash` in the working candidate immediately before this leaf equals `expected_hash`, so it takes part in sequential Compound preconditions exactly like `ReplacePayload`. `key` is a validated `ExtensionKey` (§4.5 grammar, no trimming or normalization). The leaf sets `extensions[key] = value`, inserting an absent key or replacing a different value; an equal existing value is the typed no-op error `ExtensionNoOp {id, key}` and never an accepted leaf. Every other node field (`id`, `status`, `payload`, `evidence`, `derivations`, `standards`, `tags`, every other extension, `audit`) is preserved; the changed node passes ordinary local validation. Extensions participate in the node element hash, so the change is reported as an ordinary node modification and revision finalization increments the revision once; global semantic-hash participation is unchanged (a `ScenarioRun` update stays non-semantic). It has no inverse because the previous value is not part of the input.
 - **Compound:** non-empty; nested Compounds are flattened depth-first in declared order. Each leaf enforces its own existence, hash and local structural preconditions against the working candidate, but graph-wide validity (endpoints, cardinality, cycles, cross-element references) is evaluated once on the final graph. Any failure discards the candidate; the base graph is never modified and no partial graph or delta is returned.
 - **ID recycling:** within one patch set an ID that has existed or been removed cannot be reused for a new node or edge.
 - **Local validation:** a locally changed node or edge is validated immediately (payload, revision, audit, `conflicts_with` orientation, relation/property pairing, envelope duplicates).

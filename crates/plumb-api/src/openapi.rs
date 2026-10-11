@@ -5,7 +5,8 @@
 //!
 //! This module defines the contract only. It has no router, handler body, application state,
 //! store, commit, intake or session execution, and reads no file, clock, network or environment:
-//! the HR fixture is embedded at compile time. Runtime handlers belong to A0.2 and A0.3.
+//! the HR fixture is embedded at compile time. Runtime handlers belong to A0.2, A0.3 and A0.4
+//! (contract version 3, Hotfix 065).
 
 use plumb_core::to_canonical_json;
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use thiserror::Error;
 use utoipa::{OpenApi, ToSchema};
 
 /// The contract version recorded as `x-plumb-contract-version`.
-pub const CONTRACT_VERSION: u64 = 2;
+pub const CONTRACT_VERSION: u64 = 3;
 
 const FIXTURE_CONTRACT: &str = include_str!("../../../fixtures/hr-leave/fixture-contract.yaml");
 const COMPONENT_PREFIX: &str = "#/components/schemas/";
@@ -54,7 +55,8 @@ pub struct OperationSpec {
     pub tag: &'static str,
     /// Returns `Page {items, next_cursor}` and takes `cursor` and `limit`.
     pub pageable: bool,
-    /// The implementation task that owns the runtime handler (Hotfix 063).
+    /// The implementation task that owns the runtime handler (Hotfix 063; Hotfix 065 moves
+    /// `run_stage` and `get_job` to A0.4).
     pub owner: &'static str,
 }
 
@@ -144,7 +146,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "run_stage",
         "stages",
         false,
-        "A0.3",
+        "A0.4",
     ),
     op(
         10,
@@ -153,7 +155,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_job",
         "stages",
         false,
-        "A0.3",
+        "A0.4",
     ),
     op(
         11,
@@ -844,12 +846,28 @@ pub struct GateStatus {
 #[serde(deny_unknown_fields)]
 pub struct SearchHit {
     pub id: String,
+    /// The exact retrieval document kind wire string.
     pub kind: String,
-    pub path: String,
+    /// The exact detail route of the hit; `null` means there is no exact detail route for its
+    /// indexed family (Hotfix 065).
+    #[schema(required = true)]
+    pub path: Option<String>,
     pub score: f64,
     pub snippet: String,
 }
 page!(SearchPage, SearchHit);
+
+/// The indexed retrieval families of `GET /api/search` (Hotfix 065).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchScope {
+    Requirement,
+    Concept,
+    Rule,
+    Calculation,
+    Scenario,
+    Evidence,
+}
 
 // ============================================================================ sources and stages
 
@@ -1022,6 +1040,7 @@ pub struct AcceptEarsRequest {
 #[serde(deny_unknown_fields)]
 pub struct SplitRequest {
     pub parts: Vec<String>,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1035,6 +1054,7 @@ pub struct WaiveRequirementFindingRequest {
 #[serde(deny_unknown_fields)]
 pub struct MarkDuplicateRequest {
     pub of: String,
+    pub reason: String,
 }
 
 // ============================================================================ glossary and sentences
@@ -1062,6 +1082,7 @@ pub struct GlossaryEditRequest {
 #[serde(deny_unknown_fields)]
 pub struct GlossaryMergeRequest {
     pub into: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1071,14 +1092,32 @@ pub struct SentenceUnknown {
     pub question_id: String,
 }
 
+/// The typed slots of a Sentence: the exact requirement_kind, level and modality wire values
+/// of its Requirement (Hotfix 065).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SentenceSlots {
+    pub class: String,
+    pub level: String,
+    pub modality: String,
+}
+
+/// The supplied slot changes of a Sentence edit; at least one is required at runtime.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SentenceSlotPatch {
+    pub class: Option<String>,
+    pub level: Option<String>,
+    pub modality: Option<String>,
+}
+
+/// A compatibility view of exactly one Requirement (there is no Sentence node type).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Sentence {
     pub id: String,
     pub text: String,
-    /// Typed slots keyed by slot name.
-    #[schema(value_type = Object)]
-    pub slots: Value,
+    pub slots: SentenceSlots,
     pub status: String,
     pub evidence: Vec<String>,
     pub unknowns: Vec<SentenceUnknown>,
@@ -1089,8 +1128,7 @@ page!(SentencePage, Sentence);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SentenceEditRequest {
-    #[schema(value_type = Object)]
-    pub slots: Value,
+    pub slots: SentenceSlotPatch,
 }
 
 // ============================================================================ entities
@@ -1137,15 +1175,20 @@ pub struct Entity {
 }
 page!(EntityPage, Entity);
 
+/// One CRUD cell. The PSG distinguishes only `reads` and `writes`: `null` in `c`, `u` or `d`
+/// means not distinguishable from current PSG semantics, not false (Hotfix 065).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CrudCell {
     pub op: String,
     pub ent: String,
-    pub c: bool,
+    #[schema(required = true)]
+    pub c: Option<bool>,
     pub r: bool,
-    pub u: bool,
-    pub d: bool,
+    #[schema(required = true)]
+    pub u: Option<bool>,
+    #[schema(required = true)]
+    pub d: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1192,7 +1235,23 @@ page!(CalculationPage, Calculation);
 pub struct CalculationExample {
     pub expr: String,
     pub rendered_example: String,
-    pub value: ScalarValue,
+    pub value: CalculationValue,
+}
+
+/// An exact, non-recursive PlumbExpr value (Hotfix 065). Decimal, duration and quantity values
+/// are exact decimal strings and never pass through a binary float.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CalculationValue {
+    Integer { value: i64 },
+    Decimal { value: String },
+    Boolean { value: bool },
+    String { value: String },
+    Date { value: String },
+    DateTime { value: String },
+    Duration { value: String, unit: String },
+    Quantity { value: String, unit: String },
+    Enum { enum_ref: String, member: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1207,18 +1266,34 @@ pub struct RuleRow {
 pub struct Rule {
     pub id: String,
     pub name: String,
+    pub kind: RuleViewKind,
     pub conditions: Vec<String>,
-    pub rows: Vec<RuleRow>,
-    pub uncovered_cells: Vec<String>,
-    pub overlaps: Vec<String>,
+    /// `null` means not applicable or not analyzable, not empty (Hotfix 065).
+    #[schema(required = true)]
+    pub rows: Option<Vec<RuleRow>>,
+    #[schema(required = true)]
+    pub uncovered_cells: Option<Vec<String>>,
+    #[schema(required = true)]
+    pub overlaps: Option<Vec<String>>,
 }
 page!(RulePage, Rule);
+
+/// Whether a Rule view projects a scalar PSG Rule or a PSG DecisionTable (Hotfix 065).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleViewKind {
+    Rule,
+    DecisionTable,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuleCellRequest {
+    /// `row:<row>:output:<output column>`, zero-based.
     pub cell: String,
+    /// The exact RFC 8785 JSON of one DecisionOutputCell.
     pub outcome: String,
+    pub reason: String,
 }
 
 // ============================================================================ processes
@@ -1236,21 +1311,22 @@ pub struct Process {
 }
 page!(ProcessPage, Process);
 
-/// NOW process-step mutations (no `branch`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum ProcessStepOp {
-    Add,
-    Move,
-    Remove,
-}
-
+/// NOW process-step mutations of a strict linear Process, tagged by `op` (no `branch`;
+/// Hotfix 065). `position` is zero-based among interior steps.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ProcessStepRequest {
-    pub op: ProcessStepOp,
-    pub step: String,
-    pub position: Option<u64>,
+#[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
+pub enum ProcessStepRequest {
+    Add {
+        operation_ref: String,
+        position: u64,
+    },
+    Move {
+        node_ref: String,
+        position: u64,
+    },
+    Remove {
+        node_ref: String,
+    },
 }
 
 /// NOW process interchange format (no `svg`).
@@ -1286,6 +1362,9 @@ pub struct ScenarioRun {
     pub trace: Vec<String>,
 }
 
+/// A Scenario view (Hotfix 065). `given`, `when` and `then` are RFC 8785 canonical JSON texts of
+/// the exact PSG values; `status` is the node ElementStatus and `confirmation_status` the
+/// Scenario confirmation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
@@ -1293,11 +1372,31 @@ pub struct Scenario {
     pub given: Vec<String>,
     pub when: String,
     pub then: Vec<String>,
-    pub status: String,
-    pub derived_from: Option<String>,
+    pub status: ScenarioStatus,
+    pub confirmation_status: ScenarioConfirmationStatus,
+    pub derived_from: Vec<String>,
+    #[schema(required = true)]
     pub run: Option<ScenarioRun>,
 }
 page!(ScenarioPage, Scenario);
+
+/// The ElementStatus of a Scenario node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum ScenarioStatus {
+    Proposed,
+    Accepted,
+    Rejected,
+    Superseded,
+    Deprecated,
+    Suspect,
+}
+
+/// The pilot Scenario confirmation status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum ScenarioConfirmationStatus {
+    Derived,
+    Confirmed,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -1355,45 +1454,73 @@ page!(AssumptionPage, Assumption);
 
 // ============================================================================ questions and proposals
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct QuestionContext {
-    pub sentence: String,
-    pub flow_fragment: Option<String>,
-    pub scenario: Option<String>,
+/// The exact PSG `Question.question_kind` spellings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum QuestionKind {
+    YesNo,
+    PickOne,
+    PickMany,
+    Number,
+    Text,
+    Cardinality,
+    Unit,
+    Precision,
+    Rounding,
+    FormulaConfirm,
+    RuleCell,
+    Calendar,
+    RoleAssignment,
+    Permission,
+    QualityThreshold,
+    ArchitectureChoice,
+    TechnologyChoice,
+    InterfaceChoice,
+    VerificationMethod,
 }
 
+/// The persisted Question lifecycle statuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum QuestionStatus {
+    Open,
+    Answered,
+    Closed,
+    Superseded,
+}
+
+/// The persisted projection of one Accepted PSG Question (Hotfix 065). Generation-time slots
+/// are not persisted and are not part of the contract; `answer_schema` is the typed-answer
+/// authority and `context_refs` are the exact persisted context IDs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Question {
     pub id: String,
-    pub kind: String,
+    pub kind: QuestionKind,
+    /// The persisted prompt.
     pub text: String,
-    #[schema(value_type = Object)]
-    pub slots: Value,
-    pub context: QuestionContext,
-    pub priority: f64,
+    pub status: QuestionStatus,
+    #[schema(value_type = Option<Object>, required = true)]
+    pub answer_schema: Option<Value>,
+    #[schema(required = true)]
+    pub stakeholder_ref: Option<String>,
+    /// The canonical unsigned priority.
+    #[schema(required = true)]
+    pub priority: Option<u64>,
+    #[schema(required = true)]
+    pub round_ref: Option<String>,
+    pub context_refs: Vec<String>,
 }
 page!(QuestionPage, Question);
 
+/// An answer to a Question (Hotfix 065): `answer` is validated against the persisted
+/// `Question.answer_schema` (every pilot answer schema is a closed JSON object).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct AnswerByValue {
-    pub value: ScalarValue,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AnswerByText {
-    pub text: String,
-}
-
-/// Exactly one of `{value}` or `{text}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(untagged)]
-pub enum AnswerRequest {
-    Value(AnswerByValue),
-    Text(AnswerByText),
+pub struct AnswerRequest {
+    #[schema(value_type = Object)]
+    pub answer: Value,
+    pub rationale: Option<String>,
+    /// The Accepted ResolutionDecision this answer supersedes.
+    pub supersedes: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1477,13 +1604,39 @@ pub struct Round {
     pub questions: Vec<String>,
 }
 
+/// The composed round of `POST /api/rounds` and the write that assigned it (Hotfix 065).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRoundResponse {
+    pub version: String,
+    pub revision: String,
+    pub semantic_hash: String,
+    pub events: Vec<DesignEvent>,
+    pub round: Round,
+}
+
+/// A dry-run intake of one complete typed Proposal (Hotfix 065): `payload` is the exact JSON
+/// of a `plumb_patch::Proposal`, `kind` its derived ProposalKind and `evidence` exactly its
+/// sorted unique evidence refs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IntakeRequest {
-    pub kind: String,
+    pub kind: ProposalKind,
     #[schema(value_type = Object)]
     pub payload: Value,
     pub evidence: Vec<String>,
+}
+
+/// The closed workflow action classification of a Proposal (Hotfix 065); it does not change
+/// materiality or acceptance policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalKind {
+    Link,
+    Merge,
+    Supersede,
+    Create,
+    Accept,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1525,6 +1678,25 @@ pub struct CreateSessionResponse {
 #[serde(deny_unknown_fields)]
 pub struct SessionTurnRequest {
     pub text: String,
+    pub stage: SessionStage,
+}
+
+/// The active compiler stage of a session turn, exactly `plumb_core::StageId` (Hotfix 065).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum SessionStage {
+    S0,
+    S1,
+    S2,
+    S3,
+    S4,
+    S5,
+    S6,
+    S7,
+    S8,
+    S9,
+    S10,
+    S11,
+    S12,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1655,7 +1827,7 @@ mod stubs {
 
     #[utoipa::path(get, path = "/api/search", operation_id = "search_model", tag = "meta",
         params(("q" = Option<String>, Query, description = "Search text"),
-               ("scope" = Option<String>, Query, description = "Search scope")),
+               ("scope" = Option<SearchScope>, Query, description = "Search scope")),
         responses((status = 200, description = "Search hits", body = SearchPage)))]
     pub fn search_model() {}
 
@@ -1863,7 +2035,7 @@ mod stubs {
 
     #[utoipa::path(get, path = "/api/scenarios", operation_id = "list_scenarios", tag = "scenarios",
         params(("requirement" = Option<String>, Query, description = "Requirement filter"),
-               ("status" = Option<String>, Query, description = "Status filter"),
+               ("status" = Option<ScenarioStatus>, Query, description = "Status filter"),
                ("derived" = Option<bool>, Query, description = "Derived filter")),
         responses((status = 200, description = "Scenarios", body = ScenarioPage)))]
     pub fn list_scenarios() {}
@@ -1914,13 +2086,14 @@ mod stubs {
 
     #[utoipa::path(post, path = "/api/assumptions/{id}/resolve", operation_id = "resolve_assumption", tag = "assumptions",
         params(("id" = String, Path, description = "Assumption ID")),
+        request_body(content = ReasonRequest),
         responses((status = 200, description = "Write result", body = WriteResult)))]
     pub fn resolve_assumption() {}
 
     #[utoipa::path(get, path = "/api/questions", operation_id = "list_questions", tag = "questions",
         params(("stakeholder" = Option<String>, Query, description = "Stakeholder filter"),
                ("round" = Option<String>, Query, description = "Round filter"),
-               ("status" = Option<String>, Query, description = "Status filter")),
+               ("status" = Option<QuestionStatus>, Query, description = "Status filter")),
         responses((status = 200, description = "Questions", body = QuestionPage)))]
     pub fn list_questions() {}
 
@@ -1932,7 +2105,7 @@ mod stubs {
 
     #[utoipa::path(post, path = "/api/rounds", operation_id = "create_round", tag = "questions",
         request_body(content = CreateRoundRequest),
-        responses((status = 200, description = "Write result", body = WriteResult)))]
+        responses((status = 200, description = "The composed round", body = CreateRoundResponse)))]
     pub fn create_round() {}
 
     #[utoipa::path(get, path = "/api/rounds/{id}", operation_id = "get_round", tag = "questions",
@@ -2061,7 +2234,7 @@ mod stubs {
     ),
     components(schemas(
         DesignEvent, PreconditionFailedResponse, CursorConflictResponse, CursorErrorCode, StageName,
-        ProcessFormat, ExportFormat, ReadinessGroup,
+        ProcessFormat, ExportFormat, ReadinessGroup, SearchScope,
     )),
     tags(
         (name = "meta"), (name = "sources"), (name = "stages"), (name = "requirements"),
@@ -2666,6 +2839,28 @@ fn apply_http_contract(doc: &mut Value) -> Result<(), OpenApiContractError> {
     Ok(())
 }
 
+/// The internally tagged request/response unions whose serde form rejects unknown fields
+/// (Hotfix 065); utoipa cannot express that per variant.
+pub const CLOSED_TAGGED_UNIONS: [&str; 2] = ["CalculationValue", "ProcessStepRequest"];
+
+/// Closes every `oneOf` branch of [`CLOSED_TAGGED_UNIONS`] with `additionalProperties: false`.
+fn close_tagged_unions(doc: &mut Value) -> Result<(), OpenApiContractError> {
+    for name in CLOSED_TAGGED_UNIONS {
+        let branches = doc
+            .pointer_mut(&format!("/components/schemas/{name}/oneOf"))
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| invariant(format!("{name} is not a oneOf union")))?;
+        for branch in branches {
+            branch
+                .as_object_mut()
+                .filter(|b| b.get("type") == Some(&json!("object")))
+                .ok_or_else(|| invariant(format!("{name} has a non-object branch")))?
+                .insert("additionalProperties".to_owned(), json!(false));
+        }
+    }
+    Ok(())
+}
+
 fn responses_mut(
     operation: &mut Map<String, Value>,
 ) -> Result<&mut Map<String, Value>, OpenApiContractError> {
@@ -2796,7 +2991,7 @@ pub fn openapi_document() -> Result<Value, OpenApiContractError> {
     let mut api = ApiDoc::openapi();
     api.info.version = env!("CARGO_PKG_VERSION").to_owned();
     api.info.description = Some(
-        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2/A0.3."
+        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4."
             .to_owned(),
     );
     api.info.license = None;
@@ -2805,6 +3000,7 @@ pub fn openapi_document() -> Result<Value, OpenApiContractError> {
         .map_err(|e| OpenApiContractError::Serialization(e.to_string()))?;
     check_inventory(&doc)?;
     apply_http_contract(&mut doc)?;
+    close_tagged_unions(&mut doc)?;
     let base = doc.clone();
     apply_extensions(&mut doc, &base)?;
     apply_examples(&mut doc)?;
@@ -2836,7 +3032,7 @@ The machine-readable contract is `api/modeller.openapi.json`, the source of the 
         OPERATIONS.len()
     ));
     out.push_str(
-        "A0.1 defines the pilot contract only; A0.2 and A0.3 provide the runtime handlers. \
+        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers. \
 An operation listed here is not operational until its handler task is done.\n\n",
     );
     out.push_str("## Conventions\n\n");
@@ -2874,7 +3070,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
             .count()
     };
     out.push_str("\n## Implementation ownership\n\n");
-    for owner in ["A0.2", "A0.3"] {
+    for owner in ["A0.2", "A0.3", "A0.4"] {
         out.push_str(&format!(
             "- {owner}: {} operations ({} POST, {} GET).\n",
             owned(owner, ""),
@@ -2882,9 +3078,12 @@ An operation listed here is not operational until its handler task is done.\n\n"
             owned(owner, "GET")
         ));
     }
-    out.push_str(
-        "- A0.3 must not start directly after A0.2: its deferred compatibility operations need a separate contract freeze of their wire semantics, supporting domain services and tests first.\n",
-    );
+    for line in [
+        "Hotfix 065 froze the deferred A0.3 compatibility semantics (contract version 3).",
+        "A0.4 owns `run_stage` and `get_job` and must not start before its separate stage-orchestration contract freeze.",
+    ] {
+        out.push_str(&format!("- {line}\n"));
+    }
     out.push_str("\n## Operations\n\n| # | Method | Path | operationId | Tag | Owner |\n|---|---|---|---|---|---|\n");
     for spec in &OPERATIONS {
         out.push_str(&format!(

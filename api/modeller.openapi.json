@@ -14,40 +14,31 @@
         ],
         "type": "object"
       },
-      "AnswerByText": {
-        "additionalProperties": false,
-        "properties": {
-          "text": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "text"
-        ],
-        "type": "object"
-      },
-      "AnswerByValue": {
-        "additionalProperties": false,
-        "properties": {
-          "value": {
-            "$ref": "#/components/schemas/ScalarValue"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "type": "object"
-      },
       "AnswerRequest": {
-        "description": "Exactly one of `{value}` or `{text}`.",
-        "oneOf": [
-          {
-            "$ref": "#/components/schemas/AnswerByValue"
+        "additionalProperties": false,
+        "description": "An answer to a Question (Hotfix 065): `answer` is validated against the persisted\n`Question.answer_schema` (every pilot answer schema is a closed JSON object).",
+        "properties": {
+          "answer": {
+            "type": "object"
           },
-          {
-            "$ref": "#/components/schemas/AnswerByText"
+          "rationale": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supersedes": {
+            "description": "The Accepted ResolutionDecision this answer supersedes.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
-        ]
+        },
+        "required": [
+          "answer"
+        ],
+        "type": "object"
       },
       "AnswerResponse": {
         "additionalProperties": false,
@@ -235,7 +226,7 @@
             "type": "string"
           },
           "value": {
-            "$ref": "#/components/schemas/ScalarValue"
+            "$ref": "#/components/schemas/CalculationValue"
           }
         },
         "required": [
@@ -266,6 +257,195 @@
           "items"
         ],
         "type": "object"
+      },
+      "CalculationValue": {
+        "description": "An exact, non-recursive PlumbExpr value (Hotfix 065). Decimal, duration and quantity values\nare exact decimal strings and never pass through a binary float.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "integer"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "value",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "decimal"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "boolean"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "value",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "string"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "date"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "date_time"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "duration"
+                ],
+                "type": "string"
+              },
+              "unit": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "unit",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "quantity"
+                ],
+                "type": "string"
+              },
+              "unit": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "unit",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "enum_ref": {
+                "type": "string"
+              },
+              "member": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "enum"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "enum_ref",
+              "member",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "ClassifyRequest": {
         "additionalProperties": false,
@@ -346,6 +526,38 @@
         ],
         "type": "object"
       },
+      "CreateRoundResponse": {
+        "additionalProperties": false,
+        "description": "The composed round of `POST /api/rounds` and the write that assigned it (Hotfix 065).",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DesignEvent"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "round": {
+            "$ref": "#/components/schemas/Round"
+          },
+          "semantic_hash": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "semantic_hash",
+          "events",
+          "round"
+        ],
+        "type": "object"
+      },
       "CreateSessionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -394,12 +606,19 @@
       },
       "CrudCell": {
         "additionalProperties": false,
+        "description": "One CRUD cell. The PSG distinguishes only `reads` and `writes`: `null` in `c`, `u` or `d`\nmeans not distinguishable from current PSG semantics, not false (Hotfix 065).",
         "properties": {
           "c": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "d": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "ent": {
             "type": "string"
@@ -411,7 +630,10 @@
             "type": "boolean"
           },
           "u": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "required": [
@@ -878,10 +1100,14 @@
         "properties": {
           "into": {
             "type": "string"
+          },
+          "reason": {
+            "type": "string"
           }
         },
         "required": [
-          "into"
+          "into",
+          "reason"
         ],
         "type": "object"
       },
@@ -1031,6 +1257,7 @@
       },
       "IntakeRequest": {
         "additionalProperties": false,
+        "description": "A dry-run intake of one complete typed Proposal (Hotfix 065): `payload` is the exact JSON\nof a `plumb_patch::Proposal`, `kind` its derived ProposalKind and `evidence` exactly its\nsorted unique evidence refs.",
         "properties": {
           "evidence": {
             "items": {
@@ -1039,7 +1266,7 @@
             "type": "array"
           },
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/ProposalKind"
           },
           "payload": {
             "type": "object"
@@ -1137,10 +1364,14 @@
         "properties": {
           "of": {
             "type": "string"
+          },
+          "reason": {
+            "type": "string"
           }
         },
         "required": [
-          "of"
+          "of",
+          "reason"
         ],
         "type": "object"
       },
@@ -1355,38 +1586,79 @@
         ],
         "type": "object"
       },
-      "ProcessStepOp": {
-        "description": "NOW process-step mutations (no `branch`).",
-        "enum": [
-          "add",
-          "move",
-          "remove"
-        ],
-        "type": "string"
-      },
       "ProcessStepRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "op": {
-            "$ref": "#/components/schemas/ProcessStepOp"
+        "description": "NOW process-step mutations of a strict linear Process, tagged by `op` (no `branch`;\nHotfix 065). `position` is zero-based among interior steps.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "op": {
+                "enum": [
+                  "add"
+                ],
+                "type": "string"
+              },
+              "operation_ref": {
+                "type": "string"
+              },
+              "position": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "operation_ref",
+              "position",
+              "op"
+            ],
+            "type": "object"
           },
-          "position": {
-            "format": "int64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+          {
+            "additionalProperties": false,
+            "properties": {
+              "node_ref": {
+                "type": "string"
+              },
+              "op": {
+                "enum": [
+                  "move"
+                ],
+                "type": "string"
+              },
+              "position": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "node_ref",
+              "position",
+              "op"
+            ],
+            "type": "object"
           },
-          "step": {
-            "type": "string"
+          {
+            "additionalProperties": false,
+            "properties": {
+              "node_ref": {
+                "type": "string"
+              },
+              "op": {
+                "enum": [
+                  "remove"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "node_ref",
+              "op"
+            ],
+            "type": "object"
           }
-        },
-        "required": [
-          "op",
-          "step"
-        ],
-        "type": "object"
+        ]
       },
       "ProposalActionRequest": {
         "additionalProperties": false,
@@ -1401,26 +1673,65 @@
         },
         "type": "object"
       },
+      "ProposalKind": {
+        "description": "The closed workflow action classification of a Proposal (Hotfix 065); it does not change\nmateriality or acceptance policy.",
+        "enum": [
+          "link",
+          "merge",
+          "supersede",
+          "create",
+          "accept"
+        ],
+        "type": "string"
+      },
       "Question": {
         "additionalProperties": false,
+        "description": "The persisted projection of one Accepted PSG Question (Hotfix 065). Generation-time slots\nare not persisted and are not part of the contract; `answer_schema` is the typed-answer\nauthority and `context_refs` are the exact persisted context IDs.",
         "properties": {
-          "context": {
-            "$ref": "#/components/schemas/QuestionContext"
+          "answer_schema": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "context_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "id": {
             "type": "string"
           },
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/QuestionKind"
           },
           "priority": {
-            "format": "double",
-            "type": "number"
+            "description": "The canonical unsigned priority.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
-          "slots": {
-            "type": "object"
+          "round_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stakeholder_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/QuestionStatus"
           },
           "text": {
+            "description": "The persisted prompt.",
             "type": "string"
           }
         },
@@ -1428,35 +1739,39 @@
           "id",
           "kind",
           "text",
-          "slots",
-          "context",
-          "priority"
+          "status",
+          "answer_schema",
+          "stakeholder_ref",
+          "priority",
+          "round_ref",
+          "context_refs"
         ],
         "type": "object"
       },
-      "QuestionContext": {
-        "additionalProperties": false,
-        "properties": {
-          "flow_fragment": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "scenario": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "sentence": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "sentence"
+      "QuestionKind": {
+        "description": "The exact PSG `Question.question_kind` spellings.",
+        "enum": [
+          "YesNo",
+          "PickOne",
+          "PickMany",
+          "Number",
+          "Text",
+          "Cardinality",
+          "Unit",
+          "Precision",
+          "Rounding",
+          "FormulaConfirm",
+          "RuleCell",
+          "Calendar",
+          "RoleAssignment",
+          "Permission",
+          "QualityThreshold",
+          "ArchitectureChoice",
+          "TechnologyChoice",
+          "InterfaceChoice",
+          "VerificationMethod"
         ],
-        "type": "object"
+        "type": "string"
       },
       "QuestionPage": {
         "additionalProperties": false,
@@ -1479,6 +1794,16 @@
           "items"
         ],
         "type": "object"
+      },
+      "QuestionStatus": {
+        "description": "The persisted Question lifecycle statuses.",
+        "enum": [
+          "Open",
+          "Answered",
+          "Closed",
+          "Superseded"
+        ],
+        "type": "string"
       },
       "Readiness": {
         "additionalProperties": false,
@@ -1794,6 +2119,9 @@
           "id": {
             "type": "string"
           },
+          "kind": {
+            "$ref": "#/components/schemas/RuleViewKind"
+          },
           "name": {
             "type": "string"
           },
@@ -1801,24 +2129,35 @@
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "rows": {
+            "description": "`null` means not applicable or not analyzable, not empty (Hotfix 065).",
             "items": {
               "$ref": "#/components/schemas/RuleRow"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "uncovered_cells": {
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
           "name",
+          "kind",
           "conditions",
           "rows",
           "uncovered_cells",
@@ -1830,15 +2169,21 @@
         "additionalProperties": false,
         "properties": {
           "cell": {
+            "description": "`row:<row>:output:<output column>`, zero-based.",
             "type": "string"
           },
           "outcome": {
+            "description": "The exact RFC 8785 JSON of one DecisionOutputCell.",
+            "type": "string"
+          },
+          "reason": {
             "type": "string"
           }
         },
         "required": [
           "cell",
-          "outcome"
+          "outcome",
+          "reason"
         ],
         "type": "object"
       },
@@ -1886,6 +2231,14 @@
         ],
         "type": "object"
       },
+      "RuleViewKind": {
+        "description": "Whether a Rule view projects a scalar PSG Rule or a PSG DecisionTable (Hotfix 065).",
+        "enum": [
+          "rule",
+          "decision_table"
+        ],
+        "type": "string"
+      },
       "ScalarValue": {
         "description": "A JSON scalar: string, number (integers included) or boolean. The branches are disjoint.",
         "oneOf": [
@@ -1903,12 +2256,16 @@
       },
       "Scenario": {
         "additionalProperties": false,
+        "description": "A Scenario view (Hotfix 065). `given`, `when` and `then` are RFC 8785 canonical JSON texts of\nthe exact PSG values; `status` is the node ElementStatus and `confirmation_status` the\nScenario confirmation.",
         "properties": {
+          "confirmation_status": {
+            "$ref": "#/components/schemas/ScenarioConfirmationStatus"
+          },
           "derived_from": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "given": {
             "items": {
@@ -1930,7 +2287,7 @@
             ]
           },
           "status": {
-            "type": "string"
+            "$ref": "#/components/schemas/ScenarioStatus"
           },
           "then": {
             "items": {
@@ -1947,9 +2304,20 @@
           "given",
           "when",
           "then",
-          "status"
+          "status",
+          "confirmation_status",
+          "derived_from",
+          "run"
         ],
         "type": "object"
+      },
+      "ScenarioConfirmationStatus": {
+        "description": "The pilot Scenario confirmation status.",
+        "enum": [
+          "Derived",
+          "Confirmed"
+        ],
+        "type": "string"
       },
       "ScenarioCorrectRequest": {
         "additionalProperties": false,
@@ -2048,6 +2416,18 @@
         ],
         "type": "string"
       },
+      "ScenarioStatus": {
+        "description": "The ElementStatus of a Scenario node.",
+        "enum": [
+          "Proposed",
+          "Accepted",
+          "Rejected",
+          "Superseded",
+          "Deprecated",
+          "Suspect"
+        ],
+        "type": "string"
+      },
       "SearchHit": {
         "additionalProperties": false,
         "properties": {
@@ -2055,10 +2435,15 @@
             "type": "string"
           },
           "kind": {
+            "description": "The exact retrieval document kind wire string.",
             "type": "string"
           },
           "path": {
-            "type": "string"
+            "description": "The exact detail route of the hit; `null` means there is no exact detail route for its\nindexed family (Hotfix 065).",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "score": {
             "format": "double",
@@ -2099,8 +2484,21 @@
         ],
         "type": "object"
       },
+      "SearchScope": {
+        "description": "The indexed retrieval families of `GET /api/search` (Hotfix 065).",
+        "enum": [
+          "requirement",
+          "concept",
+          "rule",
+          "calculation",
+          "scenario",
+          "evidence"
+        ],
+        "type": "string"
+      },
       "Sentence": {
         "additionalProperties": false,
+        "description": "A compatibility view of exactly one Requirement (there is no Sentence node type).",
         "properties": {
           "evidence": {
             "items": {
@@ -2112,8 +2510,7 @@
             "type": "string"
           },
           "slots": {
-            "description": "Typed slots keyed by slot name.",
-            "type": "object"
+            "$ref": "#/components/schemas/SentenceSlots"
           },
           "status": {
             "type": "string"
@@ -2143,7 +2540,7 @@
         "description": "The edited typed slots of a sentence.",
         "properties": {
           "slots": {
-            "type": "object"
+            "$ref": "#/components/schemas/SentenceSlotPatch"
           }
         },
         "required": [
@@ -2170,6 +2567,52 @@
         },
         "required": [
           "items"
+        ],
+        "type": "object"
+      },
+      "SentenceSlotPatch": {
+        "additionalProperties": false,
+        "description": "The supplied slot changes of a Sentence edit; at least one is required at runtime.",
+        "properties": {
+          "class": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modality": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "SentenceSlots": {
+        "additionalProperties": false,
+        "description": "The typed slots of a Sentence: the exact requirement_kind, level and modality wire values\nof its Requirement (Hotfix 065).",
+        "properties": {
+          "class": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "modality": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "class",
+          "level",
+          "modality"
         ],
         "type": "object"
       },
@@ -2262,15 +2705,38 @@
         ],
         "type": "object"
       },
+      "SessionStage": {
+        "description": "The active compiler stage of a session turn, exactly `plumb_core::StageId` (Hotfix 065).",
+        "enum": [
+          "S0",
+          "S1",
+          "S2",
+          "S3",
+          "S4",
+          "S5",
+          "S6",
+          "S7",
+          "S8",
+          "S9",
+          "S10",
+          "S11",
+          "S12"
+        ],
+        "type": "string"
+      },
       "SessionTurnRequest": {
         "additionalProperties": false,
         "properties": {
+          "stage": {
+            "$ref": "#/components/schemas/SessionStage"
+          },
           "text": {
             "type": "string"
           }
         },
         "required": [
-          "text"
+          "text",
+          "stage"
         ],
         "type": "object"
       },
@@ -2467,10 +2933,14 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "reason": {
+            "type": "string"
           }
         },
         "required": [
-          "parts"
+          "parts",
+          "reason"
         ],
         "type": "object"
       },
@@ -2584,7 +3054,7 @@
     }
   },
   "info": {
-    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2/A0.3.",
+    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4.",
     "title": "Plumb Modeller API",
     "version": "0.1.0"
   },
@@ -2692,6 +3162,19 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "reason": "example"
+              },
+              "schema": {
+                "$ref": "#/components/schemas/ReasonRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -3396,7 +3879,8 @@
           "content": {
             "application/json": {
               "example": {
-                "into": "example"
+                "into": "example",
+                "reason": "example"
               },
               "schema": {
                 "$ref": "#/components/schemas/GlossaryMergeRequest"
@@ -3974,7 +4458,11 @@
                 "example": {
                   "expr": "if leave_type == Annual then RequestedWorkingDays else 0",
                   "rendered_example": "example",
-                  "value": 1.0
+                  "value": {
+                    "enum_ref": "example",
+                    "member": "example",
+                    "type": "enum"
+                  }
                 },
                 "schema": {
                   "$ref": "#/components/schemas/CalculationExample"
@@ -4360,6 +4848,7 @@
                         "example"
                       ],
                       "id": "AnnualLeaveEligibility",
+                      "kind": "decision_table",
                       "name": "AnnualLeaveEligibility",
                       "overlaps": [
                         "example"
@@ -4441,6 +4930,7 @@
                     "example"
                   ],
                   "id": "AnnualLeaveEligibility",
+                  "kind": "decision_table",
                   "name": "AnnualLeaveEligibility",
                   "overlaps": [
                     "example"
@@ -4511,7 +5001,8 @@
             "application/json": {
               "example": {
                 "cell": "example",
-                "outcome": "example"
+                "outcome": "example",
+                "reason": "example"
               },
               "schema": {
                 "$ref": "#/components/schemas/RuleCellRequest"
@@ -4625,7 +5116,11 @@
                         "example"
                       ],
                       "id": "example",
-                      "slots": {},
+                      "slots": {
+                        "class": "example",
+                        "level": "example",
+                        "modality": "example"
+                      },
                       "status": "example",
                       "text": "example",
                       "unknowns": [
@@ -5246,8 +5741,9 @@
           "content": {
             "application/json": {
               "example": {
-                "op": "add",
-                "step": "example"
+                "node_ref": "example",
+                "op": "move",
+                "position": 0
               },
               "schema": {
                 "$ref": "#/components/schemas/ProcessStepRequest"
@@ -5326,7 +5822,7 @@
                 "evidence": [
                   "example"
                 ],
-                "kind": "example",
+                "kind": "accept",
                 "payload": {}
               },
               "schema": {
@@ -5959,12 +6455,12 @@
           },
           {
             "description": "Status filter",
-            "example": "example",
+            "example": "Answered",
             "in": "query",
             "name": "status",
             "required": false,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/QuestionStatus"
             }
           },
           {
@@ -5996,13 +6492,16 @@
                 "example": {
                   "items": [
                     {
-                      "context": {
-                        "sentence": "example"
-                      },
+                      "answer_schema": {},
+                      "context_refs": [
+                        "example"
+                      ],
                       "id": "example",
-                      "kind": "example",
-                      "priority": 1.0,
-                      "slots": {},
+                      "kind": "ArchitectureChoice",
+                      "priority": 0,
+                      "round_ref": "example",
+                      "stakeholder_ref": "example",
+                      "status": "Answered",
                       "text": "example"
                     }
                   ]
@@ -6073,7 +6572,7 @@
           "content": {
             "application/json": {
               "example": {
-                "text": "example"
+                "answer": {}
               },
               "schema": {
                 "$ref": "#/components/schemas/AnswerRequest"
@@ -6624,7 +7123,8 @@
           "content": {
             "application/json": {
               "example": {
-                "of": "example"
+                "of": "example",
+                "reason": "example"
               },
               "schema": {
                 "$ref": "#/components/schemas/MarkDuplicateRequest"
@@ -6765,7 +7265,8 @@
               "example": {
                 "parts": [
                   "example"
-                ]
+                ],
+                "reason": "example"
               },
               "schema": {
                 "$ref": "#/components/schemas/SplitRequest"
@@ -6953,15 +7454,22 @@
                     }
                   ],
                   "revision": "example",
+                  "round": {
+                    "id": "example",
+                    "questions": [
+                      "example"
+                    ],
+                    "stakeholder": "example"
+                  },
                   "semantic_hash": "example",
                   "version": "example"
                 },
                 "schema": {
-                  "$ref": "#/components/schemas/WriteResult"
+                  "$ref": "#/components/schemas/CreateRoundResponse"
                 }
               }
             },
-            "description": "Write result"
+            "description": "The composed round"
           },
           "412": {
             "content": {
@@ -7050,12 +7558,12 @@
           },
           {
             "description": "Status filter",
-            "example": "example",
+            "example": "Accepted",
             "in": "query",
             "name": "status",
             "required": false,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/ScenarioStatus"
             }
           },
           {
@@ -7097,11 +7605,21 @@
                 "example": {
                   "items": [
                     {
+                      "confirmation_status": "Confirmed",
+                      "derived_from": [
+                        "example"
+                      ],
                       "given": [
                         "example"
                       ],
                       "id": "example",
-                      "status": "example",
+                      "run": {
+                        "result": "fail",
+                        "trace": [
+                          "example"
+                        ]
+                      },
+                      "status": "Accepted",
                       "then": [
                         "example"
                       ],
@@ -7524,12 +8042,12 @@
           },
           {
             "description": "Search scope",
-            "example": "example",
+            "example": "calculation",
             "in": "query",
             "name": "scope",
             "required": false,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/SearchScope"
             }
           },
           {
@@ -7808,6 +8326,7 @@
           "content": {
             "application/json": {
               "example": {
+                "stage": "S0",
                 "text": "example"
               },
               "schema": {
@@ -8276,5 +8795,5 @@
       "name": "export"
     }
   ],
-  "x-plumb-contract-version": 2
+  "x-plumb-contract-version": 3
 }
