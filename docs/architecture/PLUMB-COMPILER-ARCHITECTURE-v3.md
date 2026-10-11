@@ -1644,6 +1644,10 @@ The job, not the `Proposal`, owns `base_revision`, `base_semantic_hash`, `stage`
 
 `If-Match` remains correct for API writes, but internal jobs use the same compare-and-swap semantic rule.
 
+### Asynchronous stage job revision protection (X1.5, Hotfix 061)
+
+A job also captures the branch whose head it observed, and its identity is the hash of its immutable capture, so capturing again at another revision is another job. Its status moves deterministically through queued, acquiring or evaluating to ready, stale, failed or committed; stale, failed and committed are terminal. Completion binds the existing `CompileRun` (stage, input revision, semantic hash, profile and config) and the `StagePlan` that carries the scope. Freshness is decided by revision-ID equality with the observed head alone: an evidence-only revision leaves the semantic hash unchanged but is a new revision, so the earlier job is stale. A ready job becomes stale when a later head is observed, a stale job is never rebased, and re-evaluation captures a new job at the current head. Commit guards admit only an exact canonical output of the bound run while the head is still the base revision; they prove freshness, not intake or authorization. The store commit with `expected_head` equal to the base revision remains the final race authority, and `committed` records that one selected output advanced the branch, not that every proposal of the run was accepted.
+
 ---
 
 ## 22. Incremental recompilation
