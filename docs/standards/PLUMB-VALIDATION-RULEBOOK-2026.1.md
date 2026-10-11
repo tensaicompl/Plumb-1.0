@@ -604,9 +604,9 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Class:** `plumb_core`
 - **Severity:** `blocker`
 - **Source/mapping:** Plumb v3 normative semantics
-- **Applies when:** Requirement/Operation is functional and implementation-scoped.
-- **Deterministic check:** At least one verified_by link reaches an accepted VerificationObligation.
-- **Pass condition:** At least one verified_by link reaches an accepted VerificationObligation.
+- **Applies when:** Accepted Requirement/Operation is selected as implementation-scoped by the resolved F4 applicability input (source_refs), including explicitly non-executable Requirements.
+- **Deterministic check:** At least one accepted verified_by link reaches an accepted VerificationObligation of any verification kind; no implementation-scoped source is NOT_APPLICABLE.
+- **Pass condition:** At least one accepted verified_by link reaches an accepted VerificationObligation of any verification kind; no implementation-scoped source is NOT_APPLICABLE.
 - **Waiver:** `decision_required`
 
 ### `PLUMB.F4.SCENARIO.FOR_EXECUTABLE_BEHAVIOR` — Executable business behavior has representative scenarios
@@ -614,9 +614,9 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Class:** `plumb_core`
 - **Severity:** `blocker`
 - **Source/mapping:** Plumb v3 normative semantics
-- **Applies when:** Operation/Process/Rule participates in deterministic executable business behavior.
-- **Deterministic check:** At least one accepted Scenario covers normal behavior and each blocking outcome/boundary class required by profile.
-- **Pass condition:** At least one accepted Scenario covers normal behavior and each blocking outcome/boundary class required by profile.
+- **Applies when:** Accepted Requirement/Operation is classified as executable by the resolved F4 applicability input (executable_source_refs).
+- **Deterministic check:** An accepted verified_by link reaches an accepted scenario VerificationObligation whose accepted implemented_as links reach at least one in-scope Accepted Confirmed Scenario, plus one for every ScenarioKind the resolved profile explicitly requires for the source.
+- **Pass condition:** An accepted verified_by link reaches an accepted scenario VerificationObligation whose accepted implemented_as links reach at least one in-scope Accepted Confirmed Scenario, plus one for every ScenarioKind the resolved profile explicitly requires for the source.
 - **Waiver:** `decision_required`
 
 ### `PLUMB.F4.SCENARIO.GROUNDED` — Scenarios trace to obligations
@@ -624,9 +624,9 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Class:** `plumb_core`
 - **Severity:** `blocker`
 - **Source/mapping:** Plumb v3 normative semantics
-- **Applies when:** All in-scope accepted elements of the relevant type.
-- **Deterministic check:** Each accepted Scenario references Requirement/AcceptanceCriterion/Rule/Transition from which it is derived.
-- **Pass condition:** Each accepted Scenario references Requirement/AcceptanceCriterion/Rule/Transition from which it is derived.
+- **Applies when:** Each in-scope Accepted Confirmed Scenario of the resolved F4 applicability input.
+- **Deterministic check:** requirement_refs or derived_from_refs contain at least one accepted Requirement, AcceptanceCriterion, Rule, Transition, DecisionTable, Operation, Event, Calculation or Calendar from which the Scenario is derived.
+- **Pass condition:** requirement_refs or derived_from_refs contain at least one accepted Requirement, AcceptanceCriterion, Rule, Transition, DecisionTable, Operation, Event, Calculation or Calendar from which the Scenario is derived.
 - **Waiver:** `decision_required`
 
 ### `PLUMB.F4.SCENARIO.TYPED` — Scenario Given/When/Then values are type-valid
@@ -634,9 +634,9 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Class:** `plumb_core`
 - **Severity:** `blocker`
 - **Source/mapping:** Plumb v3 normative semantics
-- **Applies when:** All in-scope accepted elements of the relevant type.
-- **Deterministic check:** All scenario fixtures satisfy entity types, units, enum domains and operation inputs.
-- **Pass condition:** All scenario fixtures satisfy entity types, units, enum domains and operation inputs.
+- **Applies when:** Each in-scope Accepted Confirmed Scenario of the resolved F4 applicability input.
+- **Deterministic check:** The S4 type-check result bound to the current Scenario specification is valid: all scenario fixtures satisfy entity types, units, enum domains, references and operation inputs.
+- **Pass condition:** The S4 type-check result bound to the current Scenario specification is valid: all scenario fixtures satisfy entity types, units, enum domains, references and operation inputs.
 - **Waiver:** `forbidden`
 
 ### `PLUMB.F4.RUN.NO_BLOCKING_UNDECIDABLE` — Blocking executable scenarios are decidable
@@ -644,9 +644,9 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Class:** `plumb_core`
 - **Severity:** `blocker`
 - **Source/mapping:** Plumb v3 normative semantics
-- **Applies when:** All in-scope accepted elements of the relevant type.
-- **Deterministic check:** Latest current ScenarioRun for every blocking executable scenario is Pass or an accepted expected-failure case; none is Undecidable.
-- **Pass condition:** Latest current ScenarioRun for every blocking executable scenario is Pass or an accepted expected-failure case; none is Undecidable.
+- **Applies when:** Each blocking executable Scenario of the resolved F4 applicability input.
+- **Deterministic check:** The current ScenarioRun (the unique supplied run bound to the current Scenario specification and model baseline) has result Pass; Fail, Undecidable or no current run is a violation. A correctly modelled expected business failure compares as Pass.
+- **Pass condition:** The current ScenarioRun (the unique supplied run bound to the current Scenario specification and model baseline) has result Pass; Fail, Undecidable or no current run is a violation. A correctly modelled expected business failure compares as Pass.
 - **Waiver:** `decision_required`
 
 ### `PLUMB.F4.RUN.TRACE_COMPLETE` — Scenario execution produces semantic trace
@@ -654,9 +654,9 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Class:** `plumb_core`
 - **Severity:** `error`
 - **Source/mapping:** Plumb v3 normative semantics
-- **Applies when:** All in-scope accepted elements of the relevant type.
-- **Deterministic check:** ScenarioRun records operation/rule/calculation/transition steps sufficient to explain the result.
-- **Pass condition:** ScenarioRun records operation/rule/calculation/transition steps sufficient to explain the result.
+- **Applies when:** Each supplied current ScenarioRun of an in-scope Scenario.
+- **Deterministic check:** The trace is ordered execution then comparison steps of the frozen S4 vocabulary, starts and completes for its Scenario with the run result, and records business-semantic operation/rule/decision/calculation/transition/event steps sufficient to explain the result; an Undecidable run may instead record its missing semantics.
+- **Pass condition:** The trace is ordered execution then comparison steps of the frozen S4 vocabulary, starts and completes for its Scenario with the run result, and records business-semantic operation/rule/decision/calculation/transition/event steps sufficient to explain the result; an Undecidable run may instead record its missing semantics.
 - **Waiver:** `decision_required`
 
 ### `PLUMB.F4.ASSUMPTIONS.VISIBLE` — Assumptions affecting execution are visible in gate output
@@ -664,9 +664,9 @@ Projects MAY run gates out of order for diagnostics, but a formal baseline canno
 - **Class:** `plumb_core`
 - **Severity:** `error`
 - **Source/mapping:** Plumb v3 normative semantics
-- **Applies when:** All in-scope accepted elements of the relevant type.
-- **Deterministic check:** Gate report lists every active assumption reachable from covered obligations.
-- **Pass condition:** Gate report lists every active assumption reachable from covered obligations.
+- **Applies when:** Active assumptions (Accepted, status Accepted) whose accepted Finding affects the F4 coverage frontier of covered sources, their obligations, in-scope Scenarios and their traceability refs.
+- **Deterministic check:** Gate output lists exactly the active assumptions reachable from covered obligations, through the rule result targets and evidence.
+- **Pass condition:** Gate output lists exactly the active assumptions reachable from covered obligations, through the rule result targets and evidence.
 - **Waiver:** `forbidden`
 
 ## Q1 — Architecture-driving quality requirements are measurable.

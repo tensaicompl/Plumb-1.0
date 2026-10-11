@@ -6362,30 +6362,170 @@ tasks:
   depends_on:
   - S4.5
   files:
+  - crates/plumb-validation/src/evaluator.rs
+  - crates/plumb-validation/src/lib.rs
   - crates/plumb-validation/src/rules/f4.rs
   - crates/plumb-validation/src/rules/mod.rs
   - crates/plumb-validation/tests/f4.rs
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
-  - Implement all seven F4 evaluators exactly from the supplied rule YAML and rulebook. Register only this gate's
-    real evaluators in crates/plumb-validation/src/rules/mod.rs through the F0.13 EvaluatorRegistry; registration
-    is gate-incremental and this gate becomes evaluatable when all of its rules are bound.
-  - Do not use the v2 universal every-requirement scenario rule.
-  - RUN.NO_BLOCKING_UNDECIDABLE considers only blocking executable scenarios under current profile.
-  - Add a regression proving that the combined I0, F1, F2, F3 and F4 registration contains exactly the 54 rule IDs
-    of ValidationRegistry::required_now_rule_ids(), no more and no fewer.
+  - Boundary (Hotfix 055). Hotfix 055 replaces the earlier S4.6 actions; where they differ, this contract governs. S4.6
+    implements exactly the seven F4 evaluators (PLUMB.F4.FUNCTION.VERIFICATION_LINK, PLUMB.F4.SCENARIO.FOR_EXECUTABLE_BEHAVIOR,
+    PLUMB.F4.SCENARIO.GROUNDED, PLUMB.F4.SCENARIO.TYPED, PLUMB.F4.RUN.NO_BLOCKING_UNDECIDABLE, PLUMB.F4.RUN.TRACE_COMPLETE,
+    PLUMB.F4.ASSUMPTIONS.VISIBLE) over the accepted PSG plus explicit F4 supplemental inputs. F4 never derives S4.5 applicability,
+    executes or compares Scenarios, re-validates Scenario semantics, runs inference or persists anything. Production plumb-validation
+    gains no dependency on plumb-functional or plumb-sim (both would cycle); there is no Cargo change. Hotfix 055 amended
+    only the applies_when, check and pass_condition text of these seven rules in the profile YAML and rulebook (IDs, gate,
+    title, severity, class, waiver policy, evaluation and finding status unchanged; 133 rules, 54 NOW evaluators, 7 F4)
+    and refreshed the profile_hash, rule_pack_hash and golden-report pins that intentionally identify the changed profile;
+    F4 metadata stays read only from the profile.
+  - 'Inputs (Hotfix 055). evaluator.rs defines F4ValidationInputs {applicability: F4ApplicabilityInput, scenario_type_checks:
+    Vec<F4ScenarioTypeCheckInput>, scenario_runs: Vec<F4ScenarioRunInput>, visible_assumption_refs: Vec<Id>} with F4ApplicabilityInput
+    {source_refs, executable_source_refs, in_scope_scenario_refs, blocking_scenario_refs, executable_coverage: Vec<F4ExecutableCoverageInput
+    {source_ref, required_scenario_kinds: Vec<ScenarioKind>}>}, F4ScenarioTypeCheckInput {scenario_ref, specification_hash,
+    status: F4ScenarioTypeStatus = Valid | Invalid {issues}}, and F4ScenarioRunInput {run: plumb_psg ScenarioRun, trace_artifact_hash,
+    trace_artifact_bytes}; all Debug, Clone, PartialEq, Eq, Serialize, Deserialize with deny_unknown_fields. F4ValidationInputs::new
+    canonicalizes every collection (sorted, unique) so construction order is irrelevant, and content_hash() is the Generic
+    SHA-256 of its RFC 8785 canonical JSON (provenance only; GateReport is unchanged). ValidationContext gains f4_inputs:
+    Option<F4ValidationInputs> (skipped when None, None from new), with_f4_inputs(graph, inputs) canonicalizes, validates
+    and installs, validate_for revalidates it, and evaluate_gate(F4) without inputs returns InvalidContext("F4 validation
+    inputs are required") before any rule runs; other gates ignore it.'
+  - 'Applicability context (Hotfix 055). Orchestration carries the S4.5 VerificationApplicabilitySnapshot: source_refs
+    and executable_source_refs as given, blocking_scenario_refs as given, and in_scope_scenario_refs as the Scenarios
+    of the current F4 scope. Context invariants (else InvalidContext): source_refs are Accepted Requirements or Operations;
+    executable_source_refs ⊆ source_refs; in_scope_scenario_refs are Accepted Scenarios with confirmation_status Confirmed;
+    blocking_scenario_refs ⊆ in_scope_scenario_refs; exactly one executable_coverage entry per executable source and none
+    otherwise, with sorted unique ScenarioKinds (empty means one representative Scenario is still required); all lists
+    sorted and unique. Blocking is never inferred from priority, RequirementKind, ScenarioKind, severity or names.'
+  - 'Type checks and specification identity (Hotfix 055). S4.1 owns Scenario typing: orchestration runs plumb_functional::validate_scenario
+    on the same baseline and supplies exactly one F4ScenarioTypeCheckInput per in-scope Scenario (missing, extra or duplicate
+    is InvalidContext); Invalid needs non-empty, clean, sorted, unique issues and Valid none. Each is bound by the S4.2
+    specification hash canonical_hash(Generic, {execution_contract_version: 1, scenario_ref, scenario}) recomputed by
+    a validation-local identity helper that never decodes Scenario semantics; a stale hash is InvalidContext.'
+  - 'Run evidence (Hotfix 055). At most one F4ScenarioRunInput per Scenario, each for an in-scope Scenario (duplicate
+    or out-of-scope is InvalidContext; missing is legal and left to the rules). In NOW scope the current ScenarioRun is
+    the unique supplied run whose specification_hash equals the current Scenario specification; there is no latest-by-time
+    selection and no clock. Context checks (InvalidContext): run.specification_hash current; trace_artifact_hash Generic
+    and equal to SHA-256(trace_artifact_bytes); the bytes are RFC 8785 canonical JSON (re-canonicalization reproduces
+    them); the artifact has exactly version (1), model_semantic_hash, scenario_ref, specification_hash, result, trace
+    and diffs (an array); model_semantic_hash equals the graph semantic hash; and scenario_ref, specification_hash, result
+    and trace equal the ScenarioRun. No plumb-sim type is imported; the frozen JSON wire is read.'
+  - 'Visible assumptions (Hotfix 055). visible_assumption_refs are the assumptions orchestration intends F4 output to
+    surface: sorted, unique, each an Accepted Assumption whose status is Accepted (else InvalidContext). Active means
+    node Accepted and status Accepted; F4 evaluates no expiry (F3 owns it).'
+  - 'Verification link and executable coverage (Hotfix 055). FUNCTION.VERIFICATION_LINK applies to source_refs (empty
+    is NOT_APPLICABLE) and needs an Accepted verified_by to an Accepted VerificationObligation of any kind; violation
+    key implementation_scoped_source_unverified, targets the unverified sources, message ''Implementation-scoped verification
+    sources must link to an accepted VerificationObligation.'', resolution ''Accept or create the required VerificationObligation
+    and verified_by relation for each affected source.''. Non-executable Requirements of any kind pass through non-scenario
+    obligations. SCENARIO.FOR_EXECUTABLE_BEHAVIOR applies to executable_source_refs (empty is NOT_APPLICABLE) and needs
+    an Accepted verified_by to an Accepted scenario-kind VerificationObligation whose Accepted implemented_as links reach
+    in-scope Scenarios: at least one, plus one per required ScenarioKind; key executable_source_scenario_coverage_incomplete,
+    targets the affected sources, evidence missing_scenario:<source> and missing_kind:<source>:<kind>, message ''Executable
+    verification sources need accepted Confirmed Scenario coverage for the resolved profile.'', resolution ''Accept representative
+    Scenario implementations and every ScenarioKind explicitly required by the resolved profile.''.'
+  - 'Grounding and typing (Hotfix 055). SCENARIO.GROUNDED applies to in_scope_scenario_refs (empty is NOT_APPLICABLE):
+    a Scenario is grounded when an Accepted ref in requirement_refs or derived_from_refs is a Requirement, AcceptanceCriterion,
+    Rule, Transition, DecisionTable, Operation, Event, Calculation or Calendar (the S4.1 derivation sources and anchors;
+    Attribute and Process are not origins); key scenario_not_grounded, targets the ungrounded Scenarios, message ''In-scope
+    accepted Scenarios must trace to an accepted semantic derivation source.'', resolution ''Add or correct requirement_refs/derived_from_refs
+    using an accepted S4 grounding source.''. SCENARIO.TYPED applies to in_scope_scenario_refs (empty is NOT_APPLICABLE)
+    and fails each Scenario whose bound status is Invalid; key scenario_not_typed, evidence type_issue:<scenario>:<issue>,
+    message ''In-scope Scenario Given/When/Then material must satisfy the S4 typed scenario contract.'', resolution ''Correct
+    the Scenario fixture types, units, enum domains, references or operation inputs and revalidate it.''.'
+  - 'Runs and traces (Hotfix 055). RUN.NO_BLOCKING_UNDECIDABLE applies to blocking_scenario_refs (empty is NOT_APPLICABLE):
+    only a current run with result Pass satisfies it; Fail, Undecidable and a missing run violate (S4.3 already compares
+    against expectations, so a correctly modelled expected business failure is Pass; there is no separate expected-failure
+    exception); non-blocking runs are ignored; key blocking_scenario_run_not_acceptable, evidence missing_run:, run_fail:,
+    run_undecidable:<scenario>, message ''Every blocking executable Scenario must have a current passing ScenarioRun.'',
+    resolution ''Execute the current confirmed Scenario and resolve failures or missing semantics until its comparison
+    verdict is Pass.''. RUN.TRACE_COMPLETE applies to every supplied current run (none is NOT_APPLICABLE): each trace
+    entry is {phase: execution|comparison, step: {step: <name>, ...}} with the frozen S4.2 execution names (materialization_started,
+    semantic_resolved, semantic_missing, given_materialized, footprint_declared, performer_recorded, authorization_checked,
+    precondition_evaluated, rule_evaluated, rule_action_not_executed, decision_table_evaluated, calculation_evaluated,
+    outcome_selected, transition_trigger_recorded, guard_evaluated, transition_applied, transition_effects_recorded, event_occurred,
+    postcondition_evaluated, invariant_evaluated, event_emitted, execution_completed) and S4.3 comparison names (comparison_started,
+    expected_value_resolved, expected_semantic_missing, attribute_compared, state_compared, outcomes_compared, events_compared,
+    rule_compared, decision_output_compared, calculation_compared, comparison_completed); one or more execution entries
+    precede one or more comparison entries with no execution entry after comparison begins; the first execution entry
+    is materialization_started and the first comparison entry comparison_started, both for the run''s Scenario; the last
+    entry is comparison_completed with the run''s result and a u32 diff_count; a Pass or Fail run needs at least one business-semantic
+    execution step (footprint_declared through event_emitted, excluding lifecycle steps), while an Undecidable run may
+    instead contain semantic_missing or expected_semantic_missing; no execution_failed step exists or is required. Malformed
+    traces are rule violations, not context errors; key scenario_trace_incomplete, stable evidence trace_missing_execution_phase:,
+    trace_unknown_step:, trace_bad_order:, trace_result_mismatch:, trace_no_semantic_evidence:<scenario> (and similar
+    stable categories), message ''Current ScenarioRun traces must contain ordered business-semantic evidence sufficient
+    to explain their result.'', resolution ''Regenerate the ScenarioRun using the current S4 execution/comparison trace
+    contract.''.'
+  - Assumption visibility (Hotfix 055). The F4 coverage frontier is source_refs, in_scope_scenario_refs, the Accepted
+    VerificationObligations reached by Accepted verified_by from source_refs, and the Accepted refs in the in-scope Scenarios'
+    requirement_refs and derived_from_refs; nothing further is traversed. An active Assumption is expected-visible iff
+    its finding_ref names an Accepted Finding whose affected_refs intersect the frontier (no finding_ref is never reachable;
+    statements and default values are never parsed). ASSUMPTIONS.VISIBLE compares the expected set with visible_assumption_refs
+    exactly; both empty is NOT_APPLICABLE; on PASS the targets are the visible assumptions and evidence visible_assumption:<id>;
+    on violation the targets are the symmetric difference and evidence expected_assumption:<id> and visible_assumption:<id>
+    for both complete sets; key execution_assumptions_not_visible, message 'F4 gate output must surface exactly the active
+    assumptions reachable from covered verification obligations.', resolution 'Update the F4 visibility material so every
+    reachable active assumption, and no unrelated assumption, is surfaced.'.
+  - Engine and registry (Hotfix 055). rules/f4.rs holds the seven evaluators, read-only graph and wire helpers and register_f4_evaluators;
+    rules/mod.rs only declares and exports it; lib.rs exports the F4 input surface explicitly. Evaluators aggregate deterministically
+    (BTree sets, one violation per rule) and the existing engine owns finding identity (GeneratedFinding through rule
+    ID, sorted targets and condition key), effective severity and waivers (SCENARIO.TYPED and ASSUMPTIONS.VISIBLE stay
+    unwaivable by metadata). Registering I0, F1, F2, F3 and F4 binds exactly the 54 ValidationRegistry::required_now_rule_ids();
+    I_SCENARIO_FAIL and G_SCENARIO_UNDECIDABLE remain S4.4 execution findings outside both registries.
+  - Files (Hotfix 055). Only crates/plumb-validation/src/evaluator.rs, crates/plumb-validation/src/lib.rs, crates/plumb-validation/src/rules/f4.rs,
+    crates/plumb-validation/src/rules/mod.rs, crates/plumb-validation/tests/f4.rs and, at successful completion, docs/plan/EXECUTION-STATE.yaml
+    change. registry.rs, model.rs, the I0-F3 rules and tests, tests/profile.rs, tests/evaluator.rs, plumb-functional tests/golden.rs,
+    all other crates, Cargo files, fixtures, the rulebook, the rules YAML and the plan documents are unchanged. Production
+    code holds no HR constant, fixture path, inference, store, network, clock, mutation, execution or second Scenario
+    validator.
+  - 'Tests (Hotfix 055). crates/plumb-validation/tests/f4.rs covers: an applicable PASS and an isolated violation (state,
+    targets, condition key, finding severity and stable ID) for each rule; non-executable verification without a Scenario;
+    missing scenario obligation and implemented_as; Derived Scenarios rejected from scope; required ScenarioKinds; DecisionTable,
+    Transition, Calculation, Calendar, Operation and Event grounding and an ungrounded case; Valid and Invalid type checks
+    produced by the real plumb_functional::validate_scenario (dev-dependency) and a stale check; the blocking run matrix
+    (Pass, Fail, Undecidable, missing) and a non-blocking Undecidable; stale run, wrong model hash, mutated, noncanonical
+    and mismatched artifacts as InvalidContext; trace PASS, unknown step, bad order, result mismatch, Undecidable semantic-missing
+    PASS and lifecycle-only FAIL; assumption visibility PASS, missing, unexpected, inactive and unlinked; a full F4 PASS
+    fixture; waiver behaviour; missing F4 inputs; the exact seven registrations and the combined 54; the HR pre-answer
+    (blocking Undecidable fails) and post-answer (F4 PASS) sequence with fixture answers only as test oracle; reverse-order
+    determinism; independent Python goldens for an F4 input content hash, a Scenario specification hash and a trace artifact
+    hash; and production source guards.'
   tests:
-  - cargo test -p plumb-validation f4
+  - cargo test -p plumb-validation --test f4
+  - cargo test -p plumb-validation --no-fail-fast
   acceptance:
-  - All seven F4 rules have PASS/FAIL fixtures; HR fixture passes F4 after expert answers and required scenario confirmation.
+  - All seven F4 rules have applicable PASS and isolated violation fixtures over explicit F4 inputs; non-executable sources
+    verify without Scenarios, executable sources need confirmed in-scope Scenario coverage, valid S4.1 rule-row, transition
+    and boundary Scenarios are grounded, and stale or unbound evidence is rejected as invalid context.
+  - Blocking executable Scenarios pass only with a current Pass run; the HR fixture fails F4 before expert answers on
+    its blocking undecidable run and passes F4 after accepted answers, required Scenario confirmation, S4.5 links, current
+    type checks, passing runs, complete traces and exact assumption visibility.
+  - The combined I0, F1, F2, F3 and F4 registration binds exactly the 54 required NOW rule IDs; no production dependency
+    on plumb-functional or plumb-sim, no Cargo change and no metadata change beyond Hotfix 055.
   source_refs:
   - SRCREF-441E1C9F5A
   - SRCREF-2AC9336C3C
   - SRCREF-AD0A0F5D57
-  forbidden: []
+  forbidden:
+  - Do not change files outside the six-file allowlist (including registry.rs, model.rs, existing rules and tests, the
+    hash-golden test files, the rules YAML, rulebook, plan documents, Cargo files and fixtures); add production dependencies
+    on plumb-functional or plumb-sim; add or alias validation rules or register I_SCENARIO_FAIL or G_SCENARIO_UNDECIDABLE;
+    change F4 metadata; re-validate Scenario semantics, execute or compare Scenarios; infer applicability, blocking or
+    ScenarioKinds; select runs by time; implement custom waivers; mutate or persist; read a clock or fixtures; or start
+    S4.7.
   commands:
+  - cargo test -p plumb-validation --test f4
   - cargo test -p plumb-validation f4
+  - cargo test -p plumb-validation --no-fail-fast
+  - cargo test -p plumb-functional --no-fail-fast
+  - cargo test -p plumb-sim --no-fail-fast
+  - cargo test -p plumb-patch --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'S4.6: Implement all F4 validation rules'
 - id: S4.7
   title: Implement functional pilot projections and reports

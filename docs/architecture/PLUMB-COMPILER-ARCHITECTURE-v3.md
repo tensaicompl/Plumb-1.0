@@ -1075,6 +1075,12 @@ F4 requires the functional semantics that are executable through the functional 
 
 **Linkage.** A source is linked to its obligation by `verified_by`, and a scenario obligation to every accepted, confirmed scenario that exactly covers the source (directly, or through the operation that specifies a requirement) by `implemented_as`. An executable source without any covering scenario still receives its obligation, so missing coverage becomes visible. Obligation identity is the project, the source and the verification kind only; blocking status, implementations and audit never change it. The blocking scenarios derived here are what orchestration hands to incremental re-execution.
 
+### F4 validation inputs and applicability (S4.6, Hotfix 055)
+
+**Evidence, not re-execution.** F4 validates the accepted graph together with explicit, content-bound supplemental material produced upstream: the resolved verification applicability (implementation-scoped sources, executable sources, in-scope confirmed Scenarios, blocking Scenarios and any Scenario kinds the profile requires), one type-check result per in-scope Scenario bound to its specification hash, at most one current Scenario run per Scenario bound to its specification and to the model baseline through its canonical trace artifact, and the assumptions the gate output is meant to surface. Validation never depends on the scenario compiler or interpreter; stale or unbound material is an invalid context, while missing or failing proof is a rule violation.
+
+**Applicability-aware verification.** Every implementation-scoped source needs an accepted verification obligation of some kind; only executable sources need confirmed Scenario coverage. Scenarios are grounded by their derivation sources and anchors, typed by the content-bound S4 check, and a blocking Scenario is acceptable only when its current run passed, since comparison already accounts for expected business failures. Traces must be ordered, bound to their run and carry business-semantic evidence, or the missing semantics of an undecidable run. Active assumptions whose findings touch the covered sources, obligations or Scenarios must be surfaced exactly through the rule results.
+
 ### Gate
 
 `F4`

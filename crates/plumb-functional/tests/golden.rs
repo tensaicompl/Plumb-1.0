@@ -204,7 +204,7 @@ assumptions:
         "sha256:3a4a3d756d0821ced3cfd3f9e842975247a66d5cba8ed15ec47968e34588016a";
 
     const PROFILE_HASH: &str =
-        "sha256:08b5b1535eedf401dd002c26ffc7301cfc35a119680f75b664de691b41c3a52f";
+        "sha256:e6dc73ec3f1847e5e7fc5d71aef64b71c15a3e93838e64c7f246f275c65af055";
 
     /// The expected warnings of `hr_graph()`: (code, source refs).
     const GOLDEN_WARNINGS: [(&str, &[&str]); 13] = [

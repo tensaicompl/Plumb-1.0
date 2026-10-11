@@ -898,9 +898,12 @@ rules:
   title: In-scope functional obligations have a verification obligation
   severity: blocker
   rule_class: plumb_core
-  applies_when: Requirement/Operation is functional and implementation-scoped.
-  check: At least one verified_by link reaches an accepted VerificationObligation.
-  pass_condition: At least one verified_by link reaches an accepted VerificationObligation.
+  applies_when: Accepted Requirement/Operation is selected as implementation-scoped by the resolved F4 applicability input
+    (source_refs), including explicitly non-executable Requirements.
+  check: At least one accepted verified_by link reaches an accepted VerificationObligation of any verification kind; no implementation-scoped
+    source is NOT_APPLICABLE.
+  pass_condition: At least one accepted verified_by link reaches an accepted VerificationObligation of any verification kind;
+    no implementation-scoped source is NOT_APPLICABLE.
   waiver_policy: decision_required
   evaluation: deterministic
   finding_status_on_fail: Open
@@ -909,10 +912,13 @@ rules:
   title: Executable business behavior has representative scenarios
   severity: blocker
   rule_class: plumb_core
-  applies_when: Operation/Process/Rule participates in deterministic executable business behavior.
-  check: At least one accepted Scenario covers normal behavior and each blocking outcome/boundary class required by profile.
-  pass_condition: At least one accepted Scenario covers normal behavior and each blocking outcome/boundary class required
-    by profile.
+  applies_when: Accepted Requirement/Operation is classified as executable by the resolved F4 applicability input (executable_source_refs).
+  check: An accepted verified_by link reaches an accepted scenario VerificationObligation whose accepted implemented_as links
+    reach at least one in-scope Accepted Confirmed Scenario, plus one for every ScenarioKind the resolved profile explicitly
+    requires for the source.
+  pass_condition: An accepted verified_by link reaches an accepted scenario VerificationObligation whose accepted implemented_as
+    links reach at least one in-scope Accepted Confirmed Scenario, plus one for every ScenarioKind the resolved profile explicitly
+    requires for the source.
   waiver_policy: decision_required
   evaluation: deterministic
   finding_status_on_fail: Open
@@ -921,9 +927,11 @@ rules:
   title: Scenarios trace to obligations
   severity: blocker
   rule_class: plumb_core
-  applies_when: All in-scope accepted elements of the relevant type.
-  check: Each accepted Scenario references Requirement/AcceptanceCriterion/Rule/Transition from which it is derived.
-  pass_condition: Each accepted Scenario references Requirement/AcceptanceCriterion/Rule/Transition from which it is derived.
+  applies_when: Each in-scope Accepted Confirmed Scenario of the resolved F4 applicability input.
+  check: requirement_refs or derived_from_refs contain at least one accepted Requirement, AcceptanceCriterion, Rule, Transition,
+    DecisionTable, Operation, Event, Calculation or Calendar from which the Scenario is derived.
+  pass_condition: requirement_refs or derived_from_refs contain at least one accepted Requirement, AcceptanceCriterion, Rule,
+    Transition, DecisionTable, Operation, Event, Calculation or Calendar from which the Scenario is derived.
   waiver_policy: decision_required
   evaluation: deterministic
   finding_status_on_fail: Open
@@ -932,9 +940,11 @@ rules:
   title: Scenario Given/When/Then values are type-valid
   severity: blocker
   rule_class: plumb_core
-  applies_when: All in-scope accepted elements of the relevant type.
-  check: All scenario fixtures satisfy entity types, units, enum domains and operation inputs.
-  pass_condition: All scenario fixtures satisfy entity types, units, enum domains and operation inputs.
+  applies_when: Each in-scope Accepted Confirmed Scenario of the resolved F4 applicability input.
+  check: 'The S4 type-check result bound to the current Scenario specification is valid: all scenario fixtures satisfy entity
+    types, units, enum domains, references and operation inputs.'
+  pass_condition: 'The S4 type-check result bound to the current Scenario specification is valid: all scenario fixtures satisfy
+    entity types, units, enum domains, references and operation inputs.'
   waiver_policy: forbidden
   evaluation: deterministic
   finding_status_on_fail: Open
@@ -943,11 +953,13 @@ rules:
   title: Blocking executable scenarios are decidable
   severity: blocker
   rule_class: plumb_core
-  applies_when: All in-scope accepted elements of the relevant type.
-  check: Latest current ScenarioRun for every blocking executable scenario is Pass or an accepted expected-failure case; none
-    is Undecidable.
-  pass_condition: Latest current ScenarioRun for every blocking executable scenario is Pass or an accepted expected-failure
-    case; none is Undecidable.
+  applies_when: Each blocking executable Scenario of the resolved F4 applicability input.
+  check: The current ScenarioRun (the unique supplied run bound to the current Scenario specification and model baseline)
+    has result Pass; Fail, Undecidable or no current run is a violation. A correctly modelled expected business failure compares
+    as Pass.
+  pass_condition: The current ScenarioRun (the unique supplied run bound to the current Scenario specification and model baseline)
+    has result Pass; Fail, Undecidable or no current run is a violation. A correctly modelled expected business failure compares
+    as Pass.
   waiver_policy: decision_required
   evaluation: deterministic
   finding_status_on_fail: Open
@@ -956,9 +968,13 @@ rules:
   title: Scenario execution produces semantic trace
   severity: error
   rule_class: plumb_core
-  applies_when: All in-scope accepted elements of the relevant type.
-  check: ScenarioRun records operation/rule/calculation/transition steps sufficient to explain the result.
-  pass_condition: ScenarioRun records operation/rule/calculation/transition steps sufficient to explain the result.
+  applies_when: Each supplied current ScenarioRun of an in-scope Scenario.
+  check: The trace is ordered execution then comparison steps of the frozen S4 vocabulary, starts and completes for its Scenario
+    with the run result, and records business-semantic operation/rule/decision/calculation/transition/event steps sufficient
+    to explain the result; an Undecidable run may instead record its missing semantics.
+  pass_condition: The trace is ordered execution then comparison steps of the frozen S4 vocabulary, starts and completes for
+    its Scenario with the run result, and records business-semantic operation/rule/decision/calculation/transition/event steps
+    sufficient to explain the result; an Undecidable run may instead record its missing semantics.
   waiver_policy: decision_required
   evaluation: deterministic
   finding_status_on_fail: Open
@@ -967,9 +983,12 @@ rules:
   title: Assumptions affecting execution are visible in gate output
   severity: error
   rule_class: plumb_core
-  applies_when: All in-scope accepted elements of the relevant type.
-  check: Gate report lists every active assumption reachable from covered obligations.
-  pass_condition: Gate report lists every active assumption reachable from covered obligations.
+  applies_when: Active assumptions (Accepted, status Accepted) whose accepted Finding affects the F4 coverage frontier of
+    covered sources, their obligations, in-scope Scenarios and their traceability refs.
+  check: Gate output lists exactly the active assumptions reachable from covered obligations, through the rule result targets
+    and evidence.
+  pass_condition: Gate output lists exactly the active assumptions reachable from covered obligations, through the rule result
+    targets and evidence.
   waiver_policy: forbidden
   evaluation: deterministic
   finding_status_on_fail: Open

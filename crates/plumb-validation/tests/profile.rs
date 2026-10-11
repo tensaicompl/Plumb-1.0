@@ -22,11 +22,11 @@ mod profile_contract {
 
     // Calculated outside this crate (Python: PyYAML load, the documented normalization,
     // json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False), hashlib.sha256)
-    // over 95145 and 92373 canonical bytes respectively.
+    // over 97161 and 94389 canonical bytes respectively.
     const PROFILE_HASH: &str =
-        "sha256:08b5b1535eedf401dd002c26ffc7301cfc35a119680f75b664de691b41c3a52f";
+        "sha256:e6dc73ec3f1847e5e7fc5d71aef64b71c15a3e93838e64c7f246f275c65af055";
     const RULE_PACK_HASH: &str =
-        "sha256:6677e02dd7740bb294533513a4d5294576c62c65eb8606973ca998b565f1b2e7";
+        "sha256:b3a48aa0d0dc47b612697bbf35fa778499509343f74de43459fbcc145e21d33e";
 
     const GATE_RULE_COUNTS: [(GateId, usize); 13] = [
         (GateId::I0, 6),
