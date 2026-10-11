@@ -1597,6 +1597,10 @@ Plumb core must never depend semantically on one vendor.
 
 The stored artifact includes provider/model so enterprise customers can audit which model contributed to a proposal.
 
+### Live provider request material (X1.1, Hotfix 057)
+
+`InferenceProvider::execute` still takes only an `InferenceRequest` and returns a `ProviderExecution` (the inference artifact plus the exact raw response bytes and media type). Because the request carries only content hashes, live providers are provisioned with immutable, hash-bound request material supplied in memory by orchestration: the canonical context bytes, the exact prompt-template bytes and the exact schema-source bytes, each verified against the request before any network call. The provider has no graph, artifact-store or filesystem acquisition capability and reads no environment. Vendor adapters validate output locally against the exact Plumb schema and never translate it into a vendor-specific constrained-output subset unless native equivalence has been separately proven; unparseable, truncated, refused or schema-invalid output is a typed failure, never repaired, and retries belong to orchestration.
+
 ---
 
 ## 21. Concurrency and asynchronous jobs

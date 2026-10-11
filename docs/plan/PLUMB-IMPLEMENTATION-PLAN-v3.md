@@ -4276,40 +4276,56 @@ python3 scripts/verify-plan-contract.py
 
 **Write allowlist**
 
-- `crates/plumb-inference/src/anthropic.rs`
+- `crates/plumb-inference/src/lib.rs`
 - `crates/plumb-inference/src/provider.rs`
+- `crates/plumb-inference/src/anthropic.rs`
 - `crates/plumb-inference/tests/provider_contract.rs`
 - `scripts/manual-llm-smoke.sh`
+- `docs/plan/EXECUTION-STATE.yaml`
 
 **Required actions**
 
-1. Add AnthropicProvider under the plumb-inference Cargo feature anthropic using reqwest. The plumb-api and plumb-cli llm features enable plumb-inference/anthropic as defined in §5.4.
-2. Provider accepts only InferenceRequest and returns InferenceArtifact; caller supplies JSON schema/prompt artifacts.
-3. Record provider, model, parameters, raw_response_hash and validated_output_hash.
-4. No live provider test runs in CI; manual smoke script requires ANTHROPIC_API_KEY and exits with a clear error when absent.
-5. Provider/model string is configuration, not hard-coded semantic truth.
+1. Boundary (Hotfix 057). Hotfix 057 replaces the earlier X1.1 actions; where they differ, this contract governs. The InferenceProvider trait stays exactly fn execute(&self, request: &InferenceRequest) -> Result<ProviderExecution, ProviderError>; a live provider returns ProviderExecution (the InferenceArtifact plus the exact raw response bytes and media type), not a bare InferenceArtifact. InferenceRequest, ProviderPolicy, InferenceArtifact, ProviderExecution, model.rs, null.rs, mock.rs, the stage request builders, committed prompts and inference schemas are unchanged. X1.1 implements only the provider capability: no CLI, API, compiler, session or pipeline wiring.
+2. Request material (Hotfix 057). InferenceRequest carries only hashes, so a live provider is provisioned with immutable, hash-bound acquisition material supplied in memory by orchestration (never PSG truth, never a graph, store, artifact-store, file or environment capability). provider.rs adds the generic InferenceRequestMaterial {request_hash, context_json, prompt_template, schema_json} and InferenceRequestMaterialSet (new, from_materials, register, get; no mutable map access; a second material for the same request hash is DuplicateMaterial, never overwritten or deduplicated). InferenceRequestMaterial::validate_for(request) checks, without network: request_hash is Generic and equals request.id (MaterialRequestMismatch); SHA-256(context_json) = context_hash, SHA-256(prompt_template) = prompt_template_hash and SHA-256(schema_json) = schema_hash on the exact bytes (MaterialHashMismatch, no trimming or normalization); context_json is RFC 8785 canonical (re-canonicalization reproduces it, else NonCanonicalContext); the prompt is valid UTF-8 (InvalidPromptEncoding, no repair); the schema parses as JSON and compiles as JSON Schema Draft 2020-12 with the existing jsonschema crate (InvalidSchema). Material is never put in ProviderPolicy.config and the provider never reads prompt or schema files or infers paths from task_kind.
+3. Schema preservation (Hotfix 057). The exact committed Plumb schema is the acceptance contract: it is never transformed, reduced or stripped of constraints (minimum, maximum, minLength, maxLength, pattern, oneOf, anyOf, allOf, additionalProperties or any other). X1.1 does not use Anthropic native structured output (no output_config / json_schema), because existing Draft 2020-12 schemas are not guaranteed to map exactly to a vendor subset; the model receives the context and the exact schema as input, returns ordinary text that must be strict JSON, and the provider validates it locally against the compiled exact schema. Native constrained output needs a later task proving exact equivalence for every relevant schema.
+4. AnthropicProvider (Hotfix 057). Under feature anthropic (reqwest, already optional; plumb-api and plumb-cli llm enable it), anthropic.rs defines AnthropicProvider {client: reqwest::blocking::Client with a 120-second timeout and redirect policy none, api_key, endpoint, materials: InferenceRequestMaterialSet}. new(api_key, materials) uses https://api.anthropic.com/v1/messages; with_endpoint(api_key, endpoint, materials) accepts only http or https URLs without embedded credentials (InvalidEndpoint), using reqwest's URL type. The key is passed explicitly (production code never reads ANTHROPIC_API_KEY or any environment variable), must be non-empty without surrounding whitespace or control characters (InvalidSecret), and never appears in Debug (manual redacted Debug or none), errors, requests, parameters or artifacts.
+5. Provider config (Hotfix 057). execute runs only for provider_policy.provider == anthropic (else UnsupportedProvider before any lookup). provider_policy.config is exactly {adapter_version: 1, model: clean non-empty string, max_tokens: integer 1..=131072, api_version: clean non-empty string} plus optional workspace_id (clean non-empty string); unknown fields, a missing field or another adapter_version are InvalidProviderConfig. There is no default or hard-coded model, max_tokens or api_version and no sampling, thinking, effort, stop-sequence or tool parameter. adapter_version 1 binds the deterministic translation of request plus material into the HTTP request.
+6. Execution order and HTTP request (Hotfix 057). execute: (1) request.validate(); (2) provider check; (3) config decode; (4) material lookup by request.id (MaterialNotFound); (5) material.validate_for(request); (6) schema compile; (7) build the request; (8) exactly one POST to the endpoint; steps 1-6 make no HTTP connection. Headers: Authorization: Bearer <key>, anthropic-version: <api_version>, content-type: application/json and anthropic-workspace-id only when configured. Body: {model, max_tokens, system: the exact prompt string, messages: [{role: user, content: the RFC 8785 canonical JSON text of {context: <context value>, output_schema: <schema value>}}]} with no tools, tool_choice, output_config, thinking, sampling, prefill or stream. No retry, sleep, backoff or retry-after handling; retries belong to orchestration.
+7. Response handling (Hotfix 057). Non-2xx (including a redirect) is Remote {status, error_type, message, request_id} from the parsed error shape {type: error, error: {type, message}, request_id} or the request-id header, with None fields for a non-JSON body and no raw body, headers or credential in Display. Transport failures (DNS, connect, TLS, timeout) are Transport without the secret. A 2xx body is kept as the exact raw bytes with media type application/json and raw_response_hash = SHA-256(bytes); it must be JSON with type message, role assistant, a clean model, a content array and a stop_reason (additive fields are ignored, else MalformedResponse). stop_reason end_turn is success, refusal is Refusal, max_tokens is IncompleteOutput and any other value is UnexpectedStopReason. Exactly one text content block is required (none or several is MalformedResponse; other block types are ignored); its text must be exactly one JSON value with no fence stripping, brace searching, trimming of prose or repair (InvalidOutputJson), and must satisfy the compiled exact schema (SchemaInvalidOutput with sorted messages).
+8. Artifact (Hotfix 057). On success the InferenceArtifact is {request_hash: request.id, provider: anthropic, model: the model returned by Anthropic, parameters: request.provider_policy.config (exactly, so the configured model stays there), raw_response_hash, validated_output: CanonicalJson of the parsed output, validated_output_hash: its content hash} and the ProviderExecution {artifact, raw_response_media_type: application/json, raw_response: exact bytes} must pass execution.validate_for(request) (else InvalidProviderExecution). No endpoint, secret, timeout or request ID enters the artifact. Existing ProviderError variants keep their behaviour; the new typed variants are UnsupportedProvider, InvalidProviderConfig, InvalidSecret, InvalidEndpoint, MaterialNotFound, DuplicateMaterial, MaterialRequestMismatch, MaterialHashMismatch, NonCanonicalContext, InvalidPromptEncoding, InvalidSchema, Transport, Remote, MalformedResponse, UnexpectedStopReason, Refusal, IncompleteOutput, InvalidOutputJson, SchemaInvalidOutput and InvalidProviderExecution.
+9. Files and features (Hotfix 057). Only crates/plumb-inference/src/lib.rs (generic material exports and, under cfg(feature = "anthropic"), the anthropic module and AnthropicProvider), crates/plumb-inference/src/provider.rs (generic material types, validation, the material set and the new error variants; no reqwest, vendor shapes, graph or store), crates/plumb-inference/src/anthropic.rs, crates/plumb-inference/tests/provider_contract.rs, scripts/manual-llm-smoke.sh and, at successful completion, docs/plan/EXECUTION-STATE.yaml change. No Cargo, model.rs, null.rs, mock.rs, prompt, schema, fixture or other-crate change; feature-off plumb-inference has no reqwest in its normal dependency tree.
+10. Tests and smoke (Hotfix 057). provider_contract.rs covers feature-independent material validation (request, context, prompt and schema hash corruption, noncanonical context, invalid prompt UTF-8, invalid schema JSON and compilation), the material set (order independence, duplicates) and NullProvider/MockProvider regressions; under the anthropic feature, local std TcpListener tests on 127.0.0.1 (never api.anthropic.com) cover the exact outbound request and headers, secret confinement to the Authorization header, configured versus returned model, config validation (unknown and missing fields, adapter_version, max_tokens, workspace_id), provider mismatch, zero connections on pre-network failures, success with raw-byte and hash checks and validate_for, schema-invalid, non-JSON and fenced output, refusal, max_tokens, unknown stop reasons, zero and two text blocks, text plus non-text blocks, statuses 400, 401, 403, 404, 429, 500 and 529 with parsed or absent error fields, transport failure, an unfollowed redirect and exactly one connection on 529. One #[ignore] live test needs ANTHROPIC_API_KEY and ANTHROPIC_MODEL (optional ANTHROPIC_WORKSPACE_ID), uses max_tokens 128, api_version 2023-06-01, a tiny test prompt and the schema {"$schema": draft 2020-12, type object, additionalProperties false, required [ok], properties {ok: {const: true}}}, and expects {"ok":true}; scripts/manual-llm-smoke.sh (set -euo pipefail, no secret echo, no tracing or provisioning) fails clearly without the variables and runs only that ignored test with --features anthropic --ignored. CI never needs credentials.
 
 **Commands**
 
 ```bash
-cargo test -p plumb-inference --no-default-features
-cargo test -p plumb-inference --features anthropic
+cargo test -p plumb-inference --no-default-features --no-fail-fast
 if cargo tree -p plumb-inference --no-default-features -e normal | grep -qE '(^|[[:space:]])reqwest v'; then
   echo "ERROR: reqwest present in feature-off plumb-inference dependency graph" >&2
   exit 1
 fi
+cargo test -p plumb-inference --features anthropic --no-fail-fast
+cargo tree -p plumb-inference --features anthropic -e normal
+cargo check -p plumb-api --features llm
+cargo check -p plumb-cli --features llm
+cargo clippy -p plumb-inference --features anthropic --all-targets -- -D warnings
+cargo test --workspace --no-fail-fast
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+python3 scripts/verify-plan-contract.py
 ```
 
 **Tests**
 
-- `cargo test -p plumb-inference --no-default-features`
-- `cargo test -p plumb-inference --features anthropic`
+- `cargo test -p plumb-inference --no-default-features --no-fail-fast`
+- `cargo test -p plumb-inference --features anthropic --no-fail-fast`
 
 **Acceptance**
 
-- Mock/Null contract tests pass; feature-off build has no network dependency path; manual script is documented.
+- AnthropicProvider implements the unchanged InferenceProvider trait behind the anthropic feature, consuming only the request plus hash-bound in-memory request material, and returns a ProviderExecution whose artifact records the configured parameters, the returned model, the exact raw response hash and the locally schema-validated output.
+- The exact Draft 2020-12 Plumb schema is enforced locally without vendor schema translation; malformed material and configuration fail before any network call; refusals, truncation, non-JSON, fenced or schema-invalid output, remote statuses and transport failures are typed errors with no retry and no secret disclosure.
+- Mock and Null contracts still pass, the feature-off build has no reqwest dependency path, the plumb-api and plumb-cli llm features compile, automated tests use only a local server, and the live smoke is ignored and run only by the documented manual script.
 
 **Supporting references**
 
@@ -4320,6 +4336,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - Do not let AnthropicProvider access store/graph.
 - Do not make Anthropic the only possible trait implementation.
+
+**Task-specific prohibitions**
+
+- Do not change model.rs, null.rs, mock.rs, the InferenceProvider trait, InferenceRequest, ProviderPolicy, InferenceArtifact, ProviderExecution, stage request builders, prompts, inference schemas, Cargo files, fixtures or other crates; put material or secrets into ProviderPolicy or artifacts; give the provider graph, store, file or environment access; transform or weaken schemas or use native structured output; repair model output; retry automatically; wire the provider into CLI, API or pipelines; call api.anthropic.com from automated tests; or start X1.2.
 
 
 ### `X1.2` — Implement lexical BM25 retrieval index
