@@ -1054,3 +1054,138 @@ pub fn resolve_question(
         proposal,
     })
 }
+
+// ============================================================================ governed acceptance
+
+/// The `answer.kind` of a proposal-acceptance companion decision (Hotfix 065, metamodel §6.3).
+pub const ACCEPTANCE_DECISION_KIND: &str = "proposal_acceptance";
+
+/// `dec:<16 hex of SHA-256(RFC 8785 {kind: proposal_acceptance, project_id, proposal_ref,
+/// decided_by, decided_at, patch_ref})>`; the rationale and reason codes are not part of the
+/// identity (metamodel §6.3, Hotfix 065).
+pub fn acceptance_decision_id(
+    project_id: &Id,
+    proposal_ref: &Id,
+    decided_by: &Id,
+    decided_at: &Timestamp,
+    patch_ref: &Hash,
+) -> Result<Id, CoreError> {
+    short_id(
+        "dec",
+        &json!({
+            "kind": ACCEPTANCE_DECISION_KIND,
+            "project_id": project_id.to_string(),
+            "proposal_ref": proposal_ref.to_string(),
+            "decided_by": decided_by.to_string(),
+            "decided_at": serde_json::to_value(decided_at).map_err(|e| CoreError::Canonicalization(e.to_string()))?,
+            "patch_ref": patch_ref.as_str(),
+        }),
+    )
+}
+
+/// One governed acceptance of an already-built proposal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcceptanceInput {
+    /// The sorted unique wire strings of the intake report that gated the acceptance.
+    pub reason_codes: Vec<String>,
+    pub decided_by: Id,
+    pub decided_at: Timestamp,
+    /// The clean caller-supplied reason, if any.
+    pub rationale: Option<String>,
+}
+
+/// The companion decision and the combined acceptance patch; nothing has been applied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcceptanceCompanion {
+    pub decision_ref: Id,
+    /// The Accepted, proposal-only companion ResolutionDecision node.
+    pub decision_node: Node,
+    /// RFC 8785 bytes of the original PatchSet, to persist as a Patch artifact; their generic
+    /// SHA-256 is the companion's `patch_ref`.
+    pub original_patch_bytes: Vec<u8>,
+    pub patch_ref: Hash,
+    /// `Compound {original patch, AddNode companion}` on the original base semantic hash,
+    /// dry-run against the graph.
+    pub patch_set: PatchSet,
+}
+
+/// Builds the proposal-acceptance companion of `original` (metamodel §6.3, Hotfix 065): an
+/// Accepted ResolutionDecision `{question_ref None, proposal_ref original.id, answer {kind,
+/// reason_codes}}` whose `patch_ref` is the original PatchSet, added in one Compound after the
+/// unchanged original effect. The original proposal is never rewritten or re-identified.
+pub fn build_acceptance_companion(
+    graph: &Graph,
+    original: &Proposal,
+    input: &AcceptanceInput,
+) -> Result<AcceptanceCompanion, ResolutionError> {
+    let invalid = |reason: String| ResolutionError::InvalidResolutionProposal { reason };
+    if let Some(rationale) = &input.rationale {
+        if !clean(rationale) {
+            return Err(ResolutionError::InvalidRationale);
+        }
+    }
+    let mut reason_codes = input.reason_codes.clone();
+    reason_codes.sort();
+    reason_codes.dedup();
+    if reason_codes != input.reason_codes || reason_codes.iter().any(|c| !clean(c)) {
+        return Err(invalid(
+            "reason codes must be sorted, unique, clean wire strings".to_owned(),
+        ));
+    }
+    let original_patch_bytes = to_canonical_json(&original.patch_set)?;
+    let patch_ref = Hash::content_sha256(&original_patch_bytes);
+    let decision_ref = acceptance_decision_id(
+        graph.project_id(),
+        &original.id,
+        &input.decided_by,
+        &input.decided_at,
+        &patch_ref,
+    )?;
+    if graph.node(&decision_ref).is_some() || graph.edge(&decision_ref).is_some() {
+        return Err(ResolutionError::ResolutionDecisionIdCollision(decision_ref));
+    }
+    let decision = ResolutionDecision {
+        question_ref: None,
+        proposal_ref: Some(original.id.clone()),
+        answer: json!({"kind": ACCEPTANCE_DECISION_KIND, "reason_codes": reason_codes}),
+        decided_by: input.decided_by.clone(),
+        decided_at: input.decided_at,
+        patch_ref: patch_ref.clone(),
+        rationale: input.rationale.clone(),
+        supersedes: None,
+    };
+    let audit = AuditMeta::new(input.decided_by.clone(), input.decided_at, None, None)
+        .map_err(|e| invalid(e.to_string()))?;
+    let decision_node = Node {
+        id: decision_ref.clone(),
+        revision: 1,
+        status: ElementStatus::Accepted,
+        payload: NodePayload::ResolutionDecision(decision),
+        evidence: Vec::new(),
+        derivations: Vec::new(),
+        standards: Vec::new(),
+        tags: Default::default(),
+        extensions: Default::default(),
+        audit,
+    };
+    let patch_set = PatchSet {
+        base_semantic_hash: original.patch_set.base_semantic_hash.clone(),
+        patch: SemanticPatch::Compound {
+            patches: vec![
+                original.patch_set.patch.clone(),
+                SemanticPatch::AddNode {
+                    node: decision_node.clone(),
+                },
+            ],
+        },
+    };
+    apply_patch(graph, &patch_set)
+        .map_err(|e| invalid(format!("acceptance patch does not apply: {e}")))?;
+    Ok(AcceptanceCompanion {
+        decision_ref,
+        decision_node,
+        original_patch_bytes,
+        patch_ref,
+        patch_set,
+    })
+}

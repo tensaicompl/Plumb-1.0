@@ -12,7 +12,9 @@ pub use index::{
     IndexError, IndexUpdateSummary, LexicalIndex, RetrievalDocumentKind, RetrievalHit,
     RETRIEVAL_INDEX_VERSION,
 };
-pub use intake::{intake, validate_required_rationale, IntakeError, IntakeValidationInput};
+pub use intake::{
+    intake, is_validation_conflict, validate_required_rationale, IntakeError, IntakeValidationInput,
+};
 pub use report::{
     CoverageMatch, DeclaredConflict, DuplicateCandidate, IntakeAcceptanceError, IntakeReasonCode,
     IntakeReport, IntakeReportError, RefinementLink, SubjectNovelty, TermResolution,

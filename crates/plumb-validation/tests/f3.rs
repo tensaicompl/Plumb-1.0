@@ -1359,8 +1359,9 @@ mod f3_contract {
                 "dec:00000000000000c1",
                 Accepted,
                 NodePayload::ResolutionDecision(ResolutionDecision {
-                    question_ref: Some(id("q:0000000000000001")),
-                    proposal_ref: None,
+                    // Hotfix 065: Finding-bound (resolves only its Finding), so no question_ref.
+                    question_ref: None,
+                    proposal_ref: Some(id("prop:00000000000000c1")),
                     answer: json!({"kind": "requirement_supersession"}),
                     decided_by: id(HUMAN),
                     decided_at: ts(AT),
@@ -1458,21 +1459,39 @@ mod f3_contract {
         );
         // Missing governance target and missing artifact.
         let d = g.decisions["calculation_calendar"].clone();
-        // Retarget its resolves edges to another Question's Finding.
+        // Retarget its resolves edges to another Question's Finding. Hotfix 065: a
+        // question-bound decision that does not resolve its Question is now rejected by graph
+        // validation itself (metamodel §17.9), so it can no longer reach F3.
         let elsewhere = question_findings()[2].id.clone();
-        let untargeted = rebuild(&g.graph, |_, edges| {
-            for e in edges
-                .iter_mut()
-                .filter(|e| e.kind == RelationKind::Resolves && e.from == d)
-            {
-                e.to = elsewhere.clone();
-            }
-            let mut seen = BTreeSet::new();
-            edges.retain(|e| {
-                !(e.kind == RelationKind::Resolves && e.from == d) || seen.insert(e.to.clone())
-            });
+        let nodes: Vec<Node> = g.graph.nodes().values().cloned().collect();
+        let mut edges: Vec<Edge> = g.graph.edges().values().cloned().collect();
+        let question = match &g.graph.node(&d).unwrap().payload {
+            NodePayload::ResolutionDecision(decision) => decision.question_ref.clone().unwrap(),
+            _ => unreachable!(),
+        };
+        for e in edges
+            .iter_mut()
+            .filter(|e| e.kind == RelationKind::Resolves && e.from == d)
+        {
+            e.to = elsewhere.clone();
+        }
+        let mut seen = BTreeSet::new();
+        edges.retain(|e| {
+            !(e.kind == RelationKind::Resolves && e.from == d) || seen.insert(e.to.clone())
         });
-        fails(untargeted, "calculation_calendar");
+        let violations = Graph::new(
+            id("project:pilot"),
+            id("profile:plumb-software-2026.1"),
+            nodes,
+            edges,
+        )
+        .unwrap_err();
+        assert!(
+            violations.contains(&plumb_psg::GraphViolation::DecisionQuestionNotResolved {
+                decision: d.clone(),
+                question,
+            })
+        );
         let mut without = g.artifacts.clone();
         without.retain(|a| a.decision_ref != d);
         let report = evaluate(&g.graph, F3ValidationInputs::new(without, vec![]));

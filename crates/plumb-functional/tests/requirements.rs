@@ -1662,4 +1662,205 @@ mod requirements_contract {
             "different source candidates, different IDs"
         );
     }
+
+    // ------------------------------------------------------------------ split (Hotfix 065)
+
+    fn split_parent(status: ElementStatus) -> Node {
+        let mut node = Node {
+            id: id("req:parent"),
+            revision: 3,
+            status,
+            payload: NodePayload::Requirement(Requirement {
+                statement: "Employees shall submit and cancel requests.".into(),
+                requirement_kind: RequirementKind::Functional,
+                level: RequirementLevel::System,
+                modality: Modality::Shall,
+                title: Some("Requests".into()),
+                rationale: None,
+                priority: None,
+                source_identifier: Some("R-1".into()),
+                verification_method: None,
+                owner_refs: None,
+                stakeholder_refs: None,
+            }),
+            evidence: Vec::new(),
+            derivations: Vec::new(),
+            standards: Vec::new(),
+            tags: BTreeSet::from(["core".to_owned()]),
+            extensions: BTreeMap::new(),
+            audit: AuditMeta::new(id("agent:import"), ts("2026-01-01T00:00:00Z"), None, None)
+                .unwrap(),
+        };
+        node.extensions.insert(
+            SEGMENT_ORIGIN_EXTENSION.parse().unwrap(),
+            json!({"candidate": "c1"}),
+        );
+        node.extensions
+            .insert("acme:owner".parse().unwrap(), json!("team-a"));
+        node
+    }
+
+    fn split_input(parts: &[&str]) -> RequirementSplitInput {
+        RequirementSplitInput {
+            parent_ref: id("req:parent"),
+            parts: parts.iter().map(|p| (*p).to_owned()).collect(),
+            actor_ref: id("agent:analyst"),
+            at: ts("2026-02-02T10:00:00Z"),
+        }
+    }
+
+    fn split_graph(status: ElementStatus) -> Graph {
+        Graph::new(
+            id("project:pilot"),
+            id("profile:plumb-software-2026.1"),
+            vec![split_parent(status)],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn requirement_split_children_edges_and_supersession() {
+        let g = split_graph(ElementStatus::Accepted);
+        let proposal = propose_requirement_split(
+            &g,
+            &split_input(&[
+                "Employees shall submit requests.",
+                "Employees shall cancel requests.",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(proposal.stage, StageId::S1);
+        assert_eq!(proposal.materiality, ProposalMateriality::MaterialDecision);
+        assert_eq!(proposal.acceptance_policy, AcceptancePolicy::HumanDecision);
+        assert_eq!(
+            proposal.patch_set.base_semantic_hash,
+            g.semantic_hash().unwrap()
+        );
+        let SemanticPatch::Compound { patches } = &proposal.patch_set.patch else {
+            panic!("not a Compound")
+        };
+        // Independent Python goldens of {kind, project_id, parent_ref, index}.
+        let children = ["req:e77ed9d9f53492ce", "req:c9c4cfb7fc8b8a97"];
+        assert_eq!(
+            split_child_id(&id("project:pilot"), &id("req:parent"), 0).unwrap(),
+            id(children[0])
+        );
+        assert_eq!(patches.len(), 5);
+        for (index, child) in children.iter().enumerate() {
+            let SemanticPatch::AddNode { node } = &patches[index] else {
+                panic!("child {index} is not AddNode")
+            };
+            assert_eq!(node.id, id(child));
+            assert_eq!(node.status, ElementStatus::Accepted);
+            let NodePayload::Requirement(r) = &node.payload else {
+                panic!()
+            };
+            let parent = split_parent(ElementStatus::Accepted);
+            let NodePayload::Requirement(p) = &parent.payload else {
+                panic!()
+            };
+            let mut expected = p.clone();
+            expected.statement = split_input(&[
+                "Employees shall submit requests.",
+                "Employees shall cancel requests.",
+            ])
+            .parts[index]
+                .clone();
+            assert_eq!(r, &expected);
+            assert_eq!(node.tags, parent.tags);
+            assert_eq!(
+                serde_json::to_value(&node.extensions).unwrap(),
+                json!({
+                    "acme:owner": "team-a",
+                    "plumb_functional:requirement_split_origin": {"parent_ref": "req:parent", "index": index}
+                })
+            );
+            assert_eq!(node.audit.created_by, id("agent:analyst"));
+            let SemanticPatch::AddEdge { edge } = &patches[2 + index] else {
+                panic!("edge {index} is not AddEdge")
+            };
+            assert_eq!(edge.kind, plumb_psg::RelationKind::DecomposesTo);
+            assert_eq!(edge.from, id("req:parent"));
+            assert_eq!(edge.to, id(child));
+            assert_eq!(edge.status, ElementStatus::Accepted);
+            assert_eq!(
+                edge.id.as_str(),
+                sha_id(
+                    "rel",
+                    &json!({"kind": "decomposes_to", "from": "req:parent", "to": child})
+                )
+            );
+        }
+        assert!(matches!(
+            &patches[4],
+            SemanticPatch::SetStatus { from: ElementStatus::Accepted, to: ElementStatus::Superseded, target } if target.id == id("req:parent")
+        ));
+        let after = apply_patch(&g, &proposal.patch_set).unwrap().graph;
+        assert_eq!(
+            after.node(&id("req:parent")).unwrap().status,
+            ElementStatus::Superseded
+        );
+        // Identity is independent of the statements.
+        let other =
+            propose_requirement_split(&g, &split_input(&["A shall x.", "B shall y."])).unwrap();
+        let SemanticPatch::Compound { patches: other } = &other.patch_set.patch else {
+            panic!()
+        };
+        let SemanticPatch::AddNode { node } = &other[0] else {
+            panic!()
+        };
+        assert_eq!(node.id, id(children[0]));
+    }
+
+    #[test]
+    fn requirement_split_rejects_invalid_input() {
+        let g = split_graph(ElementStatus::Accepted);
+        assert_eq!(
+            propose_requirement_split(&g, &split_input(&["Only one."])),
+            Err(RequirementSplitError::TooFewParts(1))
+        );
+        for bad in ["", " padded", "tab\tinside"] {
+            assert_eq!(
+                propose_requirement_split(&g, &split_input(&["Fine.", bad])),
+                Err(RequirementSplitError::InvalidPart(1))
+            );
+        }
+        assert_eq!(
+            propose_requirement_split(&g, &split_input(&["Same.", "Other.", "Same."])),
+            Err(RequirementSplitError::DuplicatePart {
+                first: 0,
+                second: 2
+            })
+        );
+        let proposed = split_graph(ElementStatus::Proposed);
+        assert_eq!(
+            propose_requirement_split(&proposed, &split_input(&["A.", "B."])),
+            Err(RequirementSplitError::NotAccepted(id("req:parent")))
+        );
+        let mut missing = split_input(&["A.", "B."]);
+        missing.parent_ref = id("req:nowhere");
+        assert_eq!(
+            propose_requirement_split(&g, &missing),
+            Err(RequirementSplitError::NotARequirement(id("req:nowhere")))
+        );
+        // A collision with an existing node is never overwritten.
+        let mut nodes = vec![split_parent(ElementStatus::Accepted)];
+        let mut taken = split_parent(ElementStatus::Proposed);
+        taken.id = id("req:c9c4cfb7fc8b8a97");
+        nodes.push(taken);
+        let collided = Graph::new(
+            id("project:pilot"),
+            id("profile:plumb-software-2026.1"),
+            nodes,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            propose_requirement_split(&collided, &split_input(&["A.", "B."])),
+            Err(RequirementSplitError::IdCollision(id(
+                "req:c9c4cfb7fc8b8a97"
+            )))
+        );
+    }
 }

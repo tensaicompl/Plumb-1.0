@@ -656,3 +656,98 @@ pub fn analyze_requirement_duplicates(
         proposals,
     })
 }
+
+// ============================================================================ explicit duplicate marking
+
+/// Why a requirement cannot be marked as a duplicate (Hotfix 065).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum DuplicateMarkError {
+    #[error(transparent)]
+    Core(#[from] CoreError),
+    /// The element does not exist or is not a Requirement.
+    #[error("{0} is not a Requirement")]
+    NotARequirement(Id),
+    /// The Requirement is not Accepted.
+    #[error("requirement {0} is not Accepted")]
+    NotAccepted(Id),
+    /// The duplicate and its replacement are the same Requirement.
+    #[error("requirement {0} cannot duplicate itself")]
+    SameRequirement(Id),
+    /// The deterministic supersedes edge ID is already used.
+    #[error("id {0} is already used")]
+    IdCollision(Id),
+    /// The proposal could not be built.
+    #[error("invalid proposal: {reason}")]
+    InvalidProposal { reason: String },
+}
+
+fn accepted_requirement<'g>(graph: &'g Graph, id: &Id) -> Result<&'g Node, DuplicateMarkError> {
+    let node = graph
+        .node(id)
+        .filter(|n| matches!(n.payload, NodePayload::Requirement(_)))
+        .ok_or_else(|| DuplicateMarkError::NotARequirement(id.clone()))?;
+    if node.status != ElementStatus::Accepted {
+        return Err(DuplicateMarkError::NotAccepted(id.clone()));
+    }
+    Ok(node)
+}
+
+/// Proposes the explicit supersession of the Accepted duplicate `duplicate_ref` by the Accepted
+/// canonical replacement `of_ref` (Hotfix 065): canonical `Supersede {old: duplicate, new: of,
+/// edge: Accepted supersedes of -> duplicate}`. Never a node merge; the S1.3 exact-duplicate
+/// analysis stays separate. Stage S1, MaterialDecision, HUMAN_DECISION.
+pub fn propose_duplicate_supersession(
+    graph: &Graph,
+    duplicate_ref: &Id,
+    of_ref: &Id,
+    actor_ref: &Id,
+    at: plumb_core::Timestamp,
+) -> Result<Proposal, DuplicateMarkError> {
+    if duplicate_ref == of_ref {
+        return Err(DuplicateMarkError::SameRequirement(duplicate_ref.clone()));
+    }
+    let old = accepted_requirement(graph, duplicate_ref)?;
+    let new = accepted_requirement(graph, of_ref)?;
+    let invalid = |reason: String| DuplicateMarkError::InvalidProposal { reason };
+    let edge_id = supersedes_edge_id(&new.id, &old.id)?;
+    if graph.node(&edge_id).is_some() || graph.edge(&edge_id).is_some() {
+        return Err(DuplicateMarkError::IdCollision(edge_id));
+    }
+    let edge = Edge {
+        id: edge_id,
+        revision: 1,
+        status: ElementStatus::Accepted,
+        kind: RelationKind::Supersedes,
+        from: new.id.clone(),
+        to: old.id.clone(),
+        properties: RelationProperties::None,
+        evidence: Vec::new(),
+        derivations: Vec::new(),
+        standards: Vec::new(),
+        audit: AuditMeta::new(actor_ref.clone(), at, None, None)
+            .map_err(|e| invalid(e.to_string()))?,
+    };
+    let pre = |node: &Node| -> Result<ElementPrecondition, DuplicateMarkError> {
+        Ok(ElementPrecondition {
+            id: node.id.clone(),
+            expected_hash: node_element_hash(node)?,
+        })
+    };
+    Proposal::new(
+        StageId::S1,
+        PatchSet {
+            base_semantic_hash: graph.semantic_hash()?,
+            patch: SemanticPatch::Supersede {
+                old: pre(old)?,
+                new: pre(new)?,
+                edge,
+            },
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::MaterialDecision,
+        AcceptancePolicy::HumanDecision,
+        None,
+    )
+    .map_err(|e| invalid(e.to_string()))
+}

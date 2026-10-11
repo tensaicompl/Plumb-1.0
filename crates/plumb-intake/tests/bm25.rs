@@ -405,6 +405,35 @@ mod bm25 {
         );
     }
 
+    #[test]
+    fn indexed_text_is_the_exact_read_only_projection() {
+        // Hotfix 065: search snippets are prefixes of exactly the indexed text.
+        let g = representative();
+        let index = build(&g);
+        assert_eq!(
+            index.indexed_text(&id("requirement:r1")),
+            Some("The employee shall submit a leave request.")
+        );
+        assert_eq!(
+            index.indexed_text(&id("concept:leave")),
+            Some("Leave\nAn approved absence from work.")
+        );
+        assert_eq!(
+            index.indexed_text(&id(FRAGMENT_ID)),
+            Some("Employees request leave in half-day units.")
+        );
+        // Proposed, token-empty and unsupported nodes are not indexed.
+        for absent in ["requirement:r3", "requirement:r4", SOURCE_ID, "entity:x"] {
+            assert_eq!(index.indexed_text(&id(absent)), None, "{absent}");
+        }
+        // Every hit of a search has indexed text, and the accessor never changes the index.
+        let before = index.clone();
+        for hit in search(&index, "leave", usize::MAX) {
+            assert!(index.indexed_text(&hit.id).is_some());
+        }
+        assert_eq!(index, before);
+    }
+
     const REGRESSION_QUERIES: &[&str] = &[
         "leave",
         "leave request",

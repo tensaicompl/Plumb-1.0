@@ -802,7 +802,7 @@ fn short_id(prefix: &str, body: &JsonValue) -> Result<Id, CoreError> {
 }
 
 /// `process:<16 hex of SHA-256(RFC 8785 {project_id, name, node_type: process})>`.
-fn process_id(project_id: &Id, name: &str) -> Result<Id, CoreError> {
+pub fn process_id(project_id: &Id, name: &str) -> Result<Id, CoreError> {
     short_id(
         "process",
         &json!({"project_id": project_id, "name": name, "node_type": "process"}),
@@ -810,7 +810,7 @@ fn process_id(project_id: &Id, name: &str) -> Result<Id, CoreError> {
 }
 
 /// `process_node:<16 hex of SHA-256(RFC 8785 {project_id, process_ref, node_key, node_type})>`.
-fn process_node_id(project_id: &Id, process_ref: &Id, node_key: &str) -> Result<Id, CoreError> {
+pub fn process_node_id(project_id: &Id, process_ref: &Id, node_key: &str) -> Result<Id, CoreError> {
     short_id(
         "process_node",
         &json!({
@@ -1457,4 +1457,731 @@ pub fn analyze_processes(
         proposals,
         issues: Vec::new(),
     })
+}
+
+// ============================================================================ linear processes (Hotfix 065)
+
+/// A strict linear Process: one start, one end, single-successor interior steps in flow order
+/// and the `next` edges between them, over its active (Proposed or Accepted) members.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearProcess {
+    pub process_ref: Id,
+    pub name: String,
+    pub start: Id,
+    pub end: Id,
+    /// Interior steps in flow order.
+    pub interior: Vec<Id>,
+    /// The active `next` edges in flow order: start -> first, .., last -> end.
+    pub flow_edges: Vec<Id>,
+}
+
+/// Why a Process is not a strict linear Accepted Process.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum LinearProcessError {
+    #[error(transparent)]
+    Core(#[from] CoreError),
+    #[error("{0} is not a Process")]
+    NotAProcess(Id),
+    #[error("process {0} is not Accepted")]
+    NotAccepted(Id),
+    #[error("process {process_ref} is not strictly linear: {reason}")]
+    NotLinear { process_ref: Id, reason: String },
+}
+
+fn not_linear(process_ref: &Id, reason: impl Into<String>) -> LinearProcessError {
+    LinearProcessError::NotLinear {
+        process_ref: process_ref.clone(),
+        reason: reason.into(),
+    }
+}
+
+/// The active `next` edges incident on `node`.
+fn flow_edges_of<'g>(graph: &'g Graph, node: &Id, outgoing: bool) -> Vec<&'g Edge> {
+    let ids = if outgoing {
+        graph.outgoing_edge_ids(node)
+    } else {
+        graph.incoming_edge_ids(node)
+    };
+    ids.iter()
+        .filter_map(|e| graph.edge(e))
+        .filter(|e| e.kind == RelationKind::Next && is_active(e.status))
+        .collect()
+}
+
+/// Recognizes a strict linear Accepted Process (Hotfix 065): over its active ProcessNodes and
+/// `next` edges exactly one start (indegree 0, outdegree 1) and one end (indegree 1, outdegree
+/// 0), every interior node with indegree 1 and outdegree 1, one start -> end traversal visiting
+/// every member once, no gateway and no active `next` edge crossing the process boundary.
+pub fn linear_process(
+    graph: &Graph,
+    process_ref: &Id,
+) -> Result<LinearProcess, LinearProcessError> {
+    let process = graph
+        .node(process_ref)
+        .ok_or_else(|| LinearProcessError::NotAProcess(process_ref.clone()))?;
+    let NodePayload::Process(payload) = &process.payload else {
+        return Err(LinearProcessError::NotAProcess(process_ref.clone()));
+    };
+    if process.status != ElementStatus::Accepted {
+        return Err(LinearProcessError::NotAccepted(process_ref.clone()));
+    }
+    let members: BTreeSet<Id> = graph
+        .node_ids_by_type(NodeType::ProcessNode)
+        .iter()
+        .filter_map(|id| graph.node(id))
+        .filter(|n| is_active(n.status))
+        .filter(
+            |n| matches!(&n.payload, NodePayload::ProcessNode(p) if &p.process_ref == process_ref),
+        )
+        .map(|n| n.id.clone())
+        .collect();
+    if members.len() < 2 {
+        return Err(not_linear(process_ref, "fewer than two process nodes"));
+    }
+    let mut start = None;
+    let mut end = None;
+    let mut successor: BTreeMap<&Id, &Edge> = BTreeMap::new();
+    for member in &members {
+        if let Some(NodePayload::ProcessNode(p)) = graph.node(member).map(|n| &n.payload) {
+            if matches!(
+                p.node_kind,
+                ProcessNodeKind::ExclusiveGateway
+                    | ProcessNodeKind::ParallelSplit
+                    | ProcessNodeKind::ParallelJoin
+            ) {
+                return Err(not_linear(process_ref, format!("{member} is a gateway")));
+            }
+        }
+        let out = flow_edges_of(graph, member, true);
+        let inc = flow_edges_of(graph, member, false);
+        if out
+            .iter()
+            .map(|e| &e.to)
+            .chain(inc.iter().map(|e| &e.from))
+            .any(|other| !members.contains(other))
+        {
+            return Err(not_linear(
+                process_ref,
+                format!("{member} has flow crossing the process boundary"),
+            ));
+        }
+        match (inc.len(), out.len()) {
+            (0, 1) if start.is_none() => start = Some(member),
+            (1, 0) if end.is_none() => end = Some(member),
+            (1, 1) => {}
+            (i, o) => {
+                return Err(not_linear(
+                    process_ref,
+                    format!("{member} has indegree {i} and outdegree {o}"),
+                ))
+            }
+        }
+        if let [edge] = out.as_slice() {
+            successor.insert(member, edge);
+        }
+    }
+    let (Some(start), Some(end)) = (start, end) else {
+        return Err(not_linear(process_ref, "no unique start and end"));
+    };
+    let mut interior = Vec::new();
+    let mut flow_edges = Vec::new();
+    let mut visited = BTreeSet::from([start]);
+    let mut current = start;
+    while current != end {
+        let edge = successor
+            .get(current)
+            .ok_or_else(|| not_linear(process_ref, format!("{current} has no successor")))?;
+        flow_edges.push(edge.id.clone());
+        let next = &edge.to;
+        if !visited.insert(next) {
+            return Err(not_linear(process_ref, "the flow has a cycle"));
+        }
+        if next != end {
+            interior.push(next.clone());
+        }
+        current = next;
+    }
+    if visited.len() != members.len() {
+        return Err(not_linear(
+            process_ref,
+            "the start -> end traversal does not visit every node",
+        ));
+    }
+    Ok(LinearProcess {
+        process_ref: process_ref.clone(),
+        name: payload.name.clone(),
+        start: start.clone(),
+        end: end.clone(),
+        interior,
+        flow_edges,
+    })
+}
+
+/// One requested step change; positions are zero-based among interior steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessStepChange {
+    Add { operation_ref: Id, position: usize },
+    Move { node_ref: Id, position: usize },
+    Remove { node_ref: Id },
+}
+
+/// Why a step change cannot be proposed.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ProcessStepError {
+    #[error(transparent)]
+    Core(#[from] CoreError),
+    #[error(transparent)]
+    Linear(#[from] LinearProcessError),
+    /// The referenced operation or process node does not exist.
+    #[error("{0} does not exist")]
+    Missing(Id),
+    /// The referenced element exists but is not of the required type or state.
+    #[error("{node_ref} is not {expected}")]
+    WrongTarget {
+        node_ref: Id,
+        expected: &'static str,
+    },
+    /// The position is outside the allowed range.
+    #[error("position {position} is outside 0..={max}")]
+    PositionOutOfRange { position: usize, max: usize },
+    /// The step is already at the requested position.
+    #[error("{0} is already at this position")]
+    NoChange(Id),
+    /// The step has active relations other than its flow.
+    #[error("{node_ref} has active relations {edges:?}")]
+    HasRelations { node_ref: Id, edges: Vec<Id> },
+    /// A deterministic ID is already used.
+    #[error("id {0} is already used")]
+    IdCollision(Id),
+    /// The candidate does not apply or fails process analysis.
+    #[error("the mutated process is invalid: {reason}")]
+    MutationInvalid { reason: String },
+}
+
+/// `process_node:<16 hex of SHA-256(RFC 8785 {kind: api_process_step, project_id, process_ref,
+/// operation_ref, base_semantic_hash, requested_position})>`.
+pub fn api_process_step_id(
+    project_id: &Id,
+    process_ref: &Id,
+    operation_ref: &Id,
+    base_semantic_hash: &Hash,
+    requested_position: usize,
+) -> Result<Id, CoreError> {
+    short_id(
+        "process_node",
+        &json!({
+            "kind": "api_process_step",
+            "project_id": project_id,
+            "process_ref": process_ref,
+            "operation_ref": operation_ref,
+            "base_semantic_hash": base_semantic_hash.as_str(),
+            "requested_position": requested_position,
+        }),
+    )
+}
+
+fn precondition_of_edge(edge: &Edge) -> Result<plumb_patch::ElementPrecondition, CoreError> {
+    Ok(plumb_patch::ElementPrecondition {
+        id: edge.id.clone(),
+        expected_hash: plumb_psg::edge_element_hash(edge)?,
+    })
+}
+
+/// An Accepted `next` edge with its deterministic ID and the actor's audit.
+fn flow_edge(from: &Id, to: &Id, audit: &AuditMeta) -> Result<Edge, CoreError> {
+    Ok(Edge {
+        id: edge_id(&RelationKind::Next, from, to)?,
+        revision: 1,
+        status: ElementStatus::Accepted,
+        kind: RelationKind::Next,
+        from: from.clone(),
+        to: to.clone(),
+        properties: RelationProperties::None,
+        evidence: Vec::new(),
+        derivations: Vec::new(),
+        standards: Vec::new(),
+        audit: audit.clone(),
+    })
+}
+
+/// The flow edge from `from` to `to` in the linear process.
+fn flow_between<'g>(graph: &'g Graph, from: &Id, to: &Id) -> Result<&'g Edge, ProcessStepError> {
+    flow_edges_of(graph, from, true)
+        .into_iter()
+        .find(|e| &e.to == to)
+        .ok_or_else(|| ProcessStepError::MutationInvalid {
+            reason: format!("no flow from {from} to {to}"),
+        })
+}
+
+/// Predecessor and successor of interior position `position` in `steps`.
+fn neighbours<'a>(linear: &'a LinearProcess, steps: &'a [Id], position: usize) -> (&'a Id, &'a Id) {
+    let pred = if position == 0 {
+        &linear.start
+    } else {
+        &steps[position - 1]
+    };
+    let succ = steps.get(position).unwrap_or(&linear.end);
+    (pred, succ)
+}
+
+/// Predecessor and successor of the interior step at index `current`.
+fn around(linear: &LinearProcess, current: usize) -> (&Id, &Id) {
+    let pred = if current == 0 {
+        &linear.start
+    } else {
+        &linear.interior[current - 1]
+    };
+    (
+        pred,
+        linear.interior.get(current + 1).unwrap_or(&linear.end),
+    )
+}
+
+/// Proposes one step change of a strict linear Accepted Process (Hotfix 065): `Add` inserts an
+/// Accepted service task for an Accepted Operation, `Move` reinserts an interior step among the
+/// remaining ones, `Remove` deletes an interior step without other active relations; only the
+/// affected `next` edges are rebuilt. The candidate must pass process analysis. Stage S2,
+/// Semantic, HUMAN_CONFIRM.
+pub fn propose_process_step_change(
+    graph: &Graph,
+    process_ref: &Id,
+    change: &ProcessStepChange,
+    actor_ref: &Id,
+    at: Timestamp,
+) -> Result<Proposal, ProcessStepError> {
+    let linear = linear_process(graph, process_ref)?;
+    let base = graph.semantic_hash()?;
+    let audit = AuditMeta::new(actor_ref.clone(), at, None, None).map_err(|e| {
+        ProcessStepError::MutationInvalid {
+            reason: e.to_string(),
+        }
+    })?;
+    let free = |id: &Id| -> Result<(), ProcessStepError> {
+        if graph.node(id).is_some() || graph.edge(id).is_some() {
+            Err(ProcessStepError::IdCollision(id.clone()))
+        } else {
+            Ok(())
+        }
+    };
+    let remove = |edge: &Edge| -> Result<SemanticPatch, ProcessStepError> {
+        Ok(SemanticPatch::RemoveEdge {
+            target: precondition_of_edge(edge)?,
+        })
+    };
+    let add = |from: &Id, to: &Id| -> Result<SemanticPatch, ProcessStepError> {
+        let edge = flow_edge(from, to, &audit)?;
+        free(&edge.id)?;
+        Ok(SemanticPatch::AddEdge { edge })
+    };
+    let interior_step = |node_ref: &Id| -> Result<usize, ProcessStepError> {
+        if graph.node(node_ref).is_none() {
+            return Err(ProcessStepError::Missing(node_ref.clone()));
+        }
+        linear
+            .interior
+            .iter()
+            .position(|n| n == node_ref)
+            .ok_or_else(|| ProcessStepError::WrongTarget {
+                node_ref: node_ref.clone(),
+                expected: "an active interior step of the process",
+            })
+    };
+    let patches = match change {
+        ProcessStepChange::Add {
+            operation_ref,
+            position,
+        } => {
+            let operation = graph
+                .node(operation_ref)
+                .ok_or_else(|| ProcessStepError::Missing(operation_ref.clone()))?;
+            if operation.status != ElementStatus::Accepted
+                || operation.payload.node_type() != NodeType::Operation
+            {
+                return Err(ProcessStepError::WrongTarget {
+                    node_ref: operation_ref.clone(),
+                    expected: "an Accepted Operation",
+                });
+            }
+            let max = linear.interior.len();
+            if *position > max {
+                return Err(ProcessStepError::PositionOutOfRange {
+                    position: *position,
+                    max,
+                });
+            }
+            let node_id = api_process_step_id(
+                graph.project_id(),
+                process_ref,
+                operation_ref,
+                &base,
+                *position,
+            )?;
+            free(&node_id)?;
+            let (pred, succ) = neighbours(&linear, &linear.interior, *position);
+            let node = Node {
+                id: node_id.clone(),
+                revision: 1,
+                status: ElementStatus::Accepted,
+                payload: NodePayload::ProcessNode(ProcessNode {
+                    process_ref: process_ref.clone(),
+                    node_kind: ProcessNodeKind::ServiceTask,
+                    operation_ref: Some(operation_ref.clone()),
+                    condition_expr: None,
+                    message_ref: None,
+                    timer_expr: None,
+                }),
+                evidence: Vec::new(),
+                derivations: Vec::new(),
+                standards: Vec::new(),
+                tags: BTreeSet::new(),
+                extensions: BTreeMap::new(),
+                audit: audit.clone(),
+            };
+            vec![
+                remove(flow_between(graph, pred, succ)?)?,
+                SemanticPatch::AddNode { node },
+                add(pred, &node_id)?,
+                add(&node_id, succ)?,
+            ]
+        }
+        ProcessStepChange::Move { node_ref, position } => {
+            let current = interior_step(node_ref)?;
+            let remaining: Vec<Id> = linear
+                .interior
+                .iter()
+                .filter(|n| *n != node_ref)
+                .cloned()
+                .collect();
+            let max = remaining.len();
+            if *position > max {
+                return Err(ProcessStepError::PositionOutOfRange {
+                    position: *position,
+                    max,
+                });
+            }
+            if *position == current {
+                return Err(ProcessStepError::NoChange(node_ref.clone()));
+            }
+            let (old_pred, old_succ) = around(&linear, current);
+            let (new_pred, new_succ) = neighbours(&linear, &remaining, *position);
+            vec![
+                remove(flow_between(graph, old_pred, node_ref)?)?,
+                remove(flow_between(graph, node_ref, old_succ)?)?,
+                remove(flow_between(graph, new_pred, new_succ)?)?,
+                add(old_pred, old_succ)?,
+                add(new_pred, node_ref)?,
+                add(node_ref, new_succ)?,
+            ]
+        }
+        ProcessStepChange::Remove { node_ref } => {
+            let current = interior_step(node_ref)?;
+            let mut others: Vec<Id> = graph
+                .outgoing_edge_ids(node_ref)
+                .iter()
+                .chain(graph.incoming_edge_ids(node_ref))
+                .filter_map(|e| graph.edge(e))
+                .filter(|e| is_active(e.status) && e.kind != RelationKind::Next)
+                .map(|e| e.id.clone())
+                .collect();
+            others.sort();
+            others.dedup();
+            if !others.is_empty() {
+                return Err(ProcessStepError::HasRelations {
+                    node_ref: node_ref.clone(),
+                    edges: others,
+                });
+            }
+            let (pred, succ) = around(&linear, current);
+            let node = graph
+                .node(node_ref)
+                .ok_or_else(|| ProcessStepError::Missing(node_ref.clone()))?;
+            vec![
+                remove(flow_between(graph, pred, node_ref)?)?,
+                remove(flow_between(graph, node_ref, succ)?)?,
+                add(pred, succ)?,
+                SemanticPatch::RemoveNode {
+                    target: plumb_patch::ElementPrecondition {
+                        id: node.id.clone(),
+                        expected_hash: plumb_psg::node_element_hash(node)?,
+                    },
+                },
+            ]
+        }
+    };
+    let invalid = |reason: String| ProcessStepError::MutationInvalid { reason };
+    let proposal = Proposal::new(
+        PROCESS_STAGE,
+        PatchSet {
+            base_semantic_hash: base,
+            patch: SemanticPatch::Compound { patches },
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::Semantic,
+        AcceptancePolicy::HumanConfirm,
+        None,
+    )
+    .map_err(|e| invalid(e.to_string()))?;
+    let candidate = apply_patch(graph, &proposal.patch_set).map_err(|e| invalid(e.to_string()))?;
+    let analysis = analyze_process(
+        &candidate.graph,
+        process_ref,
+        ProcessAnalysisMode::ActiveOverlay,
+    )
+    .map_err(|e| invalid(e.to_string()))?;
+    let issues = analysis_issues(&analysis);
+    if !issues.is_empty() {
+        return Err(invalid(format!("process analysis reports {issues:?}")));
+    }
+    Ok(proposal)
+}
+
+/// The interchange material of a linear process that is exactly representable (Hotfix 065).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearProcessSteps {
+    pub process_ref: Id,
+    pub name: String,
+    /// The Accepted Operation of each interior service task, in flow order.
+    pub operation_refs: Vec<Id>,
+}
+
+/// Why a process has no exact linear interchange form.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum LinearInterchangeError {
+    #[error(transparent)]
+    Core(#[from] CoreError),
+    #[error(transparent)]
+    Linear(#[from] LinearProcessError),
+    #[error("process {process_ref} is not representable: {reason}")]
+    Unrepresentable { process_ref: Id, reason: String },
+    #[error("{0} is not an Accepted Operation")]
+    OperationInvalid(Id),
+    #[error("the process name is invalid: {0}")]
+    InvalidName(&'static str),
+    #[error("an equivalent process {0} already exists")]
+    NoChange(Id),
+    #[error("process {0} already exists with different material")]
+    Conflict(Id),
+    #[error("id {0} is already used")]
+    IdCollision(Id),
+    #[error("invalid import proposal: {reason}")]
+    InvalidProposal { reason: String },
+}
+
+/// The exact interchange material of a strict linear Accepted Process whose start and end are
+/// start and end nodes and whose interior steps are plain service tasks of Accepted Operations,
+/// with no active relation other than the flow on any of its nodes.
+pub fn linear_process_steps(
+    graph: &Graph,
+    process_ref: &Id,
+) -> Result<LinearProcessSteps, LinearInterchangeError> {
+    let linear = linear_process(graph, process_ref)?;
+    let unrepresentable = |reason: String| LinearInterchangeError::Unrepresentable {
+        process_ref: process_ref.clone(),
+        reason,
+    };
+    let mut operation_refs = Vec::with_capacity(linear.interior.len());
+    let members: Vec<(&Id, ProcessNodeKind)> =
+        std::iter::once((&linear.start, ProcessNodeKind::Start))
+            .chain(
+                linear
+                    .interior
+                    .iter()
+                    .map(|n| (n, ProcessNodeKind::ServiceTask)),
+            )
+            .chain(std::iter::once((&linear.end, ProcessNodeKind::End)))
+            .collect();
+    for (member, expected_kind) in members {
+        let node = graph
+            .node(member)
+            .ok_or_else(|| unrepresentable(format!("{member} is missing")))?;
+        let NodePayload::ProcessNode(p) = &node.payload else {
+            return Err(unrepresentable(format!("{member} is not a process node")));
+        };
+        if node.status != ElementStatus::Accepted {
+            return Err(unrepresentable(format!("{member} is not Accepted")));
+        }
+        if p.node_kind != expected_kind
+            || p.condition_expr.is_some()
+            || p.message_ref.is_some()
+            || p.timer_expr.is_some()
+        {
+            return Err(unrepresentable(format!(
+                "{member} is not a plain {expected_kind:?} node"
+            )));
+        }
+        let related = graph
+            .outgoing_edge_ids(member)
+            .iter()
+            .chain(graph.incoming_edge_ids(member))
+            .filter_map(|e| graph.edge(e))
+            .any(|e| is_active(e.status) && e.kind != RelationKind::Next);
+        if related {
+            return Err(unrepresentable(format!(
+                "{member} has relations other than its flow"
+            )));
+        }
+        match (expected_kind, &p.operation_ref) {
+            (ProcessNodeKind::ServiceTask, Some(operation)) => {
+                let accepted = graph.node(operation).is_some_and(|n| {
+                    n.status == ElementStatus::Accepted
+                        && n.payload.node_type() == NodeType::Operation
+                });
+                if !accepted {
+                    return Err(unrepresentable(format!(
+                        "{member} performs {operation}, which is not an Accepted Operation"
+                    )));
+                }
+                operation_refs.push(operation.clone());
+            }
+            (ProcessNodeKind::ServiceTask, None) => {
+                return Err(unrepresentable(format!("{member} has no operation")))
+            }
+            (_, Some(_)) => return Err(unrepresentable(format!("{member} carries an operation"))),
+            (_, None) => {}
+        }
+    }
+    Ok(LinearProcessSteps {
+        process_ref: process_ref.clone(),
+        name: linear.name,
+        operation_refs,
+    })
+}
+
+/// The node key of interior step `index`: `step_0000`, `step_0001`, ..
+pub fn linear_step_key(index: usize) -> String {
+    format!("step_{index:04}")
+}
+
+/// Proposes importing a strict linear Accepted Process named `name` whose interior service tasks
+/// perform `operation_refs` in order (Hotfix 065), with the existing deterministic process and
+/// process-node identities (node keys `start`, `step_0000`.., `end`). An unused process ID yields
+/// the proposal; an exact equivalent is [`LinearInterchangeError::NoChange`]; the same ID with
+/// different material is a conflict and is never overwritten. Stage S2, Semantic, HUMAN_CONFIRM.
+pub fn propose_linear_process_import(
+    graph: &Graph,
+    name: &str,
+    operation_refs: &[Id],
+    actor_ref: &Id,
+    at: Timestamp,
+) -> Result<Proposal, LinearInterchangeError> {
+    if let Some(problem) = name_problem(name) {
+        return Err(LinearInterchangeError::InvalidName(problem));
+    }
+    for operation in operation_refs {
+        let accepted = graph.node(operation).is_some_and(|n| {
+            n.status == ElementStatus::Accepted && n.payload.node_type() == NodeType::Operation
+        });
+        if !accepted {
+            return Err(LinearInterchangeError::OperationInvalid(operation.clone()));
+        }
+    }
+    let project = graph.project_id();
+    let process_ref = process_id(project, name)?;
+    if graph.node(&process_ref).is_some() || graph.edge(&process_ref).is_some() {
+        let equivalent = linear_process_steps(graph, &process_ref).is_ok_and(|existing| {
+            existing.name == name && existing.operation_refs == operation_refs
+        }) && graph.node(&process_ref).is_some_and(|n| {
+            n.payload
+                == NodePayload::Process(Process {
+                    name: name.to_owned(),
+                    description: None,
+                    process_kind: None,
+                })
+        });
+        return Err(if equivalent {
+            LinearInterchangeError::NoChange(process_ref)
+        } else {
+            LinearInterchangeError::Conflict(process_ref)
+        });
+    }
+    let invalid = |reason: String| LinearInterchangeError::InvalidProposal { reason };
+    let audit =
+        AuditMeta::new(actor_ref.clone(), at, None, None).map_err(|e| invalid(e.to_string()))?;
+    let accepted_node = |id: Id, payload: NodePayload| Node {
+        id,
+        revision: 1,
+        status: ElementStatus::Accepted,
+        payload,
+        evidence: Vec::new(),
+        derivations: Vec::new(),
+        standards: Vec::new(),
+        tags: BTreeSet::new(),
+        extensions: BTreeMap::new(),
+        audit: audit.clone(),
+    };
+    let step = |kind: ProcessNodeKind, operation_ref: Option<Id>| {
+        NodePayload::ProcessNode(ProcessNode {
+            process_ref: process_ref.clone(),
+            node_kind: kind,
+            operation_ref,
+            condition_expr: None,
+            message_ref: None,
+            timer_expr: None,
+        })
+    };
+    let mut nodes = vec![accepted_node(
+        process_ref.clone(),
+        NodePayload::Process(Process {
+            name: name.to_owned(),
+            description: None,
+            process_kind: None,
+        }),
+    )];
+    let mut order = vec![process_node_id(project, &process_ref, "start")?];
+    nodes.push(accepted_node(
+        order[0].clone(),
+        step(ProcessNodeKind::Start, None),
+    ));
+    for (index, operation) in operation_refs.iter().enumerate() {
+        let id = process_node_id(project, &process_ref, &linear_step_key(index))?;
+        nodes.push(accepted_node(
+            id.clone(),
+            step(ProcessNodeKind::ServiceTask, Some(operation.clone())),
+        ));
+        order.push(id);
+    }
+    let end = process_node_id(project, &process_ref, "end")?;
+    nodes.push(accepted_node(end.clone(), step(ProcessNodeKind::End, None)));
+    order.push(end);
+    let mut patches = Vec::new();
+    for node in nodes {
+        if graph.node(&node.id).is_some() || graph.edge(&node.id).is_some() {
+            return Err(LinearInterchangeError::IdCollision(node.id));
+        }
+        patches.push(SemanticPatch::AddNode { node });
+    }
+    for pair in order.windows(2) {
+        let edge = flow_edge(&pair[0], &pair[1], &audit)?;
+        if graph.node(&edge.id).is_some() || graph.edge(&edge.id).is_some() {
+            return Err(LinearInterchangeError::IdCollision(edge.id));
+        }
+        patches.push(SemanticPatch::AddEdge { edge });
+    }
+    let proposal = Proposal::new(
+        PROCESS_STAGE,
+        PatchSet {
+            base_semantic_hash: graph.semantic_hash()?,
+            patch: SemanticPatch::Compound { patches },
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::Semantic,
+        AcceptancePolicy::HumanConfirm,
+        None,
+    )
+    .map_err(|e| invalid(e.to_string()))?;
+    let candidate = apply_patch(graph, &proposal.patch_set).map_err(|e| invalid(e.to_string()))?;
+    let analysis = analyze_process(
+        &candidate.graph,
+        &process_ref,
+        ProcessAnalysisMode::AcceptedOnly,
+    )
+    .map_err(|e| invalid(e.to_string()))?;
+    let issues = analysis_issues(&analysis);
+    if !issues.is_empty() {
+        return Err(invalid(format!("process analysis reports {issues:?}")));
+    }
+    Ok(proposal)
 }

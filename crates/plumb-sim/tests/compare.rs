@@ -1740,4 +1740,43 @@ mod compare_contract {
         assert!(COMPARE_SRC.contains("materialize(model, scenario_ref, &probe, &values)"));
         assert!(COMPARE_SRC.contains("admit(model, scenario_ref)"));
     }
+
+    // ------------------------------------------------------------------ stable run identity (Hotfix 065)
+
+    #[test]
+    fn scenario_run_identity_is_stable_per_project_and_scenario() {
+        // Independent Python SHA-256 of RFC 8785 {node_type, project_id, scenario_ref}.
+        let cases = [
+            (
+                "project:leave-management",
+                "scenario:submit",
+                "scenario_run:ac09d929fb3f9a47",
+            ),
+            (
+                "project:leave-management",
+                "scenario:other",
+                "scenario_run:d12beb5a4947795e",
+            ),
+            (
+                "project:other",
+                "scenario:submit",
+                "scenario_run:9a0d756f8628293a",
+            ),
+        ];
+        for (project, scenario, expected) in cases {
+            let a = plumb_sim::scenario_run_id(&id(project), &id(scenario)).unwrap();
+            assert_eq!(a.as_str(), expected);
+            assert_eq!(
+                plumb_sim::scenario_run_id(&id(project), &id(scenario)).unwrap(),
+                a
+            );
+        }
+        assert_eq!(
+            plumb_sim::SCENARIO_TRACE_LINK_EXTENSION,
+            "plumb_sim:scenario_trace_artifact"
+        );
+        assert!(plumb_sim::SCENARIO_TRACE_LINK_EXTENSION
+            .parse::<plumb_psg::ExtensionKey>()
+            .is_ok());
+    }
 }

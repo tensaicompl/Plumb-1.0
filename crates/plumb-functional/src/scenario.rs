@@ -2745,3 +2745,384 @@ pub fn derive_scenarios(
         unresolved,
     })
 }
+
+// ============================================================================ lifecycle (Hotfix 065)
+
+/// Why a Scenario lifecycle change cannot be proposed.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum ScenarioLifecycleError {
+    #[error(transparent)]
+    Core(#[from] CoreError),
+    /// The element does not exist or is not a Scenario.
+    #[error("{0} is not a Scenario")]
+    NotAScenario(Id),
+    /// The Scenario is not Proposed with confirmation status Derived.
+    #[error(
+        "scenario {scenario_ref} is {status:?} / {confirmation_status:?}, not Proposed / Derived"
+    )]
+    NotConfirmable {
+        scenario_ref: Id,
+        status: ElementStatus,
+        confirmation_status: Option<String>,
+    },
+    /// The Scenario is neither Proposed + Derived nor Accepted + Confirmed.
+    #[error("scenario {scenario_ref} is {status:?} / {confirmation_status:?}")]
+    StateInvalid {
+        scenario_ref: Id,
+        status: ElementStatus,
+        confirmation_status: Option<String>,
+    },
+    /// The decision table does not exist.
+    #[error("decision table {0} does not exist")]
+    DecisionTableMissing(Id),
+    /// The element is not an Accepted DecisionTable.
+    #[error("{0} is not an Accepted DecisionTable")]
+    DecisionTableInvalid(Id),
+    /// No Proposed, Derived Scenario derives from the decision table.
+    #[error("no confirmable derived scenario of {0}")]
+    NoConfirmableDerived(Id),
+    /// The Then entries do not decode through the S4.1 wire.
+    #[error("invalid Then: {reason}")]
+    InvalidThen { reason: String },
+    /// The corrected Scenario does not validate against the graph.
+    #[error("corrected scenario is invalid: {reason}")]
+    CorrectionInvalid { reason: String },
+    /// The Then entries are unchanged.
+    #[error("scenario {0} already has this Then")]
+    NoChange(Id),
+    /// The proposal could not be built or does not apply.
+    #[error("invalid scenario proposal: {reason}")]
+    InvalidProposal { reason: String },
+    /// The stable ScenarioRun ID holds an element that is not the Accepted run of the Scenario.
+    #[error("scenario run {0} collides with another element")]
+    RunCollision(Id),
+}
+
+fn lifecycle_invalid(e: impl ToString) -> ScenarioLifecycleError {
+    ScenarioLifecycleError::InvalidProposal {
+        reason: e.to_string(),
+    }
+}
+
+fn scenario_node<'g>(
+    graph: &'g Graph,
+    scenario_ref: &Id,
+) -> Result<(&'g Node, &'g Scenario), ScenarioLifecycleError> {
+    let node = graph
+        .node(scenario_ref)
+        .ok_or_else(|| ScenarioLifecycleError::NotAScenario(scenario_ref.clone()))?;
+    match &node.payload {
+        NodePayload::Scenario(s) => Ok((node, s)),
+        _ => Err(ScenarioLifecycleError::NotAScenario(scenario_ref.clone())),
+    }
+}
+
+fn element_precondition(node: &Node) -> Result<plumb_patch::ElementPrecondition, CoreError> {
+    Ok(plumb_patch::ElementPrecondition {
+        id: node.id.clone(),
+        expected_hash: plumb_psg::node_element_hash(node)?,
+    })
+}
+
+fn derived_proposed(node: &Node, scenario: &Scenario) -> bool {
+    node.status == ElementStatus::Proposed
+        && scenario.confirmation_status.as_deref() == Some(SCENARIO_DERIVED)
+}
+
+/// The two confirmation leaves of one Proposed, Derived Scenario: `ReplacePayload` under the
+/// original element hash with confirmation status Confirmed, then `SetStatus Proposed ->
+/// Accepted` under the intermediate element hash computed by the patch engine.
+fn confirmation_leaves(
+    graph: &Graph,
+    base: &Hash,
+    node: &Node,
+    scenario: &Scenario,
+) -> Result<Vec<SemanticPatch>, ScenarioLifecycleError> {
+    let mut confirmed = scenario.clone();
+    confirmed.confirmation_status = Some(SCENARIO_CONFIRMED.to_owned());
+    let replace = SemanticPatch::ReplacePayload {
+        target: element_precondition(node)?,
+        payload: NodePayload::Scenario(confirmed),
+    };
+    let step = apply_patch(
+        graph,
+        &PatchSet {
+            base_semantic_hash: base.clone(),
+            patch: replace.clone(),
+        },
+    )
+    .map_err(lifecycle_invalid)?;
+    let intermediate = step
+        .graph
+        .node(&node.id)
+        .ok_or_else(|| lifecycle_invalid("confirmed scenario is missing"))?;
+    Ok(vec![
+        replace,
+        SemanticPatch::SetStatus {
+            target: element_precondition(intermediate)?,
+            from: ElementStatus::Proposed,
+            to: ElementStatus::Accepted,
+        },
+    ])
+}
+
+/// A dry-run S4 Semantic HUMAN_CONFIRM proposal of `patches`.
+fn lifecycle_proposal(
+    graph: &Graph,
+    base: Hash,
+    mut patches: Vec<SemanticPatch>,
+) -> Result<Proposal, ScenarioLifecycleError> {
+    let patch = if patches.len() == 1 {
+        patches.remove(0)
+    } else {
+        SemanticPatch::Compound { patches }
+    };
+    let proposal = Proposal::new(
+        SCENARIO_STAGE,
+        PatchSet {
+            base_semantic_hash: base,
+            patch,
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::Semantic,
+        AcceptancePolicy::HumanConfirm,
+        None,
+    )
+    .map_err(lifecycle_invalid)?;
+    apply_patch(graph, &proposal.patch_set).map_err(lifecycle_invalid)?;
+    Ok(proposal)
+}
+
+/// Proposes confirming one Proposed, Derived Scenario: Accepted with confirmation status
+/// Confirmed in one proposal with sequential element preconditions. No inference, derivation or
+/// regeneration. Stage S4, Semantic, HUMAN_CONFIRM.
+pub fn propose_scenario_confirmation(
+    graph: &Graph,
+    scenario_ref: &Id,
+) -> Result<Proposal, ScenarioLifecycleError> {
+    let (node, scenario) = scenario_node(graph, scenario_ref)?;
+    if !derived_proposed(node, scenario) {
+        return Err(ScenarioLifecycleError::NotConfirmable {
+            scenario_ref: scenario_ref.clone(),
+            status: node.status,
+            confirmation_status: scenario.confirmation_status.clone(),
+        });
+    }
+    let base = graph.semantic_hash()?;
+    let leaves = confirmation_leaves(graph, &base, node, scenario)?;
+    lifecycle_proposal(graph, base, leaves)
+}
+
+/// Proposes confirming every already-persisted Proposed, Derived Scenario whose
+/// `derived_from_refs` contain the Accepted DecisionTable `table_ref`, in Scenario ID order, in
+/// one Compound proposal. Never derives. Returns the proposal and the confirmed Scenario IDs.
+pub fn propose_derived_scenario_confirmation(
+    graph: &Graph,
+    table_ref: &Id,
+) -> Result<(Proposal, Vec<Id>), ScenarioLifecycleError> {
+    let table = graph
+        .node(table_ref)
+        .ok_or_else(|| ScenarioLifecycleError::DecisionTableMissing(table_ref.clone()))?;
+    if table.status != ElementStatus::Accepted
+        || table.payload.node_type() != NodeType::DecisionTable
+    {
+        return Err(ScenarioLifecycleError::DecisionTableInvalid(
+            table_ref.clone(),
+        ));
+    }
+    let base = graph.semantic_hash()?;
+    let mut leaves = Vec::new();
+    let mut confirmed = Vec::new();
+    for id in graph.node_ids_by_type(NodeType::Scenario) {
+        let (node, scenario) = scenario_node(graph, id)?;
+        let derives = scenario
+            .derived_from_refs
+            .iter()
+            .flatten()
+            .any(|r| r == table_ref);
+        if derives && derived_proposed(node, scenario) {
+            leaves.extend(confirmation_leaves(graph, &base, node, scenario)?);
+            confirmed.push(node.id.clone());
+        }
+    }
+    if confirmed.is_empty() {
+        return Err(ScenarioLifecycleError::NoConfirmableDerived(
+            table_ref.clone(),
+        ));
+    }
+    Ok((lifecycle_proposal(graph, base, leaves)?, confirmed))
+}
+
+/// Proposes replacing only the Then entries of a Proposed + Derived or Accepted + Confirmed
+/// Scenario. The entries decode through [`ScenarioThen::from_values`] and the candidate must pass
+/// [`validate_scenario`]; status, confirmation status and every other field are preserved, so a
+/// Derived Scenario still needs confirmation. Stage S4, Semantic, HUMAN_CONFIRM.
+pub fn propose_scenario_correction(
+    graph: &Graph,
+    scenario_ref: &Id,
+    then: Vec<Value>,
+) -> Result<Proposal, ScenarioLifecycleError> {
+    let (node, scenario) = scenario_node(graph, scenario_ref)?;
+    let confirmed_accepted = node.status == ElementStatus::Accepted
+        && scenario.confirmation_status.as_deref() == Some(SCENARIO_CONFIRMED);
+    if !(derived_proposed(node, scenario) || confirmed_accepted) {
+        return Err(ScenarioLifecycleError::StateInvalid {
+            scenario_ref: scenario_ref.clone(),
+            status: node.status,
+            confirmation_status: scenario.confirmation_status.clone(),
+        });
+    }
+    ScenarioThen::from_values(&then).map_err(|e| ScenarioLifecycleError::InvalidThen {
+        reason: e.to_string(),
+    })?;
+    if scenario.then == then {
+        return Err(ScenarioLifecycleError::NoChange(scenario_ref.clone()));
+    }
+    let mut corrected = scenario.clone();
+    corrected.then = then;
+    validate_scenario(graph, &corrected).map_err(|e| {
+        ScenarioLifecycleError::CorrectionInvalid {
+            reason: e.to_string(),
+        }
+    })?;
+    let base = graph.semantic_hash()?;
+    let replace = SemanticPatch::ReplacePayload {
+        target: element_precondition(node)?,
+        payload: NodePayload::Scenario(corrected),
+    };
+    lifecycle_proposal(graph, base, vec![replace])
+}
+
+/// The desired current run of one Scenario (Hotfix 065): its stable ScenarioRun ID, the run
+/// payload and the generic hash of its ScenarioTrace artifact, linked through `link_key`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenarioRunUpdate {
+    pub run_ref: Id,
+    pub scenario_ref: Id,
+    pub payload: plumb_psg::ScenarioRun,
+    pub link_key: plumb_psg::ExtensionKey,
+    pub link: Hash,
+}
+
+/// The current run node of an update, if any; another element at the ID is a collision.
+fn current_run_node<'g>(
+    graph: &'g Graph,
+    update: &ScenarioRunUpdate,
+) -> Result<Option<&'g Node>, ScenarioLifecycleError> {
+    if graph.edge(&update.run_ref).is_some() {
+        return Err(ScenarioLifecycleError::RunCollision(update.run_ref.clone()));
+    }
+    match graph.node(&update.run_ref) {
+        None => Ok(None),
+        Some(node) => match &node.payload {
+            NodePayload::ScenarioRun(run)
+                if node.status == ElementStatus::Accepted
+                    && run.scenario_ref == update.scenario_ref =>
+            {
+                Ok(Some(node))
+            }
+            _ => Err(ScenarioLifecycleError::RunCollision(update.run_ref.clone())),
+        },
+    }
+}
+
+/// The leaves bringing one stable ScenarioRun to its desired payload and trace link: a first
+/// run adds the Accepted node with both; a re-run emits only what differs, and when both differ
+/// the link leaf uses the intermediate element hash of the dry-applied node.
+fn run_update_leaves(
+    graph: &Graph,
+    base: &Hash,
+    update: &ScenarioRunUpdate,
+    audit: &AuditMeta,
+) -> Result<Vec<SemanticPatch>, ScenarioLifecycleError> {
+    let link_value = Value::String(update.link.to_string());
+    let Some(node) = current_run_node(graph, update)? else {
+        return Ok(vec![SemanticPatch::AddNode {
+            node: Node {
+                id: update.run_ref.clone(),
+                revision: 1,
+                status: ElementStatus::Accepted,
+                payload: NodePayload::ScenarioRun(update.payload.clone()),
+                evidence: Vec::new(),
+                derivations: Vec::new(),
+                standards: Vec::new(),
+                tags: BTreeSet::new(),
+                extensions: BTreeMap::from([(update.link_key.clone(), link_value)]),
+                audit: audit.clone(),
+            },
+        }]);
+    };
+    let NodePayload::ScenarioRun(current) = &node.payload else {
+        return Err(ScenarioLifecycleError::RunCollision(update.run_ref.clone()));
+    };
+    let payload_changed = current != &update.payload;
+    let link_changed = node.extensions.get(&update.link_key) != Some(&link_value);
+    let mut leaves = Vec::new();
+    let mut target = element_precondition(node)?;
+    if payload_changed {
+        let replace = SemanticPatch::ReplacePayload {
+            target: target.clone(),
+            payload: NodePayload::ScenarioRun(update.payload.clone()),
+        };
+        if link_changed {
+            let step = apply_patch(
+                graph,
+                &PatchSet {
+                    base_semantic_hash: base.clone(),
+                    patch: replace.clone(),
+                },
+            )
+            .map_err(lifecycle_invalid)?;
+            let intermediate = step
+                .graph
+                .node(&node.id)
+                .ok_or_else(|| lifecycle_invalid("updated scenario run is missing"))?;
+            target = element_precondition(intermediate)?;
+        }
+        leaves.push(replace);
+    }
+    if link_changed {
+        leaves.push(SemanticPatch::SetNodeExtension {
+            target,
+            key: update.link_key.clone(),
+            value: link_value,
+        });
+    }
+    Ok(leaves)
+}
+
+/// Proposes bringing every stable ScenarioRun of `updates` to its latest run and trace link in
+/// one Compound NonSemantic AUTO_NON_SEMANTIC proposal (stage S4), so a committed graph never
+/// pairs a new payload with an old link (Hotfix 065). `None` when nothing changes.
+pub fn propose_scenario_run_updates(
+    graph: &Graph,
+    updates: &[ScenarioRunUpdate],
+    actor_ref: &Id,
+    at: Timestamp,
+) -> Result<Option<Proposal>, ScenarioLifecycleError> {
+    let base = graph.semantic_hash()?;
+    let audit = AuditMeta::new(actor_ref.clone(), at, None, None).map_err(lifecycle_invalid)?;
+    let mut leaves = Vec::new();
+    for update in updates {
+        leaves.extend(run_update_leaves(graph, &base, update, &audit)?);
+    }
+    if leaves.is_empty() {
+        return Ok(None);
+    }
+    let proposal = Proposal::new(
+        SCENARIO_STAGE,
+        PatchSet {
+            base_semantic_hash: base,
+            patch: SemanticPatch::Compound { patches: leaves },
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::NonSemantic,
+        AcceptancePolicy::AutoNonSemantic,
+        None,
+    )
+    .map_err(lifecycle_invalid)?;
+    apply_patch(graph, &proposal.patch_set).map_err(lifecycle_invalid)?;
+    Ok(Some(proposal))
+}

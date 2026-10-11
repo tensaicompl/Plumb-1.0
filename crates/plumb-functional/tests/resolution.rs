@@ -2070,6 +2070,151 @@ mod resolution_contract {
         assert_eq!(leaves(&a).len(), leaves(&b).len());
     }
 
+    // ------------------------------------------------------------------ governed acceptance (Hotfix 065)
+
+    fn acceptance(codes: &[&str], rationale: Option<&str>) -> AcceptanceInput {
+        AcceptanceInput {
+            reason_codes: codes.iter().map(|c| (*c).to_owned()).collect(),
+            decided_by: id(HUMAN),
+            decided_at: ts(DECIDED_AT),
+            rationale: rationale.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn acceptance_companion_is_a_separate_proposal_only_decision() {
+        let graph = asked();
+        let s33 = resolve(
+            &graph,
+            &good(&graph, ResolutionTemplate::DomainRelationshipCardinality),
+        )
+        .unwrap();
+        let original = s33.proposal.clone();
+        let companion = build_acceptance_companion(
+            &graph,
+            &original,
+            &acceptance(&["human_decision", "material_decision"], Some("Approved.")),
+        )
+        .unwrap();
+        // patch_ref is the generic SHA-256 of the RFC 8785 original PatchSet.
+        assert_eq!(
+            companion.original_patch_bytes,
+            to_canonical_json(&original.patch_set).unwrap()
+        );
+        assert_eq!(
+            companion.patch_ref,
+            Hash::content_sha256(&companion.original_patch_bytes)
+        );
+        // Identity: exactly {kind, project_id, proposal_ref, decided_by, decided_at, patch_ref}.
+        let identity = json!({
+            "decided_at": DECIDED_AT,
+            "decided_by": HUMAN,
+            "kind": "proposal_acceptance",
+            "patch_ref": companion.patch_ref.as_str(),
+            "project_id": graph.project_id().as_str(),
+            "proposal_ref": original.id.as_str(),
+        });
+        let digest = Hash::content_sha256(&to_canonical_json(&identity).unwrap());
+        let expected = format!("dec:{}", &digest.as_str()["sha256:".len()..][..16]);
+        assert_eq!(companion.decision_ref.as_str(), expected);
+        assert_eq!(
+            acceptance_decision_id(
+                graph.project_id(),
+                &original.id,
+                &id(HUMAN),
+                &ts(DECIDED_AT),
+                &companion.patch_ref
+            )
+            .unwrap(),
+            companion.decision_ref
+        );
+        // The node: Accepted, proposal-only, reason codes and rationale outside identity.
+        let node = &companion.decision_node;
+        assert_eq!(node.id, companion.decision_ref);
+        assert_eq!(node.status, Accepted);
+        let NodePayload::ResolutionDecision(d) = &node.payload else {
+            panic!("not a decision")
+        };
+        assert_eq!(d.question_ref, None);
+        assert_eq!(d.proposal_ref, Some(original.id.clone()));
+        assert_eq!(
+            d.answer,
+            json!({"kind": "proposal_acceptance", "reason_codes": ["human_decision", "material_decision"]})
+        );
+        assert_eq!(d.decided_by, id(HUMAN));
+        assert_eq!(d.decided_at, ts(DECIDED_AT));
+        assert_eq!(d.rationale.as_deref(), Some("Approved."));
+        assert_eq!(d.supersedes, None);
+        let other_reason =
+            build_acceptance_companion(&graph, &original, &acceptance(&[], None)).unwrap();
+        assert_eq!(other_reason.decision_ref, companion.decision_ref);
+        // The acceptance patch is Compound {original patch, AddNode companion} on the original
+        // base; the original proposal (and its S3.3 decision) is unchanged.
+        assert_eq!(
+            companion.patch_set.base_semantic_hash,
+            original.patch_set.base_semantic_hash
+        );
+        assert_eq!(
+            companion.patch_set.patch,
+            SemanticPatch::Compound {
+                patches: vec![
+                    original.patch_set.patch.clone(),
+                    SemanticPatch::AddNode { node: node.clone() },
+                ]
+            }
+        );
+        assert_eq!(original, s33.proposal);
+        let after = apply_patch(&graph, &companion.patch_set).unwrap().graph;
+        assert!(after.node(&companion.decision_ref).is_some());
+        assert!(after.node(&s33.decision_ref).is_some());
+        // The companion needs no resolves edge.
+        assert!(after.outgoing_edge_ids(&companion.decision_ref).is_empty());
+    }
+
+    #[test]
+    fn acceptance_companion_input_rules() {
+        let graph = asked();
+        let s33 = resolve(
+            &graph,
+            &good(&graph, ResolutionTemplate::DomainRelationshipCardinality),
+        )
+        .unwrap();
+        for bad in ["", " padded", "line\nbreak"] {
+            assert_eq!(
+                build_acceptance_companion(&graph, &s33.proposal, &acceptance(&[], Some(bad))),
+                Err(ResolutionError::InvalidRationale)
+            );
+        }
+        for codes in [
+            &["material_decision", "human_decision"][..],
+            &["human_decision", "human_decision"][..],
+            &[""][..],
+        ] {
+            assert!(matches!(
+                build_acceptance_companion(&graph, &s33.proposal, &acceptance(codes, None)),
+                Err(ResolutionError::InvalidResolutionProposal { .. })
+            ));
+        }
+        // A collision with an existing element is refused.
+        let built =
+            build_acceptance_companion(&graph, &s33.proposal, &acceptance(&[], None)).unwrap();
+        let collided = rebuild(&graph, |nodes, _| {
+            nodes.push(built.decision_node.clone());
+        });
+        assert_eq!(
+            build_acceptance_companion(&collided, &s33.proposal, &acceptance(&[], None)),
+            Err(ResolutionError::ResolutionDecisionIdCollision(
+                built.decision_ref.clone()
+            ))
+        );
+        // A proposal that no longer applies is refused (dry run).
+        let applied_graph = applied(&graph, &s33);
+        assert!(matches!(
+            build_acceptance_companion(&applied_graph, &s33.proposal, &acceptance(&[], None)),
+            Err(ResolutionError::InvalidResolutionProposal { .. })
+        ));
+    }
+
     #[test]
     fn production_source_guard() {
         let source = include_str!("../src/resolution.rs");

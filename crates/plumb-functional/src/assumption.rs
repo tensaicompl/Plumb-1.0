@@ -316,3 +316,90 @@ pub fn analyze_assumption_expiry(
         findings: findings.into_values().collect(),
     })
 }
+
+// ============================================================================ resolution
+
+/// The terminal payload status of a resolved assumption (Hotfix 065).
+pub const ASSUMPTION_RESOLVED: &str = "Resolved";
+
+/// Why an assumption cannot be resolved (Hotfix 065).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum AssumptionResolutionError {
+    #[error(transparent)]
+    Core(#[from] CoreError),
+    /// The element does not exist or is not an Assumption.
+    #[error("{0} is not an Assumption")]
+    NotAnAssumption(Id),
+    /// The Assumption node is not Accepted.
+    #[error("assumption {0} is not Accepted")]
+    NotAccepted(Id),
+    /// The Assumption is already Resolved.
+    #[error("assumption {0} is already Resolved")]
+    AlreadyResolved(Id),
+    /// The Assumption payload status is neither Accepted nor Resolved.
+    #[error("assumption {assumption_ref} has status {status:?}, not Accepted")]
+    NotActive { assumption_ref: Id, status: String },
+    /// The proposal could not be built.
+    #[error("invalid assumption resolution proposal: {reason}")]
+    InvalidProposal { reason: String },
+}
+
+/// Proposes resolving an Accepted assumption (Hotfix 065): one `ReplacePayload` that changes only
+/// its payload status from `Accepted` to `Resolved`; the node stays Accepted and nothing else
+/// (findings, default, expiry, supersession, owner, node status) changes. Stage S3,
+/// MaterialDecision, HUMAN_DECISION.
+pub fn propose_assumption_resolution(
+    graph: &Graph,
+    assumption_ref: &Id,
+) -> Result<Proposal, AssumptionResolutionError> {
+    let node = graph
+        .node(assumption_ref)
+        .ok_or_else(|| AssumptionResolutionError::NotAnAssumption(assumption_ref.clone()))?;
+    let NodePayload::Assumption(assumption) = &node.payload else {
+        return Err(AssumptionResolutionError::NotAnAssumption(
+            assumption_ref.clone(),
+        ));
+    };
+    if node.status != ElementStatus::Accepted {
+        return Err(AssumptionResolutionError::NotAccepted(
+            assumption_ref.clone(),
+        ));
+    }
+    match assumption.status.as_str() {
+        ASSUMPTION_ACCEPTED => {}
+        ASSUMPTION_RESOLVED => {
+            return Err(AssumptionResolutionError::AlreadyResolved(
+                assumption_ref.clone(),
+            ))
+        }
+        other => {
+            return Err(AssumptionResolutionError::NotActive {
+                assumption_ref: assumption_ref.clone(),
+                status: other.to_owned(),
+            })
+        }
+    }
+    let mut resolved = assumption.clone();
+    resolved.status = ASSUMPTION_RESOLVED.to_owned();
+    Proposal::new(
+        ASSUMPTION_STAGE,
+        PatchSet {
+            base_semantic_hash: graph.semantic_hash()?,
+            patch: SemanticPatch::ReplacePayload {
+                target: plumb_patch::ElementPrecondition {
+                    id: node.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(node)?,
+                },
+                payload: NodePayload::Assumption(resolved),
+            },
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::MaterialDecision,
+        AcceptancePolicy::HumanDecision,
+        None,
+    )
+    .map_err(|e| AssumptionResolutionError::InvalidProposal {
+        reason: e.to_string(),
+    })
+}

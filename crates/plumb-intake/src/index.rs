@@ -326,4 +326,11 @@ impl LexicalIndex {
     pub fn document_count(&self) -> usize {
         self.documents.len()
     }
+
+    /// The exact indexed retrieval text of document `id`, or `None` when `id` is not indexed.
+    /// Read-only (Hotfix 065): search snippets are prefixes of exactly this text, never a
+    /// recomputed projection.
+    pub fn indexed_text(&self, id: &Id) -> Option<&str> {
+        self.documents.get(id).map(|d| d.text.as_str())
+    }
 }

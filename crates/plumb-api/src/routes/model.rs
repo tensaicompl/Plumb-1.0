@@ -1,11 +1,13 @@
 //! Model routes (plan A0.2): glossary, entities and attributes, calculations, processes,
-//! findings, assumptions, decisions, exports and revision diffs.
+//! findings, assumptions, decisions, exports and revision diffs. A0.3 (Hotfix 065) adds the
+//! Term merge, the CRUD view, calculation examples, rules and decision-table cells, linear
+//! process editing with canonical Mermaid interchange, waivers and assumption resolution.
 //!
 //! Reads project typed PSG material, typed relations and existing analyses of one loaded
 //! revision; writes are typed status or payload replacements committed through the shared
 //! intake and compare-and-swap pipeline.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axum::body::Bytes;
 use axum::extract::{Path, RawQuery, State};
@@ -13,8 +15,18 @@ use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use plumb_core::{GateId, Id, StageId, Timestamp};
-use plumb_functional::{project_functional_pilot, PilotDataClass};
+use plumb_artifacts::{ArtifactKind, ArtifactStore};
+use plumb_core::{to_canonical_json, GateId, Id, StageId, Timestamp};
+use plumb_functional::decision_table::DecisionOutputCell;
+use plumb_functional::waiver::{create_waiver, WaiverError};
+use plumb_functional::{
+    analyze_decision_table, calculation_example, decode_decision_table, encode_decision_table,
+    linear_process_steps, linear_step_key, project_functional_pilot, propose_assumption_resolution,
+    propose_linear_process_import, propose_process_step_change, propose_term_merge,
+    set_output_cell, AssumptionResolutionError, CalculationExampleError, DecisionCellError,
+    DecisionCoverage, ExactValue, LinearInterchangeError, PilotDataClass, ProcessStepChange,
+    ProcessStepError, TermMergeError,
+};
 use plumb_patch::{
     AcceptancePolicy, ElementPrecondition, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
@@ -23,19 +35,24 @@ use plumb_psg::{
     NodeType, ProcessNodeKind, RelationKind,
 };
 use plumb_store::{LoadedRevision, RevisionId};
+use plumb_validation::waiver::WaiverRequest;
 use plumb_validation::{analyze_process, ParallelAnalysis, ProcessAnalysisMode};
+use plumb_validation::{GeneratedFinding, ValidationPolicy};
 use serde_json::{json, Value};
 
 use crate::error::ApiError;
 use crate::openapi::{
     Assumption, AssumptionPage, AttributeClassRequest, AttributeTypeRequest, AttributeUnitRequest,
-    Calculation, CalculationPage, Decision, DecisionPage, Entity, EntityAttribute, EntityPage,
-    EntityRelationship, EntityTransition, ExportFormat, Finding, FindingPage, GlossaryEditRequest,
-    GlossaryPage, GlossaryTerm, ModelDiff, Process, ProcessPage, ScalarValue,
+    Calculation, CalculationExample, CalculationPage, CalculationValue, CrudCell, CrudMatrix,
+    Decision, DecisionPage, Entity, EntityAttribute, EntityPage, EntityRelationship,
+    EntityTransition, ExportFormat, Finding, FindingPage, GlossaryEditRequest,
+    GlossaryMergeRequest, GlossaryPage, GlossaryTerm, ModelDiff, Process, ProcessFormat,
+    ProcessImportRequest, ProcessPage, ProcessStepRequest, ReasonRequest, Rule, RuleCellRequest,
+    RulePage, RuleRow, RuleViewKind, ScalarValue, WriteResult,
 };
 use crate::state::{
-    check_if_match, is_clean_text, paginate, parse_body, parse_wire, read_json, wire, with_etag,
-    ApiState, PageRequest, QueryParams,
+    check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
+    require_clean_reason, wire, with_etag, ApiState, PageRequest, QueryParams,
 };
 
 pub(crate) fn routes() -> Router<ApiState> {
@@ -63,6 +80,20 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/decisions", get(list_decisions))
         .route("/api/model/export", get(export_model))
         .route("/api/model/diff", get(get_model_diff))
+        .route("/api/glossary/{id}/merge", post(merge_glossary))
+        .route("/api/model/crud", get(get_crud_matrix))
+        .route(
+            "/api/model/calculations/{id}/example",
+            get(get_calculation_example),
+        )
+        .route("/api/model/rules", get(list_rules))
+        .route("/api/model/rules/{id}", get(get_rule))
+        .route("/api/model/rules/{id}/cells", post(set_rule_cell))
+        .route("/api/processes/{id}/steps", post(mutate_process_steps))
+        .route("/api/processes/import", post(import_process))
+        .route("/api/processes/{id}/export", get(export_process))
+        .route("/api/findings/{id}/waive", post(waive_finding))
+        .route("/api/assumptions/{id}/resolve", post(resolve_assumption))
 }
 
 fn active(status: ElementStatus) -> bool {
@@ -921,4 +952,834 @@ fn element_differs<E>(
         (Ok(a), Ok(b)) => Ok(a != b),
         _ => Err(ApiError::internal("element_hash")),
     }
+}
+
+// ============================================================================ A0.3 (Hotfix 065)
+
+/// A MaterialDecision / HUMAN_DECISION proposal of `patch` on the loaded head.
+fn material_proposal(
+    loaded: &LoadedRevision,
+    stage: StageId,
+    patch: SemanticPatch,
+) -> Result<Proposal, ApiError> {
+    Proposal::new(
+        stage,
+        PatchSet {
+            base_semantic_hash: loaded.revision.semantic_hash.clone(),
+            patch,
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::MaterialDecision,
+        AcceptancePolicy::HumanDecision,
+        None,
+    )
+    .map_err(|_| ApiError::internal("proposal"))
+}
+
+fn id_collision(id: &Id) -> ApiError {
+    ApiError::conflict("E_ID_COLLISION", "a deterministic identity is already used")
+        .with_details(json!({ "id": id }))
+}
+
+// ---------------------------------------------------------------------------- glossary
+
+/// `merge_glossary`: the source Term (path) merges into the Accepted target through
+/// `plumb_functional::vocabulary`.
+async fn merge_glossary(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: GlossaryMergeRequest = parse_body(&body)?;
+    let into = parse_id(&request.into).ok_or_else(|| ApiError::invalid("into is not an ID"))?;
+    if request.into == id {
+        return Err(ApiError::invalid("a term cannot be merged into itself"));
+    }
+    require_clean_reason(&request.reason)?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let created_at = state.now();
+    let source = typed_node(&loaded.graph, &id, NodeType::Term, "term")?;
+    let target = typed_node(&loaded.graph, into.as_str(), NodeType::Term, "term")?;
+    let proposal =
+        propose_term_merge(&loaded.graph, &source.id, &target.id).map_err(|error| match error {
+            TermMergeError::Conflict { field, .. } => ApiError::conflict(
+                "E_TERM_MERGE_CONFLICT",
+                "the terms differ in language or definition",
+            )
+            .with_details(json!({ "field": field })),
+            TermMergeError::NotApplicable { reason } => ApiError::unprocessable(
+                "E_PATCH_REJECTED",
+                "the proposed change cannot be applied to the current graph",
+            )
+            .with_details(json!({ "patch_error": reason })),
+            other => ApiError::semantic("TermMergeError", other.to_string()),
+        })?;
+    let write = state.write(
+        &loaded,
+        &proposal,
+        true,
+        Some(&request.reason),
+        created_at,
+        "merge_glossary",
+    )?;
+    Ok(Json(write).into_response())
+}
+
+// ---------------------------------------------------------------------------- CRUD
+
+/// `get_crud_matrix`: reads exactly from active `reads` edges; a written pair reports create,
+/// update and delete as null because the PSG does not distinguish them.
+async fn get_crud_matrix(
+    State(state): State<ApiState>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    QueryParams::parse(query.as_deref(), &[], false)?;
+    let loaded = state.load_head()?;
+    let g = &loaded.graph;
+    let active_of = |node_type: NodeType| -> Vec<Id> {
+        g.node_ids_by_type(node_type)
+            .iter()
+            .filter(|id| g.node(id).is_some_and(|n| active(n.status)))
+            .cloned()
+            .collect()
+    };
+    let operations = active_of(NodeType::Operation);
+    let entities = active_of(NodeType::Entity);
+    let related = |op: &Id, ent: &Id, kind: RelationKind| {
+        g.outgoing_edge_ids(op)
+            .iter()
+            .filter_map(|e| g.edge(e))
+            .any(|e| e.kind == kind && active(e.status) && &e.to == ent)
+    };
+    let mut cells = Vec::with_capacity(operations.len() * entities.len());
+    for op in &operations {
+        for ent in &entities {
+            let written = related(op, ent, RelationKind::Writes);
+            let unknown = if written { None } else { Some(false) };
+            cells.push(CrudCell {
+                op: op.to_string(),
+                ent: ent.to_string(),
+                c: unknown,
+                r: related(op, ent, RelationKind::Reads),
+                u: unknown,
+                d: unknown,
+            });
+        }
+    }
+    Ok(read_json(
+        &loaded,
+        CrudMatrix {
+            operations: operations.iter().map(Id::to_string).collect(),
+            entities: entities.iter().map(Id::to_string).collect(),
+            cells,
+        },
+    ))
+}
+
+// ---------------------------------------------------------------------------- calculation example
+
+/// One JSON object whose keys must be unique (duplicate keys are rejected, never overwritten).
+struct UniqueObject(Vec<(String, Value)>);
+
+impl<'de> serde::Deserialize<'de> for UniqueObject {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueObject;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<UniqueObject, A::Error> {
+                let mut entries: Vec<(String, Value)> = Vec::new();
+                while let Some((key, value)) = map.next_entry::<String, Value>()? {
+                    if entries.iter().any(|(k, _)| *k == key) {
+                        return Err(serde::de::Error::custom(format!("duplicate key {key:?}")));
+                    }
+                    entries.push((key, value));
+                }
+                Ok(UniqueObject(entries))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+/// `get_calculation_example`: an exact example of an Accepted Calculation through
+/// `plumb_functional::calculation` and the injected providers.
+async fn get_calculation_example(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let query = QueryParams::parse(query.as_deref(), &["inputs"], false)?;
+    let mut inputs: BTreeMap<String, ExactValue> = BTreeMap::new();
+    if let Some(text) = query.get("inputs") {
+        let object: UniqueObject = serde_json::from_str(text)
+            .map_err(|e| ApiError::invalid(format!("inputs must be one JSON object: {e}")))?;
+        for (key, value) in object.0 {
+            let typed: CalculationValue = serde_json::from_value(value)
+                .map_err(|e| ApiError::invalid(format!("input {key:?}: {e}")))?;
+            let exact: ExactValue = serde_json::to_value(&typed)
+                .and_then(serde_json::from_value)
+                .map_err(|_| ApiError::internal("calculation_value"))?;
+            inputs.insert(key, exact);
+        }
+    }
+    let runtime = state.runtime("calculation_providers")?;
+    let loaded = state.load_head()?;
+    let target = typed_node(&loaded.graph, &id, NodeType::Calculation, "calculation")?;
+    let example = calculation_example(
+        &loaded.graph,
+        &target.id,
+        &inputs,
+        runtime.calendars.as_ref(),
+        runtime.predicates.as_ref(),
+    )
+    .map_err(|error| match error {
+        CalculationExampleError::NotACalculation(id) => {
+            ApiError::not_found(format!("calculation {id} not found"))
+        }
+        CalculationExampleError::ScopeUnavailable(id) => ApiError::conflict(
+            "E_CALCULATION_SCOPE_UNAVAILABLE",
+            "the calculation has no replayable scope",
+        )
+        .with_details(json!({ "calculation": id })),
+        CalculationExampleError::InvalidInput { name, reason } => {
+            ApiError::invalid(format!("input {name:?}: {reason}"))
+        }
+        CalculationExampleError::Evaluation { reason } => ApiError::unprocessable(
+            "E_CALCULATION_EVALUATION",
+            "the calculation cannot be evaluated with these inputs",
+        )
+        .with_details(json!({ "reason": reason })),
+        CalculationExampleError::Unrepresentable { reason } => ApiError::unprocessable(
+            "E_CALCULATION_VALUE_UNREPRESENTABLE",
+            "the result has no exact calculation value form",
+        )
+        .with_details(json!({ "reason": reason })),
+        other => ApiError::semantic("CalculationExampleError", other.to_string()),
+    })?;
+    let value: CalculationValue = serde_json::to_value(&example.value)
+        .and_then(serde_json::from_value)
+        .map_err(|_| ApiError::internal("calculation_value"))?;
+    Ok(read_json(
+        &loaded,
+        CalculationExample {
+            expr: example.expr,
+            rendered_example: example.rendered_example,
+            value,
+        },
+    ))
+}
+
+// ---------------------------------------------------------------------------- rules
+
+fn encoding_invalid(id: &Id, error: impl ToString) -> ApiError {
+    ApiError::conflict(
+        "E_DECISION_TABLE_ENCODING_INVALID",
+        "the persisted decision table encoding is malformed",
+    )
+    .with_details(json!({ "decision_table": id, "reason": error.to_string() }))
+}
+
+/// RFC 8785 text of a typed value.
+fn canonical_text<T: serde::Serialize>(value: &T) -> Result<String, ApiError> {
+    let bytes = to_canonical_json(value).map_err(|_| ApiError::internal("canonical_json"))?;
+    String::from_utf8(bytes).map_err(|_| ApiError::internal("canonical_json"))
+}
+
+/// The Rule view of a Rule or DecisionTable node.
+fn rule_view(node: &Node) -> Result<Option<Rule>, ApiError> {
+    match &node.payload {
+        NodePayload::Rule(rule) => Ok(Some(Rule {
+            id: node.id.to_string(),
+            name: rule.name.clone(),
+            kind: RuleViewKind::Rule,
+            conditions: rule.condition_expr.iter().cloned().collect(),
+            rows: None,
+            uncovered_cells: None,
+            overlaps: None,
+        })),
+        NodePayload::DecisionTable(table) => {
+            let spec = decode_decision_table(table).map_err(|e| encoding_invalid(&node.id, e))?;
+            let conditions = spec
+                .inputs
+                .iter()
+                .map(canonical_text)
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut rows = Vec::with_capacity(spec.rows.len());
+            for row in &spec.rows {
+                rows.push(RuleRow {
+                    when: row
+                        .inputs
+                        .iter()
+                        .map(canonical_text)
+                        .collect::<Result<_, _>>()?,
+                    then: row
+                        .outputs
+                        .iter()
+                        .map(canonical_text)
+                        .collect::<Result<_, _>>()?,
+                });
+            }
+            let analysis = analyze_decision_table(&spec);
+            let overlaps = analysis.structure.is_empty().then(|| {
+                analysis
+                    .overlaps
+                    .iter()
+                    .map(|o| format!("{}:{}", o.left_row, o.right_row))
+                    .collect()
+            });
+            let uncovered_cells = match &analysis.coverage {
+                DecisionCoverage::Complete | DecisionCoverage::CompleteByDefault => {
+                    Some(Vec::new())
+                }
+                DecisionCoverage::Incomplete { witnesses } => Some(
+                    witnesses
+                        .iter()
+                        .map(canonical_text)
+                        .collect::<Result<_, _>>()?,
+                ),
+                DecisionCoverage::IncompleteNumeric { gaps } => {
+                    Some(gaps.iter().map(canonical_text).collect::<Result<_, _>>()?)
+                }
+                DecisionCoverage::NotAnalyzable { .. } | DecisionCoverage::StructureInvalid => None,
+            };
+            Ok(Some(Rule {
+                id: node.id.to_string(),
+                name: table.name.clone(),
+                kind: RuleViewKind::DecisionTable,
+                conditions,
+                rows: Some(rows),
+                uncovered_cells,
+                overlaps,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// `list_rules`: every Rule and DecisionTable node.
+async fn list_rules(
+    State(state): State<ApiState>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let query = QueryParams::parse(query.as_deref(), &[], true)?;
+    let loaded = state.load_head()?;
+    let mut items = Vec::new();
+    for node_type in [NodeType::Rule, NodeType::DecisionTable] {
+        for id in loaded.graph.node_ids_by_type(node_type) {
+            let Some(node) = loaded.graph.node(id) else {
+                continue;
+            };
+            if let Some(view) = rule_view(node)? {
+                items.push((node.id.to_string(), view));
+            }
+        }
+    }
+    let (items, next_cursor) = simple_page(items, "list_rules", &query, &loaded)?;
+    Ok(read_json(&loaded, RulePage { items, next_cursor }))
+}
+
+/// `get_rule`.
+async fn get_rule(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let loaded = state.load_head()?;
+    let missing = || ApiError::not_found(format!("rule {id} not found"));
+    let node = parse_id(&id)
+        .and_then(|i| loaded.graph.node(&i))
+        .ok_or_else(missing)?;
+    let view = rule_view(node)?.ok_or_else(missing)?;
+    Ok(read_json(&loaded, view))
+}
+
+/// Parses `row:<row>:output:<column>` with canonical zero-based indexes.
+fn parse_cell(cell: &str) -> Option<(usize, usize)> {
+    let rest = cell.strip_prefix("row:")?;
+    let (row, column) = rest.split_once(":output:")?;
+    let index = |text: &str| {
+        let canonical = text == "0"
+            || (!text.is_empty()
+                && !text.starts_with('0')
+                && text.bytes().all(|b| b.is_ascii_digit()));
+        canonical.then(|| text.parse::<usize>().ok()).flatten()
+    };
+    Some((index(row)?, index(column)?))
+}
+
+/// `set_rule_cell`: replaces exactly one output cell of a DecisionTable through the strict
+/// adapter; a governed human decision with a mandatory reason.
+async fn set_rule_cell(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: RuleCellRequest = parse_body(&body)?;
+    let (row, column) = parse_cell(&request.cell)
+        .ok_or_else(|| ApiError::invalid("cell must be row:<row>:output:<column>"))?;
+    let outcome: DecisionOutputCell = serde_json::from_str(&request.outcome)
+        .map_err(|e| ApiError::invalid(format!("outcome is not a decision output cell: {e}")))?;
+    if canonical_text(&outcome)? != request.outcome {
+        return Err(ApiError::invalid(
+            "outcome must be its own RFC 8785 encoding",
+        ));
+    }
+    require_clean_reason(&request.reason)?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let created_at = state.now();
+    let node = parse_id(&id)
+        .and_then(|i| loaded.graph.node(&i))
+        .ok_or_else(|| ApiError::not_found(format!("rule {id} not found")))?;
+    let NodePayload::DecisionTable(table) = &node.payload else {
+        return Err(ApiError::conflict(
+            "E_RULE_NOT_DECISION_TABLE",
+            "only a DecisionTable has editable cells",
+        )
+        .with_details(json!({ "rule": node.id })));
+    };
+    let spec = decode_decision_table(table).map_err(|e| encoding_invalid(&node.id, e))?;
+    let changed = set_output_cell(&spec, row, column, outcome).map_err(|error| match error {
+        DecisionCellError::RowOutOfRange { .. } | DecisionCellError::ColumnOutOfRange { .. } => {
+            ApiError::invalid(format!("cell {}: {error}", request.cell))
+        }
+        DecisionCellError::NoChange => {
+            ApiError::unprocessable("E_NO_CHANGE", "the cell already has this outcome")
+        }
+        DecisionCellError::InvalidOutputCell { .. } => {
+            ApiError::semantic("DecisionCellError", error.to_string())
+        }
+    })?;
+    let encoded =
+        encode_decision_table(&table.name, &changed).map_err(|e| encoding_invalid(&node.id, e))?;
+    let proposal = material_proposal(
+        &loaded,
+        StageId::S2,
+        SemanticPatch::ReplacePayload {
+            target: precondition(node)?,
+            payload: NodePayload::DecisionTable(encoded),
+        },
+    )?;
+    let write = state.write(
+        &loaded,
+        &proposal,
+        true,
+        Some(&request.reason),
+        created_at,
+        "set_rule_cell",
+    )?;
+    Ok(Json(write).into_response())
+}
+
+// ---------------------------------------------------------------------------- processes
+
+/// `mutate_process_steps`: one step change of a strict linear Accepted Process through
+/// `plumb_functional::process`.
+async fn mutate_process_steps(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: ProcessStepRequest = parse_body(&body)?;
+    let position =
+        |p: u64| usize::try_from(p).map_err(|_| ApiError::invalid("position is too large"));
+    let ref_of = |text: &str| {
+        parse_id(text).ok_or_else(|| ApiError::invalid(format!("{text:?} is not an ID")))
+    };
+    let change = match &request {
+        ProcessStepRequest::Add {
+            operation_ref,
+            position: p,
+        } => ProcessStepChange::Add {
+            operation_ref: ref_of(operation_ref)?,
+            position: position(*p)?,
+        },
+        ProcessStepRequest::Move {
+            node_ref,
+            position: p,
+        } => ProcessStepChange::Move {
+            node_ref: ref_of(node_ref)?,
+            position: position(*p)?,
+        },
+        ProcessStepRequest::Remove { node_ref } => ProcessStepChange::Remove {
+            node_ref: ref_of(node_ref)?,
+        },
+    };
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let created_at = state.now();
+    let process = typed_node(&loaded.graph, &id, NodeType::Process, "process")?;
+    let proposal = propose_process_step_change(
+        &loaded.graph,
+        &process.id,
+        &change,
+        state.actor_ref(),
+        created_at,
+    )
+    .map_err(|error| match error {
+        ProcessStepError::Linear(e) => ApiError::conflict(
+            "E_PROCESS_NOT_LINEAR",
+            "step editing is defined only for a strict linear Accepted Process",
+        )
+        .with_details(json!({ "reason": e.to_string() })),
+        ProcessStepError::Missing(id) => ApiError::not_found(format!("{id} not found")),
+        ProcessStepError::PositionOutOfRange { .. } => ApiError::invalid(error.to_string()),
+        ProcessStepError::NoChange(_) => {
+            ApiError::unprocessable("E_NO_CHANGE", "the step is already at this position")
+        }
+        ProcessStepError::HasRelations { node_ref, edges } => ApiError::conflict(
+            "E_PROCESS_STEP_HAS_RELATIONS",
+            "the step has relations other than its flow",
+        )
+        .with_details(json!({ "node_ref": node_ref, "edges": edges })),
+        ProcessStepError::IdCollision(id) => id_collision(&id),
+        ProcessStepError::MutationInvalid { reason } => ApiError::unprocessable(
+            "E_PROCESS_MUTATION_INVALID",
+            "the changed process fails process analysis",
+        )
+        .with_details(json!({ "reason": reason })),
+        other => ApiError::semantic("ProcessStepError", other.to_string()),
+    })?;
+    let write = state.write(
+        &loaded,
+        &proposal,
+        false,
+        None,
+        created_at,
+        "mutate_process_steps",
+    )?;
+    Ok(Json(write).into_response())
+}
+
+/// The canonical Mermaid text of a linear process (Hotfix 065).
+fn render_mermaid(name: &str, operation_refs: &[Id]) -> Result<String, ApiError> {
+    let name = serde_json::to_string(name).map_err(|_| ApiError::internal("mermaid"))?;
+    let mut text = format!("flowchart TD\n%% plumb-process-name: {name}\n  start((Start))\n");
+    let keys: Vec<String> = (0..operation_refs.len()).map(linear_step_key).collect();
+    for (key, operation) in keys.iter().zip(operation_refs) {
+        text.push_str(&format!("  {key}[\"{operation}\"]\n"));
+    }
+    text.push_str("  end((End))\n");
+    let mut order = vec!["start".to_owned()];
+    order.extend(keys);
+    order.push("end".to_owned());
+    for pair in order.windows(2) {
+        text.push_str(&format!("  {} --> {}\n", pair[0], pair[1]));
+    }
+    Ok(text)
+}
+
+/// Parses exactly the canonical Mermaid subset: the name and the operation of each step, then
+/// requires the canonical re-rendering to equal `text` byte for byte.
+fn parse_mermaid(text: &str) -> Result<(String, Vec<Id>), ApiError> {
+    let invalid = || {
+        ApiError::bad_request(
+            "E_MERMAID_INVALID",
+            "the text is not canonical Plumb Mermaid",
+        )
+    };
+    let mut lines = text.split('\n');
+    if lines.next() != Some("flowchart TD") {
+        return Err(invalid());
+    }
+    let name_line = lines.next().ok_or_else(invalid)?;
+    let name: String = serde_json::from_str(
+        name_line
+            .strip_prefix("%% plumb-process-name: ")
+            .ok_or_else(invalid)?,
+    )
+    .map_err(|_| invalid())?;
+    if lines.next() != Some("  start((Start))") {
+        return Err(invalid());
+    }
+    let mut operations = Vec::new();
+    for line in lines {
+        let Some(rest) = line.strip_prefix(&format!("  {}[\"", linear_step_key(operations.len())))
+        else {
+            break;
+        };
+        let operation = rest.strip_suffix("\"]").ok_or_else(invalid)?;
+        operations.push(parse_id(operation).ok_or_else(invalid)?);
+    }
+    if render_mermaid(&name, &operations)? != text {
+        return Err(invalid());
+    }
+    Ok((name, operations))
+}
+
+/// `import_process`: a canonical Mermaid linear process imported through
+/// `plumb_functional::process` with the existing process identities; never overwrites.
+async fn import_process(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: ProcessImportRequest = parse_body(&body)?;
+    let ProcessFormat::Mermaid = request.format;
+    let normalized = request.text.replace("\r\n", "\n").replace('\r', "\n");
+    let (name, operations) = parse_mermaid(&normalized)?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let created_at = state.now();
+    let proposal = propose_linear_process_import(
+        &loaded.graph,
+        &name,
+        &operations,
+        state.actor_ref(),
+        created_at,
+    )
+    .map_err(|error| match error {
+        LinearInterchangeError::InvalidName(_) => {
+            ApiError::bad_request("E_MERMAID_INVALID", error.to_string())
+        }
+        LinearInterchangeError::OperationInvalid(_) => {
+            ApiError::semantic("LinearInterchangeError", error.to_string())
+        }
+        LinearInterchangeError::NoChange(_) => {
+            ApiError::unprocessable("E_NO_CHANGE", "an identical process already exists")
+        }
+        LinearInterchangeError::Conflict(id) => ApiError::conflict(
+            "E_PROCESS_IMPORT_CONFLICT",
+            "the process exists with different material",
+        )
+        .with_details(json!({ "process": id })),
+        LinearInterchangeError::IdCollision(id) => id_collision(&id),
+        other => ApiError::semantic("LinearInterchangeError", other.to_string()),
+    })?;
+    let write = state.write(
+        &loaded,
+        &proposal,
+        false,
+        None,
+        created_at,
+        "import_process",
+    )?;
+    Ok(Json(write).into_response())
+}
+
+/// `export_process`: the canonical Mermaid text of a representable linear process.
+async fn export_process(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let query = QueryParams::parse(query.as_deref(), &["format"], false)?;
+    let _format: ProcessFormat = parse_wire(
+        query
+            .get("format")
+            .ok_or_else(|| ApiError::invalid("format is required"))?,
+        "format",
+    )?;
+    let loaded = state.load_head()?;
+    let process = typed_node(&loaded.graph, &id, NodeType::Process, "process")?;
+    let steps = linear_process_steps(&loaded.graph, &process.id).map_err(|e| {
+        ApiError::conflict(
+            "E_MERMAID_UNREPRESENTABLE",
+            "the process is outside the canonical Mermaid subset",
+        )
+        .with_details(json!({ "reason": e.to_string() }))
+    })?;
+    let text = render_mermaid(&steps.name, &steps.operation_refs)?;
+    let mut response = text.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    Ok(with_etag(&loaded, response))
+}
+
+// ---------------------------------------------------------------------------- waivers
+
+/// The Hotfix 048 waiver of current finding `finding_id` (Hotfix 065): the waiver material
+/// comes from the current, head-bound gate reports and is checked against the persisted
+/// Finding; `requirement` additionally scopes it to an Accepted Requirement.
+pub(super) fn waive(
+    state: &ApiState,
+    loaded: &LoadedRevision,
+    finding_id: &Id,
+    requirement: Option<&Id>,
+    reason: &str,
+    created_at: Timestamp,
+    operation_id: &'static str,
+) -> Result<WriteResult, ApiError> {
+    let reports = state.current_gate_reports(loaded);
+    let generated: Vec<(&GeneratedFinding, &ValidationPolicy)> = reports
+        .iter()
+        .flat_map(|r| r.findings.iter().map(move |f| (f, &r.policy)))
+        .filter(|(f, _)| &f.id == finding_id)
+        .collect();
+    let Some((first, policy)) = generated.first().copied() else {
+        return Err(ApiError::conflict(
+            "E_FINDING_NOT_CURRENT",
+            "no current gate report generated this finding",
+        )
+        .with_details(json!({ "finding": finding_id })));
+    };
+    if generated.iter().any(|(f, p)| {
+        f.key != first.key
+            || f.semantic_condition_key != first.semantic_condition_key
+            || f.payload != first.payload
+            || *p != policy
+    }) {
+        return Err(ApiError::conflict(
+            "E_GATE_REPORT_INCOHERENT",
+            "current gate reports disagree about this finding",
+        )
+        .with_details(json!({ "finding": finding_id })));
+    }
+    let material_mismatch = || {
+        ApiError::conflict(
+            "E_FINDING_MATERIAL_MISMATCH",
+            "the persisted finding does not carry the evaluated identity",
+        )
+        .with_details(json!({ "finding": finding_id }))
+    };
+    let persisted = loaded
+        .graph
+        .node(finding_id)
+        .ok_or_else(material_mismatch)?;
+    let NodePayload::Finding(finding) = &persisted.payload else {
+        return Err(material_mismatch());
+    };
+    if persisted.status != ElementStatus::Accepted
+        || finding.code != first.payload.code
+        || finding.family != first.payload.family
+        || finding.affected_refs != first.payload.affected_refs
+    {
+        return Err(material_mismatch());
+    }
+    if let Some(requirement) = requirement {
+        if !first.payload.affected_refs.contains(requirement) {
+            return Err(ApiError::conflict(
+                "E_FINDING_NOT_FOR_REQUIREMENT",
+                "the finding does not affect this requirement",
+            )
+            .with_details(json!({ "finding": finding_id, "requirement": requirement })));
+        }
+    }
+    let rule = state
+        .profile()
+        .rules
+        .iter()
+        .find(|r| r.id == first.payload.code)
+        .ok_or_else(|| {
+            ApiError::conflict(
+                "E_GATE_REPORT_INCOHERENT",
+                "the finding's rule is not part of the current profile",
+            )
+            .with_details(json!({ "finding": finding_id }))
+        })?;
+    let created = create_waiver(
+        &loaded.graph,
+        &WaiverRequest {
+            rule,
+            targets: &first.payload.affected_refs,
+            semantic_condition_key: &first.semantic_condition_key,
+            decided_by: state.actor_ref(),
+            decided_at: created_at,
+            rationale: reason,
+        },
+        policy,
+    )
+    .map_err(|error| {
+        let name = match &error {
+            WaiverError::Material(_) => "WaiverCreationError",
+            WaiverError::InvalidWaiverProposal { .. } => "WaiverError",
+        };
+        ApiError::semantic(name, error.to_string())
+    })?;
+    let stored = state.with_artifact_store(|store| {
+        store.put(
+            ArtifactKind::Patch,
+            "application/json",
+            &created.artifact_bytes,
+            created_at,
+        )
+    })?;
+    match stored {
+        Ok(hash) if hash == created.decision.patch_ref => {}
+        _ => return Err(ApiError::internal("artifact_store")),
+    }
+    state.write(
+        loaded,
+        &created.proposal,
+        true,
+        Some(reason),
+        created_at,
+        operation_id,
+    )
+}
+
+/// `waive_finding`.
+async fn waive_finding(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: ReasonRequest = parse_body(&body)?;
+    require_clean_reason(&request.reason)?;
+    let finding_id =
+        parse_id(&id).ok_or_else(|| ApiError::not_found(format!("finding {id} not found")))?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let created_at = state.now();
+    let write = waive(
+        &state,
+        &loaded,
+        &finding_id,
+        None,
+        &request.reason,
+        created_at,
+        "waive_finding",
+    )?;
+    Ok(Json(write).into_response())
+}
+
+// ---------------------------------------------------------------------------- assumptions
+
+/// `resolve_assumption`: Accepted -> Resolved through `plumb_functional::assumption`.
+async fn resolve_assumption(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: ReasonRequest = parse_body(&body)?;
+    require_clean_reason(&request.reason)?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let created_at = state.now();
+    let node = typed_node(&loaded.graph, &id, NodeType::Assumption, "assumption")?;
+    let proposal =
+        propose_assumption_resolution(&loaded.graph, &node.id).map_err(|error| match error {
+            AssumptionResolutionError::AlreadyResolved(_) => {
+                ApiError::unprocessable("E_NO_CHANGE", "the assumption is already Resolved")
+            }
+            AssumptionResolutionError::NotActive { status, .. } => ApiError::conflict(
+                "E_ASSUMPTION_NOT_ACTIVE",
+                "only an Accepted assumption can be resolved",
+            )
+            .with_details(json!({ "status": status })),
+            other => ApiError::semantic("AssumptionResolutionError", other.to_string()),
+        })?;
+    let write = state.write(
+        &loaded,
+        &proposal,
+        true,
+        Some(&request.reason),
+        created_at,
+        "resolve_assumption",
+    )?;
+    Ok(Json(write).into_response())
 }

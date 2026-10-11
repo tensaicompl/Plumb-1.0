@@ -2,8 +2,8 @@
 
 use plumb_core::{CoreError, Hash, HashKind, Id};
 use plumb_psg::{
-    edge_element_hash, node_element_hash, Edge, ElementStatus, EvidenceRef, Node, NodePayload,
-    RelationKind, RelationProperties, RelationPropertiesError, StandardMapping,
+    edge_element_hash, node_element_hash, Edge, ElementStatus, EvidenceRef, ExtensionKey, Node,
+    NodePayload, RelationKind, RelationProperties, RelationPropertiesError, StandardMapping,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -91,7 +91,7 @@ pub enum MergePolicy {
     KeepPayloadUnionMetadata,
 }
 
-/// A serializable semantic change (metamodel §20.3). Exactly 12 variants; the `op` tag is the
+/// A serializable semantic change (metamodel §20.3). Exactly 13 variants; the `op` tag is the
 /// variant name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", deny_unknown_fields, try_from = "SemanticPatchFields")]
@@ -141,6 +141,12 @@ pub enum SemanticPatch {
     AttachStandardMapping {
         target: ElementPrecondition,
         mapping: StandardMapping,
+    },
+    /// Sets exactly one node extension entry (Hotfix 065, metamodel §20.4).
+    SetNodeExtension {
+        target: ElementPrecondition,
+        key: ExtensionKey,
+        value: Value,
     },
     Compound {
         patches: Vec<SemanticPatch>,
@@ -198,6 +204,12 @@ enum SemanticPatchFields {
         target: ElementPrecondition,
         mapping: StandardMapping,
     },
+    /// Sets exactly one node extension entry (Hotfix 065, metamodel §20.4).
+    SetNodeExtension {
+        target: ElementPrecondition,
+        key: ExtensionKey,
+        value: Value,
+    },
     Compound {
         patches: Vec<SemanticPatch>,
     },
@@ -249,6 +261,9 @@ impl TryFrom<SemanticPatchFields> for SemanticPatch {
             F::AttachStandardMapping { target, mapping } => {
                 SemanticPatch::AttachStandardMapping { target, mapping }
             }
+            F::SetNodeExtension { target, key, value } => {
+                SemanticPatch::SetNodeExtension { target, key, value }
+            }
             F::Compound { patches } => SemanticPatch::Compound { patches },
         })
     }
@@ -291,7 +306,8 @@ impl SemanticPatch {
             | SemanticPatch::MergeNodes { .. }
             | SemanticPatch::Supersede { .. }
             | SemanticPatch::AttachEvidence { .. }
-            | SemanticPatch::AttachStandardMapping { .. } => None,
+            | SemanticPatch::AttachStandardMapping { .. }
+            | SemanticPatch::SetNodeExtension { .. } => None,
         })
     }
 }

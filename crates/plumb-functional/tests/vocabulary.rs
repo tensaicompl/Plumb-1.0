@@ -1568,6 +1568,162 @@ mod vocabulary_contract {
         ));
     }
 
+    // ------------------------------------------------------------------ Term merge (Hotfix 065)
+
+    fn merge_graph(source: Node, target: Node) -> Graph {
+        Graph::new(id(PROJECT), id(PROFILE), vec![source, target], vec![]).unwrap()
+    }
+
+    #[test]
+    fn term_merge_unions_aliases_under_the_intermediate_hash() {
+        let mut source = term_node(
+            "term:src",
+            Proposed,
+            "Holiday",
+            Some(vec!["Vacation", "PTO"]),
+        );
+        source.tags.insert("from-source".into());
+        let target = term_node(
+            "term:dst",
+            Accepted,
+            "Leave",
+            Some(vec!["Absence", "Holiday"]),
+        );
+        let g = merge_graph(source, target.clone());
+        let p = propose_term_merge(&g, &id("term:src"), &id("term:dst")).unwrap();
+        assert_eq!(p.stage, StageId::S1);
+        assert_eq!(p.materiality, ProposalMateriality::MaterialDecision);
+        assert_eq!(p.acceptance_policy, AcceptancePolicy::HumanDecision);
+        let SemanticPatch::Compound { patches } = &p.patch_set.patch else {
+            panic!("not a Compound")
+        };
+        assert_eq!(patches.len(), 2);
+        let SemanticPatch::MergeNodes {
+            keep,
+            merge,
+            field_policy,
+        } = &patches[0]
+        else {
+            panic!("first leaf is not MergeNodes")
+        };
+        assert_eq!(keep.id, id("term:dst"));
+        assert_eq!(merge.len(), 1);
+        assert_eq!(merge[0].id, id("term:src"));
+        assert_eq!(
+            *field_policy,
+            plumb_patch::MergePolicy::KeepPayloadUnionMetadata
+        );
+        let SemanticPatch::ReplacePayload {
+            target: pre,
+            payload,
+        } = &patches[1]
+        else {
+            panic!("second leaf is not ReplacePayload")
+        };
+        // The precondition is the real post-merge hash, not the original one.
+        assert_ne!(pre.expected_hash, keep.expected_hash);
+        let NodePayload::Term(term) = payload else {
+            panic!()
+        };
+        assert_eq!(term.term, "Leave");
+        assert_eq!(term.language, "en");
+        assert_eq!(term.definition_ref, None);
+        assert_eq!(
+            term.aliases,
+            Some(vec![
+                "Absence".to_owned(),
+                "Holiday".to_owned(),
+                "PTO".to_owned(),
+                "Vacation".to_owned()
+            ])
+        );
+        let after = apply_patch(&g, &p.patch_set).unwrap().graph;
+        assert!(after.node(&id("term:src")).is_none());
+        let merged = after.node(&id("term:dst")).unwrap();
+        assert!(merged.tags.contains("from-source"));
+        assert_eq!(merged.payload, payload.clone());
+        // The target term itself is never an alias.
+        let echo = term_node("term:src", Accepted, "Leave", None);
+        let g = merge_graph(echo, term_node("term:dst", Accepted, "Leave", None));
+        let p = propose_term_merge(&g, &id("term:src"), &id("term:dst")).unwrap();
+        let SemanticPatch::Compound { patches } = &p.patch_set.patch else {
+            panic!()
+        };
+        let SemanticPatch::ReplacePayload { payload, .. } = &patches[1] else {
+            panic!()
+        };
+        assert!(matches!(payload, NodePayload::Term(t) if t.aliases.is_none()));
+    }
+
+    #[test]
+    fn term_merge_conflicts_and_lifecycle() {
+        let target = || term_node("term:dst", Accepted, "Leave", None);
+        let mut other_language = term_node("term:src", Accepted, "Urlaub", None);
+        if let NodePayload::Term(t) = &mut other_language.payload {
+            t.language = "de".into();
+        }
+        assert_eq!(
+            propose_term_merge(
+                &merge_graph(other_language, target()),
+                &id("term:src"),
+                &id("term:dst")
+            ),
+            Err(TermMergeError::Conflict {
+                source_ref: id("term:src"),
+                target_ref: id("term:dst"),
+                field: "language"
+            })
+        );
+        let mut defined = term_node("term:src", Accepted, "Holiday", None);
+        if let NodePayload::Term(t) = &mut defined.payload {
+            t.definition_ref = Some(id("concept:x"));
+        }
+        let concept = concept_node("concept:x", Accepted, "X", ObjectType);
+        let g = Graph::new(
+            id(PROJECT),
+            id(PROFILE),
+            vec![defined, target(), concept],
+            vec![],
+        )
+        .unwrap();
+        assert!(matches!(
+            propose_term_merge(&g, &id("term:src"), &id("term:dst")),
+            Err(TermMergeError::Conflict {
+                field: "definition_ref",
+                ..
+            })
+        ));
+        let g = merge_graph(term_node("term:src", Accepted, "Holiday", None), target());
+        assert_eq!(
+            propose_term_merge(&g, &id("term:dst"), &id("term:dst")),
+            Err(TermMergeError::SameTerm(id("term:dst")))
+        );
+        let g = merge_graph(
+            term_node("term:src", Accepted, "Holiday", None),
+            term_node("term:dst", Proposed, "Leave", None),
+        );
+        assert_eq!(
+            propose_term_merge(&g, &id("term:src"), &id("term:dst")),
+            Err(TermMergeError::TargetNotAccepted(id("term:dst")))
+        );
+        let g = merge_graph(
+            term_node("term:src", ElementStatus::Rejected, "Holiday", None),
+            target(),
+        );
+        assert_eq!(
+            propose_term_merge(&g, &id("term:src"), &id("term:dst")),
+            Err(TermMergeError::SourceNotActive(id("term:src")))
+        );
+        let g = with_nodes(
+            &merge_graph(term_node("term:src", Accepted, "Holiday", None), target()),
+            vec![concept_node("concept:y", Accepted, "Y", Role)],
+        );
+        assert_eq!(
+            propose_term_merge(&g, &id("concept:y"), &id("term:dst")),
+            Err(TermMergeError::NotATerm(id("concept:y")))
+        );
+    }
+
     // ------------------------------------------------------------------ guard
 
     #[test]
@@ -1594,7 +1750,6 @@ mod vocabulary_contract {
                 "InferenceProvider",
                 "::execute",
                 "MockProvider",
-                "apply_patch",
                 "persist_inference_bundle",
                 "materialize_derivation_record",
                 "commit(",
@@ -1614,6 +1769,16 @@ mod vocabulary_contract {
                 assert!(!source.contains(token), "{name} contains {token}");
             }
         }
+        // Hotfix 065: the only patch-engine call is the Term-merge dry run that computes the
+        // target's intermediate element hash; nothing is committed.
+        assert_eq!(
+            include_str!("../src/vocabulary.rs")
+                .matches("apply_patch(")
+                .count(),
+            1,
+            "dry run only"
+        );
+        assert!(!include_str!("../src/vocabulary_exceptions.rs").contains("apply_patch"));
         assert!(!include_str!("../src/lib.rs").contains("Proposal"));
     }
 

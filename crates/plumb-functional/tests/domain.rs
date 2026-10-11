@@ -1516,19 +1516,33 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                "cardinality_from": from, "cardinality_to": to})
     }
 
+    /// How a governed decision is bound (Hotfix 065, metamodel §6.3): a question-bound
+    /// decision names QUESTION and resolves it; a Finding-bound decision has no question_ref
+    /// and resolves its Finding.
+    #[derive(Clone, Copy)]
+    enum Binding {
+        Question,
+        Finding,
+    }
+
     fn decision_node(
         node_id: &str,
         status: ElementStatus,
         answer: Value,
         rationale: Option<&str>,
         by: &str,
+        binding: Binding,
     ) -> Node {
+        let (question_ref, proposal_ref) = match binding {
+            Binding::Question => (Some(id(QUESTION)), None),
+            Binding::Finding => (None, Some(id("prop:00000000000000aa"))),
+        };
         node(
             node_id,
             status,
             NodePayload::ResolutionDecision(ResolutionDecision {
-                question_ref: Some(id(QUESTION)),
-                proposal_ref: None,
+                question_ref,
+                proposal_ref,
                 answer,
                 decided_by: id(by),
                 decided_at: ts(AT),
@@ -1626,6 +1640,11 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                     marker(SUBMITS_RELATIONSHIP, "1", "0..*"),
                     Some("Confirmed with HR."),
                     HUMAN,
+                    if via_question {
+                        Binding::Question
+                    } else {
+                        Binding::Finding
+                    },
                 )],
                 vec![resolves("rel:resolves-1", DECISION, target)],
                 AgentKind::Human,
@@ -1649,6 +1668,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                 marker(SUBMITS_RELATIONSHIP, "0..1", "1"),
                 Some("Confirmed with HR."),
                 HUMAN,
+                Binding::Question,
             )],
             vec![resolves("rel:resolves-1", DECISION, QUESTION)],
             AgentKind::Human,
@@ -1687,8 +1707,16 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                 ),
             )
         };
-        let good =
-            |answer: Value| decision_node(DECISION, Accepted, answer, Some("Confirmed."), HUMAN);
+        let good = |answer: Value| {
+            decision_node(
+                DECISION,
+                Accepted,
+                answer,
+                Some("Confirmed."),
+                HUMAN,
+                Binding::Question,
+            )
+        };
         assert!(matches!(
             try_run(
                 good(marker(SUBMITS_RELATIONSHIP, "many", "1")),
@@ -1729,7 +1757,8 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                         Accepted,
                         marker(SUBMITS_RELATIONSHIP, "1", "1"),
                         rationale,
-                        HUMAN
+                        HUMAN,
+                        Binding::Question
                     ),
                     AgentKind::Human,
                     QUESTION
@@ -1773,6 +1802,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                     marker(SUBMITS_RELATIONSHIP, "1", "1"),
                     Some("Confirmed."),
                     HUMAN,
+                    Binding::Finding,
                 ),
             ],
             vec![resolves("rel:resolves-1", DECISION, "fnd:00000000000000ff")],
@@ -1802,6 +1832,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                 marker(SUBMITS_RELATIONSHIP, "1", "1"),
                 Some("Draft."),
                 HUMAN,
+                Binding::Question,
             ),
             AgentKind::Human,
             QUESTION,
@@ -1835,6 +1866,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                 marker(reverse.as_str(), "1", "1"),
                 Some("Confirmed."),
                 HUMAN,
+                Binding::Question,
             )],
             vec![resolves("rel:resolves-1", DECISION, QUESTION)],
             AgentKind::Human,
@@ -1923,6 +1955,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                     marker(SUBMITS_RELATIONSHIP, "1", "0..*"),
                     Some("First."),
                     HUMAN,
+                    Binding::Question,
                 ),
                 decision_node(
                     "decision:cardinality-2",
@@ -1930,6 +1963,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                     marker(SUBMITS_RELATIONSHIP, "1", "1..*"),
                     Some("Second."),
                     HUMAN,
+                    Binding::Question,
                 ),
             ],
             vec![

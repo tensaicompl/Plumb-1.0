@@ -874,3 +874,192 @@ fn finish(
         unresolved,
     }
 }
+
+// ============================================================================ requirement split
+
+/// Extension key recording the parent and index of a requirement produced by a split
+/// (Hotfix 065).
+pub const REQUIREMENT_SPLIT_ORIGIN_EXTENSION: &str = "plumb_functional:requirement_split_origin";
+
+/// Why a requirement split cannot be proposed.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum RequirementSplitError {
+    #[error(transparent)]
+    Core(#[from] CoreError),
+    /// The parent does not exist or is not a Requirement.
+    #[error("{0} is not a Requirement")]
+    NotARequirement(Id),
+    /// The parent Requirement is not Accepted.
+    #[error("requirement {0} is not Accepted")]
+    NotAccepted(Id),
+    /// Fewer than two parts were supplied.
+    #[error("a split needs at least two parts, got {0}")]
+    TooFewParts(usize),
+    /// A part is empty, padded or contains control characters.
+    #[error("part {0} is not clean text")]
+    InvalidPart(usize),
+    /// Two parts are the same string.
+    #[error("parts {first} and {second} are identical")]
+    DuplicatePart { first: usize, second: usize },
+    /// A deterministic child or relation ID is already used.
+    #[error("id {0} is already used")]
+    IdCollision(Id),
+    /// The split proposal could not be built.
+    #[error("invalid split proposal: {reason}")]
+    InvalidProposal { reason: String },
+}
+
+/// One explicit human-governed split of an Accepted Requirement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequirementSplitInput {
+    pub parent_ref: Id,
+    /// The child statements in order; never inferred or rewritten.
+    pub parts: Vec<String>,
+    pub actor_ref: Id,
+    pub at: Timestamp,
+}
+
+/// `req:<first 16 hex of SHA-256(RFC 8785 {kind: requirement_split, project_id, parent_ref,
+/// index})>`; the statement is not part of the identity.
+pub fn split_child_id(project_id: &Id, parent_ref: &Id, index: usize) -> Result<Id, CoreError> {
+    let body = json!({
+        "kind": "requirement_split",
+        "project_id": project_id.as_str(),
+        "parent_ref": parent_ref.as_str(),
+        "index": index,
+    });
+    let digest = Hash::content_sha256(&to_canonical_json(&body)?);
+    let hex = &digest.as_str()["sha256:".len()..];
+    format!("req:{}", &hex[..16]).parse()
+}
+
+fn clean_part(part: &str) -> bool {
+    !part.is_empty() && part.trim() == part && !part.chars().any(char::is_control)
+}
+
+/// Proposes the split of an Accepted Requirement (Hotfix 065): Accepted children carrying the
+/// parent payload with each supplied statement and the parent provenance (without its segment
+/// origin, with a split origin), Accepted `decomposes_to` edges parent -> child, and the parent
+/// superseded. Patch order: children by index, edges by index, then the parent status. Stage S1,
+/// MaterialDecision, HUMAN_DECISION.
+pub fn propose_requirement_split(
+    graph: &Graph,
+    input: &RequirementSplitInput,
+) -> Result<Proposal, RequirementSplitError> {
+    let parent = graph
+        .node(&input.parent_ref)
+        .ok_or_else(|| RequirementSplitError::NotARequirement(input.parent_ref.clone()))?;
+    let NodePayload::Requirement(parent_payload) = &parent.payload else {
+        return Err(RequirementSplitError::NotARequirement(
+            input.parent_ref.clone(),
+        ));
+    };
+    if parent.status != ElementStatus::Accepted {
+        return Err(RequirementSplitError::NotAccepted(input.parent_ref.clone()));
+    }
+    if input.parts.len() < 2 {
+        return Err(RequirementSplitError::TooFewParts(input.parts.len()));
+    }
+    for (index, part) in input.parts.iter().enumerate() {
+        if !clean_part(part) {
+            return Err(RequirementSplitError::InvalidPart(index));
+        }
+        if let Some(first) = input.parts[..index].iter().position(|p| p == part) {
+            return Err(RequirementSplitError::DuplicatePart {
+                first,
+                second: index,
+            });
+        }
+    }
+    let invalid = |reason: String| RequirementSplitError::InvalidProposal { reason };
+    let audit = AuditMeta::new(input.actor_ref.clone(), input.at, None, None)
+        .map_err(|e| invalid(e.to_string()))?;
+    let segment_key: ExtensionKey = SEGMENT_ORIGIN_EXTENSION
+        .parse()
+        .map_err(|e: plumb_psg::InvalidExtensionKey| invalid(e.to_string()))?;
+    let split_key: ExtensionKey = REQUIREMENT_SPLIT_ORIGIN_EXTENSION
+        .parse()
+        .map_err(|e: plumb_psg::InvalidExtensionKey| invalid(e.to_string()))?;
+    let free = |id: &Id| -> Result<(), RequirementSplitError> {
+        if graph.node(id).is_some() || graph.edge(id).is_some() {
+            Err(RequirementSplitError::IdCollision(id.clone()))
+        } else {
+            Ok(())
+        }
+    };
+    let mut children = Vec::with_capacity(input.parts.len());
+    let mut edges = Vec::with_capacity(input.parts.len());
+    for (index, part) in input.parts.iter().enumerate() {
+        let child_id = split_child_id(graph.project_id(), &parent.id, index)?;
+        free(&child_id)?;
+        let mut payload = parent_payload.clone();
+        payload.statement = part.clone();
+        let mut extensions = parent.extensions.clone();
+        extensions.remove(&segment_key);
+        extensions.insert(
+            split_key.clone(),
+            json!({"parent_ref": parent.id.as_str(), "index": index}),
+        );
+        children.push(Node {
+            id: child_id.clone(),
+            revision: 1,
+            status: ElementStatus::Accepted,
+            payload: NodePayload::Requirement(payload),
+            evidence: parent.evidence.clone(),
+            derivations: parent.derivations.clone(),
+            standards: parent.standards.clone(),
+            tags: parent.tags.clone(),
+            extensions,
+            audit: audit.clone(),
+        });
+        let edge_id = crate::resolution::relation_id(
+            &plumb_psg::RelationKind::DecomposesTo,
+            &parent.id,
+            &child_id,
+        )?;
+        free(&edge_id)?;
+        edges.push(plumb_psg::Edge {
+            id: edge_id,
+            revision: 1,
+            status: ElementStatus::Accepted,
+            kind: plumb_psg::RelationKind::DecomposesTo,
+            from: parent.id.clone(),
+            to: child_id,
+            properties: plumb_psg::RelationProperties::None,
+            evidence: Vec::new(),
+            derivations: Vec::new(),
+            standards: Vec::new(),
+            audit: audit.clone(),
+        });
+    }
+    let mut patches: Vec<SemanticPatch> = children
+        .into_iter()
+        .map(|node| SemanticPatch::AddNode { node })
+        .collect();
+    patches.extend(
+        edges
+            .into_iter()
+            .map(|edge| SemanticPatch::AddEdge { edge }),
+    );
+    patches.push(SemanticPatch::SetStatus {
+        target: plumb_patch::ElementPrecondition {
+            id: parent.id.clone(),
+            expected_hash: plumb_psg::node_element_hash(parent)?,
+        },
+        from: ElementStatus::Accepted,
+        to: ElementStatus::Superseded,
+    });
+    Proposal::new(
+        StageId::S1,
+        PatchSet {
+            base_semantic_hash: graph.semantic_hash()?,
+            patch: SemanticPatch::Compound { patches },
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::MaterialDecision,
+        AcceptancePolicy::HumanDecision,
+        None,
+    )
+    .map_err(|e| invalid(e.to_string()))
+}

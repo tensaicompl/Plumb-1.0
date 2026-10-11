@@ -1224,6 +1224,83 @@ mod duplicates_contract {
         assert!(forward.findings.windows(2).all(|p| p[0].id < p[1].id));
     }
 
+    // ------------------------------------------------------------------ explicit marking (Hotfix 065)
+
+    fn marking_graph(b_status: ElementStatus) -> Graph {
+        graph(
+            vec![
+                req_node(A, Accepted, requirement(STATEMENT), &[]),
+                req_node(
+                    B,
+                    b_status,
+                    requirement("The system shall print the report."),
+                    &[],
+                ),
+            ],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn marking_a_duplicate_is_canonical_supersession() {
+        let g = marking_graph(Accepted);
+        let at = ts("2026-02-02T10:00:00Z");
+        let p =
+            propose_duplicate_supersession(&g, &id(A), &id(B), &id("agent:analyst"), at).unwrap();
+        assert_eq!(p.stage, StageId::S1);
+        assert_eq!(p.materiality, ProposalMateriality::MaterialDecision);
+        assert_eq!(p.acceptance_policy, AcceptancePolicy::HumanDecision);
+        let SemanticPatch::Supersede { old, new, edge } = &p.patch_set.patch else {
+            panic!("not a Supersede: never a merge")
+        };
+        assert_eq!(old.id, id(A));
+        assert_eq!(new.id, id(B));
+        assert_eq!(
+            old.expected_hash,
+            node_element_hash(g.node(&id(A)).unwrap()).unwrap()
+        );
+        assert_eq!(
+            new.expected_hash,
+            node_element_hash(g.node(&id(B)).unwrap()).unwrap()
+        );
+        // Independent Python golden of {kind: supersedes, from: B, to: A}.
+        assert_eq!(edge.id.as_str(), "rel:5047809d3edbaae2");
+        assert_eq!(edge.kind, RelationKind::Supersedes);
+        assert_eq!((&edge.from, &edge.to), (&id(B), &id(A)));
+        assert_eq!(edge.status, Accepted);
+        assert_eq!(edge.audit.created_by, id("agent:analyst"));
+        let after = apply_patch(&g, &p.patch_set).unwrap().graph;
+        assert_eq!(
+            after.node(&id(A)).unwrap().status,
+            ElementStatus::Superseded
+        );
+        assert_eq!(after.node(&id(B)).unwrap().status, Accepted);
+    }
+
+    #[test]
+    fn marking_a_duplicate_requires_two_distinct_accepted_requirements() {
+        let at = ts("2026-02-02T10:00:00Z");
+        let actor = id("agent:analyst");
+        let g = marking_graph(Accepted);
+        assert_eq!(
+            propose_duplicate_supersession(&g, &id(A), &id(A), &actor, at),
+            Err(DuplicateMarkError::SameRequirement(id(A)))
+        );
+        assert_eq!(
+            propose_duplicate_supersession(&g, &id(A), &id(C), &actor, at),
+            Err(DuplicateMarkError::NotARequirement(id(C)))
+        );
+        let proposed = marking_graph(Proposed);
+        assert_eq!(
+            propose_duplicate_supersession(&proposed, &id(A), &id(B), &actor, at),
+            Err(DuplicateMarkError::NotAccepted(id(B)))
+        );
+        assert_eq!(
+            propose_duplicate_supersession(&proposed, &id(B), &id(A), &actor, at),
+            Err(DuplicateMarkError::NotAccepted(id(B)))
+        );
+    }
+
     #[test]
     fn duplicates_production_source_guard() {
         let source = include_str!("../src/duplicates.rs");

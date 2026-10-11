@@ -1503,6 +1503,257 @@ mod calculation_contract {
         assert!(!q.qualification.is_qualified());
     }
 
+    // ------------------------------------------------------------------ examples (Hotfix 065)
+
+    fn accepted_hr() -> Graph {
+        let g = base_graph(vec![], vec![]);
+        let applied = apply(
+            &g,
+            &run(&g, &hr_scope(), vec![half_day()]).unwrap().proposals,
+        );
+        set_status(&applied, GOLDEN_CALCULATION_ID, Accepted)
+    }
+
+    fn exact_inputs(day_fraction: &str) -> BTreeMap<String, ExactValue> {
+        BTreeMap::from([
+            (
+                "start_date".to_owned(),
+                ExactValue::Date {
+                    value: "2027-02-01".into(),
+                },
+            ),
+            (
+                "end_date".to_owned(),
+                ExactValue::Date {
+                    value: "2027-02-02".into(),
+                },
+            ),
+            (
+                "inclusive_end".to_owned(),
+                ExactValue::Boolean { value: true },
+            ),
+            (
+                "day_fraction".to_owned(),
+                ExactValue::Decimal {
+                    value: day_fraction.into(),
+                },
+            ),
+        ])
+    }
+
+    #[test]
+    fn calculation_example_is_exact_and_rendered() {
+        let g = accepted_hr();
+        let example = calculation_example(
+            &g,
+            &id(GOLDEN_CALCULATION_ID),
+            &exact_inputs("0.5"),
+            &hr_calendars(),
+            &NoPredicates,
+        )
+        .unwrap();
+        assert_eq!(example.expr, HALF_DAY);
+        // Monday and Tuesday, inclusive: two working days times one half.
+        assert_eq!(
+            example.value,
+            ExactValue::Quantity {
+                value: "1.0".into(),
+                unit: "working_day".into()
+            }
+        );
+        assert_eq!(
+            example.rendered_example,
+            "Given calendar = cal:PL-Office, day_fraction = 0.5, end_date = 2027-02-02, \
+             inclusive_end = true, start_date = 2027-02-01; working_days([start_date, end_date], \
+             calendar, inclusive_end) * day_fraction evaluates to 1.0 working_day."
+        );
+        // The wire form is the tagged, exact-string CalculationValue shape.
+        assert_eq!(
+            serde_json::to_value(&example.value).unwrap(),
+            json!({"type": "quantity", "value": "1.0", "unit": "working_day"})
+        );
+    }
+
+    #[test]
+    fn calculation_example_inputs_are_exact_and_never_ignored() {
+        let g = accepted_hr();
+        let calc = id(GOLDEN_CALCULATION_ID);
+        let example = |inputs: &BTreeMap<String, ExactValue>| {
+            calculation_example(&g, &calc, inputs, &hr_calendars(), &NoPredicates)
+        };
+        // Non-canonical decimal spellings are rejected, never rounded through a float.
+        for bad in ["0.50000000000000000001x", "+0.5", ".5", "5e-1"] {
+            assert!(
+                matches!(
+                    example(&exact_inputs(bad)),
+                    Err(CalculationExampleError::InvalidInput { .. })
+                ),
+                "{bad}"
+            );
+        }
+        // An unknown binding, or a scope binding the expression does not use, is an error,
+        // never ignored.
+        for name in ["nobody", "LeaveRequest"] {
+            let mut extra = exact_inputs("0.5");
+            extra.insert(name.into(), ExactValue::Integer { value: 1 });
+            assert!(matches!(
+                example(&extra),
+                Err(CalculationExampleError::InvalidInput { name: n, .. }) if n == name
+            ));
+        }
+        let mut bad_date = exact_inputs("0.5");
+        bad_date.insert(
+            "start_date".into(),
+            ExactValue::Date {
+                value: "2027-2-1".into(),
+            },
+        );
+        assert!(matches!(
+            example(&bad_date),
+            Err(CalculationExampleError::InvalidInput { .. })
+        ));
+        // Missing input and wrong type are evaluation errors.
+        let mut missing = exact_inputs("0.5");
+        missing.remove("day_fraction");
+        assert!(matches!(
+            example(&missing),
+            Err(CalculationExampleError::Evaluation { .. })
+        ));
+        let mut wrong = exact_inputs("0.5");
+        wrong.insert("inclusive_end".into(), ExactValue::Integer { value: 1 });
+        assert!(matches!(
+            example(&wrong),
+            Err(CalculationExampleError::Evaluation { .. })
+        ));
+    }
+
+    #[test]
+    fn calculation_example_targets_and_scopes() {
+        let g = accepted_hr();
+        assert_eq!(
+            calculation_example(
+                &g,
+                &id("attr:count"),
+                &BTreeMap::new(),
+                &hr_calendars(),
+                &NoPredicates
+            ),
+            Err(CalculationExampleError::NotACalculation(id("attr:count")))
+        );
+        let proposed = set_status(&g, GOLDEN_CALCULATION_ID, Proposed);
+        assert_eq!(
+            calculation_example(
+                &proposed,
+                &id(GOLDEN_CALCULATION_ID),
+                &BTreeMap::new(),
+                &hr_calendars(),
+                &NoPredicates
+            ),
+            Err(CalculationExampleError::NotAccepted(id(
+                GOLDEN_CALCULATION_ID
+            )))
+        );
+        let legacy = base_graph(
+            vec![calculation_node(
+                "calculation:legacy",
+                Accepted,
+                "day_fraction_twice",
+                "day_fraction * 2",
+                "Decimal(2)",
+                None,
+            )],
+            vec![],
+        );
+        assert_eq!(
+            calculation_example(
+                &legacy,
+                &id("calculation:legacy"),
+                &BTreeMap::new(),
+                &hr_calendars(),
+                &NoPredicates
+            ),
+            Err(CalculationExampleError::ScopeUnavailable(id(
+                "calculation:legacy"
+            )))
+        );
+    }
+
+    #[test]
+    fn exact_value_conversion_is_lossless_and_closed() {
+        let cases = [
+            (ExactValue::Integer { value: -7 }, Value::Int(-7)),
+            (
+                ExactValue::Decimal {
+                    value: "12.340".into(),
+                },
+                Value::Decimal(Decimal::from_str("12.340").unwrap()),
+            ),
+            (ExactValue::Boolean { value: false }, Value::Bool(false)),
+            (
+                ExactValue::String {
+                    value: "x y".into(),
+                },
+                Value::String("x y".into()),
+            ),
+            (
+                ExactValue::Date {
+                    value: "2027-01-06".into(),
+                },
+                Value::Date(date(2027, 1, 6)),
+            ),
+            (
+                ExactValue::DateTime {
+                    value: "2027-01-06T10:00:00.000000000Z".into(),
+                },
+                Value::DateTime(ts("2027-01-06T10:00:00Z")),
+            ),
+            (
+                ExactValue::Duration {
+                    value: "1.5".into(),
+                    unit: "day".into(),
+                },
+                Value::Duration {
+                    value: Decimal::from_str("1.5").unwrap(),
+                    unit: Unit::new("day").unwrap(),
+                },
+            ),
+            (
+                ExactValue::Enum {
+                    enum_ref: "attr:kind".into(),
+                    member: "Annual".into(),
+                },
+                Value::Enum {
+                    enum_ref: id("attr:kind"),
+                    member: sym("Annual"),
+                },
+            ),
+        ];
+        for (exact, expr) in cases {
+            assert_eq!(exact_to_expr("x", &exact).unwrap(), expr);
+            assert_eq!(expr_to_exact(&expr).unwrap(), exact);
+        }
+        assert!(matches!(
+            expr_to_exact(&Value::List(vec![])),
+            Err(CalculationExampleError::Unrepresentable { .. })
+        ));
+        assert!(matches!(
+            expr_to_exact(&Value::Ref(RefValue {
+                type_ref: id("entity:x"),
+                value_ref: id("entity:x"),
+                fields: BTreeMap::new()
+            })),
+            Err(CalculationExampleError::Unrepresentable { .. })
+        ));
+        // Closed wire: unknown variants and fields are rejected.
+        assert!(
+            serde_json::from_value::<ExactValue>(json!({"type": "list", "value": []})).is_err()
+        );
+        assert!(serde_json::from_value::<ExactValue>(
+            json!({"type": "integer", "value": 1, "unit": "day"})
+        )
+        .is_err());
+    }
+
     // ------------------------------------------------------------------ guards
 
     #[test]

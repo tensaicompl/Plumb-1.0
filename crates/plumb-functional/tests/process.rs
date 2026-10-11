@@ -1324,6 +1324,352 @@ mod process_contract {
         }
     }
 
+    // ------------------------------------------------------------------ linear processes (Hotfix 065)
+
+    const LEAVE_FLOW: &str = "process:9bf5771f7ad390a4";
+    const LEAVE_START: &str = "process_node:982add80a88c2538";
+    const LEAVE_STEP0: &str = "process_node:fd642d99e91dd629";
+    const LEAVE_STEP1: &str = "process_node:d33e693f3d1a57b0";
+    const LEAVE_END: &str = "process_node:690148f6e3440bf1";
+
+    fn imported(operations: &[&str]) -> Graph {
+        let g = base_graph();
+        let p = propose_linear_process_import(
+            &g,
+            "Leave Flow",
+            &ids(operations),
+            &id("agent:analyst"),
+            ts(AT),
+        )
+        .unwrap();
+        apply_patch(&g, &p.patch_set).unwrap().graph
+    }
+
+    fn steps_of(g: &Graph) -> Vec<Id> {
+        linear_process(g, &id(LEAVE_FLOW)).unwrap().interior
+    }
+
+    fn operations_of(g: &Graph) -> Vec<Id> {
+        linear_process_steps(g, &id(LEAVE_FLOW))
+            .unwrap()
+            .operation_refs
+    }
+
+    fn change(g: &Graph, c: ProcessStepChange) -> Result<Proposal, ProcessStepError> {
+        propose_process_step_change(g, &id(LEAVE_FLOW), &c, &id("agent:analyst"), ts(AT))
+    }
+
+    fn changed(g: &Graph, c: ProcessStepChange) -> Graph {
+        let p = change(g, c).unwrap();
+        assert_eq!(p.stage, StageId::S2);
+        assert_eq!(p.materiality, ProposalMateriality::Semantic);
+        assert_eq!(p.acceptance_policy, AcceptancePolicy::HumanConfirm);
+        apply_patch(g, &p.patch_set).unwrap().graph
+    }
+
+    #[test]
+    fn linear_import_uses_the_existing_process_identities() {
+        let g = base_graph();
+        let p = propose_linear_process_import(
+            &g,
+            "Leave Flow",
+            &ids(&["operation:approve", "operation:ship"]),
+            &id("agent:analyst"),
+            ts(AT),
+        )
+        .unwrap();
+        assert_eq!(p.stage, StageId::S2);
+        assert_eq!(p.acceptance_policy, AcceptancePolicy::HumanConfirm);
+        // Independent Python goldens of the S2.9 process and process-node identities.
+        assert_eq!(
+            process_id(&id(PROJECT), "Leave Flow").unwrap(),
+            id(LEAVE_FLOW)
+        );
+        assert_eq!(
+            process_node_id(&id(PROJECT), &id(LEAVE_FLOW), &linear_step_key(1)).unwrap(),
+            id(LEAVE_STEP1)
+        );
+        let after = apply_patch(&g, &p.patch_set).unwrap().graph;
+        let linear = linear_process(&after, &id(LEAVE_FLOW)).unwrap();
+        assert_eq!(linear.start, id(LEAVE_START));
+        assert_eq!(linear.end, id(LEAVE_END));
+        assert_eq!(linear.interior, ids(&[LEAVE_STEP0, LEAVE_STEP1]));
+        assert_eq!(linear.flow_edges.len(), 3);
+        for member in [LEAVE_FLOW, LEAVE_START, LEAVE_STEP0, LEAVE_STEP1, LEAVE_END] {
+            let n = after.node(&id(member)).unwrap();
+            assert_eq!(n.status, Accepted);
+            assert!(n.evidence.is_empty() && n.derivations.is_empty() && n.extensions.is_empty());
+            assert_eq!(n.audit.created_by, id("agent:analyst"));
+        }
+        assert_eq!(
+            after.node(&id(LEAVE_FLOW)).unwrap().payload,
+            NodePayload::Process(Process {
+                name: "Leave Flow".into(),
+                description: None,
+                process_kind: None
+            })
+        );
+        assert_eq!(
+            operations_of(&after),
+            ids(&["operation:approve", "operation:ship"])
+        );
+        // Re-importing the same material is no change; different material is a conflict.
+        assert_eq!(
+            propose_linear_process_import(
+                &after,
+                "Leave Flow",
+                &ids(&["operation:approve", "operation:ship"]),
+                &id("agent:analyst"),
+                ts(AT),
+            ),
+            Err(LinearInterchangeError::NoChange(id(LEAVE_FLOW)))
+        );
+        assert_eq!(
+            propose_linear_process_import(
+                &after,
+                "Leave Flow",
+                &ids(&["operation:ship"]),
+                &id("agent:analyst"),
+                ts(AT),
+            ),
+            Err(LinearInterchangeError::Conflict(id(LEAVE_FLOW)))
+        );
+        assert_eq!(
+            propose_linear_process_import(
+                &g,
+                "Leave Flow",
+                &ids(&["operation:draft"]),
+                &id("agent:analyst"),
+                ts(AT),
+            ),
+            Err(LinearInterchangeError::OperationInvalid(id(
+                "operation:draft"
+            )))
+        );
+        assert!(matches!(
+            propose_linear_process_import(&g, " padded", &[], &id("agent:analyst"), ts(AT)),
+            Err(LinearInterchangeError::InvalidName(_))
+        ));
+        // Zero interior steps is the start -> end flow.
+        let empty =
+            propose_linear_process_import(&g, "Empty", &[], &id("agent:analyst"), ts(AT)).unwrap();
+        let empty_graph = apply_patch(&g, &empty.patch_set).unwrap().graph;
+        let pid = process_id(&id(PROJECT), "Empty").unwrap();
+        assert!(linear_process(&empty_graph, &pid)
+            .unwrap()
+            .interior
+            .is_empty());
+    }
+
+    #[test]
+    fn step_add_inserts_an_accepted_service_task() {
+        let g = imported(&["operation:approve", "operation:ship"]);
+        let base = g.semantic_hash().unwrap();
+        let after = changed(
+            &g,
+            ProcessStepChange::Add {
+                operation_ref: id("operation:invoice"),
+                position: 1,
+            },
+        );
+        let new_step = api_process_step_id(
+            &id(PROJECT),
+            &id(LEAVE_FLOW),
+            &id("operation:invoice"),
+            &base,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            steps_of(&after),
+            vec![id(LEAVE_STEP0), new_step.clone(), id(LEAVE_STEP1)]
+        );
+        assert_eq!(
+            operations_of(&after),
+            ids(&["operation:approve", "operation:invoice", "operation:ship"])
+        );
+        let node = after.node(&new_step).unwrap();
+        assert_eq!(node.status, Accepted);
+        assert_eq!(
+            node.payload,
+            NodePayload::ProcessNode(ProcessNode {
+                process_ref: id(LEAVE_FLOW),
+                node_kind: ProcessNodeKind::ServiceTask,
+                operation_ref: Some(id("operation:invoice")),
+                condition_expr: None,
+                message_ref: None,
+                timer_expr: None,
+            })
+        );
+        // Append at the end and prepend at the start.
+        let end = changed(
+            &g,
+            ProcessStepChange::Add {
+                operation_ref: id("operation:invoice"),
+                position: 2,
+            },
+        );
+        assert_eq!(
+            operations_of(&end),
+            ids(&["operation:approve", "operation:ship", "operation:invoice"])
+        );
+        assert_eq!(
+            change(
+                &g,
+                ProcessStepChange::Add {
+                    operation_ref: id("operation:invoice"),
+                    position: 3
+                }
+            ),
+            Err(ProcessStepError::PositionOutOfRange {
+                position: 3,
+                max: 2
+            })
+        );
+        assert!(matches!(
+            change(
+                &g,
+                ProcessStepChange::Add {
+                    operation_ref: id("operation:draft"),
+                    position: 0
+                }
+            ),
+            Err(ProcessStepError::WrongTarget { .. })
+        ));
+        assert_eq!(
+            change(
+                &g,
+                ProcessStepChange::Add {
+                    operation_ref: id("operation:ghost"),
+                    position: 0
+                }
+            ),
+            Err(ProcessStepError::Missing(id("operation:ghost")))
+        );
+    }
+
+    #[test]
+    fn step_move_and_remove_rewire_only_the_flow() {
+        let g = imported(&["operation:approve", "operation:ship", "operation:invoice"]);
+        let steps = steps_of(&g);
+        let moved = changed(
+            &g,
+            ProcessStepChange::Move {
+                node_ref: steps[0].clone(),
+                position: 2,
+            },
+        );
+        assert_eq!(
+            steps_of(&moved),
+            vec![steps[1].clone(), steps[2].clone(), steps[0].clone()]
+        );
+        // The moved node keeps its ID and payload.
+        assert_eq!(
+            moved.node(&steps[0]).unwrap().payload,
+            g.node(&steps[0]).unwrap().payload
+        );
+        let back = changed(
+            &moved,
+            ProcessStepChange::Move {
+                node_ref: steps[0].clone(),
+                position: 0,
+            },
+        );
+        assert_eq!(steps_of(&back), steps);
+        assert_eq!(
+            change(
+                &g,
+                ProcessStepChange::Move {
+                    node_ref: steps[1].clone(),
+                    position: 1
+                }
+            ),
+            Err(ProcessStepError::NoChange(steps[1].clone()))
+        );
+        assert!(matches!(
+            change(
+                &g,
+                ProcessStepChange::Move {
+                    node_ref: id(LEAVE_START),
+                    position: 0
+                }
+            ),
+            Err(ProcessStepError::WrongTarget { .. })
+        ));
+        let removed = changed(
+            &g,
+            ProcessStepChange::Remove {
+                node_ref: steps[1].clone(),
+            },
+        );
+        assert!(removed.node(&steps[1]).is_none());
+        assert_eq!(steps_of(&removed), vec![steps[0].clone(), steps[2].clone()]);
+        // A step with another active relation is not removed.
+        let related = with_nodes(
+            &g,
+            vec![],
+            vec![edge(
+                RelationKind::Consumes,
+                steps[1].as_str(),
+                "event:received",
+            )],
+        );
+        assert!(matches!(
+            change(
+                &related,
+                ProcessStepChange::Remove {
+                    node_ref: steps[1].clone()
+                }
+            ),
+            Err(ProcessStepError::HasRelations { .. })
+        ));
+    }
+
+    #[test]
+    fn only_strict_linear_accepted_processes_are_edited_or_exported() {
+        let g = imported(&["operation:approve", "operation:ship"]);
+        // A branch: an extra flow edge from the start to the last step.
+        let branched = with_nodes(
+            &g,
+            vec![],
+            vec![edge(RelationKind::Next, LEAVE_START, LEAVE_STEP1)],
+        );
+        assert!(matches!(
+            linear_process(&branched, &id(LEAVE_FLOW)),
+            Err(LinearProcessError::NotLinear { .. })
+        ));
+        assert!(matches!(
+            change(
+                &branched,
+                ProcessStepChange::Remove {
+                    node_ref: id(LEAVE_STEP0)
+                }
+            ),
+            Err(ProcessStepError::Linear(
+                LinearProcessError::NotLinear { .. }
+            ))
+        ));
+        assert!(matches!(
+            linear_process_steps(&branched, &id(LEAVE_FLOW)),
+            Err(LinearInterchangeError::Linear(_))
+        ));
+        assert_eq!(
+            linear_process(&g, &id("operation:approve")),
+            Err(LinearProcessError::NotAProcess(id("operation:approve")))
+        );
+        // A step with a related outcome is linear but has no exact interchange form.
+        let related = with_nodes(
+            &g,
+            vec![],
+            vec![edge(RelationKind::Consumes, LEAVE_STEP0, "event:received")],
+        );
+        assert!(linear_process(&related, &id(LEAVE_FLOW)).is_ok());
+        assert!(matches!(
+            linear_process_steps(&related, &id(LEAVE_FLOW)),
+            Err(LinearInterchangeError::Unrepresentable { .. })
+        ));
+    }
+
     // ------------------------------------------------------------------ guards
 
     #[test]

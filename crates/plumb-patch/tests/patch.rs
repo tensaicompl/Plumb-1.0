@@ -392,6 +392,12 @@ mod patch_contract {
                        "mapping": wire_mapping()}),
             ),
             (
+                "SetNodeExtension",
+                json!({"op": "SetNodeExtension", "target": wire_pre("scenario_run:0123456789abcdef", EL_H1),
+                       "key": "plumb_sim:scenario_trace_artifact",
+                       "value": "sha256:2222222222222222222222222222222222222222222222222222222222222222"}),
+            ),
+            (
                 "Compound",
                 json!({"op": "Compound", "patches": [
                     {"op": "RemoveEdge", "target": wire_pre("rel:hr:1", EL_H2)},
@@ -417,16 +423,17 @@ mod patch_contract {
             SemanticPatch::Supersede { .. } => "Supersede",
             SemanticPatch::AttachEvidence { .. } => "AttachEvidence",
             SemanticPatch::AttachStandardMapping { .. } => "AttachStandardMapping",
+            SemanticPatch::SetNodeExtension { .. } => "SetNodeExtension",
             SemanticPatch::Compound { .. } => "Compound",
         }
     }
 
     #[test]
-    fn all_twelve_variants_round_trip_through_fixed_fixtures() {
+    fn all_thirteen_variants_round_trip_through_fixed_fixtures() {
         let fixtures = variant_fixtures();
-        assert_eq!(fixtures.len(), 12);
+        assert_eq!(fixtures.len(), 13);
         let names: BTreeSet<&str> = fixtures.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), 13);
         for (name, wire) in fixtures {
             let patch: SemanticPatch = from_json(wire.clone());
             assert_eq!(op_name(&patch), name);
@@ -2397,5 +2404,278 @@ mod patch_contract {
             let restored = apply_ok(&applied.graph, inverse);
             prop_assert_eq!(&restored.graph, &base);
         }
+    }
+
+    // ------------------------------------------------------------------ SetNodeExtension (Hotfix 065)
+
+    const TRACE_KEY: &str = "plumb_sim:scenario_trace_artifact";
+    const TRACE_A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const TRACE_B: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn set_extension(pre: ElementPrecondition, key: &str, value: Value) -> SemanticPatch {
+        SemanticPatch::SetNodeExtension {
+            target: pre,
+            key: ext(key),
+            value,
+        }
+    }
+
+    fn rich_requirement() -> Node {
+        let mut n = requirement(
+            "req:x",
+            "Accepted",
+            "Employees shall submit leave requests.",
+        );
+        n.tags = BTreeSet::from(["hr".to_owned()]);
+        n.extensions.insert(ext("acme:priority"), json!(2));
+        n.standards = vec![mapping("requirement")];
+        n
+    }
+
+    #[test]
+    fn set_node_extension_wire_fixture_is_exact() {
+        let wire = json!({
+            "op": "SetNodeExtension",
+            "target": {"id": "scenario_run:0123456789abcdef", "expected_hash": EL_H1},
+            "key": TRACE_KEY,
+            "value": TRACE_A
+        });
+        let patch: SemanticPatch = from_json(wire.clone());
+        assert_eq!(
+            patch,
+            SemanticPatch::SetNodeExtension {
+                target: ElementPrecondition {
+                    id: id("scenario_run:0123456789abcdef"),
+                    expected_hash: EL_H1.parse().unwrap(),
+                },
+                key: ext(TRACE_KEY),
+                value: json!(TRACE_A),
+            }
+        );
+        assert_eq!(serde_json::to_value(&patch).unwrap(), wire);
+        assert_eq!(patch.inverse().unwrap(), None);
+        // Unknown fields, an invalid key and a wrong hash kind are rejected on the wire.
+        let mut unknown = wire.clone();
+        unknown["extra"] = json!(1);
+        assert!(serde_json::from_value::<SemanticPatch>(unknown).is_err());
+        for bad_key in [
+            "no_colon",
+            "Upper:key",
+            "a:b:c",
+            " plumb_sim:x",
+            "plumb_sim:",
+        ] {
+            let mut bad = wire.clone();
+            bad["key"] = json!(bad_key);
+            assert!(
+                serde_json::from_value::<SemanticPatch>(bad).is_err(),
+                "{bad_key}"
+            );
+        }
+        let mut semantic = wire.clone();
+        semantic["target"]["expected_hash"] = json!(BASE_H);
+        assert!(serde_json::from_value::<SemanticPatch>(semantic).is_err());
+        let mut missing = wire;
+        missing.as_object_mut().unwrap().remove("value");
+        assert!(serde_json::from_value::<SemanticPatch>(missing).is_err());
+    }
+
+    #[test]
+    fn set_node_extension_inserts_and_preserves_every_other_field() {
+        let base = graph(vec![rich_requirement()], vec![]);
+        let before = base.node(&id("req:x")).unwrap().clone();
+        let result = apply_ok(
+            &base,
+            set_extension(pre_n(&base, "req:x"), TRACE_KEY, json!(TRACE_A)),
+        );
+        let after = result.graph.node(&id("req:x")).unwrap();
+        assert_eq!(after.extensions.get(&ext(TRACE_KEY)), Some(&json!(TRACE_A)));
+        assert_eq!(after.extensions.get(&ext("acme:priority")), Some(&json!(2)));
+        assert_eq!(after.extensions.len(), 2);
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.payload, before.payload);
+        assert_eq!(after.evidence, before.evidence);
+        assert_eq!(after.derivations, before.derivations);
+        assert_eq!(after.standards, before.standards);
+        assert_eq!(after.tags, before.tags);
+        assert_eq!(after.audit, before.audit);
+        // Exactly one revision increment and a changed element hash.
+        assert_eq!(after.revision, before.revision + 1);
+        assert_ne!(
+            node_element_hash(after).unwrap(),
+            node_element_hash(&before).unwrap()
+        );
+        assert_eq!(result.delta.modified_nodes, ids(&["req:x"]));
+        assert!(result.delta.added_nodes.is_empty());
+        assert_eq!(result.delta.diff.len(), 1);
+        assert_eq!(result.delta.diff[0].change, DiffChange::Modified);
+        assert_eq!(
+            result.delta.diff[0].before_hash,
+            Some(node_element_hash(&before).unwrap())
+        );
+        assert_eq!(
+            result.delta.diff[0].after_hash,
+            Some(node_element_hash(after).unwrap())
+        );
+    }
+
+    #[test]
+    fn set_node_extension_replaces_a_different_value() {
+        let mut n = rich_requirement();
+        n.extensions.insert(ext(TRACE_KEY), json!(TRACE_A));
+        let base = graph(vec![n], vec![]);
+        let result = apply_ok(
+            &base,
+            set_extension(pre_n(&base, "req:x"), TRACE_KEY, json!(TRACE_B)),
+        );
+        let after = result.graph.node(&id("req:x")).unwrap();
+        assert_eq!(after.extensions.get(&ext(TRACE_KEY)), Some(&json!(TRACE_B)));
+        assert_eq!(after.extensions.get(&ext("acme:priority")), Some(&json!(2)));
+        assert_eq!(after.revision, 2);
+    }
+
+    #[test]
+    fn set_node_extension_same_value_is_a_typed_no_op() {
+        let mut n = rich_requirement();
+        n.extensions.insert(ext(TRACE_KEY), json!(TRACE_A));
+        let base = graph(vec![n], vec![]);
+        assert_eq!(
+            apply_err(
+                &base,
+                set_extension(pre_n(&base, "req:x"), TRACE_KEY, json!(TRACE_A))
+            ),
+            PatchError::ExtensionNoOp {
+                id: id("req:x"),
+                key: ext(TRACE_KEY),
+            }
+        );
+    }
+
+    #[test]
+    fn set_node_extension_rejects_missing_edge_and_stale_targets() {
+        let base = graph(
+            vec![
+                rich_requirement(),
+                requirement("req:y", "Accepted", "y"),
+                constraint("con:eu", "Accepted"),
+            ],
+            vec![edge(
+                "rel:x-eu",
+                "Accepted",
+                "constrained_by",
+                "req:x",
+                "con:eu",
+            )],
+        );
+        let missing = ElementPrecondition {
+            id: id("req:nowhere"),
+            expected_hash: EL_H1.parse().unwrap(),
+        };
+        assert_eq!(
+            apply_err(&base, set_extension(missing, TRACE_KEY, json!(TRACE_A))),
+            PatchError::ElementNotFound(id("req:nowhere"))
+        );
+        assert_eq!(
+            apply_err(
+                &base,
+                set_extension(pre_e(&base, "rel:x-eu"), TRACE_KEY, json!(TRACE_A))
+            ),
+            PatchError::ExpectedNode(id("rel:x-eu"))
+        );
+        let stale = ElementPrecondition {
+            id: id("req:x"),
+            expected_hash: pre_n(&base, "req:y").expected_hash,
+        };
+        assert!(matches!(
+            apply_err(&base, set_extension(stale, TRACE_KEY, json!(TRACE_A))),
+            PatchError::ElementHashMismatch { .. }
+        ));
+        // A wrong hash kind constructed in memory is rejected by the engine too.
+        let wrong_kind = ElementPrecondition {
+            id: id("req:x"),
+            expected_hash: base.semantic_hash().unwrap(),
+        };
+        assert_eq!(
+            apply_err(&base, set_extension(wrong_kind, TRACE_KEY, json!(TRACE_A))),
+            PatchError::InvalidExpectedHashKind {
+                id: id("req:x"),
+                kind: HashKind::Semantic,
+            }
+        );
+    }
+
+    #[test]
+    fn set_node_extension_takes_part_in_sequential_compound_preconditions() {
+        let base = graph(vec![rich_requirement()], vec![]);
+        let original = pre_n(&base, "req:x");
+        let replace = SemanticPatch::ReplacePayload {
+            target: original.clone(),
+            payload: requirement_payload("Employees shall file leave requests."),
+        };
+        // The second leaf must use the intermediate element hash, never the original one.
+        assert!(matches!(
+            apply_err(
+                &base,
+                compound(vec![
+                    replace.clone(),
+                    set_extension(original.clone(), TRACE_KEY, json!(TRACE_A)),
+                ])
+            ),
+            PatchError::ElementHashMismatch { .. }
+        ));
+        let mut intermediate = base.node(&id("req:x")).unwrap().clone();
+        intermediate.payload = requirement_payload("Employees shall file leave requests.");
+        let result = apply_ok(
+            &base,
+            compound(vec![
+                replace,
+                set_extension(pre_node(&intermediate), TRACE_KEY, json!(TRACE_A)),
+            ]),
+        );
+        let after = result.graph.node(&id("req:x")).unwrap();
+        assert_eq!(after.payload, intermediate.payload);
+        assert_eq!(after.extensions.get(&ext(TRACE_KEY)), Some(&json!(TRACE_A)));
+        // Revision finalization increments once per patch set.
+        assert_eq!(after.revision, 2);
+        assert_eq!(result.delta.diff.len(), 2);
+    }
+
+    #[test]
+    fn set_node_extension_keeps_semantic_hash_participation() {
+        // Extensions participate in the semantic projection of semantic nodes and never in
+        // the semantic hash of excluded node types such as ScenarioRun.
+        let run = node(
+            "scenario_run:0123456789abcdef",
+            "Accepted",
+            "ScenarioRun",
+            json!({"scenario_ref": "scn:a", "specification_hash": TRACE_A, "result": "pass", "trace": []}),
+        );
+        let base = graph(vec![run], vec![]);
+        let result = apply_ok(
+            &base,
+            set_extension(
+                pre_n(&base, "scenario_run:0123456789abcdef"),
+                TRACE_KEY,
+                json!(TRACE_B),
+            ),
+        );
+        assert_eq!(
+            result.graph.semantic_hash().unwrap(),
+            base.semantic_hash().unwrap()
+        );
+        assert_eq!(
+            result.delta.modified_nodes,
+            ids(&["scenario_run:0123456789abcdef"])
+        );
+        let semantic_base = graph(vec![rich_requirement()], vec![]);
+        let semantic_result = apply_ok(
+            &semantic_base,
+            set_extension(pre_n(&semantic_base, "req:x"), TRACE_KEY, json!(TRACE_B)),
+        );
+        assert_ne!(
+            semantic_result.graph.semantic_hash().unwrap(),
+            semantic_base.semantic_hash().unwrap()
+        );
     }
 }

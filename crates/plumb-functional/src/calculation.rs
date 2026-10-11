@@ -210,14 +210,12 @@ pub enum CalculationEvalError {
     ResultScaleExceeded { scale: u32, declared: u8 },
 }
 
-/// Evaluates a prepared calculation with the S2.5 evaluator, injecting the reserved calendar
-/// Ref (`type_ref` and `value_ref` = calendar_ref) and applying only final rounding.
-pub fn evaluate_calculation(
+/// The caller's values plus the reserved calendar Ref (`type_ref` and `value_ref` =
+/// calendar_ref) when the calculation has a calendar: exactly the environment an evaluation sees.
+fn evaluation_values(
     prepared: &PreparedCalculation,
     values: &ValueEnv,
-    calendars: &dyn CalendarProvider,
-    predicates: &dyn PredicateProvider,
-) -> Result<Value, CalculationEvalError> {
+) -> Result<ValueEnv, CalculationEvalError> {
     let mut values = values.clone();
     if let Some(calendar) = &prepared.calendar_ref {
         let reserved = Symbol::new(CALCULATION_CALENDAR_SYMBOL)
@@ -231,6 +229,18 @@ pub fn evaluate_calculation(
             .bind(reserved, value)
             .map_err(|_| CalculationEvalError::ReservedBindingConflict)?;
     }
+    Ok(values)
+}
+
+/// Evaluates a prepared calculation with the S2.5 evaluator, injecting the reserved calendar
+/// Ref (`type_ref` and `value_ref` = calendar_ref) and applying only final rounding.
+pub fn evaluate_calculation(
+    prepared: &PreparedCalculation,
+    values: &ValueEnv,
+    calendars: &dyn CalendarProvider,
+    predicates: &dyn PredicateProvider,
+) -> Result<Value, CalculationEvalError> {
+    let values = evaluation_values(prepared, values)?;
     let value = eval(
         &prepared.ast,
         &EvalContext {
@@ -835,5 +845,248 @@ pub fn analyze_calculations(
         candidates,
         proposals,
         issues: Vec::new(),
+    })
+}
+
+// ============================================================================ examples (Hotfix 065)
+
+/// An exact, non-recursive calculation value: the wire form of the API `CalculationValue`.
+/// Decimal, duration and quantity magnitudes are exact decimal strings, never binary floats.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExactValue {
+    Integer { value: i64 },
+    Decimal { value: String },
+    Boolean { value: bool },
+    String { value: String },
+    Date { value: String },
+    DateTime { value: String },
+    Duration { value: String, unit: String },
+    Quantity { value: String, unit: String },
+    Enum { enum_ref: String, member: String },
+}
+
+/// Why a calculation example cannot be produced.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum CalculationExampleError {
+    #[error(transparent)]
+    Core(#[from] CoreError),
+    /// The target does not exist or is not a Calculation.
+    #[error("{0} is not a Calculation")]
+    NotACalculation(Id),
+    /// The Calculation is not Accepted.
+    #[error("calculation {0} is not Accepted")]
+    NotAccepted(Id),
+    /// No replayable S2.6 scope exists; none is guessed.
+    #[error("calculation {0} has no replayable scope")]
+    ScopeUnavailable(Id),
+    /// An input is malformed or is not a root input of the qualified calculation.
+    #[error("invalid input {name}: {reason}")]
+    InvalidInput { name: String, reason: String },
+    /// The calculation does not qualify, an input has the wrong type or is missing, or the
+    /// evaluation fails.
+    #[error("calculation evaluation: {reason}")]
+    Evaluation { reason: String },
+    /// The result is not representable as an exact value (a reference or a list).
+    #[error("the result is not representable: {reason}")]
+    Unrepresentable { reason: String },
+}
+
+/// One evaluated example.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalculationExample {
+    /// The persisted expression.
+    pub expr: String,
+    /// The S2.5 example renderer output.
+    pub rendered_example: String,
+    pub value: ExactValue,
+}
+
+fn exact_decimal(name: &str, text: &str) -> Result<Decimal, CalculationExampleError> {
+    let invalid = || CalculationExampleError::InvalidInput {
+        name: name.to_owned(),
+        reason: format!("{text:?} is not an exact decimal"),
+    };
+    let value: Decimal = text.parse().map_err(|_| invalid())?;
+    if value.to_string() == text {
+        Ok(value)
+    } else {
+        Err(invalid())
+    }
+}
+
+const DATE_FORMAT: &[time::format_description::FormatItem<'static>] =
+    time::macros::format_description!("[year]-[month]-[day]");
+
+/// Converts an exact input value to the PlumbExpr value it denotes; every string form must be
+/// the exact canonical spelling of its value.
+pub fn exact_to_expr(name: &str, value: &ExactValue) -> Result<Value, CalculationExampleError> {
+    let invalid = |reason: String| CalculationExampleError::InvalidInput {
+        name: name.to_owned(),
+        reason,
+    };
+    let unit = |text: &str| {
+        plumb_expr::Unit::new(text).map_err(|_| invalid(format!("{text:?} is not a unit")))
+    };
+    Ok(match value {
+        ExactValue::Integer { value } => Value::Int(*value),
+        ExactValue::Decimal { value } => Value::Decimal(exact_decimal(name, value)?),
+        ExactValue::Boolean { value } => Value::Bool(*value),
+        ExactValue::String { value } => Value::String(value.clone()),
+        ExactValue::Date { value } => {
+            let date = time::Date::parse(value, DATE_FORMAT)
+                .map_err(|_| invalid(format!("{value:?} is not a date")))?;
+            let canonical = date
+                .format(DATE_FORMAT)
+                .map_err(|_| invalid(format!("{value:?} is not a date")))?;
+            if &canonical != value {
+                return Err(invalid(format!("{value:?} is not a canonical date")));
+            }
+            Value::Date(date)
+        }
+        ExactValue::DateTime { value } => {
+            let at: Timestamp = value
+                .parse()
+                .map_err(|_| invalid(format!("{value:?} is not a timestamp")))?;
+            if &at.to_string() != value {
+                return Err(invalid(format!("{value:?} is not a canonical timestamp")));
+            }
+            Value::DateTime(at)
+        }
+        ExactValue::Duration { value, unit: u } => Value::Duration {
+            value: exact_decimal(name, value)?,
+            unit: unit(u)?,
+        },
+        ExactValue::Quantity { value, unit: u } => Value::Quantity {
+            value: exact_decimal(name, value)?,
+            unit: unit(u)?,
+        },
+        ExactValue::Enum { enum_ref, member } => Value::Enum {
+            enum_ref: enum_ref
+                .parse()
+                .map_err(|_| invalid(format!("{enum_ref:?} is not an ID")))?,
+            member: Symbol::new(member)
+                .map_err(|_| invalid(format!("{member:?} is not a member symbol")))?,
+        },
+    })
+}
+
+/// Converts a PlumbExpr value to its exact form; references and lists are unrepresentable.
+pub fn expr_to_exact(value: &Value) -> Result<ExactValue, CalculationExampleError> {
+    let unrepresentable = |kind: &str| CalculationExampleError::Unrepresentable {
+        reason: format!("a {kind} value has no exact calculation form"),
+    };
+    Ok(match value {
+        Value::Int(i) => ExactValue::Integer { value: *i },
+        Value::Decimal(d) => ExactValue::Decimal {
+            value: d.to_string(),
+        },
+        Value::Bool(b) => ExactValue::Boolean { value: *b },
+        Value::String(s) => ExactValue::String { value: s.clone() },
+        Value::Date(d) => ExactValue::Date {
+            value: d.format(DATE_FORMAT).map_err(|_| unrepresentable("date"))?,
+        },
+        Value::DateTime(t) => ExactValue::DateTime {
+            value: t.to_string(),
+        },
+        Value::Duration { value, unit } => ExactValue::Duration {
+            value: value.to_string(),
+            unit: unit.as_str().to_owned(),
+        },
+        Value::Quantity { value, unit } => ExactValue::Quantity {
+            value: value.to_string(),
+            unit: unit.as_str().to_owned(),
+        },
+        Value::Enum { enum_ref, member } => ExactValue::Enum {
+            enum_ref: enum_ref.to_string(),
+            member: member.as_str().to_owned(),
+        },
+        Value::Ref(_) => return Err(unrepresentable("reference")),
+        Value::List(_) => return Err(unrepresentable("list")),
+    })
+}
+
+/// Evaluates an example of the Accepted Calculation `calculation_ref` (Hotfix 065): qualified
+/// only through its replayable S2.6 scope (none is guessed), with `inputs` bound to exact root
+/// input symbols of that scope, evaluated with the injected providers and rendered by the S2.5
+/// example renderer. No input is ignored.
+pub fn calculation_example(
+    graph: &Graph,
+    calculation_ref: &Id,
+    inputs: &BTreeMap<String, ExactValue>,
+    calendars: &dyn CalendarProvider,
+    predicates: &dyn PredicateProvider,
+) -> Result<CalculationExample, CalculationExampleError> {
+    let node = graph
+        .node(calculation_ref)
+        .ok_or_else(|| CalculationExampleError::NotACalculation(calculation_ref.clone()))?;
+    let NodePayload::Calculation(calculation) = &node.payload else {
+        return Err(CalculationExampleError::NotACalculation(
+            calculation_ref.clone(),
+        ));
+    };
+    if node.status != ElementStatus::Accepted {
+        return Err(CalculationExampleError::NotAccepted(
+            calculation_ref.clone(),
+        ));
+    }
+    let evaluation = |reason: String| CalculationExampleError::Evaluation { reason };
+    let qualified = qualify_accepted_calculation(graph, calculation_ref, None)
+        .map_err(|e| evaluation(e.to_string()))?;
+    let qualification = qualified.qualification;
+    if qualification
+        .issues
+        .iter()
+        .any(|issue| matches!(issue, CalculationIssue::ScopeUnavailable { .. }))
+    {
+        return Err(CalculationExampleError::ScopeUnavailable(
+            calculation_ref.clone(),
+        ));
+    }
+    let prepared = match (&qualification.prepared, qualification.issues.is_empty()) {
+        (Some(prepared), true) => prepared,
+        _ => {
+            return Err(evaluation(format!(
+                "calculation does not qualify: {:?}",
+                qualification.issues
+            )))
+        }
+    };
+    let roots: BTreeSet<&str> = qualification
+        .used_bindings
+        .iter()
+        .filter(|b| matches!(b.exposure, CalculationBindingExposure::Root))
+        .map(|b| b.symbol.as_str())
+        .collect();
+    let mut env = ValueEnv::new();
+    for (name, value) in inputs {
+        if !roots.contains(name.as_str()) {
+            return Err(CalculationExampleError::InvalidInput {
+                name: name.clone(),
+                reason: "not a root input of the calculation".to_owned(),
+            });
+        }
+        let symbol = Symbol::new(name).map_err(|_| CalculationExampleError::InvalidInput {
+            name: name.clone(),
+            reason: "not a symbol".to_owned(),
+        })?;
+        env.bind(symbol, exact_to_expr(name, value)?).map_err(|e| {
+            CalculationExampleError::InvalidInput {
+                name: name.clone(),
+                reason: e.to_string(),
+            }
+        })?;
+    }
+    let result = evaluate_calculation(prepared, &env, calendars, predicates)
+        .map_err(|e| evaluation(e.to_string()))?;
+    let value = expr_to_exact(&result)?;
+    // Rendered against exactly the environment the evaluation saw.
+    let rendered_env = evaluation_values(prepared, &env).map_err(|e| evaluation(e.to_string()))?;
+    let rendered_example =
+        plumb_expr::render_example(&prepared.ast, &prepared.type_env, &rendered_env, &result);
+    Ok(CalculationExample {
+        expr: calculation.expression.clone(),
+        rendered_example,
+        value,
     })
 }

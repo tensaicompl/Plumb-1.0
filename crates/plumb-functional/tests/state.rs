@@ -1370,18 +1370,32 @@ mod lifecycle_contract {
         json!({"kind": "state_transition_trigger", "candidate_ref": candidate, "trigger_ref": trigger})
     }
 
+    /// How a governed decision is bound (Hotfix 065, metamodel §6.3): a question-bound
+    /// decision names QUESTION and resolves it; a Finding-bound decision has no question_ref
+    /// and resolves its Finding.
+    #[derive(Clone, Copy)]
+    enum Binding {
+        Question,
+        Finding,
+    }
+
     fn decision_node(
         node_id: &str,
         status: ElementStatus,
         answer: Value,
         rationale: Option<&str>,
+        binding: Binding,
     ) -> Node {
+        let (question_ref, proposal_ref) = match binding {
+            Binding::Question => (Some(id(QUESTION)), None),
+            Binding::Finding => (None, Some(id("prop:00000000000000aa"))),
+        };
         node(
             node_id,
             status,
             NodePayload::ResolutionDecision(ResolutionDecision {
-                question_ref: Some(id(QUESTION)),
-                proposal_ref: None,
+                question_ref,
+                proposal_ref,
                 answer,
                 decided_by: id(HUMAN),
                 decided_at: ts(AT),
@@ -1459,13 +1473,17 @@ mod lifecycle_contract {
     #[test]
     fn s2_state_trigger_decision_resolves_candidate() {
         for (via_question, target) in [(true, QUESTION), (false, TRIGGER_FINDING_ID)] {
-            let _ = via_question;
             let g = governed(
                 vec![decision_node(
                     DECISION,
                     Accepted,
                     marker(TRANSITION, EVENT),
                     Some("Confirmed."),
+                    if via_question {
+                        Binding::Question
+                    } else {
+                        Binding::Finding
+                    },
                 )],
                 vec![resolves("rel:resolves-1", DECISION, target, Accepted)],
                 AgentKind::Human,
@@ -1489,6 +1507,7 @@ mod lifecycle_contract {
                 Accepted,
                 marker(TRANSITION, EVENT),
                 Some("Confirmed."),
+                Binding::Question,
             )],
             vec![resolves("rel:resolves-1", DECISION, QUESTION, Accepted)],
             AgentKind::Human,
@@ -1517,7 +1536,15 @@ mod lifecycle_contract {
                 output(vec![], vec![transition_json(Value::Null)], vec![]),
             )
         };
-        let good = |answer: Value| decision_node(DECISION, Accepted, answer, Some("Confirmed."));
+        let good = |answer: Value| {
+            decision_node(
+                DECISION,
+                Accepted,
+                answer,
+                Some("Confirmed."),
+                Binding::Question,
+            )
+        };
         // Unknown and wrong-type triggers.
         for trigger in ["operation:ghost", OWNER] {
             assert!(matches!(
@@ -1541,7 +1568,13 @@ mod lifecycle_contract {
         for rationale in [None, Some(""), Some("padded ")] {
             assert!(matches!(
                 run(
-                    decision_node(DECISION, Accepted, marker(TRANSITION, EVENT), rationale),
+                    decision_node(
+                        DECISION,
+                        Accepted,
+                        marker(TRANSITION, EVENT),
+                        rationale,
+                        Binding::Question
+                    ),
                     AgentKind::Human,
                     QUESTION
                 ),
@@ -1569,7 +1602,16 @@ mod lifecycle_contract {
         }
         let g = extend(
             &g,
-            vec![wrong, good(marker(TRANSITION, EVENT))],
+            vec![
+                wrong,
+                decision_node(
+                    DECISION,
+                    Accepted,
+                    marker(TRANSITION, EVENT),
+                    Some("Confirmed."),
+                    Binding::Finding,
+                ),
+            ],
             vec![resolves(
                 "rel:resolves-1",
                 DECISION,
@@ -1591,6 +1633,7 @@ mod lifecycle_contract {
                 Proposed,
                 marker(TRANSITION, EVENT),
                 Some("Draft."),
+                Binding::Question,
             ),
             AgentKind::Human,
             QUESTION,
@@ -1632,6 +1675,7 @@ mod lifecycle_contract {
                 Accepted,
                 marker(second_id.as_str(), EVENT),
                 Some("Confirmed."),
+                Binding::Question,
             )],
             vec![resolves("rel:resolves-1", DECISION, QUESTION, Accepted)],
             AgentKind::Human,
@@ -1686,12 +1730,14 @@ mod lifecycle_contract {
                     Accepted,
                     marker(TRANSITION, EVENT),
                     Some("First."),
+                    Binding::Question,
                 ),
                 decision_node(
                     "decision:trigger-2",
                     Accepted,
                     marker(TRANSITION, OPERATION),
                     Some("Second."),
+                    Binding::Question,
                 ),
             ],
             vec![

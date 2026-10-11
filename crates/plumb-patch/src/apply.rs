@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use plumb_core::{to_canonical_json, CoreError, Hash, HashKind, Id};
 use plumb_psg::{
-    edge_element_hash, node_element_hash, Edge, EdgeError, ElementStatus, Graph, GraphViolation,
-    Node, NodeError, NodePayload, NodeType, RelationKind,
+    edge_element_hash, node_element_hash, Edge, EdgeError, ElementStatus, ExtensionKey, Graph,
+    GraphViolation, Node, NodeError, NodePayload, NodeType, RelationKind,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -85,6 +85,9 @@ pub enum PatchError {
     DuplicateEvidenceAttachment { target: Id, evidence: Id },
     #[error("the standard mapping is already attached to {0}")]
     DuplicateStandardMappingAttachment(Id),
+    /// `SetNodeExtension` would not change the extension value (Hotfix 065).
+    #[error("SetNodeExtension on {id} does not change extension {key}")]
+    ExtensionNoOp { id: Id, key: ExtensionKey },
     #[error("revision of {0} would overflow")]
     RevisionOverflow(Id),
     #[error("node {id}: {error}")]
@@ -597,6 +600,17 @@ impl Working {
                         self.put_edge(ordinal, edge)?;
                     }
                 }
+            }
+            SemanticPatch::SetNodeExtension { target, key, value } => {
+                let mut node = self.node_at(target)?.clone();
+                if node.extensions.get(key) == Some(value) {
+                    return Err(PatchError::ExtensionNoOp {
+                        id: target.id.clone(),
+                        key: key.clone(),
+                    });
+                }
+                node.extensions.insert(key.clone(), value.clone());
+                self.put_node(ordinal, node)?;
             }
             SemanticPatch::Compound { .. } => {
                 // Compounds are flattened before leaf application.

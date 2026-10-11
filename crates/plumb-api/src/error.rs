@@ -1,4 +1,4 @@
-//! Typed HTTP errors of the pilot runtime (plan A0.2, Hotfix 063).
+//! Typed HTTP errors of the pilot runtime (plan A0.2, Hotfix 063; A0.3, Hotfix 065).
 //!
 //! Every error body is `{code, message, details}`; `412` additionally carries the current
 //! branch-head `revision` and `semantic_hash`. Stable subsystem error names may appear inside
@@ -61,6 +61,11 @@ impl ApiError {
         ApiError::new(StatusCode::BAD_REQUEST, "E_INVALID_REQUEST", message)
     }
 
+    /// 400 with a frozen input code.
+    pub fn bad_request(code: &'static str, message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::BAD_REQUEST, code, message)
+    }
+
     /// 400 `E_CURSOR_INVALID`.
     pub fn cursor_invalid(message: impl Into<String>) -> ApiError {
         ApiError::new(StatusCode::BAD_REQUEST, "E_CURSOR_INVALID", message)
@@ -118,6 +123,53 @@ impl ApiError {
     /// 422 with a frozen semantic code.
     pub fn unprocessable(code: &'static str, message: impl Into<String>) -> ApiError {
         ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, code, message)
+    }
+
+    /// 422 `E_SEMANTIC_INVARIANT` for a domain-service rejection or a target in the wrong
+    /// lifecycle state; `error` is the stable error name of the rejecting service.
+    pub fn semantic(error: &str, message: impl Into<String>) -> ApiError {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "E_SEMANTIC_INVARIANT",
+            message,
+        )
+        .with_details(json!({ "error": error }))
+    }
+
+    /// 403 with a frozen code.
+    pub fn forbidden(code: &'static str, message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::FORBIDDEN, code, message)
+    }
+
+    /// 502 `E_INFERENCE_FAILED`: provider execution or provider-output inspection failed;
+    /// `error` is the stable error name.
+    pub fn inference_failed(error: &str) -> ApiError {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "E_INFERENCE_FAILED",
+            "the inference provider or its output inspection failed",
+        )
+        .with_details(json!({ "error": error }))
+    }
+
+    /// 503 `E_A03_RUNTIME_UNAVAILABLE`: the injected A0.3 runtime lacks `capability`.
+    pub fn runtime_unavailable(capability: &str) -> ApiError {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "E_A03_RUNTIME_UNAVAILABLE",
+            "this operation needs runtime material that is not configured",
+        )
+        .with_details(json!({ "capability": capability }))
+    }
+
+    /// 500 `E_WORKFLOW_CORRUPT`: impossible or corrupt persisted workflow state.
+    pub fn workflow_corrupt(what: &str) -> ApiError {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "E_WORKFLOW_CORRUPT",
+            "persisted workflow state is corrupt",
+        )
+        .with_details(json!({ "record": what }))
     }
 
     /// 500 `E_INTERNAL`; `subsystem` names the failing component, never its raw message.

@@ -428,6 +428,13 @@ pub fn intake(
     Ok(report)
 }
 
+/// Whether one intake validation finding is a surfaced validation conflict: exactly the unwaived
+/// Blocker or Error findings behind [`IntakeReasonCode::ValidationConflict`] (Hotfix 065, the
+/// intake report projection).
+pub fn is_validation_conflict(finding: &GeneratedFinding) -> bool {
+    finding_requires_reason(finding)
+}
+
 /// The pure acceptance-rationale guard that acceptance paths call before accepting
 /// `proposal`: when its report requires a reason, `decision_node` must be an Accepted
 /// ResolutionDecision bound to the proposal with a non-blank rationale.

@@ -257,13 +257,12 @@ pub static RELATION_REGISTRY: [RelationDef; 51] = [
         def.directionality = Directionality::Symmetric;
         def
     },
-    outgoing(
-        rel(
-            RelationKind::Resolves,
-            &[Ty(N::ResolutionDecision)],
-            &[Ty(N::Question), Ty(N::Finding)],
-        ),
-        AT_LEAST_ONE,
+    // Hotfix 065: no generic minimum; question-bound decisions are checked by the graph
+    // (metamodel §17.9).
+    rel(
+        RelationKind::Resolves,
+        &[Ty(N::ResolutionDecision)],
+        &[Ty(N::Question), Ty(N::Finding)],
     ),
     rel(RelationKind::Raises, &[Ty(N::Finding)], &[Ty(N::Question)]),
     // Intent and traceability

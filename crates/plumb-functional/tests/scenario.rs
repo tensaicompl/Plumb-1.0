@@ -16,10 +16,12 @@ mod scenario_contract {
     };
     use plumb_functional::{
         analyze_scenarios, build_scenario_request, derive_scenarios, project_functional_v2,
-        validate_scenario, CalculationExampleV1, ScenarioAudit, ScenarioBoundaryInput,
-        ScenarioBoundaryKind, ScenarioDecisionTableInput, ScenarioDependency,
-        ScenarioDerivationInputs, ScenarioError, ScenarioFamily, ScenarioGiven, ScenarioInference,
-        ScenarioLiteral, ScenarioNumericBound, ScenarioNumericConstraint, ScenarioRequest,
+        propose_derived_scenario_confirmation, propose_scenario_confirmation,
+        propose_scenario_correction, propose_scenario_run_updates, validate_scenario,
+        CalculationExampleV1, ScenarioAudit, ScenarioBoundaryInput, ScenarioBoundaryKind,
+        ScenarioDecisionTableInput, ScenarioDependency, ScenarioDerivationInputs, ScenarioError,
+        ScenarioFamily, ScenarioGiven, ScenarioInference, ScenarioLifecycleError, ScenarioLiteral,
+        ScenarioNumericBound, ScenarioNumericConstraint, ScenarioRequest, ScenarioRunUpdate,
         ScenarioSemantics, ScenarioSkeleton, ScenarioThen, ScenarioValue, ScenarioValueContract,
         ScenarioWhen, SkeletonValue, CALCULATION_ORIGIN_EXTENSION, HOLIDAY_DATE_KEY,
         SCENARIO_CONTEXT_VERSION, SCENARIO_OUTPUT_VERSION, SCENARIO_TASK_KIND,
@@ -2559,6 +2561,337 @@ mod scenario_contract {
             (skeletons, requests, proposals)
         };
         assert_eq!(build(false), build(true));
+    }
+
+    // ================================================================= lifecycle (Hotfix 065)
+
+    fn lifecycle_scenario(
+        node_id: &str,
+        status: ElementStatus,
+        confirmation: Option<&str>,
+        derived_from: &[&str],
+    ) -> Node {
+        node(
+            node_id,
+            status,
+            NodePayload::Scenario(Scenario {
+                name: format!("Scenario {node_id}"),
+                scenario_kind: ScenarioKind::StateTransition,
+                given: vec![json!({"states_active": ["state:draft"]})],
+                when: json!({"operation": "operation:submit"}),
+                then: vec![json!({"states_active": ["state:submitted"]})],
+                requirement_refs: None,
+                derived_from_refs: Some(derived_from.iter().map(|r| id(r)).collect()),
+                confirmation_status: confirmation.map(Into::into),
+            }),
+        )
+    }
+
+    fn lifecycle_with(extra: Vec<Node>) -> Graph {
+        let mut nodes = lifecycle_nodes();
+        nodes.push(table_node(TABLE, Accepted, "FIRST"));
+        nodes.push(table_node("decision-table:other", Accepted, "FIRST"));
+        nodes.extend(extra);
+        graph(nodes, lifecycle_edges())
+    }
+
+    fn scenario_of(g: &Graph, node_id: &str) -> (ElementStatus, Scenario) {
+        let n = g.node(&id(node_id)).unwrap();
+        let NodePayload::Scenario(s) = &n.payload else {
+            panic!()
+        };
+        (n.status, s.clone())
+    }
+
+    #[test]
+    fn confirming_a_derived_scenario_is_one_sequential_proposal() {
+        let g = lifecycle_with(vec![lifecycle_scenario(
+            "scenario:a",
+            Proposed,
+            Some("Derived"),
+            &[TABLE],
+        )]);
+        let p = propose_scenario_confirmation(&g, &id("scenario:a")).unwrap();
+        assert_eq!(p.stage, StageId::S4);
+        assert_eq!(p.materiality, ProposalMateriality::Semantic);
+        assert_eq!(p.acceptance_policy, AcceptancePolicy::HumanConfirm);
+        let SemanticPatch::Compound { patches } = &p.patch_set.patch else {
+            panic!()
+        };
+        let [SemanticPatch::ReplacePayload {
+            target: first,
+            payload,
+        }, SemanticPatch::SetStatus {
+            target: second,
+            from,
+            to,
+        }] = patches.as_slice()
+        else {
+            panic!("unexpected leaves {patches:?}")
+        };
+        assert_eq!(first.id, id("scenario:a"));
+        assert_eq!(second.id, id("scenario:a"));
+        assert_ne!(first.expected_hash, second.expected_hash);
+        assert!(
+            matches!(payload, NodePayload::Scenario(s) if s.confirmation_status.as_deref() == Some("Confirmed"))
+        );
+        assert_eq!((*from, *to), (Proposed, Accepted));
+        let after = plumb_patch::apply_patch(&g, &p.patch_set).unwrap().graph;
+        let (status, scenario) = scenario_of(&after, "scenario:a");
+        assert_eq!(status, Accepted);
+        assert_eq!(scenario.confirmation_status.as_deref(), Some("Confirmed"));
+        // Anything but Proposed + Derived is not confirmable.
+        for (status, confirmation) in [
+            (Accepted, Some("Confirmed")),
+            (Proposed, Some("Confirmed")),
+            (Proposed, None),
+            (Accepted, Some("Derived")),
+        ] {
+            let g = lifecycle_with(vec![lifecycle_scenario(
+                "scenario:a",
+                status,
+                confirmation,
+                &[TABLE],
+            )]);
+            assert!(matches!(
+                propose_scenario_confirmation(&g, &id("scenario:a")),
+                Err(ScenarioLifecycleError::NotConfirmable { .. })
+            ));
+        }
+        assert_eq!(
+            propose_scenario_confirmation(&g, &id("operation:submit")),
+            Err(ScenarioLifecycleError::NotAScenario(id("operation:submit")))
+        );
+    }
+
+    #[test]
+    fn bulk_confirmation_selects_persisted_derived_scenarios_of_one_table() {
+        let g = lifecycle_with(vec![
+            lifecycle_scenario("scenario:b", Proposed, Some("Derived"), &[TABLE]),
+            lifecycle_scenario(
+                "scenario:a",
+                Proposed,
+                Some("Derived"),
+                &["decision-table:other", TABLE],
+            ),
+            lifecycle_scenario("scenario:c", Accepted, Some("Confirmed"), &[TABLE]),
+            lifecycle_scenario(
+                "scenario:d",
+                Proposed,
+                Some("Derived"),
+                &["decision-table:other"],
+            ),
+        ]);
+        let (p, confirmed) = propose_derived_scenario_confirmation(&g, &id(TABLE)).unwrap();
+        assert_eq!(confirmed, vec![id("scenario:a"), id("scenario:b")]);
+        let SemanticPatch::Compound { patches } = &p.patch_set.patch else {
+            panic!()
+        };
+        assert_eq!(patches.len(), 4);
+        let after = plumb_patch::apply_patch(&g, &p.patch_set).unwrap().graph;
+        for done in ["scenario:a", "scenario:b"] {
+            assert_eq!(scenario_of(&after, done).0, Accepted);
+        }
+        assert_eq!(scenario_of(&after, "scenario:d").0, Proposed);
+        assert_eq!(
+            propose_derived_scenario_confirmation(&after, &id(TABLE)).map(|r| r.1),
+            Err(ScenarioLifecycleError::NoConfirmableDerived(id(TABLE)))
+        );
+        assert_eq!(
+            propose_derived_scenario_confirmation(&g, &id("decision-table:ghost")).map(|r| r.1),
+            Err(ScenarioLifecycleError::DecisionTableMissing(id(
+                "decision-table:ghost"
+            )))
+        );
+        assert_eq!(
+            propose_derived_scenario_confirmation(&g, &id("operation:submit")).map(|r| r.1),
+            Err(ScenarioLifecycleError::DecisionTableInvalid(id(
+                "operation:submit"
+            )))
+        );
+        let mut nodes = lifecycle_nodes();
+        nodes.push(table_node(TABLE, Proposed, "FIRST"));
+        let proposed_table = graph(nodes, lifecycle_edges());
+        assert_eq!(
+            propose_derived_scenario_confirmation(&proposed_table, &id(TABLE)).map(|r| r.1),
+            Err(ScenarioLifecycleError::DecisionTableInvalid(id(TABLE)))
+        );
+    }
+
+    #[test]
+    fn correction_changes_only_then_and_keeps_the_lifecycle() {
+        let new_then = vec![json!({"states_active": ["state:approved"]})];
+        for (status, confirmation) in [(Proposed, "Derived"), (Accepted, "Confirmed")] {
+            let g = lifecycle_with(vec![lifecycle_scenario(
+                "scenario:a",
+                status,
+                Some(confirmation),
+                &[TABLE],
+            )]);
+            let p = propose_scenario_correction(&g, &id("scenario:a"), new_then.clone()).unwrap();
+            assert_eq!(p.stage, StageId::S4);
+            assert_eq!(p.acceptance_policy, AcceptancePolicy::HumanConfirm);
+            assert!(matches!(
+                &p.patch_set.patch,
+                SemanticPatch::ReplacePayload { .. }
+            ));
+            let after = plumb_patch::apply_patch(&g, &p.patch_set).unwrap().graph;
+            let (after_status, after_scenario) = scenario_of(&after, "scenario:a");
+            let (_, mut before) = scenario_of(&g, "scenario:a");
+            assert_eq!(after_status, status);
+            before.then = new_then.clone();
+            assert_eq!(after_scenario, before);
+        }
+        let g = lifecycle_with(vec![lifecycle_scenario(
+            "scenario:a",
+            Proposed,
+            Some("Derived"),
+            &[TABLE],
+        )]);
+        assert_eq!(
+            propose_scenario_correction(
+                &g,
+                &id("scenario:a"),
+                vec![json!({"states_active": ["state:submitted"]})]
+            ),
+            Err(ScenarioLifecycleError::NoChange(id("scenario:a")))
+        );
+        assert!(matches!(
+            propose_scenario_correction(&g, &id("scenario:a"), vec![json!({"bogus": []})]),
+            Err(ScenarioLifecycleError::InvalidThen { .. })
+        ));
+        assert!(matches!(
+            propose_scenario_correction(
+                &g,
+                &id("scenario:a"),
+                vec![json!({"states_active": ["state:missing"]})]
+            ),
+            Err(ScenarioLifecycleError::CorrectionInvalid { .. })
+        ));
+        for (status, confirmation) in [
+            (Accepted, Some("Derived")),
+            (Proposed, Some("Confirmed")),
+            (Proposed, None),
+        ] {
+            let g = lifecycle_with(vec![lifecycle_scenario(
+                "scenario:a",
+                status,
+                confirmation,
+                &[TABLE],
+            )]);
+            assert!(matches!(
+                propose_scenario_correction(&g, &id("scenario:a"), new_then.clone()),
+                Err(ScenarioLifecycleError::StateInvalid { .. })
+            ));
+        }
+    }
+
+    fn run_payload(scenario: &str, result: &str) -> plumb_psg::ScenarioRun {
+        serde_json::from_value(json!({
+            "scenario_ref": scenario,
+            "specification_hash": format!("sha256:{}", "c".repeat(64)),
+            "result": result,
+            "trace": [{"phase": "execution", "step": {"step": "started"}}]
+        }))
+        .unwrap()
+    }
+
+    fn run_update(result: &str, link: char) -> ScenarioRunUpdate {
+        ScenarioRunUpdate {
+            run_ref: id("scenario_run:00000000000000aa"),
+            scenario_ref: id("scenario:a"),
+            payload: run_payload("scenario:a", result),
+            link_key: "plumb_sim:scenario_trace_artifact".parse().unwrap(),
+            link: format!("sha256:{}", link.to_string().repeat(64))
+                .parse()
+                .unwrap(),
+        }
+    }
+
+    fn apply_run(g: &Graph, update: &ScenarioRunUpdate) -> (Option<plumb_patch::Proposal>, Graph) {
+        let p =
+            propose_scenario_run_updates(g, std::slice::from_ref(update), &id("agent:api"), ts(AT))
+                .unwrap();
+        let after = match &p {
+            Some(p) => plumb_patch::apply_patch(g, &p.patch_set).unwrap().graph,
+            None => g.clone(),
+        };
+        (p, after)
+    }
+
+    #[test]
+    fn scenario_run_updates_keep_payload_and_trace_link_together() {
+        let g = lifecycle_with(vec![lifecycle_scenario(
+            "scenario:a",
+            Accepted,
+            Some("Confirmed"),
+            &[TABLE],
+        )]);
+        let key = || -> ExtensionKey { "plumb_sim:scenario_trace_artifact".parse().unwrap() };
+        // First run: one AddNode carrying payload and link.
+        let (p, g1) = apply_run(&g, &run_update("pass", 'a'));
+        let p = p.unwrap();
+        assert_eq!(p.stage, StageId::S4);
+        assert_eq!(p.materiality, ProposalMateriality::NonSemantic);
+        assert_eq!(p.acceptance_policy, AcceptancePolicy::AutoNonSemantic);
+        let SemanticPatch::Compound { patches } = &p.patch_set.patch else {
+            panic!()
+        };
+        assert!(matches!(
+            patches.as_slice(),
+            [SemanticPatch::AddNode { .. }]
+        ));
+        let node = g1.node(&id("scenario_run:00000000000000aa")).unwrap();
+        assert_eq!(node.status, Accepted);
+        assert_eq!(
+            node.extensions.get(&key()),
+            Some(&json!(format!("sha256:{}", "a".repeat(64))))
+        );
+        assert_eq!(g1.semantic_hash().unwrap(), g.semantic_hash().unwrap());
+        // Identical re-run: nothing to propose.
+        assert_eq!(apply_run(&g1, &run_update("pass", 'a')).0, None);
+        // Both change: ReplacePayload, then SetNodeExtension under the intermediate hash.
+        let (p, g2) = apply_run(&g1, &run_update("fail", 'b'));
+        let SemanticPatch::Compound { patches } = &p.unwrap().patch_set.patch else {
+            panic!()
+        };
+        let [SemanticPatch::ReplacePayload { target: first, .. }, SemanticPatch::SetNodeExtension { target: second, .. }] =
+            patches.as_slice()
+        else {
+            panic!("{patches:?}")
+        };
+        assert_ne!(first.expected_hash, second.expected_hash);
+        let node = g2.node(&id("scenario_run:00000000000000aa")).unwrap();
+        assert_eq!(node.revision, 2);
+        assert!(
+            matches!(&node.payload, NodePayload::ScenarioRun(r) if r.result == plumb_psg::ScenarioRunResult::Fail)
+        );
+        // Link only and payload only.
+        let (p, g3) = apply_run(&g2, &run_update("fail", 'c'));
+        let SemanticPatch::Compound { patches } = &p.unwrap().patch_set.patch else {
+            panic!()
+        };
+        assert!(matches!(
+            patches.as_slice(),
+            [SemanticPatch::SetNodeExtension { .. }]
+        ));
+        let (p, _) = apply_run(&g3, &run_update("pass", 'c'));
+        let SemanticPatch::Compound { patches } = &p.unwrap().patch_set.patch else {
+            panic!()
+        };
+        assert!(matches!(
+            patches.as_slice(),
+            [SemanticPatch::ReplacePayload { .. }]
+        ));
+        // Another element at the stable ID is a collision.
+        let mut other = run_update("pass", 'a');
+        other.scenario_ref = id("scenario:other");
+        assert_eq!(
+            propose_scenario_run_updates(&g1, &[other], &id("agent:api"), ts(AT)),
+            Err(ScenarioLifecycleError::RunCollision(id(
+                "scenario_run:00000000000000aa"
+            )))
+        );
     }
 
     // ================================================================= source guards

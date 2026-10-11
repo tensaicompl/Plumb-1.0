@@ -70,6 +70,12 @@ pub enum RoundError {
         question_ref: Id,
         priority: Option<String>,
     },
+    /// The targeted stakeholder does not exist (Hotfix 065).
+    #[error("stakeholder {0} does not exist")]
+    StakeholderMissing(Id),
+    /// The targeted stakeholder is not an Accepted Stakeholder (Hotfix 065).
+    #[error("{0} is not an Accepted Stakeholder")]
+    StakeholderInvalid(Id),
 }
 
 /// A presentation run of contiguous Questions sharing one entity anchor.
@@ -306,6 +312,34 @@ pub fn compose_question_rounds(
     graph: &Graph,
     config: &QuestionRoundConfig,
 ) -> Result<QuestionRoundResult, RoundError> {
+    compose(graph, config, None)
+}
+
+/// Composes at most one new round for the Accepted Stakeholder `stakeholder_ref` over the same
+/// kernel as [`compose_question_rounds`] (Hotfix 065): only Accepted Questions routed to that
+/// stakeholder are considered, with every eligibility and staleness rule and the same ordering.
+pub fn compose_question_round_for_stakeholder(
+    graph: &Graph,
+    stakeholder_ref: &Id,
+    config: &QuestionRoundConfig,
+) -> Result<QuestionRoundResult, RoundError> {
+    let stakeholder = graph
+        .node(stakeholder_ref)
+        .ok_or_else(|| RoundError::StakeholderMissing(stakeholder_ref.clone()))?;
+    if stakeholder.status != ElementStatus::Accepted
+        || stakeholder.payload.node_type() != NodeType::Stakeholder
+    {
+        return Err(RoundError::StakeholderInvalid(stakeholder_ref.clone()));
+    }
+    compose(graph, config, Some(stakeholder_ref))
+}
+
+/// The composition kernel; `only` restricts it to the Questions routed to one stakeholder.
+fn compose(
+    graph: &Graph,
+    config: &QuestionRoundConfig,
+    only: Option<&Id>,
+) -> Result<QuestionRoundResult, RoundError> {
     config.validate()?;
     let mut dispositions = Vec::new();
     let mut by_stakeholder: BTreeMap<Id, Vec<Eligible<'_>>> = BTreeMap::new();
@@ -319,6 +353,9 @@ pub fn compose_question_rounds(
         let NodePayload::Question(question) = &node.payload else {
             continue;
         };
+        if only.is_some_and(|target| question.stakeholder_ref.as_ref() != Some(target)) {
+            continue;
+        }
         let question_ref = node.id.clone();
         if question.status != QUESTION_STATUS_OPEN {
             if TERMINAL_QUESTION_STATUSES.contains(&question.status.as_str()) {

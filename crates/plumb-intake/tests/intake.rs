@@ -1500,6 +1500,33 @@ mod intake {
     }
 
     #[test]
+    fn validation_conflict_predicate_is_exactly_the_reason_rule() {
+        // Hotfix 065: the public predicate surfaced by the API projection agrees with the
+        // reason code for every severity and waiver state.
+        for severity in [
+            FindingSeverity::Blocker,
+            FindingSeverity::Error,
+            FindingSeverity::Warn,
+            FindingSeverity::Info,
+        ] {
+            for waived in [false, true] {
+                let (g, p, f1) = reshaped(severity, waived);
+                let report = run_with(&g, &p, &input(vec![f1]));
+                assert!(!report.validation_findings.is_empty());
+                let surfaced = report
+                    .validation_findings
+                    .iter()
+                    .any(plumb_intake::is_validation_conflict);
+                assert_eq!(
+                    surfaced,
+                    report.reason_codes.contains(&ValidationConflict),
+                    "{severity:?} waived={waived}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn warn_and_info_findings_are_reported_without_reason() {
         for severity in [FindingSeverity::Warn, FindingSeverity::Info] {
             let (g, p, f1) = reshaped(severity, false);

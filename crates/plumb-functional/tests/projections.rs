@@ -56,7 +56,7 @@ A \[period\] of \*approved\* absence.
 Paid or unpaid.
 "##;
     const GOLDEN_SCENARIOS: &str = r##"version: 1
-model_hash: psg:sha256:238ffc0323ffc9b12c7598ff5d865239d1dd22f41e4d35b9285664bad3208d36
+model_hash: psg:sha256:67b8f0827d4e8cbaf84649e1db17c9213fc4423d1d0d0edafbd9804a2248befa
 scenarios:
 - id: scenario:a-derived
   name: Scenario scenario:a-derived
@@ -101,8 +101,8 @@ scenarios:
   - operation:submit
   confirmation_status: null
 "##;
-    const GOLDEN_DECISIONS: &str = r##"{"answer":{"days":5,"kind":"carry_over"},"decided_at":"2026-03-01T00:00:00.000000000Z","decided_by":"agent:analyst","id":"dec:a","patch_ref":"sha256:102d1cd658beb9c2a06b0458173fdebcb331f65addfb3a70a3d77783e540c325","proposal_ref":null,"question_ref":"question:carry-over","rationale":"Policy <b>section</b> 4.2","supersedes":null}
-{"answer":{"days":5,"kind":"carry_over"},"decided_at":"2026-02-01T00:00:00.000000000Z","decided_by":"agent:analyst","id":"dec:b","patch_ref":"sha256:55ca51bdb9295598c2770b3bdc72c5a5cc9ebcd0a39f4e79321b9c59136de013","proposal_ref":null,"question_ref":"question:carry-over","rationale":"Policy <b>section</b> 4.2","supersedes":null}
+    const GOLDEN_DECISIONS: &str = r##"{"answer":{"days":5,"kind":"carry_over"},"decided_at":"2026-03-01T00:00:00.000000000Z","decided_by":"agent:analyst","id":"dec:a","patch_ref":"sha256:102d1cd658beb9c2a06b0458173fdebcb331f65addfb3a70a3d77783e540c325","proposal_ref":"prop:carry-over","question_ref":null,"rationale":"Policy <b>section</b> 4.2","supersedes":null}
+{"answer":{"days":5,"kind":"carry_over"},"decided_at":"2026-02-01T00:00:00.000000000Z","decided_by":"agent:analyst","id":"dec:b","patch_ref":"sha256:55ca51bdb9295598c2770b3bdc72c5a5cc9ebcd0a39f4e79321b9c59136de013","proposal_ref":"prop:carry-over","question_ref":null,"rationale":"Policy <b>section</b> 4.2","supersedes":null}
 "##;
     const GOLDEN_MODEL_REPORT: &str = r##"# Model Report
 
@@ -110,7 +110,7 @@ scenarios:
 
 - Project ID: `project:pilot`
 - Profile ID: `profile:plumb-software-2026.1`
-- Semantic hash: `psg:sha256:238ffc0323ffc9b12c7598ff5d865239d1dd22f41e4d35b9285664bad3208d36`
+- Semantic hash: `psg:sha256:67b8f0827d4e8cbaf84649e1db17c9213fc4423d1d0d0edafbd9804a2248befa`
 - Evidence hash: `ev:sha256:9eef75643b0d6c5593a7c70e41d5833530ca17796cbc1465e6a62b9578548558`
 - Profile hash: `sha256:e6dc73ec3f1847e5e7fc5d71aef64b71c15a3e93838e64c7f246f275c65af055`
 - Rule-pack hash: `sha256:b3a48aa0d0dc47b612697bbf35fa778499509343f74de43459fbcc145e21d33e`
@@ -118,7 +118,7 @@ scenarios:
 ## F4 Gate
 
 - Result: `PASS`
-- Gate-report content hash: `sha256:b1cc7547c0fbcb1b4ac5db35c3977c306ba30fd126a3837c85c612158b0e5c7e`
+- Gate-report content hash: `sha256:4c34780619bce4e484beb013182fef32f7d3e4d654cbf1f8ac5352054395f67c`
 - Blocker failures: 0
 - Blocker waivers: 0
 - Warnings: 0
@@ -145,7 +145,7 @@ scenarios:
 
 ## Functional Compatibility Projection
 
-- functional.yaml content hash: `sha256:250e0a11b76a28b482fe7f3add6bb9c2165b9dd77a0daa4c70ad54a93c05cb56`
+- functional.yaml content hash: `sha256:98f8b22a88a71542e7156893ad0e13c1dfc35855f046ad5954f540da939ac89a`
 - Projection version: 2
 - Warnings: 4
 - Lossy mappings: 1
@@ -180,7 +180,7 @@ Readiness is advisory only and is not calculated by S4.7. It does not alter the 
     const GOLDEN_HASHES: [(&str, &str); 6] = [
         (
             "functional.yaml",
-            "sha256:250e0a11b76a28b482fe7f3add6bb9c2165b9dd77a0daa4c70ad54a93c05cb56",
+            "sha256:98f8b22a88a71542e7156893ad0e13c1dfc35855f046ad5954f540da939ac89a",
         ),
         (
             "glossary.md",
@@ -188,19 +188,19 @@ Readiness is advisory only and is not calculated by S4.7. It does not alter the 
         ),
         (
             "scenarios.yaml",
-            "sha256:824f1c15bb3e4342ffdce6f8ce32ab78253e876ec8cffb947d1f8ff79cae3377",
+            "sha256:fd6149fa588c8ee6b6a2df985ee03b8fc172470c331e4312e445ce237ecf9606",
         ),
         (
             "decisions.jsonl",
-            "sha256:1f18f0501a4a8587f35ee808542b911edae014d13d42744517a0dea7c18c70a5",
+            "sha256:86c099e8a409ef3b26b53869d5eb823b762791ee31c7e0a3a7468bc3747d80df",
         ),
         (
             "model-report.md",
-            "sha256:4a7ab7b68cfa76b67400587f97fb0952ea89842b7e26694a6417fd664278100b",
+            "sha256:8a2e9287d62baa19f96c8b48855c428aa62efcdfb0894eaf5483076c9c7caed1",
         ),
         (
             "gate-report.json",
-            "sha256:b1cc7547c0fbcb1b4ac5db35c3977c306ba30fd126a3837c85c612158b0e5c7e",
+            "sha256:4c34780619bce4e484beb013182fef32f7d3e4d654cbf1f8ac5352054395f67c",
         ),
     ];
 
@@ -304,8 +304,10 @@ Readiness is advisory only and is not calculated by S4.7. It does not alter the 
             node_id,
             status,
             NodePayload::ResolutionDecision(ResolutionDecision {
-                question_ref: Some(id("question:carry-over")),
-                proposal_ref: None,
+                // Hotfix 065: Finding-bound (resolves its Finding only), so no question_ref;
+                // a decision needs a question or proposal reference (metamodel §6.3).
+                question_ref: None,
+                proposal_ref: Some(id("prop:carry-over")),
                 answer: json!({"kind": "carry_over", "days": 5}),
                 decided_by: id("agent:analyst"),
                 decided_at: ts(decided_at),

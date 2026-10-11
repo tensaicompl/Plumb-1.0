@@ -1,10 +1,12 @@
 //! Immutable PSG graph revisions, branch heads and compare-and-swap commit over the pilot
-//! SQLite database (compiler architecture §§4.1, 5.8, 21; plan §6).
+//! SQLite database (compiler architecture §§4.1, 5.8, 21; plan §6), plus the durable workflow
+//! records of store schema v2 (Hotfix 065).
 
 pub mod branches;
 pub mod revisions;
 pub mod schema;
 pub mod sqlite;
+pub mod workflow;
 
 use plumb_artifacts::ArtifactStoreError;
 use plumb_core::{CoreError, Hash, Id};
@@ -18,6 +20,11 @@ pub use revisions::{
 };
 pub use schema::{PSG_SCHEMA_VERSION, STORE_SCHEMA_VERSION};
 pub use sqlite::SqliteRevisionStore;
+pub use workflow::{
+    NewWorkflowProposal, NewWorkflowSession, NewWorkflowTurn, SqliteWorkflowStore, WorkflowInsert,
+    WorkflowOrigin, WorkflowProposal, WorkflowProposalKind, WorkflowProposalState, WorkflowSession,
+    WorkflowTurn, WorkflowTurnState,
+};
 
 /// Why a revision-store operation failed. A failed write leaves the database unchanged.
 #[derive(Debug, Error)]
@@ -101,4 +108,33 @@ pub enum StoreError {
     DecisionRefWrongType { id: Id, node_type: NodeType },
     #[error("decision ref {id} has non-baseline status {status:?}")]
     DecisionRefNotBaseline { id: Id, status: ElementStatus },
+
+    /// No workflow record of this kind is stored under this ID.
+    #[error("workflow {kind} {id} not found")]
+    WorkflowRecordNotFound { kind: &'static str, id: String },
+    /// A workflow record with this ID already exists.
+    #[error("workflow {kind} {id} already exists")]
+    WorkflowRecordExists { kind: &'static str, id: String },
+    /// A workflow transition found the record in another state.
+    #[error("workflow {kind} {id} is {actual}, expected {expected}")]
+    WorkflowStateConflict {
+        kind: &'static str,
+        id: String,
+        expected: String,
+        actual: String,
+    },
+    /// A workflow transition to this state is not defined.
+    #[error("workflow {kind} {id} cannot move to {to}")]
+    WorkflowInvalidTransition {
+        kind: &'static str,
+        id: String,
+        to: &'static str,
+    },
+    /// A stored workflow record fails an integrity check.
+    #[error("corrupt workflow {kind} {id}: {reason}")]
+    CorruptWorkflowRecord {
+        kind: &'static str,
+        id: String,
+        reason: String,
+    },
 }

@@ -97,6 +97,27 @@ pub enum GraphViolation {
     EvidenceFragmentIdMismatch { node: Id, expected: String },
     #[error("baseline edge {edge} duplicates semantic relation of edge {duplicate_of}")]
     DuplicateSemanticEdge { edge: Id, duplicate_of: Id },
+    /// A baseline question-bound `ResolutionDecision` names a missing Question (Hotfix 065).
+    #[error("resolution decision {decision}: question {question} does not exist")]
+    DecisionQuestionMissing { decision: Id, question: Id },
+    /// A baseline question-bound `ResolutionDecision` names a node that is not a Question.
+    #[error("resolution decision {decision}: {question} is a {node_type:?}, not a Question")]
+    DecisionQuestionWrongType {
+        decision: Id,
+        question: Id,
+        node_type: NodeType,
+    },
+    /// A baseline question-bound `ResolutionDecision` names a non-baseline Question.
+    #[error("resolution decision {decision}: question {question} is {status:?}")]
+    DecisionQuestionNotBaseline {
+        decision: Id,
+        question: Id,
+        status: ElementStatus,
+    },
+    /// A baseline question-bound `ResolutionDecision` has no baseline `resolves` edge to its
+    /// Question.
+    #[error("resolution decision {decision} does not resolve its question {question}")]
+    DecisionQuestionNotResolved { decision: Id, question: Id },
 }
 
 static NO_IDS: BTreeSet<Id> = BTreeSet::new();
@@ -479,6 +500,52 @@ impl Graph {
         let baseline_edges = self.edges.values().filter(|e| is_baseline(e.status));
         if let Err(constraints) = validate_relation_constraints(&baseline_types, baseline_edges) {
             v.extend(constraints.into_iter().map(GraphViolation::Relation));
+        }
+        // (15) question-bound ResolutionDecision binding (metamodel §§6.3, 17.9, Hotfix 065).
+        for (id, node) in self.nodes.iter().filter(|(_, n)| is_baseline(n.status)) {
+            let NodePayload::ResolutionDecision(decision) = &node.payload else {
+                continue;
+            };
+            let Some(question) = &decision.question_ref else {
+                continue;
+            };
+            match self.nodes.get(question) {
+                None => {
+                    v.push(GraphViolation::DecisionQuestionMissing {
+                        decision: id.clone(),
+                        question: question.clone(),
+                    });
+                    continue;
+                }
+                Some(q) if q.payload.node_type() != NodeType::Question => {
+                    v.push(GraphViolation::DecisionQuestionWrongType {
+                        decision: id.clone(),
+                        question: question.clone(),
+                        node_type: q.payload.node_type(),
+                    })
+                }
+                Some(q) if !is_baseline(q.status) => {
+                    v.push(GraphViolation::DecisionQuestionNotBaseline {
+                        decision: id.clone(),
+                        question: question.clone(),
+                        status: q.status,
+                    })
+                }
+                Some(_) => {}
+            }
+            let resolved = self.outgoing_edge_ids(id).iter().any(|edge_id| {
+                self.edges.get(edge_id).is_some_and(|edge| {
+                    edge.kind == RelationKind::Resolves
+                        && is_baseline(edge.status)
+                        && &edge.to == question
+                })
+            });
+            if !resolved {
+                v.push(GraphViolation::DecisionQuestionNotResolved {
+                    decision: id.clone(),
+                    question: question.clone(),
+                });
+            }
         }
         v
     }

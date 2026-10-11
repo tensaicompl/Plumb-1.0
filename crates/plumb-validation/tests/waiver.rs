@@ -655,8 +655,9 @@ mod waiver_contract {
             node_id,
             status,
             NodePayload::ResolutionDecision(ResolutionDecision {
-                question_ref: Some(id("q:0000000000000001")),
-                proposal_ref: None,
+                // Hotfix 065: Finding-bound (resolves only its Finding), so no question_ref.
+                question_ref: None,
+                proposal_ref: Some(id("prop:00000000000000a0")),
                 answer,
                 decided_by: id(HUMAN),
                 decided_at: ts(AT),

@@ -285,10 +285,10 @@ mod revisions {
     // ------------------------------------------------------------------ schema
 
     #[test]
-    fn fresh_database_initializes_exact_v1_schema() {
+    fn fresh_database_initializes_exact_v2_schema() {
         let db = Db::new();
         let store = db.store();
-        assert_eq!(STORE_SCHEMA_VERSION, 1);
+        assert_eq!(STORE_SCHEMA_VERSION, 2);
         assert_eq!(PSG_SCHEMA_VERSION, 1);
         let expected: BTreeSet<String> = [
             "artifacts",
@@ -299,12 +299,15 @@ mod revisions {
             "revision_nodes",
             "schema_meta",
             "sqlite_sequence",
+            "workflow_proposals",
+            "workflow_session_turns",
+            "workflow_sessions",
         ]
         .into_iter()
         .map(str::to_owned)
         .collect();
         assert_eq!(tables(&db.path), expected);
-        assert_eq!(schema_meta_rows(&db.path), vec![1]);
+        assert_eq!(schema_meta_rows(&db.path), vec![2]);
         let conn = db.raw();
         assert_eq!(
             columns(&conn, "graph_revisions"),
@@ -344,6 +347,47 @@ mod revisions {
         assert_eq!(
             columns(&conn, "artifacts"),
             ["hash", "kind", "media_type", "bytes", "created_at"]
+        );
+        assert_eq!(
+            columns(&conn, "workflow_proposals"),
+            [
+                "proposal_id",
+                "base_revision_id",
+                "proposal_json",
+                "intake_json",
+                "proposal_kind",
+                "state",
+                "origin_kind",
+                "origin_ref",
+                "created_at",
+                "resolved_at",
+                "resolved_revision_id"
+            ]
+        );
+        assert_eq!(
+            columns(&conn, "workflow_sessions"),
+            [
+                "session_id",
+                "session_json",
+                "owner_actor_ref",
+                "created_at"
+            ]
+        );
+        assert_eq!(
+            columns(&conn, "workflow_session_turns"),
+            [
+                "session_id",
+                "turn_index",
+                "state",
+                "base_revision_id",
+                "stage",
+                "expected_node_refs_json",
+                "proposal_ids_json",
+                "requires_reason_count",
+                "committed_revision_id",
+                "created_at",
+                "failure"
+            ]
         );
         let journal: String = conn
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
@@ -415,7 +459,7 @@ mod revisions {
             .unwrap();
         assert_eq!(after, before);
         assert_eq!(db.count("SELECT COUNT(*) FROM artifacts"), 1);
-        assert_eq!(schema_meta_rows(&db.path), vec![1]);
+        assert_eq!(schema_meta_rows(&db.path), vec![2]);
         drop(store);
     }
 
@@ -423,21 +467,23 @@ mod revisions {
     fn unsupported_store_schema_version_is_rejected_without_change() {
         let db = Db::new();
         drop(db.store());
-        db.exec("UPDATE schema_meta SET version = 2;");
-        let before = schema_sql(&db.path);
-        assert!(matches!(
-            SqliteRevisionStore::open(&db.path).unwrap_err(),
-            StoreError::UnsupportedStoreSchemaVersion { found: 2 }
-        ));
-        assert_eq!(schema_sql(&db.path), before);
-        assert_eq!(schema_meta_rows(&db.path), vec![2]);
+        for unknown in [0, 3] {
+            db.exec(&format!("UPDATE schema_meta SET version = {unknown};"));
+            let before = schema_sql(&db.path);
+            assert!(matches!(
+                SqliteRevisionStore::open(&db.path).unwrap_err(),
+                StoreError::UnsupportedStoreSchemaVersion { found } if found == unknown
+            ));
+            assert_eq!(schema_sql(&db.path), before);
+            assert_eq!(schema_meta_rows(&db.path), vec![unknown]);
+        }
     }
 
     #[test]
     fn malformed_schema_meta_and_missing_tables_are_corrupt() {
         let db = Db::new();
         drop(db.store());
-        db.exec("INSERT INTO schema_meta (version) VALUES (1);");
+        db.exec("INSERT INTO schema_meta (version) VALUES (2);");
         assert!(matches!(
             SqliteRevisionStore::open(&db.path).unwrap_err(),
             StoreError::CorruptStoreSchema { .. }
@@ -1311,7 +1357,7 @@ mod revisions {
 
         let store = db.store();
         assert_eq!(schema_sql(&db.path), schema);
-        assert_eq!(schema_meta_rows(&db.path), vec![1]);
+        assert_eq!(schema_meta_rows(&db.path), vec![2]);
         assert_eq!(db.count("SELECT COUNT(*) FROM branch_heads"), heads);
         assert_eq!(store.head(&branch("main")).unwrap(), Some(r2.id.clone()));
         assert_eq!(store.head(&other).unwrap(), Some(r3.id.clone()));

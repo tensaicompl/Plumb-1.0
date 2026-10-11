@@ -1,5 +1,7 @@
 //! Requirement routes (plan A0.2): requirement reads projected from the PSG and the current F1
-//! gate report, classification and human-reviewed EARS replacement.
+//! gate report, classification and human-reviewed EARS replacement. A0.3 (Hotfix 065) adds the
+//! governed split, duplicate supersession and requirement-scoped waiver through their domain
+//! helpers.
 
 use std::collections::BTreeSet;
 
@@ -10,6 +12,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use plumb_core::{GateId, Id, StageId};
+use plumb_functional::{
+    propose_duplicate_supersession, propose_requirement_split, DuplicateMarkError,
+    RequirementSplitError, RequirementSplitInput,
+};
 use plumb_patch::{
     AcceptancePolicy, ElementPrecondition, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
@@ -22,12 +28,13 @@ use plumb_validation::GateReport;
 
 use crate::error::ApiError;
 use crate::openapi::{
-    AcceptEarsRequest, ClassifyRequest, RequirementCoverage, RequirementDetail, RequirementLinks,
-    RequirementPage, RequirementSummary,
+    AcceptEarsRequest, ClassifyRequest, MarkDuplicateRequest, RequirementCoverage,
+    RequirementDetail, RequirementLinks, RequirementPage, RequirementSummary, SplitRequest,
+    WaiveRequirementFindingRequest,
 };
 use crate::state::{
-    check_if_match, is_clean_text, paginate, parse_body, parse_wire, read_json, wire, ApiState,
-    PageRequest, QueryParams,
+    check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
+    require_clean_reason, wire, ApiState, PageRequest, QueryParams,
 };
 
 /// The F1 rule whose evidence records requirement lint diagnostics.
@@ -44,6 +51,15 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route(
             "/api/requirements/{id}/accept-ears",
             post(accept_requirement_ears),
+        )
+        .route("/api/requirements/{id}/split", post(split_requirement))
+        .route(
+            "/api/requirements/{id}/mark-duplicate",
+            post(mark_requirement_duplicate),
+        )
+        .route(
+            "/api/requirements/{id}/waive-finding",
+            post(waive_requirement_finding),
         )
 }
 
@@ -321,5 +337,142 @@ async fn accept_requirement_ears(
     payload.statement = request.text;
     let proposal = replace_requirement(&loaded, node, payload)?;
     let write = state.commit(&loaded, &proposal, created_at, "accept_requirement_ears")?;
+    Ok(Json(write).into_response())
+}
+
+// ============================================================================ A0.3 (Hotfix 065)
+
+/// `split_requirement`: an explicit human-governed split into Accepted children, through
+/// `plumb_functional::requirements`; the parent is superseded.
+async fn split_requirement(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: SplitRequest = parse_body(&body)?;
+    if request.parts.len() < 2 {
+        return Err(ApiError::invalid("parts needs at least two entries"));
+    }
+    for (index, part) in request.parts.iter().enumerate() {
+        if !is_clean_text(part) {
+            return Err(ApiError::invalid(format!(
+                "part {index} must be non-empty, without surrounding whitespace or control characters"
+            )));
+        }
+        if request.parts[..index].contains(part) {
+            return Err(ApiError::invalid(format!(
+                "part {index} repeats an earlier part"
+            )));
+        }
+    }
+    require_clean_reason(&request.reason)?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let created_at = state.now();
+    let (node, _) = requirement(&loaded.graph, &id)?;
+    let proposal = propose_requirement_split(
+        &loaded.graph,
+        &RequirementSplitInput {
+            parent_ref: node.id.clone(),
+            parts: request.parts,
+            actor_ref: state.actor_ref().clone(),
+            at: created_at,
+        },
+    )
+    .map_err(|error| match error {
+        RequirementSplitError::IdCollision(id) => {
+            ApiError::conflict("E_ID_COLLISION", "a split identity is already used")
+                .with_details(serde_json::json!({ "id": id }))
+        }
+        other => ApiError::semantic("RequirementSplitError", other.to_string()),
+    })?;
+    let write = state.write(
+        &loaded,
+        &proposal,
+        true,
+        Some(&request.reason),
+        created_at,
+        "split_requirement",
+    )?;
+    Ok(Json(write).into_response())
+}
+
+/// `mark_requirement_duplicate`: canonical supersession of the duplicate (path) by `of`,
+/// through `plumb_functional::duplicates`; never a node merge.
+async fn mark_requirement_duplicate(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: MarkDuplicateRequest = parse_body(&body)?;
+    let of = parse_id(&request.of).ok_or_else(|| ApiError::invalid("of is not an ID"))?;
+    if request.of == id {
+        return Err(ApiError::invalid("a requirement cannot duplicate itself"));
+    }
+    require_clean_reason(&request.reason)?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let created_at = state.now();
+    let (duplicate, _) = requirement(&loaded.graph, &id)?;
+    let (replacement, _) = requirement(&loaded.graph, of.as_str())?;
+    let proposal = propose_duplicate_supersession(
+        &loaded.graph,
+        &duplicate.id,
+        &replacement.id,
+        state.actor_ref(),
+        created_at,
+    )
+    .map_err(|error| match error {
+        DuplicateMarkError::IdCollision(id) => ApiError::conflict(
+            "E_ID_COLLISION",
+            "the supersedes edge identity is already used",
+        )
+        .with_details(serde_json::json!({ "id": id })),
+        other => ApiError::semantic("DuplicateMarkError", other.to_string()),
+    })?;
+    let write = state.write(
+        &loaded,
+        &proposal,
+        true,
+        Some(&request.reason),
+        created_at,
+        "mark_requirement_duplicate",
+    )?;
+    Ok(Json(write).into_response())
+}
+
+/// `waive_requirement_finding`: the Hotfix 048 waiver of a current finding that affects the
+/// Accepted path Requirement.
+async fn waive_requirement_finding(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: WaiveRequirementFindingRequest = parse_body(&body)?;
+    let finding_id = parse_id(&request.finding_id)
+        .ok_or_else(|| ApiError::invalid("finding_id is not an ID"))?;
+    require_clean_reason(&request.reason)?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let created_at = state.now();
+    let (node, _) = requirement(&loaded.graph, &id)?;
+    if node.status != ElementStatus::Accepted {
+        return Err(ApiError::semantic(
+            "RequirementNotAccepted",
+            "the requirement is not Accepted",
+        ));
+    }
+    let write = super::model::waive(
+        &state,
+        &loaded,
+        &finding_id,
+        Some(&node.id),
+        &request.reason,
+        created_at,
+        "waive_requirement_finding",
+    )?;
     Ok(Json(write).into_response())
 }

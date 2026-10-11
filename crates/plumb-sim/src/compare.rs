@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use plumb_core::{Hash, Id};
+use plumb_core::{to_canonical_json, Hash, Id};
 use plumb_expr::{map_pilot_value_type, Value as ExprValue};
 use plumb_functional::decision_table::DecisionType;
 use plumb_functional::{
@@ -43,6 +43,34 @@ pub enum ComparisonError {
     },
     #[error("trace serialization: {reason}")]
     TraceSerialization { reason: String },
+    #[error("scenario run identity of {scenario_ref}: {reason}")]
+    ScenarioRunIdentity { scenario_ref: Id, reason: String },
+}
+
+/// The node extension of a Scenario's current ScenarioRun that holds the generic `sha256:` hash
+/// string of its ScenarioTrace artifact (Hotfix 065).
+pub const SCENARIO_TRACE_LINK_EXTENSION: &str = "plumb_sim:scenario_trace_artifact";
+
+/// The stable ID of the current ScenarioRun node of `scenario_ref` (Hotfix 065):
+/// `scenario_run:<first 16 hex of SHA-256(RFC 8785 {project_id, scenario_ref,
+/// node_type: scenario_run})>`. One node per Scenario holds its latest run; the immutable run
+/// history is the ScenarioTrace artifacts.
+pub fn scenario_run_id(project_id: &Id, scenario_ref: &Id) -> Result<Id, ComparisonError> {
+    let failed = |reason: String| ComparisonError::ScenarioRunIdentity {
+        scenario_ref: scenario_ref.clone(),
+        reason,
+    };
+    let bytes = to_canonical_json(&serde_json::json!({
+        "project_id": project_id,
+        "scenario_ref": scenario_ref,
+        "node_type": "scenario_run",
+    }))
+    .map_err(|e| failed(e.to_string()))?;
+    let digest = Hash::content_sha256(&bytes);
+    let hex = &digest.as_str()["sha256:".len()..];
+    format!("scenario_run:{}", &hex[..16])
+        .parse()
+        .map_err(|e: plumb_core::CoreError| failed(e.to_string()))
 }
 
 /// Where a value diff sits.

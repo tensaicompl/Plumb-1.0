@@ -1643,4 +1643,194 @@ mod graph_contract {
         assert!(contributes_to_semantic_hash(NodeType::Requirement));
         assert!(!contributes_to_semantic_hash(NodeType::ArchitectureCheck));
     }
+
+    // ------------------------------------------------------------------ ResolutionDecision binding
+
+    fn question(node_id: &str, status: &str) -> Node {
+        node(
+            node_id,
+            status,
+            "Question",
+            json!({"finding_ref": "fnd:a", "question_kind": "YesNo", "prompt": "p", "status": "Open"}),
+        )
+    }
+
+    fn finding(node_id: &str) -> Node {
+        node(
+            node_id,
+            "Accepted",
+            "Finding",
+            json!({
+                "code": "F1", "family": "F1", "severity": "error", "message": "m", "status": "open",
+                "affected_refs": []
+            }),
+        )
+    }
+
+    fn decision(node_id: &str, status: &str, question_ref: Option<&str>) -> Node {
+        node(
+            node_id,
+            status,
+            "ResolutionDecision",
+            json!({
+                "question_ref": question_ref,
+                "proposal_ref": if question_ref.is_none() { json!("proposal:p") } else { Value::Null },
+                "answer": {"kind": "test"},
+                "decided_by": "actor:analyst",
+                "decided_at": T1,
+                "patch_ref": H1
+            }),
+        )
+    }
+
+    fn binding(v: &[GraphViolation]) -> Vec<&GraphViolation> {
+        v.iter()
+            .filter(|x| {
+                matches!(
+                    x,
+                    GraphViolation::DecisionQuestionMissing { .. }
+                        | GraphViolation::DecisionQuestionWrongType { .. }
+                        | GraphViolation::DecisionQuestionNotBaseline { .. }
+                        | GraphViolation::DecisionQuestionNotResolved { .. }
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn valid_resolution_decision_bindings() {
+        // Proposal-only decision with zero resolves edges.
+        graph(vec![decision("dec:p", "Accepted", None)], vec![]).unwrap();
+        // Finding-bound decision.
+        graph(
+            vec![decision("dec:f", "Accepted", None), finding("fnd:a")],
+            vec![edge("rel:1", "Accepted", "resolves", "dec:f", "fnd:a")],
+        )
+        .unwrap();
+        // Question-bound decision resolving q.
+        graph(
+            vec![
+                decision("dec:q", "Accepted", Some("q:a")),
+                question("q:a", "Accepted"),
+            ],
+            vec![edge("rel:1", "Accepted", "resolves", "dec:q", "q:a")],
+        )
+        .unwrap();
+        // Question-bound decision resolving q and a Finding.
+        graph(
+            vec![
+                decision("dec:q", "Accepted", Some("q:a")),
+                question("q:a", "Accepted"),
+                finding("fnd:a"),
+            ],
+            vec![
+                edge("rel:1", "Accepted", "resolves", "dec:q", "q:a"),
+                edge("rel:2", "Accepted", "resolves", "dec:q", "fnd:a"),
+            ],
+        )
+        .unwrap();
+        // Proposed and Rejected decisions are not bound.
+        graph(
+            vec![
+                decision("dec:x", "Proposed", Some("q:missing")),
+                decision("dec:y", "Rejected", Some("q:missing")),
+            ],
+            vec![],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn question_bound_decision_with_missing_question_is_typed() {
+        let v = violations(vec![decision("dec:q", "Accepted", Some("q:a"))], vec![]);
+        assert_eq!(
+            binding(&v),
+            vec![&GraphViolation::DecisionQuestionMissing {
+                decision: id("dec:q"),
+                question: id("q:a"),
+            }]
+        );
+    }
+
+    #[test]
+    fn question_bound_decision_with_non_baseline_question_is_typed() {
+        let v = violations(
+            vec![
+                decision("dec:q", "Accepted", Some("q:a")),
+                question("q:a", "Proposed"),
+            ],
+            vec![edge("rel:1", "Proposed", "resolves", "dec:q", "q:a")],
+        );
+        assert_eq!(
+            binding(&v),
+            vec![
+                &GraphViolation::DecisionQuestionNotBaseline {
+                    decision: id("dec:q"),
+                    question: id("q:a"),
+                    status: ElementStatus::Proposed,
+                },
+                &GraphViolation::DecisionQuestionNotResolved {
+                    decision: id("dec:q"),
+                    question: id("q:a"),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn question_bound_decision_resolving_only_a_finding_is_typed() {
+        let v = violations(
+            vec![
+                decision("dec:q", "Accepted", Some("q:a")),
+                question("q:a", "Accepted"),
+                finding("fnd:a"),
+            ],
+            vec![edge("rel:1", "Accepted", "resolves", "dec:q", "fnd:a")],
+        );
+        assert_eq!(
+            binding(&v),
+            vec![&GraphViolation::DecisionQuestionNotResolved {
+                decision: id("dec:q"),
+                question: id("q:a"),
+            }]
+        );
+    }
+
+    #[test]
+    fn question_bound_decision_resolving_another_question_is_typed() {
+        let v = violations(
+            vec![
+                decision("dec:q", "Accepted", Some("q:a")),
+                question("q:a", "Accepted"),
+                question("q:b", "Accepted"),
+            ],
+            vec![edge("rel:1", "Accepted", "resolves", "dec:q", "q:b")],
+        );
+        assert_eq!(
+            binding(&v),
+            vec![&GraphViolation::DecisionQuestionNotResolved {
+                decision: id("dec:q"),
+                question: id("q:a"),
+            }]
+        );
+    }
+
+    #[test]
+    fn question_bound_decision_naming_a_non_question_is_typed() {
+        let v = violations(
+            vec![
+                decision("dec:q", "Accepted", Some("fnd:a")),
+                finding("fnd:a"),
+            ],
+            vec![edge("rel:1", "Accepted", "resolves", "dec:q", "fnd:a")],
+        );
+        assert_eq!(
+            binding(&v),
+            vec![&GraphViolation::DecisionQuestionWrongType {
+                decision: id("dec:q"),
+                question: id("fnd:a"),
+                node_type: NodeType::Finding,
+            }]
+        );
+    }
 }

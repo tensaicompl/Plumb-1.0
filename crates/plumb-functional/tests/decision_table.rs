@@ -668,6 +668,132 @@ mod decision_table_contract {
         );
     }
 
+    // ------------------------------------------------------------------ PSG adapter (Hotfix 065)
+
+    fn eligibility() -> DecisionTableSpec {
+        DecisionTableSpec {
+            hit_policy: "FIRST".into(),
+            inputs: vec![bool_col("eligible"), int_col("days", Some(("0", "30")))],
+            outputs: vec![
+                bool_col("approved"),
+                enum_col("route", &["Manager", "Director"]),
+            ],
+            rows: vec![
+                DecisionRow {
+                    inputs: vec![b(true), cell(bnd("0", true), bnd("10", true))],
+                    outputs: vec![
+                        out(true),
+                        DecisionOutputCell::Enum {
+                            member: "Manager".into(),
+                        },
+                    ],
+                },
+                DecisionRow {
+                    inputs: vec![any(), any()],
+                    outputs: vec![
+                        out(false),
+                        DecisionOutputCell::Enum {
+                            member: "Director".into(),
+                        },
+                    ],
+                },
+            ],
+            default_output: None,
+        }
+    }
+
+    #[test]
+    fn psg_encoding_round_trips_exactly() {
+        let spec = eligibility();
+        let encoded = encode_decision_table("Eligibility", &spec).unwrap();
+        assert_eq!(encoded.name, "Eligibility");
+        assert_eq!(encoded.hit_policy, "FIRST");
+        assert_eq!(
+            encoded.inputs[1],
+            serde_json::json!({"name": "days", "ty": {"type": "int"}, "domain": {"lower": "0", "upper": "30"}})
+        );
+        assert_eq!(
+            encoded.rows[0],
+            serde_json::to_value(&spec.rows[0]).unwrap()
+        );
+        assert_eq!(decode_decision_table(&encoded).unwrap(), spec);
+        let mut with_default = spec.clone();
+        with_default.default_output = Some(vec![out(false)]);
+        assert_eq!(
+            encode_decision_table("Eligibility", &with_default),
+            Err(DecisionTableEncodingError::DefaultOutput)
+        );
+    }
+
+    #[test]
+    fn malformed_psg_material_is_an_error_never_skipped() {
+        let good = encode_decision_table("Eligibility", &eligibility()).unwrap();
+        let mut unknown_field = good.clone();
+        unknown_field.inputs[0]["extra"] = serde_json::json!(1);
+        assert!(matches!(
+            decode_decision_table(&unknown_field),
+            Err(DecisionTableEncodingError::InputColumn { index: 0, .. })
+        ));
+        let mut number_domain = good.clone();
+        number_domain.inputs[1]["domain"]["lower"] = serde_json::json!(0);
+        assert!(matches!(
+            decode_decision_table(&number_domain),
+            Err(DecisionTableEncodingError::InputColumn { index: 1, .. })
+        ));
+        let mut bad_output = good.clone();
+        bad_output.outputs[1] = serde_json::json!("route");
+        assert!(matches!(
+            decode_decision_table(&bad_output),
+            Err(DecisionTableEncodingError::OutputColumn { index: 1, .. })
+        ));
+        let mut bad_row = good;
+        bad_row.rows[1] = serde_json::json!({"inputs": [], "outputs": [{"cell": "nope"}]});
+        assert!(matches!(
+            decode_decision_table(&bad_row),
+            Err(DecisionTableEncodingError::Row { index: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn setting_one_output_cell_changes_only_that_cell() {
+        let spec = eligibility();
+        let director = DecisionOutputCell::Enum {
+            member: "Director".into(),
+        };
+        let changed = set_output_cell(&spec, 0, 1, director.clone()).unwrap();
+        let mut expected = spec.clone();
+        expected.rows[0].outputs[1] = director.clone();
+        assert_eq!(changed, expected);
+        assert_eq!(
+            set_output_cell(&spec, 1, 1, director),
+            Err(DecisionCellError::NoChange)
+        );
+        assert_eq!(
+            set_output_cell(&spec, 2, 0, out(true)),
+            Err(DecisionCellError::RowOutOfRange { row: 2 })
+        );
+        assert_eq!(
+            set_output_cell(&spec, 0, 2, out(true)),
+            Err(DecisionCellError::ColumnOutOfRange { column: 2 })
+        );
+        // Type and membership come from the existing structural analysis of the column.
+        assert_eq!(
+            set_output_cell(&spec, 0, 0, DecisionOutputCell::Int { value: 1 }),
+            Err(DecisionCellError::InvalidOutputCell { column: 0 })
+        );
+        assert_eq!(
+            set_output_cell(
+                &spec,
+                0,
+                1,
+                DecisionOutputCell::Enum {
+                    member: "Nobody".into()
+                }
+            ),
+            Err(DecisionCellError::InvalidOutputCell { column: 1 })
+        );
+    }
+
     #[test]
     fn decision_table_source_guard() {
         let source = include_str!("../src/decision_table.rs");

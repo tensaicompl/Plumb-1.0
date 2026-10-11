@@ -357,7 +357,6 @@ mod relations_contract {
                     any,
                 ),
             ),
-            ("resolves", (Cardinality { min: 1, max: None }, any)),
             (
                 "has_attribute",
                 (
@@ -1050,25 +1049,42 @@ mod relations_contract {
     }
 
     #[test]
-    fn resolves_requires_at_least_one_outgoing_edge() {
+    fn resolves_has_no_generic_outgoing_minimum() {
+        // Hotfix 065: the registry carries no resolves minimum; question-bound decisions are
+        // checked by graph validation (metamodel §17.9).
+        let def = RELATION_REGISTRY
+            .iter()
+            .find(|def| def.kind == RelationKind::Resolves)
+            .unwrap();
+        assert_eq!(def.outgoing, Cardinality { min: 0, max: None });
+        assert_eq!(def.incoming, Cardinality { min: 0, max: None });
         let n = nodes(&[
             ("dec:a", N::ResolutionDecision),
             ("q:a", N::Question),
+            ("q:b", N::Question),
             ("fnd:a", N::Finding),
         ]);
-        assert!(matches!(
-            cardinality_violations(violations(&n, &[])).as_slice(),
-            [RelationViolation::OutgoingCardinality {
-                count: 0,
-                min: 1,
-                ..
-            }]
-        ));
-        let two = [
+        // Zero edges.
+        assert!(cardinality_violations(violations(&n, &[])).is_empty());
+        // One Question.
+        assert!(cardinality_violations(violations(
+            &n,
+            &[edge("rel:1", "resolves", "dec:a", "q:a")]
+        ))
+        .is_empty());
+        // One Finding.
+        assert!(cardinality_violations(violations(
+            &n,
+            &[edge("rel:1", "resolves", "dec:a", "fnd:a")]
+        ))
+        .is_empty());
+        // Multiple resolves edges.
+        let many = [
             edge("rel:1", "resolves", "dec:a", "q:a"),
             edge("rel:2", "resolves", "dec:a", "fnd:a"),
+            edge("rel:3", "resolves", "dec:a", "q:b"),
         ];
-        assert!(cardinality_violations(violations(&n, &two)).is_empty());
+        assert!(cardinality_violations(violations(&n, &many)).is_empty());
     }
 
     #[test]

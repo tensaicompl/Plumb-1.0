@@ -1260,6 +1260,77 @@ mod round_contract {
         assert_eq!(keys, sorted);
     }
 
+    // ------------------------------------------------------------------ targeted rounds (Hotfix 065)
+
+    #[test]
+    fn targeted_round_uses_the_same_kernel_for_one_stakeholder() {
+        let fx = many(many(Fx::new(), HR, 1, 4), ARCHITECT, 100, 3).question(
+            &qid(50),
+            ERROR,
+            Some(HR),
+            "999",
+        );
+        let g = fx.graph();
+        let all = compose_question_rounds(&g, &size(3)).unwrap();
+        let hr = compose_question_round_for_stakeholder(&g, &id(HR), &size(3)).unwrap();
+        // Exactly the HR round of the global composition, same ID and order.
+        assert_eq!(hr.rounds, vec![round_of(&all, HR).clone()]);
+        assert_eq!(
+            strings(&hr.rounds[0].question_refs),
+            [qid(1), qid(2), qid(3)]
+        );
+        // Only HR Questions are considered: no architect dispositions or assignments.
+        for architect_question in [qid(100), qid(101), qid(102)] {
+            assert!(disposition(&hr, &architect_question).is_empty());
+        }
+        assert_eq!(hr.dispositions.len(), 5);
+        assert_eq!(
+            disposition(&hr, &qid(4)),
+            [&QuestionRoundDisposition::DeferredByCapacity {
+                question_ref: id(&qid(4)),
+                stakeholder_ref: id(HR)
+            }]
+        );
+        assert_eq!(replaced(&hr).len(), 3);
+        let proposal = hr.proposal.as_ref().unwrap();
+        assert_eq!(proposal.materiality, ProposalMateriality::NonSemantic);
+        assert_eq!(
+            proposal.acceptance_policy,
+            AcceptancePolicy::AutoNonSemantic
+        );
+        assert_eq!(proposal.stage, StageId::S3);
+        let architect =
+            compose_question_round_for_stakeholder(&g, &id(ARCHITECT), &size(15)).unwrap();
+        assert_eq!(architect.rounds.len(), 1);
+        assert_eq!(architect.rounds[0].question_refs.len(), 3);
+    }
+
+    #[test]
+    fn targeted_round_stakeholder_rules_and_empty_result() {
+        let fx = many(Fx::new(), HR, 1, 2);
+        let g = fx.graph();
+        assert_eq!(
+            compose_question_round_for_stakeholder(&g, &id("stakeholder:ghost"), &size(5)),
+            Err(RoundError::StakeholderMissing(id("stakeholder:ghost")))
+        );
+        assert_eq!(
+            compose_question_round_for_stakeholder(&g, &id("stakeholder:old"), &size(5)),
+            Err(RoundError::StakeholderInvalid(id("stakeholder:old")))
+        );
+        assert_eq!(
+            compose_question_round_for_stakeholder(&g, &id("entity:order"), &size(5)),
+            Err(RoundError::StakeholderInvalid(id("entity:order")))
+        );
+        assert!(matches!(
+            compose_question_round_for_stakeholder(&g, &id(HR), &size(0)),
+            Err(RoundError::InvalidConfig { .. })
+        ));
+        let none = compose_question_round_for_stakeholder(&g, &id(ARCHITECT), &size(5)).unwrap();
+        assert!(none.rounds.is_empty());
+        assert!(none.proposal.is_none());
+        assert!(none.dispositions.is_empty());
+    }
+
     #[test]
     fn production_source_guard() {
         let source = include_str!("../src/round.rs");

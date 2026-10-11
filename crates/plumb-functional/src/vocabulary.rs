@@ -1269,3 +1269,145 @@ pub fn analyze_vocabulary(
         issues: Vec::new(),
     })
 }
+
+// ============================================================================ explicit Term merge
+
+/// Why two Terms cannot be merged (Hotfix 065).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum TermMergeError {
+    #[error(transparent)]
+    Core(#[from] CoreError),
+    /// The element does not exist or is not a Term.
+    #[error("{0} is not a Term")]
+    NotATerm(Id),
+    /// The source Term is neither Proposed nor Accepted.
+    #[error("source term {0} is neither Proposed nor Accepted")]
+    SourceNotActive(Id),
+    /// The target Term is not Accepted.
+    #[error("target term {0} is not Accepted")]
+    TargetNotAccepted(Id),
+    /// Source and target are the same Term.
+    #[error("term {0} cannot be merged into itself")]
+    SameTerm(Id),
+    /// The Terms differ in language or definition; nothing is chosen or translated.
+    #[error("terms {source_ref} and {target_ref} differ in {field}")]
+    Conflict {
+        source_ref: Id,
+        target_ref: Id,
+        field: &'static str,
+    },
+    /// The merge cannot be applied to the graph (for example, incident relations remain).
+    #[error("term merge cannot be applied: {reason}")]
+    NotApplicable { reason: String },
+    /// The proposal could not be built.
+    #[error("invalid term merge proposal: {reason}")]
+    InvalidProposal { reason: String },
+}
+
+fn term_node<'g>(graph: &'g Graph, id: &Id) -> Result<(&'g Node, &'g Term), TermMergeError> {
+    let node = graph
+        .node(id)
+        .ok_or_else(|| TermMergeError::NotATerm(id.clone()))?;
+    match &node.payload {
+        NodePayload::Term(term) => Ok((node, term)),
+        _ => Err(TermMergeError::NotATerm(id.clone())),
+    }
+}
+
+/// Proposes merging the Proposed or Accepted source Term into the Accepted target Term
+/// (Hotfix 065): `MergeNodes {keep target, merge [source], KeepPayloadUnionMetadata}` followed by
+/// `ReplacePayload` of the target whose aliases become the sorted unique union of the target
+/// aliases, the source term and the source aliases, excluding the target term, under the
+/// target's element hash after the merge (computed by dry-applying the merge). Language and
+/// definition must be equal. Stage S1, MaterialDecision, HUMAN_DECISION.
+pub fn propose_term_merge(
+    graph: &Graph,
+    source_ref: &Id,
+    target_ref: &Id,
+) -> Result<Proposal, TermMergeError> {
+    if source_ref == target_ref {
+        return Err(TermMergeError::SameTerm(source_ref.clone()));
+    }
+    let (source, source_term) = term_node(graph, source_ref)?;
+    let (target, target_term) = term_node(graph, target_ref)?;
+    if !matches!(
+        source.status,
+        ElementStatus::Proposed | ElementStatus::Accepted
+    ) {
+        return Err(TermMergeError::SourceNotActive(source_ref.clone()));
+    }
+    if target.status != ElementStatus::Accepted {
+        return Err(TermMergeError::TargetNotAccepted(target_ref.clone()));
+    }
+    let conflict = |field: &'static str| TermMergeError::Conflict {
+        source_ref: source_ref.clone(),
+        target_ref: target_ref.clone(),
+        field,
+    };
+    if source_term.language != target_term.language {
+        return Err(conflict("language"));
+    }
+    if source_term.definition_ref != target_term.definition_ref {
+        return Err(conflict("definition_ref"));
+    }
+    let invalid = |reason: String| TermMergeError::InvalidProposal { reason };
+    let base_semantic_hash = graph.semantic_hash()?;
+    let merge = SemanticPatch::MergeNodes {
+        keep: plumb_patch::ElementPrecondition {
+            id: target.id.clone(),
+            expected_hash: plumb_psg::node_element_hash(target)?,
+        },
+        merge: vec![plumb_patch::ElementPrecondition {
+            id: source.id.clone(),
+            expected_hash: plumb_psg::node_element_hash(source)?,
+        }],
+        field_policy: plumb_patch::MergePolicy::KeepPayloadUnionMetadata,
+    };
+    // The target's real intermediate element hash, never guessed: dry-apply the merge alone.
+    let merged = plumb_patch::apply_patch(
+        graph,
+        &PatchSet {
+            base_semantic_hash: base_semantic_hash.clone(),
+            patch: merge.clone(),
+        },
+    )
+    .map_err(|e| TermMergeError::NotApplicable {
+        reason: e.to_string(),
+    })?;
+    let intermediate = merged
+        .graph
+        .node(target_ref)
+        .ok_or_else(|| invalid("merged target is missing".to_owned()))?;
+    let mut aliases: BTreeSet<String> = target_term.aliases.iter().flatten().cloned().collect();
+    aliases.insert(source_term.term.clone());
+    aliases.extend(source_term.aliases.iter().flatten().cloned());
+    aliases.remove(&target_term.term);
+    let mut payload = target_term.clone();
+    payload.aliases = if aliases.is_empty() {
+        None
+    } else {
+        Some(aliases.into_iter().collect())
+    };
+    let replace = SemanticPatch::ReplacePayload {
+        target: plumb_patch::ElementPrecondition {
+            id: target.id.clone(),
+            expected_hash: plumb_psg::node_element_hash(intermediate)?,
+        },
+        payload: NodePayload::Term(payload),
+    };
+    Proposal::new(
+        StageId::S1,
+        PatchSet {
+            base_semantic_hash,
+            patch: SemanticPatch::Compound {
+                patches: vec![merge, replace],
+            },
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::MaterialDecision,
+        AcceptancePolicy::HumanDecision,
+        None,
+    )
+    .map_err(|e| invalid(e.to_string()))
+}

@@ -734,6 +734,74 @@ mod assumption_contract {
         let _: JsonValue = json!(null);
     }
 
+    // ------------------------------------------------------------------ resolution (Hotfix 065)
+
+    #[test]
+    fn resolving_changes_only_the_payload_status() {
+        let mut active = assumption_node("assumption:a", Accepted, "Accepted", Some(EXPIRES));
+        if let NodePayload::Assumption(a) = &mut active.payload {
+            a.finding_ref = Some(id(BLOCKER));
+            a.default_value = Some(json!(3));
+        }
+        let mut nodes = base_nodes();
+        nodes.push(active.clone());
+        let g = graph_of(nodes);
+        let p = propose_assumption_resolution(&g, &id("assumption:a")).unwrap();
+        assert_eq!(p.stage, StageId::S3);
+        assert_eq!(p.materiality, ProposalMateriality::MaterialDecision);
+        assert_eq!(p.acceptance_policy, AcceptancePolicy::HumanDecision);
+        let SemanticPatch::ReplacePayload { target, payload } = &p.patch_set.patch else {
+            panic!("not a single ReplacePayload")
+        };
+        assert_eq!(target.id, id("assumption:a"));
+        let NodePayload::Assumption(before) = &active.payload else {
+            panic!()
+        };
+        let mut expected = before.clone();
+        expected.status = "Resolved".into();
+        assert_eq!(payload, &NodePayload::Assumption(expected));
+        let after = apply_patch(&g, &p.patch_set).unwrap().graph;
+        let resolved = after.node(&id("assumption:a")).unwrap();
+        assert_eq!(resolved.status, Accepted);
+        // Findings are untouched.
+        assert_eq!(after.node(&id(BLOCKER)), g.node(&id(BLOCKER)));
+    }
+
+    #[test]
+    fn resolving_requires_an_active_accepted_assumption() {
+        let with = |n: Node| {
+            let mut nodes = base_nodes();
+            nodes.push(n);
+            graph_of(nodes)
+        };
+        let g = with(assumption_node("assumption:a", Accepted, "Resolved", None));
+        assert_eq!(
+            propose_assumption_resolution(&g, &id("assumption:a")),
+            Err(AssumptionResolutionError::AlreadyResolved(id(
+                "assumption:a"
+            )))
+        );
+        for status in ["Open", "Expired", "Superseded"] {
+            let g = with(assumption_node("assumption:a", Accepted, status, None));
+            assert_eq!(
+                propose_assumption_resolution(&g, &id("assumption:a")),
+                Err(AssumptionResolutionError::NotActive {
+                    assumption_ref: id("assumption:a"),
+                    status: status.into()
+                })
+            );
+        }
+        let g = with(assumption_node("assumption:a", Proposed, "Accepted", None));
+        assert_eq!(
+            propose_assumption_resolution(&g, &id("assumption:a")),
+            Err(AssumptionResolutionError::NotAccepted(id("assumption:a")))
+        );
+        assert_eq!(
+            propose_assumption_resolution(&g, &id(HUMAN)),
+            Err(AssumptionResolutionError::NotAnAssumption(id(HUMAN)))
+        );
+    }
+
     #[test]
     fn production_source_guard() {
         let source = include_str!("../src/assumption.rs");

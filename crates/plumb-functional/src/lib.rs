@@ -31,6 +31,10 @@
 //! scope, mode and accepted methods, without D2 planning.
 //! S4.7 materializes deterministic functional pilot projections and reports from the PSG plus a
 //! current supplied F4 GateReport; functional.yaml remains the F0.14 compatibility projection.
+//! A0.3 (Hotfix 065) adds the governed requirement split, duplicate supersession, Term merge and
+//! assumption resolution, targeted question rounds, scenario confirmation, correction and run
+//! updates, the strict decision-table adapter, exact calculation examples, strict linear process
+//! editing and the proposal-acceptance companion decision.
 
 pub mod assumption;
 pub mod authorization;
@@ -61,12 +65,23 @@ pub mod vocabulary;
 mod vocabulary_exceptions;
 pub mod waiver;
 
+// Hotfix 065: the existing PlumbExpr runtime provider types, re-exported without wrapper
+// semantics so callers inject providers without a direct plumb-expr dependency.
+pub use plumb_expr::{
+    CalendarDefinition as ExprCalendarDefinition, CalendarError as ExprCalendarError,
+    CalendarProvider, CalendarProvider as ExprCalendarProvider,
+    PredicateError as ExprPredicateError, PredicateProvider,
+    PredicateProvider as ExprPredicateProvider, RefValue as ExprRefValue,
+    StaticCalendarProvider as ExprStaticCalendarProvider, Value as ExprValue,
+};
+
 // The merge/supersede wrapper enum is reached through the `duplicates` module path, because the
 // F0.14 output-only guard keeps proposal type names out of this file.
 pub use assumption::{
     analyze_assumption_expiry, assumption_id, create_assumption, expiry_condition_key,
-    expiry_finding, AssumptionAudit, AssumptionCreation, AssumptionError, AssumptionExpiryResult,
-    AssumptionInput, ASSUMPTION_EXPIRED_CODE, ASSUMPTION_STATUSES,
+    expiry_finding, propose_assumption_resolution, AssumptionAudit, AssumptionCreation,
+    AssumptionError, AssumptionExpiryResult, AssumptionInput, AssumptionResolutionError,
+    ASSUMPTION_EXPIRED_CODE, ASSUMPTION_RESOLVED, ASSUMPTION_STATUSES,
 };
 pub use authorization::{
     accepted_role_hierarchy_cycles, accepted_separation_analysis, analyze_authorization,
@@ -78,9 +93,10 @@ pub use authorization::{
 };
 pub use calculation::{
     analyze_calculation_cycles, analyze_calculations, build_calculation_request,
-    default_field_binding, default_root_binding, evaluate_calculation,
-    qualify_accepted_calculation, CalculationBindingExposure, CalculationError, CalculationIssue,
-    CalculationScope, CalculationScopeBinding, CALCULATION_CALENDAR_SYMBOL,
+    calculation_example, default_field_binding, default_root_binding, evaluate_calculation,
+    exact_to_expr, expr_to_exact, qualify_accepted_calculation, CalculationBindingExposure,
+    CalculationError, CalculationExample, CalculationExampleError, CalculationIssue,
+    CalculationScope, CalculationScopeBinding, ExactValue, CALCULATION_CALENDAR_SYMBOL,
     CALCULATION_CONTEXT_VERSION, CALCULATION_ORIGIN_EXTENSION, CALCULATION_OUTPUT_VERSION,
     CALCULATION_TASK_KIND,
 };
@@ -92,8 +108,9 @@ pub use data_class::{
     DATA_CLASS_DICTIONARY_VERSION, DATA_CLASS_OUTPUT_VERSION, DATA_CLASS_TASK_KIND,
 };
 pub use decision_table::{
-    analyze_decision_table, DecisionCoverage, DecisionTableAnalysis, DecisionTableSpec,
-    MAX_COVERAGE_WITNESSES, MAX_FINITE_DECISION_POINTS,
+    analyze_decision_table, decode_decision_table, encode_decision_table, set_output_cell,
+    DecisionCellError, DecisionCoverage, DecisionTableAnalysis, DecisionTableEncodingError,
+    DecisionTableSpec, MAX_COVERAGE_WITNESSES, MAX_FINITE_DECISION_POINTS,
 };
 pub use domain::{
     analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,
@@ -103,8 +120,9 @@ pub use domain::{
     DOMAIN_OUTPUT_VERSION, DOMAIN_TASK_KIND,
 };
 pub use duplicates::{
-    analyze_requirement_duplicates, DuplicateAnalysisResult, DuplicateError, DuplicateMatch,
-    DuplicateMatchKind, DuplicatePolicy, JaccardScore, MergeDisposition,
+    analyze_requirement_duplicates, propose_duplicate_supersession, DuplicateAnalysisResult,
+    DuplicateError, DuplicateMarkError, DuplicateMatch, DuplicateMatchKind, DuplicatePolicy,
+    JaccardScore, MergeDisposition,
 };
 pub use ears::{
     build_ears_request, evaluate_ears_normalization, EarsAcceptedSemantic, EarsContext, EarsError,
@@ -130,10 +148,13 @@ pub use operation::{
     OUTCOME_ORIGIN_EXTENSION,
 };
 pub use process::{
-    analysis_issues, analyze_processes, build_process_request, ProcessAudit,
-    ProcessCandidateAnalysis, ProcessCompilationResult, ProcessContext, ProcessDisposition,
-    ProcessError, ProcessGroundedRange, ProcessInference, ProcessIssue, ProcessNodeOrigin,
-    ProcessOrigin, ProcessRequest, ProcessScope, PROCESS_CONTEXT_VERSION,
+    analysis_issues, analyze_processes, api_process_step_id, build_process_request, linear_process,
+    linear_process_steps, linear_step_key, process_id, process_node_id,
+    propose_linear_process_import, propose_process_step_change, LinearInterchangeError,
+    LinearProcess, LinearProcessError, LinearProcessSteps, ProcessAudit, ProcessCandidateAnalysis,
+    ProcessCompilationResult, ProcessContext, ProcessDisposition, ProcessError,
+    ProcessGroundedRange, ProcessInference, ProcessIssue, ProcessNodeOrigin, ProcessOrigin,
+    ProcessRequest, ProcessScope, ProcessStepChange, ProcessStepError, PROCESS_CONTEXT_VERSION,
     PROCESS_NODE_ORIGIN_EXTENSION, PROCESS_ORIGIN_EXTENSION, PROCESS_OUTPUT_VERSION,
     PROCESS_TASK_KIND,
 };
@@ -162,27 +183,34 @@ pub use requirements::{
     REQUIREMENT_CLASSIFICATION_CONTEXT_VERSION, REQUIREMENT_CLASSIFICATION_OUTPUT_VERSION,
     REQUIREMENT_CLASSIFICATION_TASK_KIND, SEGMENT_ORIGIN_EXTENSION,
 };
+pub use requirements::{
+    propose_requirement_split, split_child_id, RequirementSplitError, RequirementSplitInput,
+    REQUIREMENT_SPLIT_ORIGIN_EXTENSION,
+};
 pub use resolution::{
     decision_id, relation_id, resolve_question, ResolutionContext, ResolutionError,
     ResolutionInput, ResolutionPatchArtifact, ResolutionResult, ResolutionTemplate,
     RESOLUTION_ARTIFACT_VERSION,
 };
 pub use round::{
-    compose_question_rounds, entity_anchor, parse_priority, round_id, QuestionRound,
-    QuestionRoundConfig, QuestionRoundDisposition, QuestionRoundGroup, QuestionRoundResult,
-    RoundError, StaleReason, MAX_QUESTION_ROUND_SIZE,
+    compose_question_round_for_stakeholder, compose_question_rounds, entity_anchor, parse_priority,
+    round_id, QuestionRound, QuestionRoundConfig, QuestionRoundDisposition, QuestionRoundGroup,
+    QuestionRoundResult, RoundError, StaleReason, MAX_QUESTION_ROUND_SIZE,
 };
 pub use scenario::{
-    analyze_scenarios, build_scenario_request, derive_scenarios, validate_scenario,
+    analyze_scenarios, build_scenario_request, derive_scenarios,
+    propose_derived_scenario_confirmation, propose_scenario_confirmation,
+    propose_scenario_correction, propose_scenario_run_updates, validate_scenario,
     CalculationExampleInput, CalculationExampleV1, ScenarioAudit, ScenarioBoundaryInput,
     ScenarioBoundaryKind, ScenarioDecisionTableInput, ScenarioDependency, ScenarioDerivationInputs,
     ScenarioDerivationResult, ScenarioError, ScenarioExisting, ScenarioFamily, ScenarioGiven,
-    ScenarioIdCollision, ScenarioInference, ScenarioInferenceContext, ScenarioLiteral,
-    ScenarioNumericBound, ScenarioNumericConstraint, ScenarioRequest, ScenarioSemantics,
-    ScenarioSkeleton, ScenarioThen, ScenarioValue, ScenarioValueContract, ScenarioValueSlot,
-    ScenarioWhen, SkeletonValue, CALCULATION_EXAMPLE_VERSION, CALCULATION_RESULT_KEY_PREFIX,
-    HOLIDAY_DATE_KEY, SCENARIO_CONFIRMED, SCENARIO_CONTEXT_VERSION, SCENARIO_DERIVED,
-    SCENARIO_OUTPUT_VERSION, SCENARIO_TASK_KIND, WORKING_DAYS_INCLUSIVE_KEY,
+    ScenarioIdCollision, ScenarioInference, ScenarioInferenceContext, ScenarioLifecycleError,
+    ScenarioLiteral, ScenarioNumericBound, ScenarioNumericConstraint, ScenarioRequest,
+    ScenarioRunUpdate, ScenarioSemantics, ScenarioSkeleton, ScenarioThen, ScenarioValue,
+    ScenarioValueContract, ScenarioValueSlot, ScenarioWhen, SkeletonValue,
+    CALCULATION_EXAMPLE_VERSION, CALCULATION_RESULT_KEY_PREFIX, HOLIDAY_DATE_KEY,
+    SCENARIO_CONFIRMED, SCENARIO_CONTEXT_VERSION, SCENARIO_DERIVED, SCENARIO_OUTPUT_VERSION,
+    SCENARIO_TASK_KIND, WORKING_DAYS_INCLUSIVE_KEY,
 };
 pub use state::{
     analyze_lifecycle, build_lifecycle_request, LifecycleAnalysisResult, LifecycleAudit,
@@ -198,12 +226,12 @@ pub use verification::{
     VerificationObligationAnalysis, VerificationSourceInput, VerificationSourceMode,
 };
 pub use vocabulary::{
-    analyze_vocabulary, build_vocabulary_request, normalize_vocabulary_term,
-    VocabularyAnalysisResult, VocabularyAudit, VocabularyConflict, VocabularyContext,
-    VocabularyCooccurrence, VocabularyError, VocabularyGroundedRange, VocabularyInference,
-    VocabularyIssue, VocabularyLintContext, VocabularyMention, VocabularyOrigin,
-    VocabularyOriginMention, VocabularyPolicy, VocabularyRequest, VocabularyRequirementContext,
-    VocabularyTermCandidate, PILOT_VOCABULARY_LANGUAGE, VOCABULARY_CONTEXT_VERSION,
-    VOCABULARY_NORMALIZATION_VERSION, VOCABULARY_ORIGIN_EXTENSION, VOCABULARY_OUTPUT_VERSION,
-    VOCABULARY_TASK_KIND,
+    analyze_vocabulary, build_vocabulary_request, normalize_vocabulary_term, propose_term_merge,
+    TermMergeError, VocabularyAnalysisResult, VocabularyAudit, VocabularyConflict,
+    VocabularyContext, VocabularyCooccurrence, VocabularyError, VocabularyGroundedRange,
+    VocabularyInference, VocabularyIssue, VocabularyLintContext, VocabularyMention,
+    VocabularyOrigin, VocabularyOriginMention, VocabularyPolicy, VocabularyRequest,
+    VocabularyRequirementContext, VocabularyTermCandidate, PILOT_VOCABULARY_LANGUAGE,
+    VOCABULARY_CONTEXT_VERSION, VOCABULARY_NORMALIZATION_VERSION, VOCABULARY_ORIGIN_EXTENSION,
+    VOCABULARY_OUTPUT_VERSION, VOCABULARY_TASK_KIND,
 };

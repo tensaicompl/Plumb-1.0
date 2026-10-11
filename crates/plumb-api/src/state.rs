@@ -1,27 +1,39 @@
-//! Runtime state and shared request plumbing of the pilot HTTP API (plan A0.2, Hotfix 063).
+//! Runtime state and shared request plumbing of the pilot HTTP API (plan A0.2, Hotfix 063;
+//! A0.3, Hotfix 065).
 //!
 //! `ApiState` owns one explicit branch, the SQLite revision and artifact stores behind
 //! synchronous mutexes (never held across an await), the injected identity and clock, the
 //! design-event broadcaster, the orchestration-registered gate reports and the validation
-//! profile. There is no global graph: every request loads the branch head once and answers or
-//! writes against exactly that revision. Writes go through the existing intake, the rationale
-//! guard and the store's compare-and-swap commit; nothing mutates a graph in place.
+//! profile, plus the optional injected A0.3 runtime (durable workflow store, providers, session
+//! configuration and simulator scopes). There is no global graph or provider: every request loads
+//! the branch head once and answers or writes against exactly that revision. Writes go through
+//! the existing intake, the rationale guard and the store's compare-and-swap commit; nothing
+//! mutates a graph in place.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use plumb_artifacts::SqliteArtifactStore;
+use plumb_artifacts::{ArtifactKind, ArtifactStore, SqliteArtifactStore};
 use plumb_core::{to_canonical_json, Clock, GateId, Hash, HashKind, Id, Timestamp};
+use plumb_functional::resolution::{build_acceptance_companion, AcceptanceInput, ResolutionError};
+use plumb_functional::{CalendarProvider, PredicateProvider};
+use plumb_inference::{InferenceProvider, ProviderPolicy};
 use plumb_intake::{
-    intake, validate_required_rationale, IntakeAcceptanceError, IntakeError, IntakeValidationInput,
+    intake, validate_required_rationale, IntakeAcceptanceError, IntakeError, IntakeReport,
+    IntakeValidationInput,
 };
-use plumb_patch::Proposal;
+use plumb_patch::{PatchSet, Proposal, SemanticPatch};
+use plumb_psg::{ElementStatus, NodePayload};
+use plumb_session::SessionTurnConfig;
+use plumb_sim::{
+    ExecutionCalculationScopeOverride, ExecutionExpressionScopeInput, RuntimeSemanticValue,
+};
 use plumb_store::{
     BranchName, GraphRevision, LoadedRevision, RevisionId, RevisionWriteMeta, SqliteRevisionStore,
-    StoreError,
+    SqliteWorkflowStore, StoreError,
 };
 use plumb_validation::{GateReport, ValidationProfile};
 use serde::{Deserialize, Serialize};
@@ -46,6 +58,111 @@ pub enum ApiStateError {
     UnsortedRoles,
     #[error("profile hashes cannot be computed: {0}")]
     Profile(String),
+    #[error("expression scope owner {0} is configured more than once")]
+    DuplicateExpressionScope(Id),
+}
+
+/// The typed A0.3 runtime configuration (Hotfix 065): exactly the injected material the A0.3
+/// operations need, owned by one state instance. Nothing here is global, environment-selected
+/// or built from a request.
+pub struct A03RuntimeConfig {
+    /// The durable workflow store over the same database as the revision store.
+    pub workflow_store: SqliteWorkflowStore,
+    pub inference_provider: Arc<dyn InferenceProvider + Send + Sync>,
+    pub provider_policy: ProviderPolicy,
+    pub session_turn_config: SessionTurnConfig,
+    /// The Accepted Agent that speaks for sessions.
+    pub assistant_actor_ref: Id,
+    pub calendars: Arc<dyn CalendarProvider + Send + Sync>,
+    pub predicates: Arc<dyn PredicateProvider + Send + Sync>,
+    /// Explicit expression scopes, unique by `owner_ref`.
+    pub expression_scopes: Vec<ExecutionExpressionScopeInput>,
+    pub calculation_scope_overrides: Vec<ExecutionCalculationScopeOverride>,
+    pub runtime_semantic_values: Vec<RuntimeSemanticValue>,
+}
+
+/// The validated A0.3 runtime held by the state.
+pub(crate) struct A03Runtime {
+    workflow_store: Mutex<SqliteWorkflowStore>,
+    pub(crate) inference_provider: Arc<dyn InferenceProvider + Send + Sync>,
+    pub(crate) provider_policy: ProviderPolicy,
+    pub(crate) session_turn_config: SessionTurnConfig,
+    pub(crate) assistant_actor_ref: Id,
+    pub(crate) calendars: Arc<dyn CalendarProvider + Send + Sync>,
+    pub(crate) predicates: Arc<dyn PredicateProvider + Send + Sync>,
+    pub(crate) expression_scopes: Vec<ExecutionExpressionScopeInput>,
+    pub(crate) calculation_scope_overrides: Vec<ExecutionCalculationScopeOverride>,
+    pub(crate) runtime_semantic_values: Vec<RuntimeSemanticValue>,
+    /// Sessions with turns being processed by this instance, whose prepared turns are not
+    /// reconciled meanwhile (a concurrency guard only; workflow state stays durable).
+    in_flight_sessions: Mutex<BTreeMap<Id, usize>>,
+}
+
+/// Marks a session as having a turn in flight until dropped.
+pub(crate) struct InFlightTurn<'a> {
+    runtime: &'a A03Runtime,
+    session: Id,
+}
+
+impl Drop for InFlightTurn<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut sessions) = self.runtime.in_flight_sessions.lock() {
+            if let Some(count) = sessions.get_mut(&self.session) {
+                *count -= 1;
+                if *count == 0 {
+                    sessions.remove(&self.session);
+                }
+            }
+        }
+    }
+}
+
+impl A03Runtime {
+    /// Marks `session` as having a turn in flight in this instance.
+    pub(crate) fn begin_turn(&self, session: &Id) -> Result<InFlightTurn<'_>, ApiError> {
+        *self
+            .in_flight_sessions
+            .lock()
+            .map_err(|_| ApiError::internal("session_turns"))?
+            .entry(session.clone())
+            .or_default() += 1;
+        Ok(InFlightTurn {
+            runtime: self,
+            session: session.clone(),
+        })
+    }
+
+    /// Whether a turn of `session` is in flight in this instance.
+    pub(crate) fn turn_in_flight(&self, session: &Id) -> Result<bool, ApiError> {
+        Ok(self
+            .in_flight_sessions
+            .lock()
+            .map_err(|_| ApiError::internal("session_turns"))?
+            .contains_key(session))
+    }
+    fn new(config: A03RuntimeConfig) -> Result<A03Runtime, ApiStateError> {
+        let mut owners = BTreeSet::new();
+        for scope in &config.expression_scopes {
+            if !owners.insert(&scope.owner_ref) {
+                return Err(ApiStateError::DuplicateExpressionScope(
+                    scope.owner_ref.clone(),
+                ));
+            }
+        }
+        Ok(A03Runtime {
+            workflow_store: Mutex::new(config.workflow_store),
+            inference_provider: config.inference_provider,
+            provider_policy: config.provider_policy,
+            session_turn_config: config.session_turn_config,
+            assistant_actor_ref: config.assistant_actor_ref,
+            calendars: config.calendars,
+            predicates: config.predicates,
+            expression_scopes: config.expression_scopes,
+            calculation_scope_overrides: config.calculation_scope_overrides,
+            runtime_semantic_values: config.runtime_semantic_values,
+            in_flight_sessions: Mutex::new(BTreeMap::new()),
+        })
+    }
 }
 
 /// The injected API identity. `actor_ref` is provenance only and never returned by `/api/me`.
@@ -110,6 +227,7 @@ struct Inner {
     profile: ValidationProfile,
     profile_hash: Hash,
     rule_pack_hash: Hash,
+    runtime: Option<A03Runtime>,
 }
 
 /// Cheaply cloneable shared state of the pilot HTTP API.
@@ -121,6 +239,7 @@ pub struct ApiState {
 impl ApiState {
     /// Builds the state for one explicit branch. `gate_reports` are the orchestration-supplied
     /// reports; only those matching the loaded head are ever presented as current.
+    /// The A0.3 runtime is absent: every operation that needs it answers 503.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         branch: BranchName,
@@ -130,6 +249,55 @@ impl ApiState {
         clock: Arc<dyn Clock + Send + Sync>,
         gate_reports: Vec<GateReport>,
         profile: ValidationProfile,
+    ) -> Result<ApiState, ApiStateError> {
+        ApiState::build(
+            branch,
+            revision_store,
+            artifact_store,
+            identity,
+            clock,
+            gate_reports,
+            profile,
+            None,
+        )
+    }
+
+    /// Builds the full A0.3 state: the core state plus the injected A0.3 runtime (Hotfix 065).
+    /// A duplicate expression-scope owner is a construction error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_runtime(
+        branch: BranchName,
+        revision_store: SqliteRevisionStore,
+        artifact_store: SqliteArtifactStore,
+        identity: ApiIdentity,
+        clock: Arc<dyn Clock + Send + Sync>,
+        gate_reports: Vec<GateReport>,
+        profile: ValidationProfile,
+        runtime: A03RuntimeConfig,
+    ) -> Result<ApiState, ApiStateError> {
+        let runtime = A03Runtime::new(runtime)?;
+        ApiState::build(
+            branch,
+            revision_store,
+            artifact_store,
+            identity,
+            clock,
+            gate_reports,
+            profile,
+            Some(runtime),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        branch: BranchName,
+        revision_store: SqliteRevisionStore,
+        artifact_store: SqliteArtifactStore,
+        identity: ApiIdentity,
+        clock: Arc<dyn Clock + Send + Sync>,
+        gate_reports: Vec<GateReport>,
+        profile: ValidationProfile,
+        runtime: Option<A03Runtime>,
     ) -> Result<ApiState, ApiStateError> {
         let profile_hash = profile
             .profile_hash()
@@ -150,6 +318,7 @@ impl ApiState {
                 profile,
                 profile_hash,
                 rule_pack_hash,
+                runtime,
             }),
         })
     }
@@ -169,6 +338,36 @@ impl ApiState {
 
     pub(crate) fn now(&self) -> Timestamp {
         self.inner.clock.now()
+    }
+
+    pub(crate) fn clock(&self) -> &(dyn Clock + Send + Sync) {
+        self.inner.clock.as_ref()
+    }
+
+    /// The injected API actor (provenance).
+    pub(crate) fn actor_ref(&self) -> &Id {
+        &self.inner.identity.actor_ref
+    }
+
+    /// The A0.3 runtime, or 503 naming the missing `capability`.
+    pub(crate) fn runtime(&self, capability: &str) -> Result<&A03Runtime, ApiError> {
+        self.inner
+            .runtime
+            .as_ref()
+            .ok_or_else(|| ApiError::runtime_unavailable(capability))
+    }
+
+    /// Runs `f` with the durable workflow store; 503 when the runtime is absent.
+    pub(crate) fn with_workflow_store<R>(
+        &self,
+        f: impl FnOnce(&mut SqliteWorkflowStore) -> R,
+    ) -> Result<R, ApiError> {
+        let runtime = self.runtime("workflow_store")?;
+        let mut store = runtime
+            .workflow_store
+            .lock()
+            .map_err(|_| ApiError::internal("workflow_store"))?;
+        Ok(f(&mut store))
     }
 
     pub(crate) fn with_artifact_store<R>(
@@ -267,45 +466,148 @@ impl ApiState {
         created_at: Timestamp,
         operation_id: &'static str,
     ) -> Result<WriteResult, ApiError> {
-        let report = match intake(&loaded.graph, proposal, &IntakeValidationInput::empty()) {
-            Ok(report) => report,
-            Err(IntakeError::Patch(error)) => {
-                return Err(ApiError::unprocessable(
-                    "E_PATCH_REJECTED",
-                    "the proposed change cannot be applied to the current graph",
-                )
-                .with_details(json!({ "patch_error": error.to_string() })))
-            }
-            Err(_) => return Err(ApiError::internal("intake")),
-        };
+        let report = run_intake(loaded, proposal)?;
         match validate_required_rationale(proposal, &report, None) {
             Ok(()) => {}
             Err(IntakeAcceptanceError::ReasonRequired(_)) => {
-                let codes: Vec<String> =
-                    report.reason_codes.iter().map(|c| c.to_string()).collect();
-                return Err(ApiError::conflict(
-                    "E_INTAKE_REASON_REQUIRED",
-                    "intake requires a recorded reason before this change can be accepted",
-                )
-                .with_details(json!({
-                    "proposal_ref": proposal.id,
-                    "reason_codes": codes,
-                })));
+                return Err(reason_required(proposal, &report))
             }
             Err(_) => return Err(ApiError::internal("intake_rationale")),
         }
+        self.commit_patch_set(
+            loaded,
+            &proposal.patch_set,
+            Vec::new(),
+            created_at,
+            operation_id,
+        )
+    }
+
+    /// The A0.3 write pipeline (Hotfix 065): X1.3 intake of `proposal` against the loaded head,
+    /// then either a plain commit or, for a governed acceptance (`governed`, or any write whose
+    /// intake requires a reason), the proposal-acceptance companion decision committed with the
+    /// unchanged original effect in one CAS. A required but absent reason is 409
+    /// `E_INTAKE_REASON_REQUIRED` with nothing committed or persisted.
+    pub(crate) fn write(
+        &self,
+        loaded: &LoadedRevision,
+        proposal: &Proposal,
+        governed: bool,
+        reason: Option<&str>,
+        created_at: Timestamp,
+        operation_id: &'static str,
+    ) -> Result<WriteResult, ApiError> {
+        let report = run_intake(loaded, proposal)?;
+        self.write_with_report(
+            loaded,
+            proposal,
+            &report,
+            governed,
+            reason,
+            created_at,
+            operation_id,
+        )
+    }
+
+    /// [`ApiState::write`] with an intake report already produced against `loaded`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_with_report(
+        &self,
+        loaded: &LoadedRevision,
+        proposal: &Proposal,
+        report: &IntakeReport,
+        governed: bool,
+        reason: Option<&str>,
+        created_at: Timestamp,
+        operation_id: &'static str,
+    ) -> Result<WriteResult, ApiError> {
+        if report.requires_reason && reason.is_none() {
+            return Err(reason_required(proposal, report));
+        }
+        if !(governed || report.requires_reason) {
+            return self.commit_patch_set(
+                loaded,
+                &proposal.patch_set,
+                Vec::new(),
+                created_at,
+                operation_id,
+            );
+        }
+        // The sorted unique wire strings of the gating report.
+        let reason_codes: BTreeSet<String> =
+            report.reason_codes.iter().map(|c| c.to_string()).collect();
+        let companion = build_acceptance_companion(
+            &loaded.graph,
+            proposal,
+            &AcceptanceInput {
+                reason_codes: reason_codes.into_iter().collect(),
+                decided_by: self.inner.identity.actor_ref.clone(),
+                decided_at: created_at,
+                rationale: reason.map(str::to_owned),
+            },
+        )
+        .map_err(|error| match error {
+            ResolutionError::ResolutionDecisionIdCollision(id) => ApiError::conflict(
+                "E_ID_COLLISION",
+                "the acceptance decision ID is already used",
+            )
+            .with_details(json!({ "id": id })),
+            ResolutionError::InvalidResolutionProposal { reason } => ApiError::unprocessable(
+                "E_PATCH_REJECTED",
+                "the proposed change cannot be applied to the current graph",
+            )
+            .with_details(json!({ "patch_error": reason })),
+            other => ApiError::semantic("ResolutionError", other.to_string()),
+        })?;
+        match validate_required_rationale(proposal, report, Some(&companion.decision_node)) {
+            Ok(()) => {}
+            Err(IntakeAcceptanceError::ReasonRequired(_))
+            | Err(IntakeAcceptanceError::MissingRationale(_)) => {
+                return Err(reason_required(proposal, report))
+            }
+            Err(_) => return Err(ApiError::internal("intake_rationale")),
+        }
+        // The original effect is persisted before the CAS; an orphan after a lost CAS is kept.
+        let stored = self.with_artifact_store(|store| {
+            store.put(
+                ArtifactKind::Patch,
+                "application/json",
+                &companion.original_patch_bytes,
+                created_at,
+            )
+        })?;
+        match stored {
+            Ok(hash) if hash == companion.patch_ref => {}
+            _ => return Err(ApiError::internal("artifact_store")),
+        }
+        let mut decision_refs = introduced_decisions(&proposal.patch_set.patch);
+        decision_refs.insert(companion.decision_ref.clone());
+        self.commit_patch_set(
+            loaded,
+            &companion.patch_set,
+            decision_refs.into_iter().collect(),
+            created_at,
+            operation_id,
+        )
+    }
+
+    /// Commits `patch_set` with the loaded revision as expected head and broadcasts one design
+    /// event. A moved head is 412 built from the reloaded head; nothing is retried or rebased.
+    pub(crate) fn commit_patch_set(
+        &self,
+        loaded: &LoadedRevision,
+        patch_set: &PatchSet,
+        decision_refs: Vec<Id>,
+        created_at: Timestamp,
+        operation_id: &'static str,
+    ) -> Result<WriteResult, ApiError> {
         let meta = RevisionWriteMeta {
-            decision_refs: Vec::new(),
+            decision_refs,
             created_by: self.inner.identity.actor_ref.clone(),
             created_at,
         };
         let committed = self.with_revision_store(|store| {
-            store.commit(
-                &self.inner.branch,
-                &loaded.revision.id,
-                &proposal.patch_set,
-                meta,
-            )
+            store.commit(&self.inner.branch, &loaded.revision.id, patch_set, meta)
         })?;
         let result = match committed {
             Ok(result) => result,
@@ -349,6 +651,51 @@ impl ApiState {
             semantic_hash: result.revision.semantic_hash.to_string(),
             events: vec![event],
         })
+    }
+}
+
+/// X1.3 intake of `proposal` against exactly the loaded head.
+pub(crate) fn run_intake(
+    loaded: &LoadedRevision,
+    proposal: &Proposal,
+) -> Result<IntakeReport, ApiError> {
+    match intake(&loaded.graph, proposal, &IntakeValidationInput::empty()) {
+        Ok(report) => Ok(report),
+        Err(IntakeError::Patch(error)) => Err(ApiError::unprocessable(
+            "E_PATCH_REJECTED",
+            "the proposed change cannot be applied to the current graph",
+        )
+        .with_details(json!({ "patch_error": error.to_string() }))),
+        Err(_) => Err(ApiError::internal("intake")),
+    }
+}
+
+/// 409 `E_INTAKE_REASON_REQUIRED` for `proposal`.
+pub(crate) fn reason_required(proposal: &Proposal, report: &IntakeReport) -> ApiError {
+    let codes: Vec<String> = report.reason_codes.iter().map(|c| c.to_string()).collect();
+    ApiError::conflict(
+        "E_INTAKE_REASON_REQUIRED",
+        "intake requires a recorded reason before this change can be accepted",
+    )
+    .with_details(json!({
+        "proposal_ref": proposal.id,
+        "reason_codes": codes,
+    }))
+}
+
+/// The Accepted ResolutionDecisions a patch introduces (its `AddNode` leaves).
+fn introduced_decisions(patch: &SemanticPatch) -> BTreeSet<Id> {
+    match patch {
+        SemanticPatch::Compound { patches } => {
+            patches.iter().flat_map(introduced_decisions).collect()
+        }
+        SemanticPatch::AddNode { node }
+            if node.status == ElementStatus::Accepted
+                && matches!(node.payload, NodePayload::ResolutionDecision(_)) =>
+        {
+            BTreeSet::from([node.id.clone()])
+        }
+        _ => BTreeSet::new(),
     }
 }
 
@@ -405,6 +752,23 @@ pub(crate) fn parse_wire<T: serde::de::DeserializeOwned>(
 /// Non-empty text without surrounding whitespace or control characters.
 pub(crate) fn is_clean_text(text: &str) -> bool {
     !text.is_empty() && text.trim() == text && !text.chars().any(char::is_control)
+}
+
+/// 400 unless `reason` is clean text (non-empty, exactly trimmed, no control characters); it is
+/// never normalized.
+pub(crate) fn require_clean_reason(reason: &str) -> Result<(), ApiError> {
+    if is_clean_text(reason) {
+        Ok(())
+    } else {
+        Err(ApiError::invalid(
+            "reason must be non-empty, without surrounding whitespace or control characters",
+        ))
+    }
+}
+
+/// A path or body ID; `None` when the text is not an ID.
+pub(crate) fn parse_id(text: &str) -> Option<Id> {
+    text.parse().ok()
 }
 
 /// Parses a JSON request body, mapping any failure to 400.
@@ -541,6 +905,16 @@ pub(crate) fn paginate<T>(
     loaded: &LoadedRevision,
 ) -> Result<(Vec<T>, Option<String>), ApiError> {
     items.sort_by(|a, b| a.0.cmp(&b.0));
+    paginate_ordered(items, request, loaded)
+}
+
+/// A page of `items` in their given (ranked) order: continued exclusively after the cursor's
+/// `after_id` within exactly this sequence, then limited.
+pub(crate) fn paginate_ordered<T>(
+    items: Vec<(String, T)>,
+    request: &PageRequest<'_>,
+    loaded: &LoadedRevision,
+) -> Result<(Vec<T>, Option<String>), ApiError> {
     let limit = match request.query.get("limit") {
         None => None,
         Some(text) => match text.parse::<u64>() {
