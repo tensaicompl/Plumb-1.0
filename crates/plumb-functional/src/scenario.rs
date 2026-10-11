@@ -16,7 +16,10 @@ use std::str::FromStr;
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, CoreError, Hash, Id, StageId, Timestamp};
 use plumb_expr::{map_pilot_value_type, Ast, Literal as ExprLiteral, Symbol, Ty, Unit};
-use plumb_inference::{InferenceArtifact, InferenceError, InferenceRequest, ProviderPolicy};
+use plumb_inference::{
+    InferenceArtifact, InferenceError, InferenceRequest, InferenceRequestMaterial, ProviderError,
+    ProviderPolicy,
+};
 use plumb_patch::{
     apply_patch, AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
@@ -119,6 +122,8 @@ pub enum ScenarioError {
     NoInferenceSlots { scenario_ref: Id },
     #[error("inference request: {0}")]
     InferenceConstruction(#[from] InferenceError),
+    #[error("inference material: {0}")]
+    InferenceMaterial(#[from] ProviderError),
     #[error("scenario request is stale or does not match its skeleton: {reason}")]
     StaleScenarioRequest { reason: String },
     #[error("several inferences for scenario {scenario_ref}")]
@@ -2360,6 +2365,20 @@ impl ScenarioInferenceContext {
 pub struct ScenarioRequest {
     pub request: InferenceRequest,
     pub context: ScenarioInferenceContext,
+}
+
+impl ScenarioRequest {
+    /// The exact acquisition material of this request (Hotfix 066): the RFC 8785 canonical
+    /// context and the committed prompt and schema bytes, bound to the request. Pure: no files,
+    /// environment, clock or network.
+    pub fn inference_material(&self) -> Result<InferenceRequestMaterial, ScenarioError> {
+        Ok(InferenceRequestMaterial::new(
+            &self.request,
+            to_canonical_json(&self.context)?,
+            PROMPT_TEMPLATE.to_vec(),
+            SCHEMA_SOURCE.as_bytes().to_vec(),
+        )?)
+    }
 }
 
 /// An already-acquired scenario-values artifact for one request, with the caller's provenance.

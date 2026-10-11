@@ -60,6 +60,42 @@ mod scenario_contract {
     const GOLDEN_REQUEST_ID: &str =
         "sha256:bbeb93f2a3309b8265270520efddbfb68c1b0cfd1efe421a99d5b26fdf6e6cf5";
 
+    /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
+    /// built from the committed prompt and schema bytes and the RFC 8785 context, and
+    /// deterministic. Request, prompt, schema and context identities do not drift.
+    macro_rules! assert_inference_material {
+        ($owner:expr) => {{
+            let owner = &$owner;
+            let inner = &owner.request;
+            assert_eq!(inner.id.as_str(), GOLDEN_REQUEST_ID);
+            assert_eq!(inner.prompt_template_hash.as_str(), PROMPT_HASH);
+            assert_eq!(inner.schema_hash.as_str(), SCHEMA_HASH);
+            assert_eq!(inner.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
+            let material = owner.inference_material().unwrap();
+            assert_eq!(material.request_hash, inner.id);
+            assert_eq!(
+                Hash::content_sha256(&material.context_json),
+                inner.context_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.prompt_template),
+                inner.prompt_template_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.schema_json),
+                inner.schema_hash
+            );
+            assert_eq!(
+                material.context_json,
+                to_canonical_json(&owner.context).unwrap()
+            );
+            assert_eq!(material.prompt_template, PROMPT);
+            assert_eq!(material.schema_json, SCHEMA.as_bytes());
+            material.validate_for(inner).unwrap();
+            assert_eq!(owner.inference_material().unwrap(), material);
+        }};
+    }
+
     const PROJECT: &str = "project:pilot";
     const PROFILE: &str = "profile:plumb-software-2026.1";
     const AT: &str = "2026-01-01T00:00:00.000000000Z";
@@ -1776,6 +1812,7 @@ mod scenario_contract {
         assert!(request.request.evidence_refs.is_empty());
         assert_eq!(request.request.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
         assert_eq!(request.request.id.as_str(), GOLDEN_REQUEST_ID);
+        assert_inference_material!(request);
         assert_eq!(
             build_scenario_request(&g, &inputs, &skeleton.scenario_ref, provider("mock")).unwrap(),
             request

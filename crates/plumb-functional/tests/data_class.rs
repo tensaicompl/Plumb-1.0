@@ -52,6 +52,42 @@ mod data_class_contract {
     const GOLDEN_REQUEST_ID: &str =
         "sha256:1b922bbfa7c58289235edbc05b7b2d6ded228a0d9bca706e5a8d1b0f7ef76113";
 
+    /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
+    /// built from the committed prompt and schema bytes and the RFC 8785 context, and
+    /// deterministic. Request, prompt, schema and context identities do not drift.
+    macro_rules! assert_inference_material {
+        ($owner:expr) => {{
+            let owner = &$owner;
+            let inner = &owner.request;
+            assert_eq!(inner.id.as_str(), GOLDEN_REQUEST_ID);
+            assert_eq!(inner.prompt_template_hash.as_str(), PROMPT_HASH);
+            assert_eq!(inner.schema_hash.as_str(), SCHEMA_HASH);
+            assert_eq!(inner.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
+            let material = owner.inference_material().unwrap();
+            assert_eq!(material.request_hash, inner.id);
+            assert_eq!(
+                Hash::content_sha256(&material.context_json),
+                inner.context_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.prompt_template),
+                inner.prompt_template_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.schema_json),
+                inner.schema_hash
+            );
+            assert_eq!(
+                material.context_json,
+                to_canonical_json(&owner.context).unwrap()
+            );
+            assert_eq!(material.prompt_template, PROMPT);
+            assert_eq!(material.schema_json, SCHEMA.as_bytes());
+            material.validate_for(inner).unwrap();
+            assert_eq!(owner.inference_material().unwrap(), material);
+        }};
+    }
+
     const PROJECT: &str = "project:pilot";
     const PROFILE: &str = "profile:plumb-software-2026.1";
     const AT: &str = "2026-01-01T00:00:00.000000000Z";
@@ -534,6 +570,7 @@ mod data_class_contract {
         let g = graph_of(&rows, false);
         let r = request(&g);
         assert_eq!(r.request.id.as_str(), GOLDEN_REQUEST_ID);
+        assert_inference_material!(r);
         assert_eq!(r.request.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
         assert_eq!(
             r.context.content_hash().unwrap().as_str(),

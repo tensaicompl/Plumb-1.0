@@ -54,6 +54,42 @@ mod domain_contract {
         "sha256:b3ebb84070c0a58933d442b4ac883d447aa01c1d561fac25cbde9a93268e9ae6";
     const GOLDEN_REQUEST_ID: &str =
         "sha256:49b49ee52b573ce421d6b342b684f02c614ff9e4aa87e677acb96d62c39e22af";
+
+    /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
+    /// built from the committed prompt and schema bytes and the RFC 8785 context, and
+    /// deterministic. Request, prompt, schema and context identities do not drift.
+    macro_rules! assert_inference_material {
+        ($owner:expr) => {{
+            let owner = &$owner;
+            let inner = &owner.request;
+            assert_eq!(inner.id.as_str(), GOLDEN_REQUEST_ID);
+            assert_eq!(inner.prompt_template_hash.as_str(), PROMPT_HASH);
+            assert_eq!(inner.schema_hash.as_str(), SCHEMA_HASH);
+            assert_eq!(inner.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
+            let material = owner.inference_material().unwrap();
+            assert_eq!(material.request_hash, inner.id);
+            assert_eq!(
+                Hash::content_sha256(&material.context_json),
+                inner.context_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.prompt_template),
+                inner.prompt_template_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.schema_json),
+                inner.schema_hash
+            );
+            assert_eq!(
+                material.context_json,
+                to_canonical_json(&owner.context).unwrap()
+            );
+            assert_eq!(material.prompt_template, PROMPT);
+            assert_eq!(material.schema_json, SCHEMA.as_bytes());
+            material.validate_for(inner).unwrap();
+            assert_eq!(owner.inference_material().unwrap(), material);
+        }};
+    }
     const EMPLOYEE_ENTITY: &str = "entity:c6ced1ff435f765a";
     const LEAVE_REQUEST_ENTITY: &str = "entity:148afe265d887d52";
     const START_DATE_ATTRIBUTE: &str = "attr:c2b91d3a99ff7cc5";
@@ -669,6 +705,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
         );
         let r = request(&g);
         assert_eq!(r.request.id.as_str(), GOLDEN_REQUEST_ID);
+        assert_inference_material!(r);
         assert_eq!(r.request.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
         assert_eq!(
             r.context.content_hash().unwrap().as_str(),

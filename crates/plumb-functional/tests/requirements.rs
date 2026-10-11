@@ -46,6 +46,42 @@ mod requirements_contract {
         "sha256:fbe4e912ae613c1ec09b4f6c5f63c275a9bd88a1cdb99d5ba0bb9f7d282e9978";
     const GOLDEN_REQUEST_ID: &str =
         "sha256:4cb0493b723ecf5d671cbaccaef356237f5e15d4268c8204a93742bbb574cc52";
+
+    /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
+    /// built from the committed prompt and schema bytes and the RFC 8785 context, and
+    /// deterministic. Request, prompt, schema and context identities do not drift.
+    macro_rules! assert_inference_material {
+        ($owner:expr) => {{
+            let owner = &$owner;
+            let inner = &owner.request;
+            assert_eq!(inner.id.as_str(), GOLDEN_REQUEST_ID);
+            assert_eq!(inner.prompt_template_hash.as_str(), PROMPT_HASH);
+            assert_eq!(inner.schema_hash.as_str(), SCHEMA_HASH);
+            assert_eq!(inner.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
+            let material = owner.inference_material().unwrap();
+            assert_eq!(material.request_hash, inner.id);
+            assert_eq!(
+                Hash::content_sha256(&material.context_json),
+                inner.context_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.prompt_template),
+                inner.prompt_template_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.schema_json),
+                inner.schema_hash
+            );
+            assert_eq!(
+                material.context_json,
+                to_canonical_json(&owner.context).unwrap()
+            );
+            assert_eq!(material.prompt_template, PROMPT);
+            assert_eq!(material.schema_json, SCHEMA.as_bytes());
+            material.validate_for(inner).unwrap();
+            assert_eq!(owner.inference_material().unwrap(), material);
+        }};
+    }
     const GOLDEN_REQ_ID: &str = "req:7a9cbb41f79dc0a6";
     const GOLDEN_CONSTRAINT_ID: &str = "constraint:db381bfb88247eed";
 
@@ -490,6 +526,7 @@ mod requirements_contract {
         assert_eq!(inner.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
         assert_eq!(inner.provider_policy, policy("mock"));
         assert_eq!(inner.id.as_str(), GOLDEN_REQUEST_ID);
+        assert_inference_material!(request);
     }
 
     #[test]
@@ -1083,7 +1120,9 @@ mod requirements_contract {
         provider
             .register(request.request.id.clone(), execution(&request.request, out))
             .unwrap();
-        let executed = provider.execute(&request.request).unwrap();
+        let executed = provider
+            .execute(&request.request, &request.inference_material().unwrap())
+            .unwrap();
         let result = compile_with(
             &graph,
             &candidates,
@@ -1536,7 +1575,9 @@ mod requirements_contract {
         provider
             .register(request.request.id.clone(), execution(&request.request, out))
             .unwrap();
-        let executed = provider.execute(&request.request).unwrap();
+        let executed = provider
+            .execute(&request.request, &request.inference_material().unwrap())
+            .unwrap();
         let result = compile_with(
             &graph,
             &candidates,

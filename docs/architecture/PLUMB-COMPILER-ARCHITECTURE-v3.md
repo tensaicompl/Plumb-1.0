@@ -79,7 +79,7 @@ Output (`StagePlan`, §28):
 
 - affected semantic scope
 - deterministic planned artifacts available immediately
-- required `InferenceRequest`s
+- required `InferenceRequest`s, each paired with its exact deterministic `InferenceRequestMaterial` (`PlannedInferenceRequest`, §28, Hotfix 066)
 - required `ExternalValidationRequest`s
 
 Acquisition/reuse orchestration may satisfy those deterministic request identities from an existing content-addressed store instead of re-executing them.
@@ -99,6 +99,8 @@ May:
 It **cannot mutate accepted PSG state**.
 
 Every result is persisted as a content-addressed artifact.
+
+For inference (Hotfix 066), acquisition calls `provider.execute(request, material)` with the exact request and material that PLAN produced together. Every provider validates the request and the binding (material `request_hash` equals `request.id`; the context, prompt and schema bytes hash to `context_hash`, `prompt_template_hash` and `schema_hash`; the context is RFC 8785 canonical; the prompt is UTF-8; the schema compiles) before any work or network. The validated provider result is persisted (`persist_inference_bundle`), and EVALUATE receives only the acquired `ArtifactInput`s, never the material.
 
 ### 3.3 EVALUATE
 
@@ -1611,7 +1613,13 @@ The stored artifact includes provider/model so enterprise customers can audit wh
 
 ### Live provider request material (X1.1, Hotfix 057)
 
-`InferenceProvider::execute` still takes only an `InferenceRequest` and returns a `ProviderExecution` (the inference artifact plus the exact raw response bytes and media type). Because the request carries only content hashes, live providers are provisioned with immutable, hash-bound request material supplied in memory by orchestration: the canonical context bytes, the exact prompt-template bytes and the exact schema-source bytes, each verified against the request before any network call. The provider has no graph, artifact-store or filesystem acquisition capability and reads no environment. Vendor adapters validate output locally against the exact Plumb schema and never translate it into a vendor-specific constrained-output subset unless native equivalence has been separately proven; unparseable, truncated, refused or schema-invalid output is a typed failure, never repaired, and retries belong to orchestration.
+Hotfix 066 supersedes the provisioning model of this paragraph; see the following section. As frozen by Hotfix 057: `InferenceProvider::execute` still takes only an `InferenceRequest` and returns a `ProviderExecution` (the inference artifact plus the exact raw response bytes and media type). Because the request carries only content hashes, live providers are provisioned with immutable, hash-bound request material supplied in memory by orchestration: the canonical context bytes, the exact prompt-template bytes and the exact schema-source bytes, each verified against the request before any network call. The provider has no graph, artifact-store or filesystem acquisition capability and reads no environment. Vendor adapters validate output locally against the exact Plumb schema and never translate it into a vendor-specific constrained-output subset unless native equivalence has been separately proven; unparseable, truncated, refused or schema-invalid output is a typed failure, never repaired, and retries belong to orchestration.
+
+### Material-bound inference acquisition (Hotfix 066)
+
+`InferenceProvider::execute(&self, request: &InferenceRequest, material: &InferenceRequestMaterial)` receives the request and its exact material on every call. `InferenceRequest` identifies an inference request and remains the only request identity; `InferenceRequestMaterial { request_hash, context_json, prompt_template, schema_json }` contains the exact deterministic bytes needed to execute it. Material is not accepted PSG state, cannot mutate the graph and is not a second request identity: its `request_hash` is the request ID. `InferenceRequestMaterial::new(&request, context_json, prompt_template, schema_json)` returns only material whose binding validates, and its serde form is strict (unknown fields rejected). Every provider validates the request and the binding before any work: `NullProvider` then returns `ProviderDisabled`; `MockProvider` replays fixtures keyed by request ID; `AnthropicProvider` owns only its connection configuration (`new(api_key)`, `with_endpoint(api_key, endpoint)`), holds no material registry or global state, and one instance executes any number of distinct requests with their own material, rejecting a mismatch before any HTTP. `ProviderExecution` has a strict serde form that rejects unknown fields and revalidates on decode, including the raw-response hash, so recorded executions replay exactly.
+
+Exactly 11 production request owners build inference requests for compiler stages and each exposes a pure `inference_material()`: `SegmentationRequest`, `RequirementClassificationRequest`, `VocabularyRequest`, `EarsRequest`, `DomainRequest`, `LifecycleRequest`, `DataClassRequest`, `CalculationRequest`, `OperationRequest`, `ProcessRequest` and `ScenarioRequest`. The material is the RFC 8785 canonical JSON of the stored context and the owning module's committed prompt and schema bytes, built through `InferenceRequestMaterial::new`; it reads no file, environment, working directory, clock or network at run time, and request, prompt, schema and context hashes are unchanged. For segmentation, `build_segmentation_request` produces the `SegmentationRequest`, `inference_material()` its material, `provider.execute(&request.request, &material)` the execution, and `evaluate_segmentation` consumes only the acquired artifact. The X1.4 session `SessionTurnPlan` carries its request and material together (built with `InferenceRequestMaterial::new`), and the A0.3 session-turn route executes exactly that pair from the same plan, off the async executor and outside every store lock; this repairs A0.3, where the provider previously received only the request.
 
 ---
 
@@ -1697,6 +1705,8 @@ Hotfix 065 is the contract freeze that the A0.2 section required before A0.3. It
 ### Stage orchestration ownership (A0.4, Hotfix 065)
 
 `POST /api/stages/{stage}/run` and `GET /api/jobs/{id}` belong to A0.4 together with the CLI. A0.4 must not start before a separate stage-orchestration contract freeze defines the stage-name mapping to concrete application services, concrete stage planning and evaluation, provider acquisition, inference artifact persistence, job persistence and lookup, progress transitions, scope, proposal production, the automatic and human acceptance boundaries, gate report production, the final CAS, X1.5 stale-result protection, the run and job response semantics and the failure and retry policy. Hotfix 065 freezes only their unchanged wire DTOs.
+
+Hotfix 066 repaired only the inference material-acquisition boundary that such orchestration will use (PLAN produces request and material, ACQUIRE calls `provider.execute(request, material)`, the provider validates the binding, the validated result is persisted, EVALUATE receives acquired artifacts only). It freezes no orchestration semantics: A0.4 remains pending and blocked on the mandatory Hotfix 067 stage-orchestration freeze, and must not begin directly after Hotfix 066.
 
 ---
 
@@ -2026,8 +2036,13 @@ pub struct ArtifactSet {
 pub struct StagePlan {
     pub scope: Scope,
     pub deterministic_artifacts: Vec<PlannedArtifact>,
-    pub inference_requests: Vec<InferenceRequest>,
+    pub inference_requests: Vec<PlannedInferenceRequest>,
     pub external_validation_requests: Vec<ExternalValidationRequest>,
+}
+
+pub struct PlannedInferenceRequest {
+    pub request: InferenceRequest,
+    pub material: InferenceRequestMaterial,
 }
 
 pub struct StageEvaluation {
@@ -2045,8 +2060,9 @@ Rules:
 - **ExternalValidationArtifact** rejects unknown fields; its hashes are generic, `validated_output_hash` is the content hash of `validated_output`, and against its request `request_hash == request.id` and `validator == request.validator`. It is the replayable validator result supplied to EVALUATE. `artifact_hash()` is the generic SHA-256 of the RFC 8785 canonical JSON of the complete artifact, equal to its artifact-store content hash when persisted as `external-validation` / `application/json`.
 - **Ownership.** `ExternalValidationRequest` and `ExternalValidationArtifact` are defined once, in `plumb-validation`, with `ExternalValidationError { InvalidRequest(String), InvalidArtifact(String) }`; `plumb-compiler` re-exports both types under its own public names and maps the error into `CompilerError::InvalidExternalValidationRequest` / `InvalidExternalValidationArtifact`. Wire forms, request IDs and validation rules are those stated above.
 - **ArtifactInput** is an artifact without `created_at`: its generic hash equals the SHA-256 of its bytes and its media type is non-empty without control characters. Converting a stored artifact drops the timestamp, so acquisition time is unobservable to evaluation.
-- **ArtifactSet** lists are each sorted by hash, and hashes are unique across the set. Inference inputs are `validated-inference` / `application/json`; validation inputs are `external-validation` / `application/json`. Against its `StagePlan` it matches one-to-one: one identical deterministic input per planned artifact, one canonical `InferenceArtifact` input valid for each inference request, one canonical `ExternalValidationArtifact` input valid for each validation request, and nothing extra.
-- **StagePlan** lists are ordered by content hash, request ID and request ID respectively, without duplicates; every inference request carries the stage's `StageId`. It contains no timestamps, provider clients or store handles.
+- **ArtifactSet** lists are each sorted by hash, and hashes are unique across the set. Inference inputs are `validated-inference` / `application/json`; validation inputs are `external-validation` / `application/json`. Against its `StagePlan` it matches one-to-one: one identical deterministic input per planned artifact, one canonical `InferenceArtifact` input valid for each planned inference request, one canonical `ExternalValidationArtifact` input valid for each validation request, and nothing extra.
+- **PlannedInferenceRequest** (Hotfix 066) pairs a request with its exact material; construction and decoding (unknown fields rejected) require a valid request and a material binding that validates against it.
+- **StagePlan** lists are ordered by content hash, request ID and request ID respectively, without duplicates; every planned inference request carries the stage's `StageId`. It contains no timestamps, provider clients or store handles. `ArtifactSet` matching uses each planned request; the material is never passed to EVALUATE.
 - **StageEvaluation** contains only the optional derivation `PatchSet` and the proposals, sorted by ID and unique. The derivation patch set and every proposal patch set have `base_semantic_hash == ctx.input_semantic_hash`, every proposal has the stage's `StageId` and validates. Evaluation never applies or commits its patches.
 - **CompilerError** distinguishes contract failures (`Core`, `Artifact`, `InvalidContext`, `InvalidScope`, `InvalidPlannedArtifact`, `InvalidExternalValidationRequest`, `InvalidExternalValidationArtifact`, `InvalidArtifactInput`, `InvalidArtifactSet`, `InvalidStagePlan`, `InvalidStageEvaluation`, `InvalidCompileRun`) from an explicit `StageFailure { stage, code, message }`.
 

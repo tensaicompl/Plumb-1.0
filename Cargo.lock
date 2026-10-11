@@ -1598,9 +1598,11 @@ dependencies = [
  "plumb-store",
  "plumb-validation",
  "predicates",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "time",
  "tracing",
  "tracing-subscriber",
 ]

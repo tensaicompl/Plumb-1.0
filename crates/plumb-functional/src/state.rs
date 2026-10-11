@@ -16,7 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, CoreError, Hash, Id, StageId, Timestamp};
-use plumb_inference::{InferenceArtifact, InferenceError, InferenceRequest, ProviderPolicy};
+use plumb_inference::{
+    InferenceArtifact, InferenceError, InferenceRequest, InferenceRequestMaterial, ProviderError,
+    ProviderPolicy,
+};
 use plumb_patch::{
     apply_patch, AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
@@ -69,6 +72,8 @@ pub enum LifecycleError {
     InvalidInput { reason: String },
     #[error("inference request: {0}")]
     InferenceConstruction(#[from] InferenceError),
+    #[error("inference material: {0}")]
+    InferenceMaterial(#[from] ProviderError),
     #[error("invalid lifecycle inference artifact: {reason}")]
     InvalidInferenceArtifact { reason: String },
     #[error("lifecycle schema does not compile: {reason}")]
@@ -283,6 +288,18 @@ pub struct LifecycleRequest {
 }
 
 impl LifecycleRequest {
+    /// The exact acquisition material of this request (Hotfix 066): the RFC 8785 canonical
+    /// context and the committed prompt and schema bytes, bound to the request. Pure: no files,
+    /// environment, clock or network.
+    pub fn inference_material(&self) -> Result<InferenceRequestMaterial, LifecycleError> {
+        Ok(InferenceRequestMaterial::new(
+            &self.request,
+            to_canonical_json(&self.context)?,
+            PROMPT_TEMPLATE.to_vec(),
+            SCHEMA_SOURCE.as_bytes().to_vec(),
+        )?)
+    }
+
     /// The request is a valid S2 lifecycle_extraction request bound to this context, the
     /// committed prompt and schema, with exactly the context IDs as input refs. The evidence
     /// refs depend on the graph and are checked by [`analyze_lifecycle`].

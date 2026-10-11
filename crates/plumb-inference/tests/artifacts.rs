@@ -499,51 +499,79 @@ fn provider_execution_contract() {
 
 // ---------------------------------------------------------------------------- providers
 
+/// A request whose hashes bind real material (Hotfix 066), with that material.
+fn bound(provider: &str, task_kind: &str) -> (InferenceRequest, InferenceRequestMaterial) {
+    let context = to_canonical_json(&json!({"task_kind": task_kind})).unwrap();
+    let prompt = b"Extract the requirements.\n".to_vec();
+    let schema =
+        br#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"}"#.to_vec();
+    let r = InferenceRequest::new(
+        StageId::S2,
+        task_kind.to_owned(),
+        vec![id("src:0123456789abcdef"), id("req:HR-001")],
+        vec![id("evd:0123456789abcdef")],
+        Hash::content_sha256(&context),
+        Hash::content_sha256(&prompt),
+        Hash::content_sha256(&schema),
+        policy(provider),
+    )
+    .unwrap();
+    let material = InferenceRequestMaterial::new(&r, context, prompt, schema).unwrap();
+    (r, material)
+}
+
 #[test]
 fn null_provider_is_always_disabled() {
     for provider in ["anthropic", "null", "mock", "local"] {
-        let r = rebuilt(|r| r.provider_policy = policy(provider));
+        let (r, material) = bound(provider, "extract-requirements");
         assert!(matches!(
-            NullProvider.execute(&r),
+            NullProvider.execute(&r, &material),
             Err(ProviderError::ProviderDisabled)
         ));
     }
-    // Even an invalid request is not inspected.
-    let mut r = request();
+    // An invalid request or a foreign material is rejected before the disabled answer.
+    let (mut r, material) = bound("anthropic", "extract-requirements");
     r.task_kind = String::new();
     assert!(matches!(
-        NullProvider.execute(&r),
-        Err(ProviderError::ProviderDisabled)
+        NullProvider.execute(&r, &material),
+        Err(ProviderError::InvalidRequest(_))
+    ));
+    let (r, _) = bound("anthropic", "extract-requirements");
+    let (_, foreign) = bound("anthropic", "extract-terms");
+    assert!(matches!(
+        NullProvider.execute(&r, &foreign),
+        Err(ProviderError::MaterialRequestMismatch { .. })
     ));
 }
 
 #[test]
 fn mock_provider_replays_exact_fixtures() {
-    let r = request();
+    assert_eq!(
+        to_canonical_json(&execution(&request()).artifact).unwrap(),
+        GOLDEN_ARTIFACT_JSON.as_bytes()
+    );
+    let (r, material) = bound("anthropic", "extract-requirements");
     let fixture = execution(&r);
     let mock = MockProvider::with_fixtures([(r.id.clone(), fixture.clone())]).unwrap();
     // The request names anthropic; the replay keeps the recorded provider and model.
     assert_eq!(r.provider_policy.provider, "anthropic");
-    let first = mock.execute(&r).unwrap();
+    let first = mock.execute(&r, &material).unwrap();
     assert_eq!(first, fixture);
     assert_eq!(first.artifact.provider, "anthropic");
     assert_eq!(first.artifact.model, "claude-opus-5-5");
     assert_eq!(first.raw_response, RAW_RESPONSE);
-    assert_eq!(
-        to_canonical_json(&first.artifact).unwrap(),
-        GOLDEN_ARTIFACT_JSON.as_bytes()
-    );
-    assert_eq!(mock.execute(&r).unwrap(), first);
+    assert_eq!(mock.execute(&r, &material).unwrap(), first);
 
-    let other = rebuilt(|r| r.task_kind = "extract-terms".to_owned());
+    // Another request with its own material proves the fixture lookup, not a mismatch.
+    let (other, other_material) = bound("anthropic", "extract-terms");
     assert!(matches!(
-        mock.execute(&other),
+        mock.execute(&other, &other_material),
         Err(ProviderError::FixtureNotFound(h)) if h == other.id
     ));
-    let mut invalid = request();
+    let mut invalid = r.clone();
     invalid.task_kind = "changed".to_owned();
     assert!(matches!(
-        mock.execute(&invalid),
+        mock.execute(&invalid, &material),
         Err(ProviderError::InvalidRequest(_))
     ));
 }
@@ -617,18 +645,16 @@ fn inference_bundle_persists_exact_artifacts_and_replays() {
     );
     let persisted_request: InferenceRequest =
         serde_json::from_slice(&request_artifact.bytes).unwrap();
-    let mock = MockProvider::with_fixtures([(
-        persisted_request.id.clone(),
-        ProviderExecution {
-            artifact: replayed.clone(),
-            raw_response_media_type: raw.media_type.clone(),
-            raw_response: raw.bytes.clone(),
-        },
-    )])
-    .unwrap();
-    let again = mock.execute(&persisted_request).unwrap();
-    assert_eq!(again.artifact, e.artifact);
-    assert_eq!(again.artifact.validated_output, output());
+    let again = ProviderExecution {
+        artifact: replayed.clone(),
+        raw_response_media_type: raw.media_type.clone(),
+        raw_response: raw.bytes.clone(),
+    };
+    again.validate_for(&persisted_request).unwrap();
+    let decoded: ProviderExecution =
+        serde_json::from_str(&serde_json::to_string(&again).unwrap()).unwrap();
+    assert_eq!(decoded.artifact, e.artifact);
+    assert_eq!(decoded.artifact.validated_output, output());
 
     // Retrying the same bundle is idempotent.
     assert_eq!(

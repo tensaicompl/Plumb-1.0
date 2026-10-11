@@ -322,13 +322,17 @@ async fn create_session_turn(
             )
         })?
         .map_err(|e| ApiError::semantic(&error_name(&e), e.to_string()))?;
-    // The provider runs off the async executor and outside every store lock.
+    // The provider runs off the async executor and outside every store lock, with the request
+    // and the exact material of this same plan (Hotfix 066).
     let provider = runtime.inference_provider.clone();
     let inference_request = plan.request.clone();
-    let execution = tokio::task::spawn_blocking(move || provider.execute(&inference_request))
-        .await
-        .map_err(|_| ApiError::internal("inference_task"))?
-        .map_err(|e| inference_failed(&e))?;
+    let inference_material = plan.material.clone();
+    let execution = tokio::task::spawn_blocking(move || {
+        provider.execute(&inference_request, &inference_material)
+    })
+    .await
+    .map_err(|_| ApiError::internal("inference_task"))?
+    .map_err(|e| inference_failed(&e))?;
     let persisted = state
         .with_artifact_store(|store| {
             persist_inference_bundle(store, &plan.request, &execution, created_at)

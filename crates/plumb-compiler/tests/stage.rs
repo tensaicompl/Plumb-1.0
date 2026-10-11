@@ -8,7 +8,9 @@ use std::collections::BTreeSet;
 use plumb_artifacts::{Artifact, ArtifactKind, ArtifactStore, SqliteArtifactStore};
 use plumb_compiler::*;
 use plumb_core::{to_canonical_json, CanonicalJson, Hash, HashKind, Id, StageId, Timestamp};
-use plumb_inference::{InferenceArtifact, InferenceRequest, ProviderPolicy};
+use plumb_inference::{
+    InferenceArtifact, InferenceRequest, InferenceRequestMaterial, ProviderPolicy,
+};
 use plumb_patch::{
     AcceptancePolicy, ElementPrecondition, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
@@ -21,6 +23,10 @@ const T1: &str = "2026-09-29T12:00:00.000000000Z";
 const T2: &str = "2026-09-30T12:00:00.000000000Z";
 const H2: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 const H3: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+/// The fixture stage's exact prompt and schema bytes (Hotfix 066 material).
+const PROMPT: &[u8] = b"Select the requirements to accept.\n";
+const SCHEMA: &[u8] =
+    br#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"}"#;
 const PROJECT: &str = "project:leave-management";
 const PROFILE: &str = "profile:plumb-software-2026.1";
 
@@ -32,7 +38,7 @@ const GOLDEN_EVR_ID: &str =
 const GOLDEN_EVA_JSON: &str = r#"{"request_hash":"sha256:2dbd3ea3b1c8233a76edf9e42cccc62fa2b46c79eacd47695d2d2a20075e9832","validated_output":{"ok":true},"validated_output_hash":"sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93","validator":"req-lint"}"#;
 const GOLDEN_EVA_HASH: &str =
     "sha256:614f8e1d2c377bf6b4a4eb92d28604de49308a806b7a63890fc8a3bc492f4756";
-const GOLDEN_PLAN_JSON: &str = r#"{"deterministic_artifacts":[{"bytes":[114,101,113,58,72,82,45,48,48,49,10,114,101,113,58,72,82,45,48,48,50],"kind":"projection","media_type":"text/plain"}],"external_validation_requests":[{"config":{},"id":"sha256:a9c573dbd7e8f1e520ffc4495127cee9b11ac1980c881667eb7714738e5504e4","input_artifact_refs":["sha256:5e3f2173ac22d5887e5a98e35497943052ce23aacc841b941c576eaf6108d2dc"],"task_kind":"lint","validator":"req-lint"}],"inference_requests":[{"context_hash":"sha256:5359f0a81f1e876e87ffe35cffc12b819a044a962a9c542f5c975ca9c0e72e19","evidence_refs":[],"id":"sha256:be95c0d694a87c8ec11d63ec39ae3b9ff4703d61169d970cf2bf89023b5a9ac8","input_refs":["req:HR-001","req:HR-002"],"prompt_template_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","provider_policy":{"config":{},"provider":"anthropic"},"schema_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","stage":"S1","task_kind":"extract-requirements"}],"scope":{"kind":"elements","refs":["req:HR-001","req:HR-002"]}}"#;
+const GOLDEN_PLAN_JSON: &str = r#"{"deterministic_artifacts":[{"bytes":[114,101,113,58,72,82,45,48,48,49,10,114,101,113,58,72,82,45,48,48,50],"kind":"projection","media_type":"text/plain"}],"external_validation_requests":[{"config":{},"id":"sha256:a9c573dbd7e8f1e520ffc4495127cee9b11ac1980c881667eb7714738e5504e4","input_artifact_refs":["sha256:5e3f2173ac22d5887e5a98e35497943052ce23aacc841b941c576eaf6108d2dc"],"task_kind":"lint","validator":"req-lint"}],"inference_requests":[{"material":{"context_json":[123,34,109,111,100,101,34,58,34,115,116,114,105,99,116,34,125],"prompt_template":[83,101,108,101,99,116,32,116,104,101,32,114,101,113,117,105,114,101,109,101,110,116,115,32,116,111,32,97,99,99,101,112,116,46,10],"request_hash":"sha256:3ac826289fbc088cb535692a0d1280e9b70ec35e485e9a2a95144c47ad8cf10f","schema_json":[123,34,36,115,99,104,101,109,97,34,58,34,104,116,116,112,115,58,47,47,106,115,111,110,45,115,99,104,101,109,97,46,111,114,103,47,100,114,97,102,116,47,50,48,50,48,45,49,50,47,115,99,104,101,109,97,34,44,34,116,121,112,101,34,58,34,111,98,106,101,99,116,34,125]},"request":{"context_hash":"sha256:5359f0a81f1e876e87ffe35cffc12b819a044a962a9c542f5c975ca9c0e72e19","evidence_refs":[],"id":"sha256:3ac826289fbc088cb535692a0d1280e9b70ec35e485e9a2a95144c47ad8cf10f","input_refs":["req:HR-001","req:HR-002"],"prompt_template_hash":"sha256:cbd21353b5ca849bc8c53df8df6913f64da22934875d11d049c03052f92df3e7","provider_policy":{"config":{},"provider":"anthropic"},"schema_hash":"sha256:ccb5a9d66e068ea8f4e205788589675a48e9e3754a840d8ac10120d14238e914","stage":"S1","task_kind":"extract-requirements"}}],"scope":{"kind":"elements","refs":["req:HR-001","req:HR-002"]}}"#;
 const GOLDEN_EVALUATION_JSON: &str = r#"{"derivation_patch_set":{"base_semantic_hash":"psg:sha256:f0626043428dce3e421bf2d11665e55153c7aa9fc440b3e9bffc6feff72f5a19","patch":{"node":{"audit":{"created_at":"2026-09-29T12:00:00.000000000Z","created_by":"actor:analyst","updated_at":null,"updated_by":null},"derivations":[],"evidence":[],"extensions":{},"id":"req:derived-1","payload":{"data":{"level":"system","modality":"shall","owner_refs":null,"priority":null,"rationale":null,"requirement_kind":"functional","source_identifier":null,"stakeholder_refs":null,"statement":"The system shall list pending leave requests.","title":null,"verification_method":null},"type":"Requirement"},"revision":1,"standards":[],"status":"Proposed","tags":[]},"op":"AddNode"}},"proposals":[{"acceptance_policy":"HUMAN_CONFIRM","confidence":0.5,"derivation_refs":[],"evidence_refs":[],"id":"prop:0d5d15377e36d268","materiality":"semantic","patch_set":{"base_semantic_hash":"psg:sha256:f0626043428dce3e421bf2d11665e55153c7aa9fc440b3e9bffc6feff72f5a19","patch":{"from":"Proposed","op":"SetStatus","target":{"expected_hash":"sha256:90f45d530c518d64d026bf4403d66a2960cc948dba0cf87236a3f81c9adac9dc","id":"req:HR-002"},"to":"Accepted"}},"stage":"S1"}]}"#;
 const GOLDEN_OUTPUT_HASH: &str =
     "sha256:8bb7f125d05d5f73f07ad68e35776326f66eeb63c7f6f8b2ffcd42fc47057800";
@@ -40,11 +46,11 @@ const GOLDEN_PATCH_REF: &str =
     "sha256:8a295052a8c014fcc4a9e22b6a7dc85ccbab918beb619576d8a950406b277948";
 const GOLDEN_PROPOSAL_REF: &str =
     "sha256:eb3766ea6a0cb9134ecbaf9d640820c5a3d550fb5382a498b485ac6aa2aec9b2";
-const GOLDEN_RUN_JSON: &str = r#"{"compiler_version":"0.1.0","config_hash":"sha256:5359f0a81f1e876e87ffe35cffc12b819a044a962a9c542f5c975ca9c0e72e19","deterministic_artifacts":["sha256:5e3f2173ac22d5887e5a98e35497943052ce23aacc841b941c576eaf6108d2dc"],"id":"sha256:b637565847dc075546408e622a5a275f906f9aff37d6c4260844a1d7f706d79e","inference_artifacts":["sha256:8ef935059bf2a60b8511a711b7bd45de2596c9ea14dfbf3af105b0812842cb75"],"input_revision":"rev:1:f0626043428dce3e","input_semantic_hash":"psg:sha256:f0626043428dce3e421bf2d11665e55153c7aa9fc440b3e9bffc6feff72f5a19","output_derivation_patch_ref":"sha256:8a295052a8c014fcc4a9e22b6a7dc85ccbab918beb619576d8a950406b277948","output_hash":"sha256:8bb7f125d05d5f73f07ad68e35776326f66eeb63c7f6f8b2ffcd42fc47057800","output_proposal_refs":["sha256:eb3766ea6a0cb9134ecbaf9d640820c5a3d550fb5382a498b485ac6aa2aec9b2"],"profile_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","profile_ref":"profile:plumb-software-2026.1","rule_pack_hash":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","stage":"S1","validation_artifacts":["sha256:e91b8f1e2d1ad54a7033c3a34182a72183d1a9544829674d69d67e2ff0fdd34f"]}"#;
+const GOLDEN_RUN_JSON: &str = r#"{"compiler_version":"0.1.0","config_hash":"sha256:5359f0a81f1e876e87ffe35cffc12b819a044a962a9c542f5c975ca9c0e72e19","deterministic_artifacts":["sha256:5e3f2173ac22d5887e5a98e35497943052ce23aacc841b941c576eaf6108d2dc"],"id":"sha256:faa27a8295ce36c5da012f4823e7cd36dcd3dd526715462d67bb089b07635426","inference_artifacts":["sha256:8ba5871e3286bccc82424dddb820a3f73e2392ed2690f01f36411849df3fea9e"],"input_revision":"rev:1:f0626043428dce3e","input_semantic_hash":"psg:sha256:f0626043428dce3e421bf2d11665e55153c7aa9fc440b3e9bffc6feff72f5a19","output_derivation_patch_ref":"sha256:8a295052a8c014fcc4a9e22b6a7dc85ccbab918beb619576d8a950406b277948","output_hash":"sha256:8bb7f125d05d5f73f07ad68e35776326f66eeb63c7f6f8b2ffcd42fc47057800","output_proposal_refs":["sha256:eb3766ea6a0cb9134ecbaf9d640820c5a3d550fb5382a498b485ac6aa2aec9b2"],"profile_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","profile_ref":"profile:plumb-software-2026.1","rule_pack_hash":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","stage":"S1","validation_artifacts":["sha256:e91b8f1e2d1ad54a7033c3a34182a72183d1a9544829674d69d67e2ff0fdd34f"]}"#;
 const GOLDEN_RUN_ID: &str =
-    "sha256:b637565847dc075546408e622a5a275f906f9aff37d6c4260844a1d7f706d79e";
+    "sha256:faa27a8295ce36c5da012f4823e7cd36dcd3dd526715462d67bb089b07635426";
 const GOLDEN_RUN_REF: &str =
-    "sha256:ed296500cab8d84c5ef4a52109c57680fc0e1c6f6121fda77021629b8dd65d7b";
+    "sha256:d586ca79fae21b1523bef53dc25ad4c98ce6ac0d6a464398150ad4f09307a342";
 
 // ---------------------------------------------------------------------------- builders
 
@@ -235,8 +241,8 @@ impl CompilerStage for FixtureStage {
             requirements.clone(),
             vec![],
             ctx.config_hash()?,
-            hash(H2),
-            hash(H3),
+            Hash::content_sha256(PROMPT),
+            Hash::content_sha256(SCHEMA),
             ProviderPolicy {
                 provider: "anthropic".to_owned(),
                 config: CanonicalJson::new(json!({})),
@@ -247,6 +253,18 @@ impl CompilerStage for FixtureStage {
             code: "inference-request".to_owned(),
             message: e.to_string(),
         })?;
+        let material = InferenceRequestMaterial::new(
+            &inference,
+            to_canonical_json(ctx.config.as_value())?,
+            PROMPT.to_vec(),
+            SCHEMA.to_vec(),
+        )
+        .map_err(|e| CompilerError::StageFailure {
+            stage: self.id(),
+            code: "inference-material".to_owned(),
+            message: e.to_string(),
+        })?;
+        let inference = PlannedInferenceRequest::new(inference, material)?;
         let validation = validation_request(vec![listing.content_hash()]);
         StagePlan::new(
             Scope::elements(requirements)?,
@@ -326,7 +344,7 @@ fn artifact_set(plan: &StagePlan) -> ArtifactSet {
         vec![input(
             ArtifactKind::ValidatedInference,
             JSON_MEDIA_TYPE,
-            to_canonical_json(&inference_artifact(&plan.inference_requests[0])).unwrap(),
+            to_canonical_json(&inference_artifact(&plan.inference_requests[0].request)).unwrap(),
         )],
         vec![input(
             ArtifactKind::ExternalValidation,
@@ -874,7 +892,8 @@ fn artifact_set_must_match_the_plan_exactly() {
         ..good.clone()
     });
     // Noncanonical inference bytes for the right request.
-    let pretty = serde_json::to_vec_pretty(&inference_artifact(&p.inference_requests[0])).unwrap();
+    let pretty =
+        serde_json::to_vec_pretty(&inference_artifact(&p.inference_requests[0].request)).unwrap();
     rejects(ArtifactSet {
         inference_artifacts: vec![input(
             ArtifactKind::ValidatedInference,
@@ -950,6 +969,24 @@ fn stage_plan_golden_ordering_and_rules() {
     assert!(StagePlan::new(Scope::Project, vec![], vec![], vec![v1.clone(), v1]).is_err());
     let r = p.inference_requests[0].clone();
     assert!(StagePlan::new(Scope::Project, vec![], vec![r.clone(), r], vec![]).is_err());
+    // Planned inference requests are sorted by request ID.
+    let (q, _) = planned_request("extract-terms");
+    let by_id = StagePlan::new(
+        Scope::Project,
+        vec![],
+        vec![p.inference_requests[0].clone(), q.clone()],
+        vec![],
+    )
+    .unwrap();
+    let by_id_reversed = StagePlan::new(
+        Scope::Project,
+        vec![],
+        vec![q, p.inference_requests[0].clone()],
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(by_id, by_id_reversed);
+    assert!(by_id.inference_requests[0].request.id < by_id.inference_requests[1].request.id);
     assert!(matches!(
         StagePlan::new(
             Scope::Project,
@@ -976,6 +1013,81 @@ fn stage_plan_golden_ordering_and_rules() {
     for forbidden in ["created_at", "timestamp", "provider_client", "store"] {
         assert!(!GOLDEN_PLAN_JSON.contains(forbidden), "{forbidden}");
     }
+}
+
+// ---------------------------------------------------------------------------- PlannedInferenceRequest (Hotfix 066)
+
+/// A planned S1 request with its own valid material, distinguished by `task_kind`.
+fn planned_request(task_kind: &str) -> (PlannedInferenceRequest, InferenceRequestMaterial) {
+    let context = to_canonical_json(&json!({"task": task_kind})).unwrap();
+    let request = InferenceRequest::new(
+        StageId::S1,
+        task_kind.to_owned(),
+        vec![id("req:HR-001")],
+        vec![],
+        Hash::content_sha256(&context),
+        Hash::content_sha256(PROMPT),
+        Hash::content_sha256(SCHEMA),
+        ProviderPolicy {
+            provider: "anthropic".to_owned(),
+            config: CanonicalJson::new(json!({})),
+        },
+    )
+    .unwrap();
+    let material =
+        InferenceRequestMaterial::new(&request, context, PROMPT.to_vec(), SCHEMA.to_vec()).unwrap();
+    (
+        PlannedInferenceRequest::new(request, material.clone()).unwrap(),
+        material,
+    )
+}
+
+#[test]
+fn planned_inference_request_binds_its_material() {
+    let (a, a_material) = planned_request("extract-requirements");
+    let (b, b_material) = planned_request("extract-terms");
+    assert_eq!(a.material, a_material);
+    assert_eq!(a.material.request_hash, a.request.id);
+    // Another request's material, or corrupted bytes, are rejected.
+    assert!(matches!(
+        PlannedInferenceRequest::new(a.request.clone(), b_material),
+        Err(CompilerError::InvalidStagePlan(_))
+    ));
+    let mut corrupt = a_material.clone();
+    corrupt.prompt_template.push(b' ');
+    assert!(matches!(
+        PlannedInferenceRequest::new(a.request.clone(), corrupt.clone()),
+        Err(CompilerError::InvalidStagePlan(_))
+    ));
+    // Strict serde: roundtrip, validated decode, no unknown fields.
+    let wire = serde_json::to_value(&a).unwrap();
+    assert_eq!(
+        serde_json::from_value::<PlannedInferenceRequest>(wire.clone()).unwrap(),
+        a
+    );
+    let mut extra = wire.clone();
+    extra["extra"] = json!(1);
+    assert!(serde_json::from_value::<PlannedInferenceRequest>(extra).is_err());
+    let mut swapped = wire.clone();
+    swapped["material"] = serde_json::to_value(&b.material).unwrap();
+    assert!(serde_json::from_value::<PlannedInferenceRequest>(swapped).is_err());
+    let mut bad = wire;
+    bad["material"] = serde_json::to_value(&corrupt).unwrap();
+    assert!(serde_json::from_value::<PlannedInferenceRequest>(bad).is_err());
+    // A plan carrying a corrupted planned request does not decode.
+    let plan = StagePlan::new(Scope::Project, vec![], vec![a, b], vec![]).unwrap();
+    let mut wire = serde_json::to_value(&plan).unwrap();
+    wire["inference_requests"][0]["material"]["schema_json"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(32));
+    assert!(serde_json::from_value::<StagePlan>(wire).is_err());
+    // The stage check uses the planned request's stage.
+    assert!(matches!(
+        plan.validate(StageId::S2, &graph()),
+        Err(CompilerError::InvalidStagePlan(_))
+    ));
+    plan.validate(StageId::S1, &graph()).unwrap();
 }
 
 // ---------------------------------------------------------------------------- StageEvaluation (§46)

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use plumb_artifacts::{Artifact, ArtifactKind, ArtifactStoreError};
 use plumb_core::{to_canonical_json, CoreError, Hash, HashKind, StageId};
-use plumb_inference::{InferenceArtifact, InferenceRequest};
+use plumb_inference::{InferenceArtifact, InferenceRequest, InferenceRequestMaterial};
 use plumb_patch::{PatchSet, Proposal};
 use plumb_psg::Graph;
 use plumb_validation::ExternalValidationError;
@@ -333,7 +333,8 @@ impl ArtifactSet {
             .iter()
             .map(|input| canonical_json_input(input, "InferenceArtifact"))
             .collect::<Result<_, _>>()?;
-        for request in &plan.inference_requests {
+        for planned in &plan.inference_requests {
+            let request = &planned.request;
             let found: Vec<&InferenceArtifact> = inference
                 .iter()
                 .filter(|a| a.request_hash == request.id)
@@ -399,6 +400,57 @@ fn canonical_json_input<T: serde::de::DeserializeOwned + Serialize>(
     Ok(value)
 }
 
+// ============================================================================ PlannedInferenceRequest
+
+/// A planned inference request with the exact material it binds (Hotfix 066). PLAN emits both;
+/// ACQUIRE hands both to the provider; EVALUATE still receives only acquired `ArtifactInput`s.
+/// The material is acquisition input, not PSG state and not a second identity: the request ID
+/// remains the only inference identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PlannedInferenceRequestFields")]
+pub struct PlannedInferenceRequest {
+    pub request: InferenceRequest,
+    pub material: InferenceRequestMaterial,
+}
+
+impl PlannedInferenceRequest {
+    /// Builds a planned request whose material binds the request.
+    pub fn new(
+        request: InferenceRequest,
+        material: InferenceRequestMaterial,
+    ) -> Result<PlannedInferenceRequest, CompilerError> {
+        let planned = PlannedInferenceRequest { request, material };
+        planned.validate()?;
+        Ok(planned)
+    }
+
+    /// The request validates and the material binds its ID, context, prompt and schema hashes.
+    pub fn validate(&self) -> Result<(), CompilerError> {
+        let invalid = CompilerError::InvalidStagePlan;
+        self.request
+            .validate()
+            .map_err(|e| invalid(format!("inference request {}: {e}", self.request.id)))?;
+        self.material
+            .validate_for(&self.request)
+            .map_err(|e| invalid(format!("inference material for {}: {e}", self.request.id)))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlannedInferenceRequestFields {
+    request: InferenceRequest,
+    material: InferenceRequestMaterial,
+}
+
+impl TryFrom<PlannedInferenceRequestFields> for PlannedInferenceRequest {
+    type Error = CompilerError;
+
+    fn try_from(f: PlannedInferenceRequestFields) -> Result<Self, Self::Error> {
+        PlannedInferenceRequest::new(f.request, f.material)
+    }
+}
+
 // ============================================================================ StagePlan
 
 /// What a stage needs: scope, deterministic artifacts and inference/validation requests.
@@ -408,7 +460,7 @@ pub struct StagePlan {
     pub scope: Scope,
 
     pub deterministic_artifacts: Vec<PlannedArtifact>,
-    pub inference_requests: Vec<InferenceRequest>,
+    pub inference_requests: Vec<PlannedInferenceRequest>,
     pub external_validation_requests: Vec<ExternalValidationRequest>,
 }
 
@@ -417,7 +469,7 @@ impl StagePlan {
     pub fn new(
         scope: Scope,
         mut deterministic_artifacts: Vec<PlannedArtifact>,
-        mut inference_requests: Vec<InferenceRequest>,
+        mut inference_requests: Vec<PlannedInferenceRequest>,
         mut external_validation_requests: Vec<ExternalValidationRequest>,
     ) -> Result<StagePlan, CompilerError> {
         let invalid = CompilerError::InvalidStagePlan;
@@ -428,7 +480,7 @@ impl StagePlan {
         )
         .map_err(invalid)?;
         sort_unique("inference request", &mut inference_requests, |r| {
-            r.id.clone()
+            r.request.id.clone()
         })
         .map_err(invalid)?;
         sort_unique(
@@ -454,10 +506,8 @@ impl StagePlan {
         for artifact in &self.deterministic_artifacts {
             artifact.validate()?;
         }
-        for request in &self.inference_requests {
-            request
-                .validate()
-                .map_err(|e| invalid(format!("inference request {}: {e}", request.id)))?;
+        for planned in &self.inference_requests {
+            planned.validate()?;
         }
         for request in &self.external_validation_requests {
             request.validate()?;
@@ -468,7 +518,11 @@ impl StagePlan {
             .map(PlannedArtifact::content_hash)
             .collect();
         require_strictly_sorted("planned artifact", &artifact_hashes).map_err(invalid)?;
-        let inference_ids: Vec<&Hash> = self.inference_requests.iter().map(|r| &r.id).collect();
+        let inference_ids: Vec<&Hash> = self
+            .inference_requests
+            .iter()
+            .map(|r| &r.request.id)
+            .collect();
         require_strictly_sorted("inference request", &inference_ids).map_err(invalid)?;
         let validation_ids: Vec<&Hash> = self
             .external_validation_requests
@@ -483,7 +537,12 @@ impl StagePlan {
     pub fn validate(&self, stage: StageId, graph: &Graph) -> Result<(), CompilerError> {
         self.validate_structure()?;
         self.scope.validate_for_graph(graph)?;
-        if let Some(request) = self.inference_requests.iter().find(|r| r.stage != stage) {
+        if let Some(request) = self
+            .inference_requests
+            .iter()
+            .map(|r| &r.request)
+            .find(|r| r.stage != stage)
+        {
             return Err(CompilerError::InvalidStagePlan(format!(
                 "inference request {} is for stage {}, not {stage}",
                 request.id, request.stage
@@ -498,7 +557,7 @@ impl StagePlan {
 struct StagePlanFields {
     scope: Scope,
     deterministic_artifacts: Vec<PlannedArtifact>,
-    inference_requests: Vec<InferenceRequest>,
+    inference_requests: Vec<PlannedInferenceRequest>,
     external_validation_requests: Vec<ExternalValidationRequest>,
 }
 

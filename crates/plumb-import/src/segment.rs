@@ -11,7 +11,10 @@ use std::str::FromStr;
 
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, CoreError, Hash, Id, StageId, Timestamp};
-use plumb_inference::{InferenceArtifact, InferenceError, InferenceRequest, ProviderPolicy};
+use plumb_inference::{
+    InferenceArtifact, InferenceError, InferenceRequest, InferenceRequestMaterial, ProviderError,
+    ProviderPolicy,
+};
 use plumb_psg::{
     is_baseline, AuditMeta, DerivationKind, DerivationRecord, ElementStatus, ExtensionKey, Node,
     NodePayload,
@@ -83,6 +86,8 @@ pub enum SegmentationError {
     /// The InferenceRequest could not be constructed or is invalid.
     #[error("inference request: {0}")]
     InferenceConstruction(#[from] InferenceError),
+    #[error("inference material: {0}")]
+    InferenceMaterial(#[from] ProviderError),
     /// The segmentation schema does not compile.
     #[error("segmentation schema does not compile: {reason}")]
     SchemaCompilation { reason: String },
@@ -224,6 +229,18 @@ pub struct SegmentationRequest {
 }
 
 impl SegmentationRequest {
+    /// The exact acquisition material of this request (Hotfix 066): the RFC 8785 canonical
+    /// context and the committed prompt and schema bytes, bound to the request. Pure: no files,
+    /// environment, clock or network.
+    pub fn inference_material(&self) -> Result<InferenceRequestMaterial, SegmentationError> {
+        Ok(InferenceRequestMaterial::new(
+            &self.request,
+            to_canonical_json(&self.context)?,
+            PROMPT_TEMPLATE.to_vec(),
+            SCHEMA_SOURCE.as_bytes().to_vec(),
+        )?)
+    }
+
     /// Validates both parts and their binding.
     pub fn new(
         request: InferenceRequest,

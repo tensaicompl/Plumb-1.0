@@ -11,7 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, CoreError, Hash, Id, StageId};
-use plumb_inference::{InferenceArtifact, InferenceError, InferenceRequest, ProviderPolicy};
+use plumb_inference::{
+    InferenceArtifact, InferenceError, InferenceRequest, InferenceRequestMaterial, ProviderError,
+    ProviderPolicy,
+};
 use plumb_patch::{
     AcceptancePolicy, ElementPrecondition, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
@@ -54,6 +57,8 @@ pub enum EarsError {
     /// The InferenceRequest could not be constructed.
     #[error("inference request: {0}")]
     InferenceConstruction(#[from] InferenceError),
+    #[error("inference material: {0}")]
+    InferenceMaterial(#[from] ProviderError),
     /// The inference artifact is not valid for the EARS request.
     #[error("invalid EARS inference artifact: {reason}")]
     InvalidInferenceArtifact { reason: String },
@@ -278,6 +283,18 @@ pub struct EarsRequest {
 }
 
 impl EarsRequest {
+    /// The exact acquisition material of this request (Hotfix 066): the RFC 8785 canonical
+    /// context and the committed prompt and schema bytes, bound to the request. Pure: no files,
+    /// environment, clock or network.
+    pub fn inference_material(&self) -> Result<InferenceRequestMaterial, EarsError> {
+        Ok(InferenceRequestMaterial::new(
+            &self.request,
+            to_canonical_json(&self.context)?,
+            PROMPT_TEMPLATE.to_vec(),
+            SCHEMA_SOURCE.as_bytes().to_vec(),
+        )?)
+    }
+
     /// Validates both parts and their binding.
     pub fn new(request: InferenceRequest, context: EarsContext) -> Result<EarsRequest, EarsError> {
         let ears = EarsRequest { request, context };

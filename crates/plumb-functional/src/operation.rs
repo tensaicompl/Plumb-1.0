@@ -15,7 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, CoreError, Hash, Id, StageId, Timestamp};
-use plumb_inference::{InferenceArtifact, InferenceError, InferenceRequest, ProviderPolicy};
+use plumb_inference::{
+    InferenceArtifact, InferenceError, InferenceRequest, InferenceRequestMaterial, ProviderError,
+    ProviderPolicy,
+};
 use plumb_patch::{
     apply_patch, AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
@@ -68,6 +71,8 @@ pub enum OperationError {
     },
     #[error("inference request: {0}")]
     InferenceConstruction(#[from] InferenceError),
+    #[error("inference material: {0}")]
+    InferenceMaterial(#[from] ProviderError),
     #[error("invalid operation inference artifact: {reason}")]
     InvalidInferenceArtifact { reason: String },
     #[error("operation schema does not compile: {reason}")]
@@ -545,6 +550,18 @@ pub fn build_operation_request(
 }
 
 impl OperationRequest {
+    /// The exact acquisition material of this request (Hotfix 066): the RFC 8785 canonical
+    /// context and the committed prompt and schema bytes, bound to the request. Pure: no files,
+    /// environment, clock or network.
+    pub fn inference_material(&self) -> Result<InferenceRequestMaterial, OperationError> {
+        Ok(InferenceRequestMaterial::new(
+            &self.request,
+            to_canonical_json(&self.context)?,
+            PROMPT_TEMPLATE.to_vec(),
+            SCHEMA_SOURCE.as_bytes().to_vec(),
+        )?)
+    }
+
     /// The request is bound to its context, the committed prompt and schema.
     pub fn validate(&self) -> Result<(), OperationError> {
         let r = &self.request;

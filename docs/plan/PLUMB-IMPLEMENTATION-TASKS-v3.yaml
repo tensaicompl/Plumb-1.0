@@ -8355,7 +8355,12 @@ tasks:
     stale-result protection, StageRunResponse semantics, JobResponse result_version semantics and the failure/retry policy,
     and complete this write allowlist. Reason: no concrete CompilerStage implementation and no application stage runner exist
     at the Hotfix 065 baseline (X1.5 defines the job lifecycle and freshness only and executes, schedules and persists nothing).
-    Hotfix 065 did not design stage orchestration, and A0.4 never invents these semantics during implementation.'
+    Hotfix 065 did not design stage orchestration, and A0.4 never invents these semantics during implementation.
+    Hotfix 066 repaired only the inference material-acquisition boundary: PLAN emits each
+    InferenceRequest with its exact deterministic InferenceRequestMaterial, ACQUIRE calls
+    provider.execute(request, material), and every provider validates the binding before any work. It
+    froze no orchestration semantics: A0.4 remains blocked on the mandatory Hotfix 067
+    stage-orchestration freeze and MUST NOT begin directly after Hotfix 066.'
   - Implement import, lint, vocab, extract, consolidate, calc, rules, analyse, questions, rounds, apply, flows, scenarios,
     run, ready, export, report, serve and log-effort.
   - Every command supports --json where output exists.

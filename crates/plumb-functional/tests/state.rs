@@ -53,6 +53,42 @@ mod lifecycle_contract {
         "sha256:2a674e2fb28ffadb2bcae0a2a01be14265c7bf8f4643a9b8a68aa4d18a248b81";
     const GOLDEN_REQUEST_ID: &str =
         "sha256:5748d571a8860c7d45c5c2aa6f7611a874506e65c4e1c4d24098c26975432773";
+
+    /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
+    /// built from the committed prompt and schema bytes and the RFC 8785 context, and
+    /// deterministic. Request, prompt, schema and context identities do not drift.
+    macro_rules! assert_inference_material {
+        ($owner:expr) => {{
+            let owner = &$owner;
+            let inner = &owner.request;
+            assert_eq!(inner.id.as_str(), GOLDEN_REQUEST_ID);
+            assert_eq!(inner.prompt_template_hash.as_str(), PROMPT_HASH);
+            assert_eq!(inner.schema_hash.as_str(), SCHEMA_HASH);
+            assert_eq!(inner.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
+            let material = owner.inference_material().unwrap();
+            assert_eq!(material.request_hash, inner.id);
+            assert_eq!(
+                Hash::content_sha256(&material.context_json),
+                inner.context_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.prompt_template),
+                inner.prompt_template_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.schema_json),
+                inner.schema_hash
+            );
+            assert_eq!(
+                material.context_json,
+                to_canonical_json(&owner.context).unwrap()
+            );
+            assert_eq!(material.prompt_template, PROMPT);
+            assert_eq!(material.schema_json, SCHEMA.as_bytes());
+            material.validate_for(inner).unwrap();
+            assert_eq!(owner.inference_material().unwrap(), material);
+        }};
+    }
     const SUBMITTED: &str = "state:34fea847d6cbbed1";
     const APPROVED: &str = "state:1af3ab50cd177533";
     const TRANSITION: &str = "transition:1824db448b1cb9d6";
@@ -562,6 +598,7 @@ mod lifecycle_contract {
         let g = golden_graph();
         let r = request(&g);
         assert_eq!(r.request.id.as_str(), GOLDEN_REQUEST_ID);
+        assert_inference_material!(r);
         assert_eq!(r.request.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
         assert_eq!(r.request.stage, StageId::S2);
         assert_eq!(r.request.task_kind, "lifecycle_extraction");

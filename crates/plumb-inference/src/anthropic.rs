@@ -1,7 +1,8 @@
 //! The Anthropic Messages API provider (plan X1.1, Hotfix 057), behind the `anthropic` feature.
 //!
-//! The provider implements the unchanged [`InferenceProvider`] trait. It consumes only the
-//! request plus hash-bound [`InferenceRequestMaterial`] supplied in memory at construction, sends
+//! The provider implements the material-bound [`InferenceProvider`] trait (Hotfix 066). It
+//! consumes only the request plus the hash-bound [`InferenceRequestMaterial`] supplied with that
+//! exact call (it owns connection configuration only, never future request material), sends
 //! the exact prompt as the system text and the canonical `{context, output_schema}` envelope as
 //! the single user message, and validates the model's strict-JSON text locally against the exact
 //! Draft 2020-12 Plumb schema. It never translates schemas into vendor constrained output,
@@ -17,9 +18,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::model::{InferenceArtifact, InferenceRequest, ProviderExecution, JSON_MEDIA_TYPE};
-use crate::provider::{
-    InferenceProvider, InferenceRequestMaterial, InferenceRequestMaterialSet, ProviderError,
-};
+use crate::provider::{verify_binding, InferenceProvider, InferenceRequestMaterial, ProviderError};
 
 /// The provider identifier this adapter serves.
 pub const ANTHROPIC_PROVIDER: &str = "anthropic";
@@ -98,7 +97,6 @@ pub struct AnthropicProvider {
     client: Client,
     api_key: String,
     endpoint: Url,
-    materials: InferenceRequestMaterialSet,
 }
 
 impl fmt::Debug for AnthropicProvider {
@@ -106,25 +104,20 @@ impl fmt::Debug for AnthropicProvider {
         f.debug_struct("AnthropicProvider")
             .field("endpoint", &self.endpoint.as_str())
             .field("api_key", &"<redacted>")
-            .field("materials", &self.materials.len())
             .finish()
     }
 }
 
 impl AnthropicProvider {
     /// A provider for the default endpoint with an explicitly supplied credential.
-    pub fn new(
-        api_key: impl Into<String>,
-        materials: InferenceRequestMaterialSet,
-    ) -> Result<AnthropicProvider, ProviderError> {
-        AnthropicProvider::with_endpoint(api_key, ANTHROPIC_MESSAGES_ENDPOINT, materials)
+    pub fn new(api_key: impl Into<String>) -> Result<AnthropicProvider, ProviderError> {
+        AnthropicProvider::with_endpoint(api_key, ANTHROPIC_MESSAGES_ENDPOINT)
     }
 
     /// A provider for an explicit http(s) endpoint (local tests or a proxy).
     pub fn with_endpoint(
         api_key: impl Into<String>,
         endpoint: &str,
-        materials: InferenceRequestMaterialSet,
     ) -> Result<AnthropicProvider, ProviderError> {
         let api_key = api_key.into();
         if !is_clean(&api_key) {
@@ -154,17 +147,7 @@ impl AnthropicProvider {
             client,
             api_key,
             endpoint,
-            materials,
         })
-    }
-
-    fn material(
-        &self,
-        request: &InferenceRequest,
-    ) -> Result<&InferenceRequestMaterial, ProviderError> {
-        self.materials
-            .get(&request.id)
-            .ok_or_else(|| ProviderError::MaterialNotFound(request.id.clone()))
     }
 }
 
@@ -187,8 +170,13 @@ fn remote_error(status: u16, header_request_id: Option<String>, body: &[u8]) -> 
 }
 
 impl InferenceProvider for AnthropicProvider {
-    fn execute(&self, request: &InferenceRequest) -> Result<ProviderExecution, ProviderError> {
-        request.validate().map_err(ProviderError::InvalidRequest)?;
+    fn execute(
+        &self,
+        request: &InferenceRequest,
+        material: &InferenceRequestMaterial,
+    ) -> Result<ProviderExecution, ProviderError> {
+        // The binding is validated before any provider-specific work and before any network.
+        let material = verify_binding(request, material)?;
         let policy = &request.provider_policy;
         if policy.provider != ANTHROPIC_PROVIDER {
             return Err(ProviderError::UnsupportedProvider {
@@ -196,7 +184,6 @@ impl InferenceProvider for AnthropicProvider {
             });
         }
         let config = decode_config(policy.config.as_value())?;
-        let material = self.material(request)?.verify(request)?;
 
         let envelope = to_canonical_json(&json!({
             "context": material.context,

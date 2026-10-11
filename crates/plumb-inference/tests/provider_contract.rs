@@ -85,7 +85,63 @@ mod provider_contract {
         (request, material)
     }
 
+    /// A second, distinct request and its own material (another context).
+    pub(crate) fn second(provider: &str) -> (InferenceRequest, InferenceRequestMaterial) {
+        let context =
+            to_canonical_json(&json!({"question": "Is the claim paid?", "version": 2})).unwrap();
+        let request = request_for(
+            policy(provider, anthropic_config()),
+            &context,
+            PROMPT.as_bytes(),
+            SCHEMA.as_bytes(),
+        );
+        let material =
+            InferenceRequestMaterial::new(&request, context, PROMPT.into(), SCHEMA.into()).unwrap();
+        (request, material)
+    }
+
     // ------------------------------------------------------------------ material
+
+    #[test]
+    fn material_new_builds_only_validated_material() {
+        let (request, material) = standard("anthropic");
+        let built =
+            InferenceRequestMaterial::new(&request, context_bytes(), PROMPT.into(), SCHEMA.into())
+                .unwrap();
+        assert_eq!(built, material);
+        assert_eq!(built.request_hash, request.id);
+        // Wrong bytes for this request are rejected at construction.
+        assert!(matches!(
+            InferenceRequestMaterial::new(&request, context_bytes(), b"other\n".to_vec(), SCHEMA.into()),
+            Err(ProviderError::MaterialHashMismatch { field }) if field == "prompt_template"
+        ));
+        let noncanonical = br#"{"version": 1, "question": "Is the leave approved?"}"#.to_vec();
+        let r = request_for(
+            policy("anthropic", anthropic_config()),
+            &noncanonical,
+            PROMPT.as_bytes(),
+            SCHEMA.as_bytes(),
+        );
+        assert!(matches!(
+            InferenceRequestMaterial::new(&r, noncanonical, PROMPT.into(), SCHEMA.into()),
+            Err(ProviderError::NonCanonicalContext)
+        ));
+    }
+
+    #[test]
+    fn material_serde_is_strict_and_roundtrips() {
+        let (request, material) = standard("anthropic");
+        let text = serde_json::to_string(&material).unwrap();
+        let back: InferenceRequestMaterial = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, material);
+        back.validate_for(&request).unwrap();
+        let mut value: Value = serde_json::from_str(&text).unwrap();
+        value["extra"] = json!(1);
+        assert!(serde_json::from_value::<InferenceRequestMaterial>(value).is_err());
+        let mut value: Value = serde_json::from_str(&text).unwrap();
+        value.as_object_mut().unwrap().remove("schema_json");
+        assert!(serde_json::from_value::<InferenceRequestMaterial>(value).is_err());
+    }
 
     #[test]
     fn material_validates_against_its_request() {
@@ -210,19 +266,66 @@ mod provider_contract {
 
     #[test]
     fn null_and_mock_providers_keep_their_contracts() {
-        let (request, _) = standard("mock");
+        let (request, material) = standard("mock");
         assert!(matches!(
-            NullProvider.execute(&request),
+            NullProvider.execute(&request, &material),
             Err(ProviderError::ProviderDisabled)
         ));
         let execution = mock_execution(&request);
         let mock = MockProvider::with_fixtures([(request.id.clone(), execution.clone())]).unwrap();
-        assert_eq!(mock.execute(&request).unwrap(), execution);
-        let (other, _) = standard("anthropic");
+        assert_eq!(mock.execute(&request, &material).unwrap(), execution);
+        // Replay is deterministic.
+        assert_eq!(mock.execute(&request, &material).unwrap(), execution);
+        let (other, other_material) = standard("anthropic");
         assert!(matches!(
-            MockProvider::new().execute(&other),
+            MockProvider::new().execute(&other, &other_material),
             Err(ProviderError::FixtureNotFound(_))
         ));
+    }
+
+    #[test]
+    fn null_and_mock_validate_the_binding_first() {
+        let (request, material) = standard("mock");
+        let (_, foreign) = second("mock");
+        let mut corrupt = material.clone();
+        corrupt.context_json.push(b' ');
+        let mock =
+            MockProvider::with_fixtures([(request.id.clone(), mock_execution(&request))]).unwrap();
+        for bad in [&foreign, &corrupt] {
+            let null = NullProvider.execute(&request, bad).unwrap_err();
+            assert!(!matches!(null, ProviderError::ProviderDisabled), "{null:?}");
+            let m = mock.execute(&request, bad).unwrap_err();
+            assert!(
+                matches!(
+                    m,
+                    ProviderError::MaterialRequestMismatch { .. }
+                        | ProviderError::MaterialHashMismatch { .. }
+                ),
+                "{m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_execution_serde_is_strict_and_validated() {
+        let (request, _) = standard("mock");
+        let execution = mock_execution(&request);
+        let text = serde_json::to_string(&execution).unwrap();
+        let back: ProviderExecution = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, execution);
+        let original: Value = serde_json::from_str(&text).unwrap();
+        // Unknown fields are rejected.
+        let mut value = original.clone();
+        value["extra"] = json!(true);
+        assert!(serde_json::from_value::<ProviderExecution>(value).is_err());
+        // Raw bytes that do not match raw_response_hash are rejected on decode.
+        let mut value = original.clone();
+        value["raw_response"] = serde_json::to_value(b"{\"answer\":\"no\"}".to_vec()).unwrap();
+        assert!(serde_json::from_value::<ProviderExecution>(value).is_err());
+        let mut value = original;
+        value["artifact"]["raw_response_hash"] =
+            serde_json::to_value(Hash::content_sha256(b"other")).unwrap();
+        assert!(serde_json::from_value::<ProviderExecution>(value).is_err());
     }
 
     // ------------------------------------------------------------------ anthropic (local)
@@ -237,14 +340,12 @@ mod provider_contract {
         use std::thread;
 
         use plumb_core::{to_canonical_json, CanonicalJson, Hash};
-        use plumb_inference::{
-            AnthropicProvider, InferenceProvider, InferenceRequestMaterialSet, ProviderError,
-        };
+        use plumb_inference::{AnthropicProvider, InferenceProvider, ProviderError};
         use serde_json::{json, Value};
 
         use super::{
-            anthropic_config, context_bytes, material_for, policy, request_for, standard, PROMPT,
-            SCHEMA,
+            anthropic_config, context_bytes, material_for, policy, request_for, second, standard,
+            PROMPT, SCHEMA,
         };
 
         const KEY: &str = "test-api-key-not-a-real-secret";
@@ -339,16 +440,8 @@ mod provider_contract {
             json!({"type": "text", "text": t})
         }
 
-        fn provider(
-            server: &Server,
-            material: super::InferenceRequestMaterial,
-        ) -> AnthropicProvider {
-            AnthropicProvider::with_endpoint(
-                KEY,
-                &server.endpoint,
-                InferenceRequestMaterialSet::from_materials([material]).unwrap(),
-            )
-            .unwrap()
+        fn provider(server: &Server) -> AnthropicProvider {
+            AnthropicProvider::with_endpoint(KEY, &server.endpoint).unwrap()
         }
 
         fn run_with(
@@ -359,7 +452,7 @@ mod provider_contract {
         ) {
             let server = serve("200 OK", &[("content-type", "application/json")], body);
             let (request, material) = standard("anthropic");
-            let result = provider(&server, material).execute(&request);
+            let result = provider(&server).execute(&request, &material);
             (result, server)
         }
 
@@ -372,8 +465,8 @@ mod provider_contract {
             );
             let server = serve("200 OK", &[("content-type", "application/json")], &body);
             let (request, material) = standard("anthropic");
-            let p = provider(&server, material);
-            let execution = p.execute(&request).unwrap();
+            let p = provider(&server);
+            let execution = p.execute(&request, &material).unwrap();
             execution.validate_for(&request).unwrap();
             assert_eq!(execution.raw_response, body);
             assert_eq!(execution.raw_response_media_type, "application/json");
@@ -427,6 +520,48 @@ mod provider_contract {
         }
 
         #[test]
+        fn one_instance_executes_distinct_requests_with_their_own_material() {
+            let body = message("m", "end_turn", json!([text(r#"{"answer":"yes"}"#)]));
+            let server = serve("200 OK", &[], &body);
+            let p = provider(&server);
+            let (a, a_material) = standard("anthropic");
+            let (b, b_material) = second("anthropic");
+            assert_ne!(a.id, b.id);
+            p.execute(&a, &a_material)
+                .unwrap()
+                .validate_for(&a)
+                .unwrap();
+            p.execute(&b, &b_material)
+                .unwrap()
+                .validate_for(&b)
+                .unwrap();
+            let sent = server.captured.lock().unwrap().clone();
+            assert_eq!(sent.len(), 2);
+            let user = |m: &super::InferenceRequestMaterial| {
+                let context: Value = serde_json::from_slice(&m.context_json).unwrap();
+                let schema: Value = serde_json::from_slice(&m.schema_json).unwrap();
+                String::from_utf8(
+                    to_canonical_json(&json!({"context": context, "output_schema": schema}))
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            for (captured, material) in sent.iter().zip([&a_material, &b_material]) {
+                let body: Value = serde_json::from_slice(&captured.body).unwrap();
+                assert_eq!(body["messages"][0]["content"], user(material));
+            }
+            // Swapped material is rejected before any further connection.
+            assert!(matches!(
+                p.execute(&a, &b_material),
+                Err(ProviderError::MaterialRequestMismatch { .. })
+            ));
+            assert_eq!(
+                server.connections.load(std::sync::atomic::Ordering::SeqCst),
+                2
+            );
+        }
+
+        #[test]
         fn workspace_header_is_sent_only_when_configured() {
             let body = message("m", "end_turn", json!([text(r#"{"answer":"no"}"#)]));
             let server = serve("200 OK", &[], &body);
@@ -440,7 +575,7 @@ mod provider_contract {
                 SCHEMA.as_bytes(),
             );
             let material = material_for(&request, &context, PROMPT.as_bytes(), SCHEMA.as_bytes());
-            provider(&server, material).execute(&request).unwrap();
+            provider(&server).execute(&request, &material).unwrap();
             assert_eq!(
                 server.captured.lock().unwrap()[0].headers["anthropic-workspace-id"],
                 "wrkspc_local"
@@ -461,7 +596,7 @@ mod provider_contract {
                 );
                 let material =
                     material_for(&request, &context, PROMPT.as_bytes(), SCHEMA.as_bytes());
-                provider(&server, material).execute(&request)
+                provider(&server).execute(&request, &material)
             };
             assert!(matches!(
                 attempt(anthropic_config(), "openai"),
@@ -499,23 +634,19 @@ mod provider_contract {
                     "{c}"
                 );
             }
-            // Missing and corrupted material.
+            // Corrupted and foreign material.
             let (request, material) = standard("anthropic");
-            let empty = AnthropicProvider::with_endpoint(
-                KEY,
-                &server.endpoint,
-                InferenceRequestMaterialSet::new(),
-            )
-            .unwrap();
-            assert!(matches!(
-                empty.execute(&request),
-                Err(ProviderError::MaterialNotFound(_))
-            ));
             let mut corrupt = material.clone();
             corrupt.schema_json.push(b'\n');
             assert!(matches!(
-                provider(&server, corrupt).execute(&request),
+                provider(&server).execute(&request, &corrupt),
                 Err(ProviderError::MaterialHashMismatch { .. })
+            ));
+            let (other_request, other_material) = second("anthropic");
+            assert_ne!(other_request.id, request.id);
+            assert!(matches!(
+                provider(&server).execute(&request, &other_material),
+                Err(ProviderError::MaterialRequestMismatch { .. })
             ));
             assert_eq!(
                 server.connections.load(std::sync::atomic::Ordering::SeqCst),
@@ -525,9 +656,8 @@ mod provider_contract {
 
         #[test]
         fn secrets_and_endpoints_are_validated() {
-            let set = InferenceRequestMaterialSet::new;
             for key in ["", " key", "key ", "ke\ny"] {
-                let err = AnthropicProvider::new(key, set()).unwrap_err();
+                let err = AnthropicProvider::new(key).unwrap_err();
                 assert!(matches!(err, ProviderError::InvalidSecret));
             }
             for endpoint in [
@@ -538,13 +668,13 @@ mod provider_contract {
             ] {
                 assert!(
                     matches!(
-                        AnthropicProvider::with_endpoint(KEY, endpoint, set()),
+                        AnthropicProvider::with_endpoint(KEY, endpoint),
                         Err(ProviderError::InvalidEndpoint { .. })
                     ),
                     "{endpoint}"
                 );
             }
-            let p = AnthropicProvider::new(KEY, set()).unwrap();
+            let p = AnthropicProvider::new(KEY).unwrap();
             assert!(format!("{p:?}").contains("api.anthropic.com/v1/messages"));
             assert!(!format!("{p:?}").contains(KEY));
         }
@@ -612,7 +742,7 @@ mod provider_contract {
                 .unwrap();
                 let server = serve(status, &[("request-id", "req_header_1")], &body);
                 let (request, material) = standard("anthropic");
-                let err = provider(&server, material).execute(&request).unwrap_err();
+                let err = provider(&server).execute(&request, &material).unwrap_err();
                 match &err {
                     ProviderError::Remote {
                         status,
@@ -641,7 +771,7 @@ mod provider_contract {
                 b"upstream exploded",
             );
             let (request, material) = standard("anthropic");
-            let err = provider(&server, material).execute(&request).unwrap_err();
+            let err = provider(&server).execute(&request, &material).unwrap_err();
             assert!(matches!(
                 &err,
                 ProviderError::Remote { status: 500, error_type: None, message: None, request_id: Some(r) } if r == "req_header_2"
@@ -657,7 +787,7 @@ mod provider_contract {
                 b"",
             );
             let (request, material) = standard("anthropic");
-            let err = provider(&server, material).execute(&request).unwrap_err();
+            let err = provider(&server).execute(&request, &material).unwrap_err();
             assert!(matches!(err, ProviderError::Remote { status: 302, .. }));
             assert_eq!(
                 server.connections.load(std::sync::atomic::Ordering::SeqCst),
@@ -675,10 +805,9 @@ mod provider_contract {
             let p = AnthropicProvider::with_endpoint(
                 KEY,
                 &format!("http://127.0.0.1:{port}/v1/messages"),
-                InferenceRequestMaterialSet::from_materials([material]).unwrap(),
             )
             .unwrap();
-            let err = p.execute(&request).unwrap_err();
+            let err = p.execute(&request, &material).unwrap_err();
             assert!(matches!(err, ProviderError::Transport { .. }));
             assert!(!format!("{err} {err:?}").contains(KEY));
         }
@@ -725,12 +854,8 @@ mod provider_contract {
                 LIVE_PROMPT.as_bytes(),
                 LIVE_SCHEMA.as_bytes(),
             );
-            let p = AnthropicProvider::new(
-                key,
-                InferenceRequestMaterialSet::from_materials([material]).unwrap(),
-            )
-            .unwrap();
-            let execution = p.execute(&request).unwrap();
+            let p = AnthropicProvider::new(key).unwrap();
+            let execution = p.execute(&request, &material).unwrap();
             assert_eq!(
                 execution.artifact.validated_output.as_value(),
                 &json!({"ok": true})

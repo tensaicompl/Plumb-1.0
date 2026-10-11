@@ -1,23 +1,47 @@
 //! The inference provider boundary (compiler architecture §§19-20).
 //!
-//! A provider receives only the request. It has no graph, revision, store, branch, commit or
-//! artifact-store capability: it cannot mutate PSG or persist artifacts. Live providers are
-//! provisioned with immutable, hash-bound [`InferenceRequestMaterial`] supplied in memory by
-//! orchestration (Hotfix 057): the canonical context, the exact prompt template and the exact
-//! schema source whose hashes the request carries.
+//! A provider receives one request together with its exact, hash-bound
+//! [`InferenceRequestMaterial`] (Hotfix 066): the canonical context, the exact prompt template
+//! and the exact schema source whose hashes the request carries. It has no graph, revision,
+//! store, branch, commit or artifact-store capability: it cannot mutate PSG or persist
+//! artifacts, and it never needs future request material installed at construction.
 
 use std::collections::BTreeMap;
 
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, Hash, HashKind};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::model::{InferenceError, InferenceRequest, ProviderExecution};
 
-/// Executes one inference request and returns the execution for acquisition to persist.
+/// Executes one inference request with its exact material and returns the execution for
+/// acquisition to persist. Every implementation validates the request/material binding
+/// ([`validate_binding`]) before any provider-specific work.
 pub trait InferenceProvider {
-    fn execute(&self, request: &InferenceRequest) -> Result<ProviderExecution, ProviderError>;
+    fn execute(
+        &self,
+        request: &InferenceRequest,
+        material: &InferenceRequestMaterial,
+    ) -> Result<ProviderExecution, ProviderError>;
+}
+
+/// Validates `request` and that `material` belongs to it exactly (request ID, context, prompt
+/// and schema hashes, canonical context, UTF-8 prompt, compilable schema). No I/O.
+pub fn validate_binding(
+    request: &InferenceRequest,
+    material: &InferenceRequestMaterial,
+) -> Result<(), ProviderError> {
+    verify_binding(request, material).map(|_| ())
+}
+
+pub(crate) fn verify_binding(
+    request: &InferenceRequest,
+    material: &InferenceRequestMaterial,
+) -> Result<VerifiedMaterial, ProviderError> {
+    request.validate().map_err(ProviderError::InvalidRequest)?;
+    material.verify(request)
 }
 
 /// Why a provider could not produce an execution.
@@ -113,8 +137,11 @@ pub enum ProviderError {
 
 // ============================================================================ request material
 
-/// The exact acquisition material of one request, bound to it by hashes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The exact deterministic acquisition material of one request, bound to it by hashes. It is
+/// not accepted PSG state, cannot mutate a graph and is not a second request identity: it is
+/// identified only by the request ID it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InferenceRequestMaterial {
     pub request_hash: Hash,
     /// RFC 8785 canonical JSON of the stage context.
@@ -135,6 +162,24 @@ pub(crate) struct VerifiedMaterial {
 }
 
 impl InferenceRequestMaterial {
+    /// The material of `request` from its exact context, prompt and schema bytes; it is returned
+    /// only when it already satisfies [`InferenceRequestMaterial::validate_for`].
+    pub fn new(
+        request: &InferenceRequest,
+        context_json: Vec<u8>,
+        prompt_template: Vec<u8>,
+        schema_json: Vec<u8>,
+    ) -> Result<InferenceRequestMaterial, ProviderError> {
+        let material = InferenceRequestMaterial {
+            request_hash: request.id.clone(),
+            context_json,
+            prompt_template,
+            schema_json,
+        };
+        material.validate_for(request)?;
+        Ok(material)
+    }
+
     /// Deterministically verifies the material against `request`; no network, files or
     /// environment.
     pub fn validate_for(&self, request: &InferenceRequest) -> Result<(), ProviderError> {
@@ -194,7 +239,8 @@ impl InferenceRequestMaterial {
     }
 }
 
-/// Immutable in-memory request material keyed by request ID.
+/// Immutable in-memory request material keyed by request ID: a utility collection; no provider
+/// looks material up here (Hotfix 066).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InferenceRequestMaterialSet {
     materials: BTreeMap<Hash, InferenceRequestMaterial>,

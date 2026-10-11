@@ -443,7 +443,7 @@ mod turn {
             execution(&f.plan.request, output),
         )])
         .unwrap();
-        let executed = provider.execute(&f.plan.request).unwrap();
+        let executed = provider.execute(&f.plan.request, &f.plan.material).unwrap();
         persist_inference_bundle(&mut f.store, &f.plan.request, &executed, ts(ACQUIRED_AT)).unwrap()
     }
 

@@ -18,7 +18,10 @@ use plumb_expr::{
     eval, round_decimal, CalendarProvider, EvalContext, EvalError, PredicateProvider, RefValue,
     Symbol, Ty, Value, ValueEnv,
 };
-use plumb_inference::{InferenceArtifact, InferenceError, InferenceRequest, ProviderPolicy};
+use plumb_inference::{
+    InferenceArtifact, InferenceError, InferenceRequest, InferenceRequestMaterial, ProviderError,
+    ProviderPolicy,
+};
 use plumb_patch::{
     apply_patch, AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
@@ -56,6 +59,8 @@ pub enum CalculationError {
     Scope(CalculationIssue),
     #[error("inference request: {0}")]
     InferenceConstruction(#[from] InferenceError),
+    #[error("inference material: {0}")]
+    InferenceMaterial(#[from] ProviderError),
     #[error("invalid calculation inference artifact: {reason}")]
     InvalidInferenceArtifact { reason: String },
     #[error("calculation schema does not compile: {reason}")]
@@ -488,6 +493,18 @@ pub fn build_calculation_request(
 }
 
 impl CalculationRequest {
+    /// The exact acquisition material of this request (Hotfix 066): the RFC 8785 canonical
+    /// context and the committed prompt and schema bytes, bound to the request. Pure: no files,
+    /// environment, clock or network.
+    pub fn inference_material(&self) -> Result<InferenceRequestMaterial, CalculationError> {
+        Ok(InferenceRequestMaterial::new(
+            &self.request,
+            to_canonical_json(&self.context)?,
+            PROMPT_TEMPLATE.to_vec(),
+            SCHEMA_SOURCE.as_bytes().to_vec(),
+        )?)
+    }
+
     /// The request is bound to its context, the committed prompt and schema.
     pub fn validate(&self) -> Result<(), CalculationError> {
         let r = &self.request;

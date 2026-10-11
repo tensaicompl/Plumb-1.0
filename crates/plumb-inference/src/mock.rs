@@ -5,9 +5,13 @@ use std::collections::BTreeMap;
 use plumb_core::{Hash, HashKind};
 
 use crate::model::{InferenceRequest, ProviderExecution};
-use crate::provider::{InferenceProvider, ProviderError};
+use crate::provider::{
+    validate_binding, InferenceProvider, InferenceRequestMaterial, ProviderError,
+};
 
-/// Replays exactly the executions registered for exact request IDs.
+/// Replays exactly the executions registered for exact request IDs, after validating the
+/// request/material binding of each call (the material comes from the request owner, never from
+/// the fixture).
 ///
 /// It never synthesizes output, never rewrites provider, model or output, and performs no I/O.
 /// The request's policy may name any provider: a replay keeps the recorded provider and model.
@@ -59,8 +63,12 @@ impl MockProvider {
 }
 
 impl InferenceProvider for MockProvider {
-    fn execute(&self, request: &InferenceRequest) -> Result<ProviderExecution, ProviderError> {
-        request.validate().map_err(ProviderError::InvalidRequest)?;
+    fn execute(
+        &self,
+        request: &InferenceRequest,
+        material: &InferenceRequestMaterial,
+    ) -> Result<ProviderExecution, ProviderError> {
+        validate_binding(request, material)?;
         let execution = self
             .fixtures
             .get(&request.id)

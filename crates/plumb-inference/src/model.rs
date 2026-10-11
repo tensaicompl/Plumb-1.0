@@ -373,11 +373,37 @@ impl TryFrom<InferenceArtifactFields> for InferenceArtifact {
 // ============================================================================ ProviderExecution
 
 /// What a provider returns: the replay artifact plus the raw response kept outside it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Strictly serializable for deterministic replay fixtures (Hotfix 066): unknown fields are
+/// rejected and every decoded value passes [`ProviderExecution::validate`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ProviderExecutionFields")]
 pub struct ProviderExecution {
     pub artifact: InferenceArtifact,
     pub raw_response_media_type: String,
     pub raw_response: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderExecutionFields {
+    artifact: InferenceArtifact,
+    raw_response_media_type: String,
+    raw_response: Vec<u8>,
+}
+
+impl TryFrom<ProviderExecutionFields> for ProviderExecution {
+    type Error = InferenceError;
+
+    fn try_from(f: ProviderExecutionFields) -> Result<Self, Self::Error> {
+        let execution = ProviderExecution {
+            artifact: f.artifact,
+            raw_response_media_type: f.raw_response_media_type,
+            raw_response: f.raw_response,
+        };
+        execution.validate()?;
+        Ok(execution)
+    }
 }
 
 impl ProviderExecution {

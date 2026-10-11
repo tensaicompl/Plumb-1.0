@@ -520,13 +520,12 @@ fn request_for(
         Hash::content_sha256(OUTPUT_SCHEMA),
         turn.provider_policy.clone(),
     )?;
-    let material = InferenceRequestMaterial {
-        request_hash: request.id.clone(),
+    let material = InferenceRequestMaterial::new(
+        &request,
         context_json,
-        prompt_template: PROMPT_TEMPLATE.to_vec(),
-        schema_json: OUTPUT_SCHEMA.to_vec(),
-    };
-    material.validate_for(&request)?;
+        PROMPT_TEMPLATE.to_vec(),
+        OUTPUT_SCHEMA.to_vec(),
+    )?;
     Ok((request, material))
 }
 

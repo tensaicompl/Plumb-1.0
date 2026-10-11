@@ -323,6 +323,43 @@ mod segment_contract {
     }
 
     #[test]
+    fn segment_inference_material_is_exact_and_deterministic() {
+        let request = request_for(&fixed_fragments());
+        let inner = &request.request;
+        // Hotfix 066 changes no segmentation identity.
+        assert_eq!(inner.id.as_str(), REQUEST_ID);
+        assert_eq!(inner.prompt_template_hash.as_str(), PROMPT_HASH);
+        assert_eq!(inner.schema_hash.as_str(), SCHEMA_HASH);
+        assert_eq!(inner.context_hash.as_str(), CONTEXT_HASH);
+        let material = request.inference_material().unwrap();
+        assert_eq!(material.request_hash, inner.id);
+        assert_eq!(
+            Hash::content_sha256(&material.context_json),
+            inner.context_hash
+        );
+        assert_eq!(
+            Hash::content_sha256(&material.prompt_template),
+            inner.prompt_template_hash
+        );
+        assert_eq!(
+            Hash::content_sha256(&material.schema_json),
+            inner.schema_hash
+        );
+        assert_eq!(
+            material.context_json,
+            to_canonical_json(&request.context).unwrap()
+        );
+        assert_eq!(material.prompt_template, PROMPT);
+        assert_eq!(material.schema_json, SCHEMA.as_bytes());
+        material.validate_for(inner).unwrap();
+        assert_eq!(request.inference_material().unwrap(), material);
+        assert_eq!(
+            serde_json::to_vec(&request.inference_material().unwrap()).unwrap(),
+            serde_json::to_vec(&material).unwrap()
+        );
+    }
+
+    #[test]
     fn segment_assets_have_no_placeholders() {
         for content in [
             String::from_utf8(PROMPT.to_vec()).unwrap(),
@@ -521,7 +558,9 @@ mod segment_contract {
                 execution(&request, valid_output()),
             )
             .unwrap();
-        let executed = provider.execute(&request.request).unwrap();
+        let executed = provider
+            .execute(&request.request, &request.inference_material().unwrap())
+            .unwrap();
         let result =
             evaluate_segmentation(&request, &fragments, Some(&executed.artifact), &audit())
                 .unwrap();
@@ -554,7 +593,9 @@ mod segment_contract {
                 execution(&request, valid_output()),
             )
             .unwrap();
-        let executed = provider.execute(&request.request).unwrap();
+        let executed = provider
+            .execute(&request.request, &request.inference_material().unwrap())
+            .unwrap();
         assert_eq!(executed.artifact.request_hash, request.request.id);
         assert_eq!(
             executed.artifact.provider,
@@ -562,7 +603,12 @@ mod segment_contract {
         );
         executed.validate_for(&request.request).unwrap();
         let other = request_for(&[fragment(A, TEXT_A, "paragraph")]);
-        assert!(provider.execute(&other.request).is_err());
+        // A valid other request with its own material proves the fixture lookup.
+        let other_material = other.inference_material().unwrap();
+        assert!(matches!(
+            provider.execute(&other.request, &other_material),
+            Err(plumb_inference::ProviderError::FixtureNotFound(h)) if h == other.request.id
+        ));
     }
 
     #[test]

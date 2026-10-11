@@ -26,8 +26,8 @@ mod http_workflow {
         ExprStaticCalendarProvider, PredicateProvider, CALCULATION_ORIGIN_EXTENSION,
     };
     use plumb_inference::{
-        InferenceArtifact, InferenceProvider, InferenceRequest, ProviderError, ProviderExecution,
-        ProviderPolicy,
+        validate_binding, InferenceArtifact, InferenceProvider, InferenceRequest,
+        InferenceRequestMaterial, ProviderError, ProviderExecution, ProviderPolicy,
     };
     use plumb_patch::{
         apply_patch, AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
@@ -465,6 +465,32 @@ mod http_workflow {
         base: Mutex<Option<Hash>>,
         /// When set, a concurrent writer commits to this database during the provider call.
         race: Mutex<Option<PathBuf>>,
+        /// Every request and material the route handed over (Hotfix 066).
+        received: Mutex<Vec<(InferenceRequest, InferenceRequestMaterial)>>,
+        /// When set, GET these routes on another thread during the provider call.
+        probe: Mutex<Option<(Router, Vec<String>)>>,
+        /// The probe statuses, or `None` when a probe did not finish in time (a held lock).
+        probed: Mutex<Option<Option<Vec<StatusCode>>>>,
+    }
+
+    /// GETs `uris` through `router` from a fresh thread and runtime, giving up after 20 s.
+    fn probe_routes(router: Router, uris: Vec<String>) -> Option<Vec<StatusCode>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let statuses = runtime.block_on(async {
+                let mut statuses = Vec::new();
+                for uri in uris {
+                    let request = Request::get(uri.as_str()).body(Body::empty()).unwrap();
+                    statuses.push(send(&router, request).await.status);
+                }
+                statuses
+            });
+            let _ = tx.send(statuses);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(20)).ok()
     }
 
     impl TestProvider {
@@ -500,7 +526,20 @@ mod http_workflow {
     }
 
     impl InferenceProvider for TestProvider {
-        fn execute(&self, request: &InferenceRequest) -> Result<ProviderExecution, ProviderError> {
+        fn execute(
+            &self,
+            request: &InferenceRequest,
+            material: &InferenceRequestMaterial,
+        ) -> Result<ProviderExecution, ProviderError> {
+            // Like every provider, bind the material before any work.
+            validate_binding(request, material)?;
+            self.received
+                .lock()
+                .unwrap()
+                .push((request.clone(), material.clone()));
+            if let Some((router, uris)) = self.probe.lock().unwrap().take() {
+                *self.probed.lock().unwrap() = Some(probe_routes(router, uris));
+            }
             if let Some(path) = self.race.lock().unwrap().take() {
                 concurrent_commit(&path);
             }
@@ -683,6 +722,9 @@ mod http_workflow {
             mode: Mutex::new(ProviderMode::Reply),
             base: Mutex::new(None),
             race: Mutex::new(None),
+            received: Mutex::new(Vec::new()),
+            probe: Mutex::new(None),
+            probed: Mutex::new(None),
         });
         let state = state_at(&path, provider.clone(), reports(&head.graph), ACTOR);
         let router = router(state.clone());
@@ -2692,6 +2734,63 @@ mod http_workflow {
             StatusCode::PRECONDITION_FAILED,
             "E_PRECONDITION_FAILED",
         );
+    }
+
+    /// Hotfix 066 regression: the session route hands the provider the request and the exact
+    /// material of the same plan, with no store lock held during the call, and the persisted
+    /// request is the one the provider saw.
+    #[tokio::test]
+    async fn http_workflow_session_turns_hand_the_provider_their_plan_material() {
+        let app = run_app();
+        // A scenario run whose trace read takes the artifact store lock.
+        let r = write(&app, "/api/scenarios/run", Some(json!({"scope": []}))).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let session = create_session(&app, json!(["req:a"])).await.json()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // While the provider runs, the workflow, revision and artifact stores stay available.
+        *app.provider.probe.lock().unwrap() = Some((
+            app.router.clone(),
+            vec![
+                format!("/api/sessions/{session}"),
+                "/api/scenarios/scn:pass/run".to_owned(),
+            ],
+        ));
+        for text in ["Employees request leave.", "Managers approve leave."] {
+            let r = turn(&app, &session, text).await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        }
+        assert_eq!(
+            app.provider.probed.lock().unwrap().clone(),
+            Some(Some(vec![StatusCode::OK, StatusCode::OK]))
+        );
+        let received = app.provider.received.lock().unwrap().clone();
+        assert_eq!(received.len(), 2);
+        assert_ne!(received[0].0.id, received[1].0.id);
+        let artifacts = SqliteArtifactStore::open(&app.path).unwrap();
+        for (request, material) in &received {
+            assert_eq!(material.request_hash, request.id);
+            material.validate_for(request).unwrap();
+            assert!(!material.prompt_template.is_empty());
+            let context: Value = serde_json::from_slice(&material.context_json).unwrap();
+            assert!(context.is_object());
+            // persist_inference_bundle stored the very request the provider executed.
+            let stored = artifacts
+                .get(&Hash::content_sha256(&to_canonical_json(request).unwrap()))
+                .unwrap();
+            assert_eq!(stored.kind, ArtifactKind::InferenceRequest);
+            let persisted: InferenceRequest = serde_json::from_slice(&stored.bytes).unwrap();
+            assert_eq!(&persisted, request);
+        }
+        // Each request carries its own material; crossing them is rejected before any work.
+        assert!(validate_binding(&received[0].0, &received[1].1).is_err());
+        // The transcript semantics are unchanged: two committed turns.
+        let turns = workflow(&app).turns(&id(&session)).unwrap();
+        assert_eq!(turns.len(), 2);
+        assert!(turns
+            .iter()
+            .all(|t| t.state == WorkflowTurnState::Committed));
     }
 
     #[tokio::test]

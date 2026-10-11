@@ -43,6 +43,42 @@ mod operation_contract {
         "sha256:68a5a788bc509400759ea64d7301ac0111a726432daae9bc0a9b322c6bd75728";
     const GOLDEN_REQUEST_ID: &str =
         "sha256:3ba5a629e873454b413cad031c32da9a76695e48f30bd98be2ae41e5b3400082";
+
+    /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
+    /// built from the committed prompt and schema bytes and the RFC 8785 context, and
+    /// deterministic. Request, prompt, schema and context identities do not drift.
+    macro_rules! assert_inference_material {
+        ($owner:expr) => {{
+            let owner = &$owner;
+            let inner = &owner.request;
+            assert_eq!(inner.id.as_str(), GOLDEN_REQUEST_ID);
+            assert_eq!(inner.prompt_template_hash.as_str(), PROMPT_HASH);
+            assert_eq!(inner.schema_hash.as_str(), SCHEMA_HASH);
+            assert_eq!(inner.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
+            let material = owner.inference_material().unwrap();
+            assert_eq!(material.request_hash, inner.id);
+            assert_eq!(
+                Hash::content_sha256(&material.context_json),
+                inner.context_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.prompt_template),
+                inner.prompt_template_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.schema_json),
+                inner.schema_hash
+            );
+            assert_eq!(
+                material.context_json,
+                to_canonical_json(&owner.context).unwrap()
+            );
+            assert_eq!(material.prompt_template, PROMPT);
+            assert_eq!(material.schema_json, SCHEMA.as_bytes());
+            material.validate_for(inner).unwrap();
+            assert_eq!(owner.inference_material().unwrap(), material);
+        }};
+    }
     const GOLDEN_OPERATION_ID: &str = "operation:8e5694fe9fe51240";
     const GOLDEN_OUTCOME_ID: &str = "outcome:512acf4c13a0e637";
     const GOLDEN_EVENT_ID: &str = "event:71f955142012d071";
@@ -646,6 +682,7 @@ mod operation_contract {
         let r = request(&g, &golden_scope());
         assert_eq!(r.request.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
         assert_eq!(r.request.id.as_str(), GOLDEN_REQUEST_ID);
+        assert_inference_material!(r);
         assert_eq!(r.request.stage, StageId::S2);
         assert_eq!(r.request.task_kind, "operation_analysis");
         assert_eq!(

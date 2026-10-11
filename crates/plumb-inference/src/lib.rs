@@ -3,7 +3,8 @@
 //! (compiler architecture §§4.3-4.4, 19-20; metamodel §§5.3-5.4).
 //!
 //! X1.1 adds hash-bound in-memory request material for live providers and, behind the
-//! `anthropic` feature, the Anthropic Messages API provider.
+//! `anthropic` feature, the Anthropic Messages API provider. Hotfix 066 binds that material to
+//! every provider call: `execute(request, material)` validates the pair before any work.
 //!
 //! Providers never receive graph, store, commit or artifact-store access. `Agent` and
 //! `DerivationRecord` are the PSG types, re-exported here; no duplicates are defined.
@@ -24,7 +25,8 @@ pub use null::NullProvider;
 pub use plumb_core::{CanonicalJson, StageId};
 pub use plumb_psg::{Agent, AgentKind, DerivationKind, DerivationRecord};
 pub use provider::{
-    InferenceProvider, InferenceRequestMaterial, InferenceRequestMaterialSet, ProviderError,
+    validate_binding, InferenceProvider, InferenceRequestMaterial, InferenceRequestMaterialSet,
+    ProviderError,
 };
 
 #[cfg(feature = "anthropic")]

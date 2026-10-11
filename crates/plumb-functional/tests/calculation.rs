@@ -45,6 +45,42 @@ mod calculation_contract {
         "sha256:370d119628f0aa8aac79656940cf3da034592d6b0eba05ae776cd0787fa49bc7";
     const GOLDEN_REQUEST_ID: &str =
         "sha256:a4d5cefac27295d5708e3040a8873c4770225a8c909e7aae93a7d08f6c266cd6";
+
+    /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
+    /// built from the committed prompt and schema bytes and the RFC 8785 context, and
+    /// deterministic. Request, prompt, schema and context identities do not drift.
+    macro_rules! assert_inference_material {
+        ($owner:expr) => {{
+            let owner = &$owner;
+            let inner = &owner.request;
+            assert_eq!(inner.id.as_str(), GOLDEN_REQUEST_ID);
+            assert_eq!(inner.prompt_template_hash.as_str(), PROMPT_HASH);
+            assert_eq!(inner.schema_hash.as_str(), SCHEMA_HASH);
+            assert_eq!(inner.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
+            let material = owner.inference_material().unwrap();
+            assert_eq!(material.request_hash, inner.id);
+            assert_eq!(
+                Hash::content_sha256(&material.context_json),
+                inner.context_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.prompt_template),
+                inner.prompt_template_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.schema_json),
+                inner.schema_hash
+            );
+            assert_eq!(
+                material.context_json,
+                to_canonical_json(&owner.context).unwrap()
+            );
+            assert_eq!(material.prompt_template, PROMPT);
+            assert_eq!(material.schema_json, SCHEMA.as_bytes());
+            material.validate_for(inner).unwrap();
+            assert_eq!(owner.inference_material().unwrap(), material);
+        }};
+    }
     const GOLDEN_CALCULATION_ID: &str = "calculation:23fc4dc09b5ebff7";
 
     const PROJECT: &str = "project:pilot";
@@ -741,6 +777,7 @@ mod calculation_contract {
         let r = request(&g, &hr_scope());
         assert_eq!(r.request.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
         assert_eq!(r.request.id.as_str(), GOLDEN_REQUEST_ID);
+        assert_inference_material!(r);
         assert_eq!(r.request.stage, StageId::S2);
         assert_eq!(r.request.task_kind, "calculation_analysis");
         assert!(r.request.evidence_refs.is_empty());

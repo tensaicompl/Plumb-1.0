@@ -43,6 +43,42 @@ mod process_contract {
         "sha256:aa37d26fb9772847592ef6d3a10377e37245b864b1316b5e0e7b02236dc355ee";
     const GOLDEN_REQUEST_ID: &str =
         "sha256:b894cf52f9354e42cc11d10e04940136b6fd88c5f92348a5110dfc05b74828a6";
+
+    /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
+    /// built from the committed prompt and schema bytes and the RFC 8785 context, and
+    /// deterministic. Request, prompt, schema and context identities do not drift.
+    macro_rules! assert_inference_material {
+        ($owner:expr) => {{
+            let owner = &$owner;
+            let inner = &owner.request;
+            assert_eq!(inner.id.as_str(), GOLDEN_REQUEST_ID);
+            assert_eq!(inner.prompt_template_hash.as_str(), PROMPT_HASH);
+            assert_eq!(inner.schema_hash.as_str(), SCHEMA_HASH);
+            assert_eq!(inner.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
+            let material = owner.inference_material().unwrap();
+            assert_eq!(material.request_hash, inner.id);
+            assert_eq!(
+                Hash::content_sha256(&material.context_json),
+                inner.context_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.prompt_template),
+                inner.prompt_template_hash
+            );
+            assert_eq!(
+                Hash::content_sha256(&material.schema_json),
+                inner.schema_hash
+            );
+            assert_eq!(
+                material.context_json,
+                to_canonical_json(&owner.context).unwrap()
+            );
+            assert_eq!(material.prompt_template, PROMPT);
+            assert_eq!(material.schema_json, SCHEMA.as_bytes());
+            material.validate_for(inner).unwrap();
+            assert_eq!(owner.inference_material().unwrap(), material);
+        }};
+    }
     const GOLDEN_PROCESS_ID: &str = "process:68053fbc051a5f16";
     const GOLDEN_START_ID: &str = "process_node:6f9da587bf8b2cc9";
     const GOLDEN_APPROVE_ID: &str = "process_node:6384d4d17f06eb04";
@@ -510,6 +546,7 @@ mod process_contract {
         let r = request(&g, &golden_scope(), &["req:r1"]);
         assert_eq!(r.request.context_hash.as_str(), GOLDEN_CONTEXT_HASH);
         assert_eq!(r.request.id.as_str(), GOLDEN_REQUEST_ID);
+        assert_inference_material!(r);
         assert_eq!(r.request.stage, StageId::S2);
         assert_eq!(
             r.request.input_refs,

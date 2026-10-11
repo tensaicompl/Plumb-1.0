@@ -12,7 +12,10 @@ use std::sync::OnceLock;
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, CoreError, Hash, Id, StageId, Timestamp};
 use plumb_import::{SegmentCandidate, SegmentClassification};
-use plumb_inference::{InferenceArtifact, InferenceError, InferenceRequest, ProviderPolicy};
+use plumb_inference::{
+    InferenceArtifact, InferenceError, InferenceRequest, InferenceRequestMaterial, ProviderError,
+    ProviderPolicy,
+};
 use plumb_patch::{AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch};
 use plumb_psg::{
     AuditMeta, DerivationRef, ElementStatus, EvidenceRef, ExtensionKey, Graph, Modality, Node,
@@ -58,6 +61,8 @@ pub enum RequirementCompilationError {
     /// The InferenceRequest could not be constructed.
     #[error("inference request: {0}")]
     InferenceConstruction(#[from] InferenceError),
+    #[error("inference material: {0}")]
+    InferenceMaterial(#[from] ProviderError),
     /// The inference artifact is not valid for the classification request.
     #[error("invalid classification inference artifact: {reason}")]
     InvalidInferenceArtifact { reason: String },
@@ -202,6 +207,20 @@ pub struct RequirementClassificationRequest {
 }
 
 impl RequirementClassificationRequest {
+    /// The exact acquisition material of this request (Hotfix 066): the RFC 8785 canonical
+    /// context and the committed prompt and schema bytes, bound to the request. Pure: no files,
+    /// environment, clock or network.
+    pub fn inference_material(
+        &self,
+    ) -> Result<InferenceRequestMaterial, RequirementCompilationError> {
+        Ok(InferenceRequestMaterial::new(
+            &self.request,
+            to_canonical_json(&self.context)?,
+            PROMPT_TEMPLATE.to_vec(),
+            SCHEMA_SOURCE.as_bytes().to_vec(),
+        )?)
+    }
+
     /// Validates both parts and their binding.
     pub fn new(
         request: InferenceRequest,

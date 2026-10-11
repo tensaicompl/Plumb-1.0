@@ -15,11 +15,13 @@ plumb-sim = { path = "../plumb-sim" }
 plumb-intake = { path = "../plumb-intake" }
 plumb-session = { path = "../plumb-session" }
 plumb-api = { path = "../plumb-api" }
+serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
