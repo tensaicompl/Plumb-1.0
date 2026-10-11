@@ -7097,25 +7097,188 @@ tasks:
   - crates/plumb-session/src/model.rs
   - crates/plumb-session/src/turn.rs
   - crates/plumb-session/tests/turn.rs
+  - prompts/session-turn.md
+  - schemas/inference/session-turn.schema.json
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
-  - Persist each user/assistant turn as SourceArtifact/EvidenceFragment of kind transcript.
-  - Turn pipeline is retrieve -> build bounded context -> create InferenceRequest -> acquire persisted artifact -> validate proposals -> intake
-    -> display.
-  - Session may ask only an existing open Question ID; an invented question ID is rejected.
-  - Every proposal from a turn must cite the user-turn EvidenceFragment or accepted PSG evidence.
-  - Session has no direct graph-write method.
+  - 'Boundary (Hotfix 060). Hotfix 060 replaces the earlier X1.4 actions; where they differ, this contract governs. A
+    session is cross-cutting runtime orchestration around a caller-supplied active compiler stage, not a PSG node and
+    not a new stage: StageId stays S0..S12 and no Session/Chat/X1 stage, PSG node, relation or ArtifactKind is added.
+    plumb-session uses only its existing dependencies (no Cargo change) and composes the X1.1 inference boundary, the
+    X1.2 lexical index, the X1.3 intake and the patch engine. model.rs owns the runtime data contracts, turn.rs the pipeline,
+    lib.rs registers mod model; mod turn; and exports only the intentional X1.4 API. The pipeline is split: prepare_turn
+    (deterministic preparation plus user-transcript artifact persistence) -> external acquisition (the caller runs provider.execute
+    with the plan''s InferenceRequestMaterial and persists the result with the existing persist_inference_bundle) -> inspect_turn_output
+    (persisted-acquisition verification and typed output validation) -> external candidate validation (the caller prepares
+    one IntakeValidationInput per proposal) -> complete_turn (X1.3 intake of every proposal, assistant transcript, display
+    result). Session production code never calls a provider, never re-implements the inference bundle writes, never runs
+    a validation gate and never writes the graph.'
+  - 'Runtime model (Hotfix 060). Session {id, project_ref, scope_refs, assistant_actor_ref} has a fixed deterministic
+    shape; its constructor sorts scope_refs and rejects duplicates. Every turn requires session.project_ref == graph.project_id()
+    and every scope ref to be an Accepted node (missing, Proposed, Suspect, Rejected, Superseded or Deprecated refs are
+    typed errors). SessionUserTurn {text, user_actor_ref, active_stage: StageId, provider_policy: ProviderPolicy}: text
+    must not be whitespace-only and its exact bytes are stored and sent untrimmed. SessionTurnConfig {retrieval_top_k,
+    max_open_questions, max_context_bytes} requires max_context_bytes > 0; zero retrieval_top_k or max_open_questions
+    disables that family. SessionRole is user | assistant. The inference request stage and every model-produced proposal
+    stage equal active_stage.'
+  - Transcript persistence (Hotfix 060). One shared routine materializes a user or assistant turn. It persists the RFC
+    8785 canonical JSON {"version":1,"session_ref","role":"user"|"assistant","actor_ref","timestamp","text"} (exact text)
+    to the ArtifactStore as ArtifactKind::SourceOriginal with media type application/vnd.plumb.transcript+json before
+    any node exists; the store's returned hash (SHA-256 of those exact bytes) is the source content hash, and a store
+    failure is a typed error with no prepared proposal. turn_ref = turn:<first 16 hex of that digest>; the SourceArtifact
+    ID is source_artifact_id(content_hash) and the EvidenceFragment ID evidence_fragment_id(source_id, ConversationTurn
+    {turn_id}). SourceArtifact {source_kind "transcript", display_name "Transcript <turn_ref>", content_hash, media_type
+    application/vnd.plumb.transcript+json, external_uri None, external_version None, producer Some(role), created_at_source
+    Some(timestamp), language None, classification None}; EvidenceFragment {source_ref, locator ConversationTurn {turn_id},
+    content_hash Hash::content_sha256(text bytes), extracted_text Some(text), speaker Some(role), source_timestamp Some(timestamp)};
+    both Accepted, audit created_by actor_ref, created_at timestamp, no update. TranscriptTurn {turn_ref, role, actor_ref,
+    timestamp, source_artifact_ref, source_node_ref, evidence_ref, text} records it.
+  - 'Transcript proposal and idempotency (Hotfix 060). Missing transcript nodes are proposed in one Proposal (AddNode
+    SourceArtifact, then AddNode EvidenceFragment, as a Compound when both are needed) with stage active_stage, base graph.semantic_hash(),
+    no evidence or derivation refs, no confidence, ProposalMateriality::NonSemantic and AcceptancePolicy::AutoNonSemantic.
+    An existing node at a transcript ID is reused only when it is Accepted with exactly the expected payload; any other
+    node there is a typed conflict and is never overwritten. When both nodes already exist exactly there is no proposal
+    and the turn graph is the input graph. A present proposal is run through X1.3 intake with IntakeValidationInput::empty()
+    and must yield no reason code; the transcript-enriched graph is the apply_patch result of that same proposal, held
+    only in memory. Evidence nodes are semantic-hash-excluded, so the semantic hash is unchanged while a new fragment
+    changes the evidence hash. Nothing is committed: future write orchestration may commit the transcript proposal first
+    without changing the semantic hash.'
+  - 'Retrieval and bounded context (Hotfix 060). prepare_turn validates session, turn and config and the scope, reads
+    the clock exactly once, persists and materializes the user transcript, then builds LexicalIndex::build(base graph)
+    (before the current transcript, so the user text does not perturb corpus statistics) and searches it with the exact
+    raw user text and retrieval_top_k (no rewriting, summarization or expansion). SessionContextItem {source: scope |
+    open_question | retrieval, node_ref, node_type, payload} carries only the semantic payload (no audit, tags, extensions,
+    revision, standards or derivations). Candidates in priority order: every scope node by ID (mandatory), then Accepted
+    Question nodes whose payload status is "Open" (with a non-empty scope only those whose context_refs intersect it)
+    by ID, at most max_open_questions, then BM25 hits in X1.2 rank order excluding nodes already selected. max_context_bytes
+    bounds the sum of RFC 8785 canonical byte lengths of the selected items (request metadata and user text excluded):
+    if the scope items do not all fit the result is ContextBudgetExceeded; an optional item that does not fit is skipped
+    whole and later smaller ones may still fit; nothing is truncated or summarized and no token estimate or model-specific
+    behaviour exists. allowed_open_question_refs are the selected open Questions (sorted); allowed_evidence_refs are the
+    user-turn EvidenceFragment plus selected Accepted EvidenceFragment items and the Accepted EvidenceFragment refs in
+    the evidence of selected nodes (sorted, unique).'
+  - 'Inference request (Hotfix 060). SessionInferenceContext {version 1, session_ref, project_ref, profile_ref, base_semantic_hash,
+    active_stage, user_turn_ref, user_evidence_ref, user_text, scope_refs, items, allowed_open_question_refs, allowed_evidence_refs,
+    context_item_bytes} serialized as RFC 8785 canonical JSON is the context_json. pub const SESSION_TURN_TASK_KIND: &str
+    = "session_turn". The prompt prompts/session-turn.md and the schema schemas/inference/session-turn.schema.json (draft
+    2020-12) are committed files included at compile time, with no hidden prefix or suffix; prompt_template_hash and schema_hash
+    are Hash::content_sha256 of their exact bytes and context_hash of the context bytes. The request is InferenceRequest::new(active_stage,
+    "session_turn", every selected item node_ref, allowed_evidence_refs, context_hash, prompt_hash, schema_hash, provider_policy)
+    and the material InferenceRequestMaterial {request_hash: request.id, context_json, prompt_template, schema_json},
+    which must pass validate_for(&request). SessionTurnPlan {session_ref, active_stage, user_turn, user_transcript_proposal,
+    user_transcript_intake, context, request, material} is validated for the material/request binding, the context, prompt
+    and schema hashes, the user evidence in the request evidence refs, the transcript turn, source and evidence IDs, the
+    stage and the session.'
+  - 'Prompt and output contract (Hotfix 060). prompts/session-turn.md is exactly: "You are the Plumb session assistant.\n\nUse
+    only the supplied context and user turn.\n\nReturn only JSON matching the supplied output schema.\n\nDo not invent
+    PSG IDs.\n\nasked_question_ref must be null or one of allowed_open_question_refs.\n\nEvery proposal must be a complete
+    serialized Plumb Proposal for the supplied active_stage and base_semantic_hash.\n\nEvery proposal must cite at least
+    one ID from allowed_evidence_refs in evidence_refs.\n\nSet derivation_refs to an empty array for session proposals
+    in this contract.\n\nDo not use AUTO_DERIVATION.\n\nDo not claim a proposal is accepted, committed, or already present
+    unless the supplied context proves it.\n" (final newline). The schema root requires exactly version (const 1), reply
+    (string, minLength 1), proposals (array, maxItems 20) and asked_question_ref (string or null) with additionalProperties
+    false; each proposal object requires exactly id, stage (S0..S12), patch_set (object; the SemanticPatch schema is not
+    duplicated), evidence_refs and derivation_refs (string arrays, uniqueItems), materiality (non_semantic, semantic,
+    material_decision), acceptance_policy (AUTO_DERIVATION, AUTO_NON_SEMANTIC, HUMAN_CONFIRM, HUMAN_DECISION, PROFILE_POLICY)
+    and confidence (number 0..1 or null), additionalProperties false. Typed Rust deserialization of SessionModelOutput
+    {version, reply, proposals: Vec<Proposal>, asked_question_ref: Option<Id>} (deny_unknown_fields) and Proposal validation
+    stay authoritative. pub const SESSION_MAX_PROPOSALS: usize = 20.'
+  - 'Persisted acquisition verification (Hotfix 060). inspect_turn_output(graph, plan, store, persisted) mutates nothing
+    and accepts no unpersisted output. It validates the plan against the graph and reconstructs the transcript-enriched
+    graph (apply the plan''s transcript proposal in memory, or the graph unchanged) whose semantic hash must equal the
+    plan''s base. It loads all three PersistedInferenceRefs artifacts: request_artifact_ref must be ArtifactKind::InferenceRequest,
+    application/json, and deserialize to an InferenceRequest equal to plan.request; validated_inference_ref must be ArtifactKind::ValidatedInference,
+    application/json, and deserialize to an InferenceArtifact passing validate_for(&plan.request); raw_response_ref must
+    be ArtifactKind::InferenceResponse with valid non-empty media metadata and its hash equals the artifact''s raw_response_hash.
+    A ProviderExecution {artifact, raw_response_media_type, raw_response} is reconstructed only to call validate_for(&plan.request);
+    the provider is never re-executed. Any missing artifact, wrong kind, media type, bytes, request, provider or hash
+    is a typed error and nothing is repaired.'
+  - Model-output validation (Hotfix 060). The validated_output (never the raw response) deserializes to SessionModelOutput;
+    version must be 1, reply must not be whitespace-only and is kept exactly, proposals must number at most SESSION_MAX_PROPOSALS
+    and have distinct IDs (no deduplication), and each proposal must pass proposal.validate(), have stage == active_stage,
+    base_semantic_hash equal to the transcript-enriched and original graph semantic hash, an acceptance policy other than
+    AUTO_DERIVATION and derivation_refs == [] (materializing a DerivationRecord is a separate write and is not authorized;
+    no derivation ID is invented). Each proposal must cite at least one evidence ref; every ref must be in plan.context.allowed_evidence_refs
+    and resolve in the transcript-enriched graph to an Accepted EvidenceFragment, and at least one must be the current
+    user-turn fragment or a fragment already Accepted in the base graph. A Some(asked_question_ref) must be in allowed_open_question_refs
+    and resolve to an Accepted Question with status "Open"; invented, unexposed, Answered, Closed or Superseded questions
+    are rejected without fallback, and the output can never create a Question. Proposals are never rewritten and no evidence
+    is injected into their element envelopes. InspectedSessionOutput {reply, proposals, asked_question_ref} also binds
+    the plan's request identity.
+  - 'Intake and completion (Hotfix 060). plumb-session runs no validation gate. SessionIntakeInputs maps each proposal
+    ID to exactly one IntakeValidationInput (constructor rejects duplicate IDs); completion requires an entry for every
+    inspected proposal and none for unknown IDs, and a caller without candidate GateReports passes IntakeValidationInput::empty()
+    explicitly. Candidate reports are built externally against the transcript-enriched turn graph plus the proposal, and
+    X1.3 checks their binding. complete_turn(graph, session, plan, inspected, intake_inputs, store, clock) re-checks the
+    session, project, stage, base semantic hash, proposal IDs and map coverage, reconstructs the transcript-enriched graph
+    and runs X1.3 intake(turn graph, proposal, input) for every proposal in persisted model order; any failure fails the
+    whole turn with no partial result. Only after every intake succeeds is the clock read once, the assistant reply (exact
+    text) persisted and materialized by the same transcript routine with role assistant and session.assistant_actor_ref,
+    and its transcript proposal (when present) intaken with IntakeValidationInput::empty() against the transcript-enriched
+    user graph. SessionTurnResult {request_ref, persisted_inference, user_turn, user_transcript_proposal, user_transcript_intake,
+    assistant_turn, assistant_transcript_proposal, assistant_transcript_intake, reply, proposals: Vec<SessionProposalCard
+    {proposal, intake}> in model order, asked_question_ref} is display material only.'
+  - 'Write boundary and determinism (Hotfix 060). plumb-session exposes no API taking a GraphStore, RevisionStore, branch
+    or expected head and never commits, accepts, rejects, merges, links, supersedes or creates a ResolutionDecision, even
+    when an intake report requires a reason (future proposal actions use the X1.3 rationale guard). Its only direct writes
+    are immutable transcript source artifacts; inference artifacts arrive through the existing persist_inference_bundle.
+    No network, filesystem, wall clock, provider call, BM25 or intake re-implementation, gate evaluator, summarization
+    or hidden conversation memory exists: only the graph, the session, the current user turn, the selected context and
+    the persisted acquisition drive a turn. Live provider nondeterminism is confined to external acquisition; given equal
+    graph, session, input, config, clock and persisted artifacts, preparation, inspection and completion are repeatable
+    and independent of graph insertion order and scope order.'
+  - Files and tests (Hotfix 060). Only crates/plumb-session/src/lib.rs, model.rs, turn.rs, tests/turn.rs, prompts/session-turn.md,
+    schemas/inference/session-turn.schema.json and, at successful completion, docs/plan/EXECUTION-STATE.yaml change; Cargo
+    files, other crates, ArtifactKind, StageId, the PSG and X1.5 files are untouched. tests/turn.rs (tests under a turn
+    module) uses an in-memory ArtifactStore, FixedClock or a counting clock and MockProvider/ProviderExecution with persist_inference_bundle
+    in test code only (no network). It pins the transcript envelope bytes and SHA-256, turn, source and evidence IDs and
+    every payload field, the transcript proposal policy, semantic/evidence hash behaviour, idempotency and collision,
+    project and scope errors, scope ordering, raw-text retrieval, context priority, mandatory and optional budget behaviour,
+    exact context byte counts, question eligibility, scoping and bounds, the request identity with independently pinned
+    prompt and schema hashes, material validation and two different active stages; every persisted-acquisition failure
+    (other request, each missing artifact, wrong kind, raw mismatch); every output rule (unknown field, blank reply, more
+    than 20 proposals, duplicate ID, wrong stage, stale base, AUTO_DERIVATION, derivation refs, missing, invented, unexposed
+    and valid user or context evidence, valid, invented, unexposed and closed questions, none); intake-map coverage, explicit
+    empty validation, a GateReport carried through X1.3 into the proposal card (a plumb_validation::GateReport value built
+    through its public wire form and bound to the candidate graph, since plumb-validation is not a session dependency),
+    intake failure with no assistant artifact and no assistant clock read, model display order, the assistant transcript
+    contract and clock ordering, graph immutability, determinism, replay and source guards.
   tests:
-  - cargo test -p plumb-session
+  - cargo test -p plumb-session turn
+  - cargo test -p plumb-session --no-fail-fast
   acceptance:
   - Proposal without user-turn/evidence ref is rejected; invented question ID is rejected; context ordering is deterministic.
+  - Each user and assistant turn is a canonical transcript SourceOriginal artifact with deterministic turn, SourceArtifact
+    and EvidenceFragment IDs proposed as Accepted NonSemantic / AUTO_NON_SEMANTIC evidence that leaves the semantic hash
+    unchanged; context is the mandatory scope, scoped open Questions and X1.2 hits of the base graph within an exact canonical
+    byte budget; the InferenceRequest (task session_turn, caller active stage) and its material bind the committed prompt
+    and schema.
+  - inspect_turn_output consumes only verified persisted acquisitions and rejects invalid output, stage, base, AUTO_DERIVATION,
+    derivation refs and unseen evidence or questions; complete_turn runs X1.3 intake for every proposal with explicit
+    per-proposal validation input, then persists the assistant transcript, and no session code calls a provider, evaluates
+    a gate or writes the graph.
   source_refs:
   - SRCREF-FB7BC75809
   - SRCREF-96D5EDE97F
-  forbidden: []
+  forbidden:
+  - Do not add a Session stage, PSG node, relation or ArtifactKind; change the PSG, InferenceRequest, InferenceArtifact,
+    ProviderExecution, the X1.1 provider contract, X1.2 retrieval or X1.3 intake; add Cargo dependencies; call a provider
+    or duplicate persist_inference_bundle in plumb-session; write through a GraphStore or RevisionStore, commit transcript
+    proposals or accept semantic proposals; invent Questions, evidence or DerivationRefs; build a second gate evaluator,
+    BM25 or intake engine; summarize or truncate text; or start X1.5.
   commands:
-  - cargo test -p plumb-session
+  - cargo test -p plumb-session turn
+  - cargo test -p plumb-session --no-fail-fast
+  - cargo test -p plumb-intake --no-fail-fast
+  - cargo test -p plumb-inference --no-fail-fast
+  - cargo test -p plumb-artifacts --no-fail-fast
+  - cargo test -p plumb-patch --no-fail-fast
+  - cargo test -p plumb-psg --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'X1.4: Implement transcript-as-source session pipeline'
 - id: X1.5
   title: Implement asynchronous stage job base-revision protection
