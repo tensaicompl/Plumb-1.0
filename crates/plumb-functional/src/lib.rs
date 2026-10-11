@@ -29,6 +29,8 @@
 //! accepted semantics and explicit derivation inputs, filling only bounded literal slots.
 //! S4.5 proposes deterministic VerificationObligation applicability links from explicit
 //! scope, mode and accepted methods, without D2 planning.
+//! S4.7 materializes deterministic functional pilot projections and reports from the PSG plus a
+//! current supplied F4 GateReport; functional.yaml remains the F0.14 compatibility projection.
 
 pub mod assumption;
 pub mod authorization;
@@ -45,8 +47,10 @@ pub mod model;
 pub mod operation;
 pub mod process;
 pub mod project;
+pub mod projections;
 pub mod question;
 pub mod question_templates;
+mod report;
 pub mod requirements;
 pub mod resolution;
 pub mod round;
@@ -136,6 +140,11 @@ pub use process::{
 pub use project::{
     project_functional_v2, validate_against_schema, validate_metadata, ProjectionError,
     FUNCTIONAL_V2_SCHEMA,
+};
+pub use projections::{
+    project_functional_pilot, DecisionProjectionEntry, FunctionalPilotOutputs, GateReportBinding,
+    PilotProjectionError, ProjectionArtifact, ProjectionArtifactKind, ScenarioProjectionDocument,
+    ScenarioProjectionEntry, SCENARIO_PROJECTION_VERSION,
 };
 pub use question::{
     generate_questions, question_id, route_question, severity_weight, GeneratedQuestion,
