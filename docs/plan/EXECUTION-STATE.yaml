@@ -94,7 +94,7 @@ tasks:
 - id: S4.5
   status: done
 - id: S4.6
-  status: pending
+  status: done
 - id: S4.7
   status: pending
 - id: X1.1

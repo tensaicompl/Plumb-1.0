@@ -12,7 +12,10 @@ use std::fmt;
 use plumb_artifacts::{Artifact, ArtifactKind};
 use plumb_core::{canonical_hash, CoreError, GateId, Hash, HashKind, Id};
 use plumb_lint::{LintInput, LintPolicy, LintTextRange};
-use plumb_psg::{AgentKind, ElementStatus, FindingSeverity, Graph, NodePayload, NodeType};
+use plumb_psg::{
+    AgentKind, ElementStatus, FindingSeverity, Graph, NodePayload, NodeType, Scenario,
+    ScenarioKind, ScenarioRun,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -274,6 +277,10 @@ pub struct ValidationContext {
     /// The deterministic F3 supplemental inputs (Hotfix 049); read only by the F3 rules.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub f3_inputs: Option<F3ValidationInputs>,
+    /// The deterministic F4 supplemental inputs (Hotfix 055); required by F4 and ignored by
+    /// other gates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub f4_inputs: Option<F4ValidationInputs>,
 }
 
 impl ValidationContext {
@@ -318,6 +325,7 @@ impl ValidationContext {
             f1_inputs: None,
             f2_inputs: None,
             f3_inputs: None,
+            f4_inputs: None,
         })
     }
 
@@ -358,6 +366,26 @@ impl ValidationContext {
         inputs.validate_for(graph)?;
         Ok(ValidationContext {
             f3_inputs: Some(inputs),
+            ..self
+        })
+    }
+
+    /// Canonicalizes `inputs`, validates them against `graph` and installs them as the F4
+    /// supplemental inputs.
+    pub fn with_f4_inputs(
+        self,
+        graph: &Graph,
+        inputs: F4ValidationInputs,
+    ) -> Result<ValidationContext, EvaluationError> {
+        let inputs = F4ValidationInputs::new(
+            inputs.applicability,
+            inputs.scenario_type_checks,
+            inputs.scenario_runs,
+            inputs.visible_assumption_refs,
+        );
+        inputs.validate_for(graph)?;
+        Ok(ValidationContext {
+            f4_inputs: Some(inputs),
             ..self
         })
     }
@@ -434,6 +462,19 @@ impl ValidationContext {
             inputs.validate_for(graph)?;
         }
         if let Some(inputs) = &self.f3_inputs {
+            inputs.validate_for(graph)?;
+        }
+        if let Some(inputs) = &self.f4_inputs {
+            if *inputs
+                != F4ValidationInputs::new(
+                    inputs.applicability.clone(),
+                    inputs.scenario_type_checks.clone(),
+                    inputs.scenario_runs.clone(),
+                    inputs.visible_assumption_refs.clone(),
+                )
+            {
+                return Err(invalid("F4 validation inputs are not canonical".into()));
+            }
             inputs.validate_for(graph)?;
         }
         Ok(())
@@ -1232,6 +1273,13 @@ impl EvaluatorRegistry {
         } else {
             None
         };
+
+        // F4 needs its supplemental inputs before any rule runs (Hotfix 055).
+        if gate == GateId::F4 && ctx.f4_inputs.is_none() {
+            return Err(EvaluationError::InvalidContext(
+                "F4 validation inputs are required".into(),
+            ));
+        }
 
         let mut rules = Vec::new();
         let mut findings = Vec::new();
@@ -2235,4 +2283,372 @@ pub(crate) fn governed_markers(graph: &Graph) -> Result<Vec<GovernedMarker>, Str
         });
     }
     Ok(out)
+}
+
+// ============================================================================ F4 supplemental inputs
+
+/// The S4.2 execution contract version bound into every Scenario specification hash.
+pub const F4_EXECUTION_CONTRACT_VERSION: u32 = 1;
+
+/// The S4.3 scenario-trace artifact version F4 accepts.
+pub const F4_SCENARIO_TRACE_VERSION: u64 = 1;
+
+const F4_TRACE_ARTIFACT_FIELDS: [&str; 7] = [
+    "diffs",
+    "model_semantic_hash",
+    "result",
+    "scenario_ref",
+    "specification_hash",
+    "trace",
+    "version",
+];
+
+/// The S4.2 Scenario specification identity (Hotfix 055): the Generic hash of the canonical
+/// JSON of `{execution_contract_version: 1, scenario_ref, scenario}`. An identity binding only;
+/// the Scenario semantics are never decoded here.
+pub fn scenario_specification_hash(
+    scenario_ref: &Id,
+    scenario: &Scenario,
+) -> Result<Hash, CoreError> {
+    canonical_hash(
+        HashKind::Generic,
+        &serde_json::json!({
+            "execution_contract_version": F4_EXECUTION_CONTRACT_VERSION,
+            "scenario_ref": scenario_ref,
+            "scenario": scenario,
+        }),
+    )
+}
+
+/// The Scenario kinds the resolved profile requires for one executable source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F4ExecutableCoverageInput {
+    pub source_ref: Id,
+    /// Empty still requires one representative Scenario.
+    pub required_scenario_kinds: Vec<ScenarioKind>,
+}
+
+/// The resolved verification applicability of the F4 evaluation (from S4.5 and orchestration).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F4ApplicabilityInput {
+    pub source_refs: Vec<Id>,
+    pub executable_source_refs: Vec<Id>,
+    pub in_scope_scenario_refs: Vec<Id>,
+    pub blocking_scenario_refs: Vec<Id>,
+    pub executable_coverage: Vec<F4ExecutableCoverageInput>,
+}
+
+/// The S4.1 type-check status of one Scenario specification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum F4ScenarioTypeStatus {
+    Valid,
+    Invalid { issues: Vec<String> },
+}
+
+/// One content-bound type-check result produced upstream by plumb-functional.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F4ScenarioTypeCheckInput {
+    pub scenario_ref: Id,
+    pub specification_hash: Hash,
+    pub status: F4ScenarioTypeStatus,
+}
+
+/// One current ScenarioRun with the exact S4.3 trace artifact that evidences it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F4ScenarioRunInput {
+    pub run: ScenarioRun,
+    pub trace_artifact_hash: Hash,
+    pub trace_artifact_bytes: Vec<u8>,
+}
+
+// The trace is JSON without floating point produced by the canonical writer.
+impl Eq for F4ScenarioRunInput {}
+
+/// The deterministic F4 supplemental inputs (Hotfix 055).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct F4ValidationInputs {
+    pub applicability: F4ApplicabilityInput,
+    pub scenario_type_checks: Vec<F4ScenarioTypeCheckInput>,
+    pub scenario_runs: Vec<F4ScenarioRunInput>,
+    pub visible_assumption_refs: Vec<Id>,
+}
+
+fn is_confirmed_scenario(node: &plumb_psg::Node) -> bool {
+    matches!(
+        &node.payload,
+        NodePayload::Scenario(s) if s.confirmation_status.as_deref() == Some("Confirmed")
+    ) && node.status == ElementStatus::Accepted
+}
+
+impl F4ValidationInputs {
+    /// Builds canonical inputs: every list sorted (duplicates are kept for validation to reject),
+    /// required kinds and type issues sorted and unique. Construction order is irrelevant.
+    pub fn new(
+        mut applicability: F4ApplicabilityInput,
+        mut scenario_type_checks: Vec<F4ScenarioTypeCheckInput>,
+        mut scenario_runs: Vec<F4ScenarioRunInput>,
+        mut visible_assumption_refs: Vec<Id>,
+    ) -> F4ValidationInputs {
+        applicability.source_refs.sort();
+        applicability.executable_source_refs.sort();
+        applicability.in_scope_scenario_refs.sort();
+        applicability.blocking_scenario_refs.sort();
+        for coverage in &mut applicability.executable_coverage {
+            coverage.required_scenario_kinds.sort();
+            coverage.required_scenario_kinds.dedup();
+        }
+        applicability
+            .executable_coverage
+            .sort_by(|a, b| a.source_ref.cmp(&b.source_ref));
+        for check in &mut scenario_type_checks {
+            if let F4ScenarioTypeStatus::Invalid { issues } = &mut check.status {
+                issues.sort();
+                issues.dedup();
+            }
+        }
+        scenario_type_checks.sort_by(|a, b| a.scenario_ref.cmp(&b.scenario_ref));
+        scenario_runs.sort_by(|a, b| a.run.scenario_ref.cmp(&b.run.scenario_ref));
+        visible_assumption_refs.sort();
+        F4ValidationInputs {
+            applicability,
+            scenario_type_checks,
+            scenario_runs,
+            visible_assumption_refs,
+        }
+    }
+
+    /// Generic SHA-256 of the RFC 8785 canonical JSON of the complete inputs (provenance only).
+    pub fn content_hash(&self) -> Result<Hash, CoreError> {
+        canonical_hash(HashKind::Generic, self)
+    }
+
+    /// The bound type check of an in-scope Scenario.
+    pub fn type_check(&self, scenario_ref: &Id) -> Option<&F4ScenarioTypeCheckInput> {
+        self.scenario_type_checks
+            .binary_search_by(|c| c.scenario_ref.cmp(scenario_ref))
+            .ok()
+            .map(|i| &self.scenario_type_checks[i])
+    }
+
+    /// The current run of a Scenario, if supplied.
+    pub fn scenario_run(&self, scenario_ref: &Id) -> Option<&F4ScenarioRunInput> {
+        self.scenario_runs
+            .binary_search_by(|r| r.run.scenario_ref.cmp(scenario_ref))
+            .ok()
+            .map(|i| &self.scenario_runs[i])
+    }
+
+    /// The required kinds of an executable source.
+    pub fn required_kinds(&self, source_ref: &Id) -> Option<&[ScenarioKind]> {
+        self.applicability
+            .executable_coverage
+            .binary_search_by(|c| c.source_ref.cmp(source_ref))
+            .ok()
+            .map(|i| {
+                self.applicability.executable_coverage[i]
+                    .required_scenario_kinds
+                    .as_slice()
+            })
+    }
+
+    /// Requires canonical, current material bound to `graph`. Malformed or stale material is a
+    /// context error, never a rule result.
+    pub fn validate_for(&self, graph: &Graph) -> Result<(), EvaluationError> {
+        self.validate_inner(graph)
+            .map_err(EvaluationError::InvalidContext)
+    }
+
+    fn validate_inner(&self, graph: &Graph) -> Result<(), String> {
+        let a = &self.applicability;
+        require_strictly_sorted("F4 source", &a.source_refs)?;
+        require_strictly_sorted("F4 executable source", &a.executable_source_refs)?;
+        require_strictly_sorted("F4 in-scope scenario", &a.in_scope_scenario_refs)?;
+        require_strictly_sorted("F4 blocking scenario", &a.blocking_scenario_refs)?;
+        require_strictly_sorted("F4 visible assumption", &self.visible_assumption_refs)?;
+        for source in &a.source_refs {
+            let ok = graph.node(source).is_some_and(|n| {
+                n.status == ElementStatus::Accepted
+                    && matches!(
+                        n.payload.node_type(),
+                        NodeType::Requirement | NodeType::Operation
+                    )
+            });
+            if !ok {
+                return Err(format!(
+                    "F4 source {source} is not an Accepted Requirement or Operation"
+                ));
+            }
+        }
+        let sources: BTreeSet<&Id> = a.source_refs.iter().collect();
+        if let Some(s) = a
+            .executable_source_refs
+            .iter()
+            .find(|s| !sources.contains(s))
+        {
+            return Err(format!("executable source {s} is not an F4 source"));
+        }
+        let coverage: Vec<&Id> = a
+            .executable_coverage
+            .iter()
+            .map(|c| &c.source_ref)
+            .collect();
+        if coverage != a.executable_source_refs.iter().collect::<Vec<_>>() {
+            return Err(
+                "executable coverage must have exactly one entry per executable source".into(),
+            );
+        }
+        for c in &a.executable_coverage {
+            if c.required_scenario_kinds.windows(2).any(|w| w[0] >= w[1]) {
+                return Err(format!(
+                    "required scenario kinds of {} are not sorted and unique",
+                    c.source_ref
+                ));
+            }
+        }
+        for scenario in &a.in_scope_scenario_refs {
+            if !graph.node(scenario).is_some_and(is_confirmed_scenario) {
+                return Err(format!(
+                    "in-scope scenario {scenario} is not an Accepted Confirmed Scenario"
+                ));
+            }
+        }
+        let in_scope: BTreeSet<&Id> = a.in_scope_scenario_refs.iter().collect();
+        if let Some(s) = a
+            .blocking_scenario_refs
+            .iter()
+            .find(|s| !in_scope.contains(s))
+        {
+            return Err(format!("blocking scenario {s} is not in scope"));
+        }
+        let checked: Vec<&Id> = self
+            .scenario_type_checks
+            .iter()
+            .map(|c| &c.scenario_ref)
+            .collect();
+        if checked != a.in_scope_scenario_refs.iter().collect::<Vec<_>>() {
+            return Err("exactly one type check is required per in-scope scenario".into());
+        }
+        for check in &self.scenario_type_checks {
+            if check.specification_hash != current_specification_hash(graph, &check.scenario_ref)? {
+                return Err(format!(
+                    "type check of {} is stale for the current specification",
+                    check.scenario_ref
+                ));
+            }
+            if let F4ScenarioTypeStatus::Invalid { issues } = &check.status {
+                if issues.is_empty() || !issues.iter().all(|i| is_clean_text(i)) {
+                    return Err(format!(
+                        "invalid type check of {} needs clean issues",
+                        check.scenario_ref
+                    ));
+                }
+                require_strictly_sorted("type issue", issues)?;
+            }
+        }
+        let runs: Vec<&Id> = self
+            .scenario_runs
+            .iter()
+            .map(|r| &r.run.scenario_ref)
+            .collect();
+        require_strictly_sorted("F4 scenario run", &runs)?;
+        let semantic_hash = graph.semantic_hash().map_err(|e| e.to_string())?;
+        for run in &self.scenario_runs {
+            validate_f4_run(graph, &semantic_hash, &in_scope, run)?;
+        }
+        for assumption in &self.visible_assumption_refs {
+            let active = graph.node(assumption).is_some_and(|n| {
+                n.status == ElementStatus::Accepted
+                    && matches!(&n.payload, NodePayload::Assumption(a) if a.status == "Accepted")
+            });
+            if !active {
+                return Err(format!(
+                    "visible assumption {assumption} is not an active Accepted Assumption"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn current_specification_hash(graph: &Graph, scenario_ref: &Id) -> Result<Hash, String> {
+    match graph.node(scenario_ref).map(|n| &n.payload) {
+        Some(NodePayload::Scenario(s)) => {
+            scenario_specification_hash(scenario_ref, s).map_err(|e| e.to_string())
+        }
+        _ => Err(format!("{scenario_ref} is not a Scenario")),
+    }
+}
+
+fn json_of<T: Serialize>(value: &T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+fn validate_f4_run(
+    graph: &Graph,
+    semantic_hash: &Hash,
+    in_scope: &BTreeSet<&Id>,
+    input: &F4ScenarioRunInput,
+) -> Result<(), String> {
+    let run = &input.run;
+    let id = &run.scenario_ref;
+    if !in_scope.contains(id) {
+        return Err(format!("scenario run for {id} is outside the F4 scope"));
+    }
+    if run.specification_hash != current_specification_hash(graph, id)? {
+        return Err(format!(
+            "scenario run of {id} is stale for the current specification"
+        ));
+    }
+    if input.trace_artifact_hash.kind() != HashKind::Generic
+        || Hash::content_sha256(&input.trace_artifact_bytes) != input.trace_artifact_hash
+    {
+        return Err(format!(
+            "trace artifact of {id} does not hash to its Generic hash"
+        ));
+    }
+    let body: Value = serde_json::from_slice(&input.trace_artifact_bytes)
+        .map_err(|_| format!("trace artifact of {id} is not JSON"))?;
+    let canonical = plumb_core::to_canonical_json(&body).map_err(|e| e.to_string())?;
+    if canonical != input.trace_artifact_bytes {
+        return Err(format!("trace artifact of {id} is not canonical JSON"));
+    }
+    let Some(object) = body.as_object() else {
+        return Err(format!("trace artifact of {id} is not an object"));
+    };
+    if !object
+        .keys()
+        .map(String::as_str)
+        .eq(F4_TRACE_ARTIFACT_FIELDS)
+    {
+        return Err(format!("trace artifact of {id} has an unexpected envelope"));
+    }
+    if object["version"].as_u64() != Some(F4_SCENARIO_TRACE_VERSION) {
+        return Err(format!("trace artifact of {id} is not version 1"));
+    }
+    let bound = serde_json::from_value::<Hash>(object["model_semantic_hash"].clone())
+        .is_ok_and(|h| &h == semantic_hash);
+    if !bound {
+        return Err(format!(
+            "trace artifact of {id} is for another model baseline"
+        ));
+    }
+    if object["scenario_ref"] != json_of(id)
+        || object["specification_hash"] != json_of(&run.specification_hash)
+        || object["result"] != json_of(&run.result)
+        || object["trace"] != Value::Array(run.trace.clone())
+    {
+        return Err(format!(
+            "trace artifact of {id} does not match its ScenarioRun"
+        ));
+    }
+    if !object["diffs"].is_array() {
+        return Err(format!("trace artifact of {id} has no diff array"));
+    }
+    Ok(())
 }

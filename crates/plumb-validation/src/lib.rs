@@ -18,12 +18,17 @@ pub mod rules;
 pub mod waiver;
 
 pub use evaluator::{
+    scenario_specification_hash, F4_EXECUTION_CONTRACT_VERSION, F4_SCENARIO_TRACE_VERSION,
+};
+pub use evaluator::{
     violation_state, Applicability, EvaluationError, EvaluatorFailure, EvaluatorRegistry,
     F1RequirementValidationInput, F1ValidationInputs, F1VocabularyDependency,
     F1VocabularyResolution, F2CalculationScopeOverride, F2DecisionTableInput, F2InvariantInput,
-    F2ValidationInputs, GateReport, GateResult, GateSummary, RuleEvaluation, RuleEvaluator,
-    RuleResult, ValidationArtifactInput, ValidationContext, ValidationPolicy,
-    EVIDENCE_ARTIFACT_KINDS, F1_ANALYSIS_FINDING_CODES, F2_ANALYSIS_FINDINGS,
+    F2ValidationInputs, F4ApplicabilityInput, F4ExecutableCoverageInput, F4ScenarioRunInput,
+    F4ScenarioTypeCheckInput, F4ScenarioTypeStatus, F4ValidationInputs, GateReport, GateResult,
+    GateSummary, RuleEvaluation, RuleEvaluator, RuleResult, ValidationArtifactInput,
+    ValidationContext, ValidationPolicy, EVIDENCE_ARTIFACT_KINDS, F1_ANALYSIS_FINDING_CODES,
+    F2_ANALYSIS_FINDINGS,
 };
 pub use external::{
     ExternalValidationArtifact, ExternalValidationError, ExternalValidationRequest,
