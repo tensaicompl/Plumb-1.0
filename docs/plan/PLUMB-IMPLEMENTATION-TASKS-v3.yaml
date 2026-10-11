@@ -7649,6 +7649,7 @@ tasks:
   - crates/plumb-api/src/routes/model.rs
   - crates/plumb-api/src/routes/gates.rs
   - crates/plumb-api/tests/http_core.rs
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
   - 'Boundary and ownership (Hotfix 063). Hotfix 063 replaces the earlier A0.2 actions; where they differ, this contract
     governs. A0.2 implements the runtime handlers of exactly 30 of the 72 contract operations (9 POST, 21 GET): get_me,
@@ -7782,15 +7783,16 @@ tasks:
     E_PATCH_REJECTED, E_SEMANTIC_INVARIANT, E_TERM_IDENTITY_CHANGE, E_NO_CHANGE, E_UNREPRESENTABLE_ASSUMPTION_DEFAULT,
     E_DIFF_NO_PARENT; 500: E_INTERNAL for unexpected store, artifact or serialization failures. Subsystem errors keep
     their stable names in details. No HTML, panic text or debug string is a response body.'
-  - 'Files and tests (Hotfix 063). Only the 13 listed files change. tests/http_core.rs covers: exactly the 30 A0.2 operationIds
-    routed and none of the 42 A0.3 operations; If-Match on all 9 POSTs; wrong If-Match 412; a CAS race 412 without retry;
-    every write through intake and the rationale guard; new revision metadata; one exact event only after commit; source
-    upload of md, txt and docx, unsupported media and orphaned artifacts on a forced CAS failure; single-revision reads
-    and ETag; all 9 pageable routes with stable ID order, absent and present limit, cursor canonical lowercase hex, request
-    hash, revision, semantic hash, an evidence-only revision change, wrong request, endpoint, filter or path, invalid
-    cursors and a missing after_id; GateReport freshness and missing gates; all-null readiness; model-version aliases;
-    every filter; model diff by RevisionId; the real exports and their missing-F4 conflict; each write mapping above;
-    and a source guard that route modules contain no direct graph mutation.'
+  - 'Files and tests (Hotfix 063). Only the 14 listed files change (Hotfix 064); docs/plan/EXECUTION-STATE.yaml changes
+    only at successful task completion, setting A0.2 from pending to done and no other task status. tests/http_core.rs
+    covers: exactly the 30 A0.2 operationIds routed and none of the 42 A0.3 operations; If-Match on all 9 POSTs; wrong
+    If-Match 412; a CAS race 412 without retry; every write through intake and the rationale guard; new revision metadata;
+    one exact event only after commit; source upload of md, txt and docx, unsupported media and orphaned artifacts on
+    a forced CAS failure; single-revision reads and ETag; all 9 pageable routes with stable ID order, absent and present
+    limit, cursor canonical lowercase hex, request hash, revision, semantic hash, an evidence-only revision change, wrong
+    request, endpoint, filter or path, invalid cursors and a missing after_id; GateReport freshness and missing gates;
+    all-null readiness; model-version aliases; every filter; model diff by RevisionId; the real exports and their missing-F4
+    conflict; each write mapping above; and a source guard that route modules contain no direct graph mutation.'
   tests:
   - cargo test -p plumb-api http_core
   - cargo test -p plumb-api --no-fail-fast
