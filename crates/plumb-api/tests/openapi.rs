@@ -347,8 +347,8 @@ mod openapi {
         assert!(doc["openapi"].as_str().unwrap().starts_with("3.1"));
         assert_eq!(doc["info"]["title"], "Plumb Modeller API");
         assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(doc["x-plumb-contract-version"], json!(1));
-        assert_eq!(CONTRACT_VERSION, 1);
+        assert_eq!(doc["x-plumb-contract-version"], json!(2));
+        assert_eq!(CONTRACT_VERSION, 2);
         assert!(doc.get("servers").is_none());
         let tags: BTreeSet<String> = doc["tags"]
             .as_array()
@@ -1503,7 +1503,7 @@ mod openapi {
             "# Plumb Pilot API\n\n> Generated from the Rust OpenAPI contract. Do not edit by hand.\n"
         ));
         for needle in [
-            "Contract version 1",
+            "Contract version 2",
             "72 operations",
             "A0.1 defines the pilot contract only; A0.2 and A0.3 provide the runtime handlers.",
             "ETag",
@@ -1514,6 +1514,13 @@ mod openapi {
             "I0, F1, F2, F3 and F4",
             "`base_revision`",
             "the composite is uncalibrated and non-authoritative in the pilot",
+            "`null` means not calculated by the current pilot runtime, not zero",
+            "Cursor v2",
+            "E_CURSOR_REQUEST_MISMATCH",
+            "E_CURSOR_INVALID",
+            "- A0.2: 30 operations (9 POST, 21 GET).",
+            "- A0.3: 42 operations (28 POST, 14 GET).",
+            "A0.3 must not start directly after A0.2",
             "`version` == `revision` and `hash` == `semantic_hash`",
             "D test endpoints are not in the pilot API.",
             "POST calculation edit is not in NOW P-R scope",
@@ -1529,12 +1536,247 @@ mod openapi {
             .filter(|l| l.starts_with("| ") && !l.starts_with("| #"))
             .collect();
         assert_eq!(rows.len(), 72);
-        for (row, (method, path, id)) in rows.iter().zip(INVENTORY) {
+        for ((row, (method, path, id)), spec) in rows.iter().zip(INVENTORY).zip(OPERATIONS.iter()) {
             assert!(
                 row.contains(&format!("| {method} | `{path}` | `{id}` |")),
                 "{row}"
             );
+            assert!(row.ends_with(&format!("| {} |", spec.owner)), "{row}");
         }
+    }
+
+    // ------------------------------------------------------------------ Hotfix 063
+
+    /// The 42 operations deferred to A0.3, written independently of the production table.
+    const A03: [&str; 42] = [
+        "search_model",
+        "run_stage",
+        "get_job",
+        "list_sentences",
+        "accept_sentence",
+        "edit_sentence",
+        "reject_sentence",
+        "split_requirement",
+        "waive_requirement_finding",
+        "mark_requirement_duplicate",
+        "merge_glossary",
+        "get_crud_matrix",
+        "get_calculation_example",
+        "list_rules",
+        "get_rule",
+        "set_rule_cell",
+        "mutate_process_steps",
+        "import_process",
+        "export_process",
+        "list_scenarios",
+        "confirm_scenario",
+        "correct_scenario",
+        "confirm_derived_scenarios",
+        "run_scenarios",
+        "get_scenario_run",
+        "waive_finding",
+        "resolve_assumption",
+        "list_questions",
+        "answer_question",
+        "create_round",
+        "get_round",
+        "intake_proposal",
+        "link_proposal",
+        "merge_proposal",
+        "supersede_proposal",
+        "create_proposal",
+        "reject_proposal",
+        "accept_proposal",
+        "create_session",
+        "create_session_turn",
+        "get_session",
+        "get_session_metrics",
+    ];
+
+    #[test]
+    fn openapi_hotfix_063_ownership() {
+        let count = |owner: &str, method: Option<&str>| {
+            OPERATIONS
+                .iter()
+                .filter(|s| s.owner == owner && method.is_none_or(|m| s.method == m))
+                .count()
+        };
+        assert_eq!(
+            (
+                count("A0.2", None),
+                count("A0.2", Some("POST")),
+                count("A0.2", Some("GET"))
+            ),
+            (30, 9, 21)
+        );
+        assert_eq!(
+            (
+                count("A0.3", None),
+                count("A0.3", Some("POST")),
+                count("A0.3", Some("GET"))
+            ),
+            (42, 28, 14)
+        );
+        assert!(OPERATIONS
+            .iter()
+            .all(|s| s.owner == "A0.2" || s.owner == "A0.3"));
+        let a03: BTreeSet<&str> = OPERATIONS
+            .iter()
+            .filter(|s| s.owner == "A0.3")
+            .map(|s| s.operation_id)
+            .collect();
+        assert_eq!(a03, A03.iter().copied().collect());
+        let a02_posts: BTreeSet<&str> = OPERATIONS
+            .iter()
+            .filter(|s| s.owner == "A0.2" && s.method == "POST")
+            .map(|s| s.operation_id)
+            .collect();
+        assert_eq!(
+            a02_posts,
+            [
+                "create_source",
+                "classify_requirement",
+                "accept_requirement_ears",
+                "confirm_glossary",
+                "edit_glossary",
+                "set_attribute_type",
+                "set_attribute_unit",
+                "set_attribute_class",
+                "confirm_calculation"
+            ]
+            .into_iter()
+            .collect()
+        );
+        let a02_pages: BTreeSet<&str> = OPERATIONS
+            .iter()
+            .filter(|s| s.owner == "A0.2" && s.pageable)
+            .map(|s| s.operation_id)
+            .collect();
+        assert_eq!(
+            a02_pages,
+            [
+                "get_source_spans",
+                "list_requirements",
+                "list_glossary",
+                "list_entities",
+                "list_calculations",
+                "list_processes",
+                "list_findings",
+                "list_assumptions",
+                "list_decisions"
+            ]
+            .into_iter()
+            .collect()
+        );
+        // No operation was added or removed.
+        let doc = doc();
+        assert_eq!(operations(&doc).len(), 72);
+    }
+
+    #[test]
+    fn openapi_hotfix_063_cursor_v2() {
+        let doc = doc();
+        let mut pageable = 0;
+        for (_, path, op) in operations(&doc) {
+            let Some(cursor) = op["parameters"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|p| p["name"] == "cursor")
+            else {
+                continue;
+            };
+            pageable += 1;
+            let description = cursor["description"].as_str().unwrap();
+            assert!(
+                description.contains(
+                    "{\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"}"
+                ),
+                "{path}"
+            );
+            assert!(description.contains("exactly these four fields"), "{path}");
+            assert!(
+                description.contains("E_CURSOR_INVALID")
+                    && description.contains("E_CURSOR_REQUEST_MISMATCH")
+            );
+            // The superseded two-field cursor is gone.
+            assert!(!description.contains("\"after_id\":\"<last-returned-id>\",\"semantic_hash\""));
+            assert!(op["responses"]["409"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("revision or semantic_hash"));
+        }
+        assert_eq!(pageable, 14);
+        assert!(!doc
+            .to_string()
+            .contains("\\\"after_id\\\":\\\"<last-returned-id>\\\",\\\"semantic_hash"));
+    }
+
+    #[test]
+    fn openapi_hotfix_063_wire_corrections() {
+        let doc = doc();
+        let ears = schema(&doc, "AcceptEarsRequest");
+        assert_eq!(ears["required"], json!(["text"]));
+        assert_eq!(ears["properties"]["text"]["type"], "string");
+        assert_eq!(ears["additionalProperties"], false);
+        let sub = schema(&doc, "ReadinessSubScores");
+        let fields = [
+            "clarity",
+            "completeness",
+            "consistency",
+            "verifiability",
+            "confirmation",
+        ];
+        assert_eq!(properties(&doc, "ReadinessSubScores"), set(&fields));
+        for field in fields {
+            assert_eq!(
+                sub["properties"][field]["type"],
+                json!(["number", "null"]),
+                "{field}"
+            );
+            assert!(validate_example(
+                &doc,
+                &component_ref("ReadinessSubScores"),
+                &json!({
+                    "clarity": null, "completeness": null, "consistency": null,
+                    "verifiability": null, "confirmation": null
+                }),
+                "readiness"
+            )
+            .is_ok());
+        }
+        let mut required: Vec<&str> = sub["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        required.sort();
+        let mut expected = fields.to_vec();
+        expected.sort();
+        assert_eq!(required, expected);
+        let readiness = schema(&doc, "Readiness");
+        assert_eq!(
+            properties(&doc, "Readiness"),
+            set(&["overall", "sub", "contributing"])
+        );
+        assert_eq!(
+            readiness["properties"]["overall"]["type"],
+            json!(["number", "null"])
+        );
+        // The all-null runtime readiness validates.
+        assert!(validate_example(&doc, &component_ref("Readiness"), &json!({
+            "overall": null,
+            "sub": {"clarity": null, "completeness": null, "consistency": null, "verifiability": null, "confirmation": null},
+            "contributing": []
+        }), "readiness").is_ok());
+        assert!(validate_example(
+            &doc,
+            &component_ref("AcceptEarsRequest"),
+            &json!({}),
+            "ears"
+        )
+        .is_err());
     }
 
     // ------------------------------------------------------------------ source guards

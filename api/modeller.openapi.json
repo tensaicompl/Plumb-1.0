@@ -3,14 +3,15 @@
     "schemas": {
       "AcceptEarsRequest": {
         "additionalProperties": false,
+        "description": "The exact EARS-normalized statement the caller reviewed. EARS suggestions are not graph\nstate, so the server never rediscovers or regenerates one; the text replaces the current\nstatement through a human-confirm proposal.",
         "properties": {
           "text": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
+        "required": [
+          "text"
+        ],
         "type": "object"
       },
       "AnswerByText": {
@@ -1481,7 +1482,7 @@
       },
       "Readiness": {
         "additionalProperties": false,
-        "description": "Readiness; `overall` is an uncalibrated, non-authoritative pilot composite.",
+        "description": "Readiness; `overall` is an uncalibrated, non-authoritative pilot composite. `null` means not\ncalculated by the current pilot runtime; readiness never influences a gate.",
         "properties": {
           "contributing": {
             "items": {
@@ -1515,26 +1516,42 @@
       },
       "ReadinessSubScores": {
         "additionalProperties": false,
+        "description": "Readiness sub-scores. `null` means not calculated by the current pilot runtime, not zero.",
         "properties": {
           "clarity": {
             "format": "double",
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "completeness": {
             "format": "double",
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "confirmation": {
             "format": "double",
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "consistency": {
             "format": "double",
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "verifiability": {
             "format": "double",
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1602,6 +1619,7 @@
             "$ref": "#/components/schemas/RequirementLinks"
           },
           "lint_findings": {
+            "description": "IDs of the current F1 gate report's findings whose affected refs include this\nrequirement.",
             "items": {
               "type": "string"
             },
@@ -1710,7 +1728,7 @@
             "type": "string"
           },
           "readiness": {
-            "description": "Advisory, uncalibrated readiness.",
+            "description": "Advisory readiness; `null` means not calculated by the current pilot runtime.",
             "format": "double",
             "type": [
               "number",
@@ -1718,6 +1736,7 @@
             ]
           },
           "smells": {
+            "description": "Error-severity lint rule IDs recorded for this requirement by the current F1 gate report\n(F1 evaluates Accepted Requirements only).",
             "items": {
               "type": "string"
             },
@@ -2576,7 +2595,7 @@
         "operationId": "list_assumptions",
         "parameters": [
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -2586,7 +2605,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -2640,7 +2659,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -2756,7 +2775,7 @@
             }
           },
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -2766,7 +2785,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -2819,7 +2838,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -2898,7 +2917,7 @@
             }
           },
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -2908,7 +2927,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -2967,7 +2986,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -3114,7 +3133,7 @@
         "operationId": "list_glossary",
         "parameters": [
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -3124,7 +3143,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -3181,7 +3200,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -3779,7 +3798,7 @@
         "operationId": "list_calculations",
         "parameters": [
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -3789,7 +3808,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -3842,7 +3861,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -4095,7 +4114,7 @@
         "operationId": "list_entities",
         "parameters": [
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -4105,7 +4124,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -4183,7 +4202,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -4309,7 +4328,7 @@
         "operationId": "list_rules",
         "parameters": [
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -4319,7 +4338,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -4390,7 +4409,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -4574,7 +4593,7 @@
             }
           },
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -4584,7 +4603,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -4647,7 +4666,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -4928,7 +4947,7 @@
         "operationId": "list_processes",
         "parameters": [
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -4938,7 +4957,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -5003,7 +5022,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -5949,7 +5968,7 @@
             }
           },
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -5959,7 +5978,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -6017,7 +6036,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -6246,7 +6265,7 @@
             }
           },
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -6256,7 +6275,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -6321,7 +6340,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -6432,7 +6451,9 @@
         "requestBody": {
           "content": {
             "application/json": {
-              "example": {},
+              "example": {
+                "text": "example"
+              },
               "schema": {
                 "$ref": "#/components/schemas/AcceptEarsRequest"
               }
@@ -7048,7 +7069,7 @@
             }
           },
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -7058,7 +7079,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -7117,7 +7138,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -7512,7 +7533,7 @@
             }
           },
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -7522,7 +7543,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -7577,7 +7598,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -8038,7 +8059,7 @@
             }
           },
           {
-            "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+            "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
             "example": "example",
             "in": "query",
             "name": "cursor",
@@ -8048,7 +8069,7 @@
             }
           },
           {
-            "description": "Maximum number of items.",
+            "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
             "example": 1,
             "in": "query",
             "name": "limit",
@@ -8102,7 +8123,7 @@
                 }
               }
             },
-            "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+            "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
           }
         },
         "tags": [
@@ -8255,5 +8276,5 @@
       "name": "export"
     }
   ],
-  "x-plumb-contract-version": 1
+  "x-plumb-contract-version": 2
 }

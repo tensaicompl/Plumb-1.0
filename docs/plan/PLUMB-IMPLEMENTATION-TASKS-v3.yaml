@@ -7636,34 +7636,188 @@ tasks:
   depends_on:
   - A0.1
   files:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/plumb-api/Cargo.toml
+  - crates/plumb-api/src/lib.rs
   - crates/plumb-api/src/state.rs
   - crates/plumb-api/src/error.rs
+  - crates/plumb-api/src/routes/mod.rs
   - crates/plumb-api/src/routes/meta.rs
   - crates/plumb-api/src/routes/sources.rs
   - crates/plumb-api/src/routes/requirements.rs
   - crates/plumb-api/src/routes/model.rs
   - crates/plumb-api/src/routes/gates.rs
-  - crates/plumb-api/src/routes/mod.rs
   - crates/plumb-api/tests/http_core.rs
   steps:
-  - Back handlers with branch head/revision store and typed PSG.
-  - All writes create Proposal/SemanticPatch then pass intake and CAS commit; no handler mutates Graph directly.
-  - Errors use {code,message,details}.
-  - List pagination uses {items,next_cursor}; a non-null cursor is lowercase hex of UTF-8 RFC-8785 canonical JSON exactly `{"after_id":"<last-returned-id>","semantic_hash":"psg:sha256:..."}`;
-    a cursor bound to a different semantic_hash returns HTTP 409/E_CURSOR_BASELINE_CHANGED.
-  - GET reads return ETag equal to semantic_hash.
+  - 'Boundary and ownership (Hotfix 063). Hotfix 063 replaces the earlier A0.2 actions; where they differ, this contract
+    governs. A0.2 implements the runtime handlers of exactly 30 of the 72 contract operations (9 POST, 21 GET): get_me,
+    get_model_version, get_gates, events_websocket, create_source, get_source, get_source_spans, list_requirements, get_requirement,
+    classify_requirement, accept_requirement_ears, list_glossary, confirm_glossary, edit_glossary, list_entities, get_entity,
+    set_attribute_type, set_attribute_unit, set_attribute_class, list_calculations, confirm_calculation, list_processes,
+    get_process, list_findings, list_assumptions, list_decisions, get_requirement_readiness, get_readiness, export_model,
+    get_model_diff. The other 42 operations (search_model, run_stage, get_job, list_sentences, accept_sentence, edit_sentence,
+    reject_sentence, split_requirement, waive_requirement_finding, mark_requirement_duplicate, merge_glossary, get_crud_matrix,
+    get_calculation_example, list_rules, get_rule, set_rule_cell, mutate_process_steps, import_process, export_process,
+    list_scenarios, confirm_scenario, correct_scenario, confirm_derived_scenarios, run_scenarios, get_scenario_run, waive_finding,
+    resolve_assumption, list_questions, answer_question, create_round, get_round, intake_proposal, link_proposal, merge_proposal,
+    supersede_proposal, create_proposal, reject_proposal, accept_proposal, create_session, create_session_turn, get_session,
+    get_session_metrics) belong to A0.3 and are not routed by the A0.2 router. Route ownership: routes/meta.rs get_me,
+    get_model_version, events_websocket; routes/sources.rs create_source, get_source, get_source_spans; routes/requirements.rs
+    list_requirements, get_requirement, classify_requirement, accept_requirement_ears; routes/gates.rs get_gates, get_requirement_readiness,
+    get_readiness; routes/model.rs the glossary, entity, attribute, calculation, process, finding, assumption, decision,
+    export and diff operations; routes/mod.rs composes the Router only. A0.2 builds a reusable Router and adds no main,
+    listener, serve command, static UI, OIDC, CORS or deployment configuration, and exposes no raw Graph, Node, Edge,
+    NodePayload, PatchSet, store or artifact handle. The only dependency changes are the root workspace dependency tower
+    = { version = "0.5", features = ["util"] } (the lock already resolves tower 0.5.3), the plumb-api dependency hex =
+    { workspace = true } (0.4) and the plumb-api dev-dependency tower = { workspace = true }; Cargo.lock changes only
+    mechanically.'
+  - State, branch and identity (Hotfix 063). ApiState owns one explicit BranchName, the SqliteRevisionStore, the artifact
+    store used for source import, the injected identity {user, actor_ref, roles, mode} (user and mode non-empty, actor_ref
+    a valid Id, roles sorted and unique), an injected Clock, the WebSocket broadcast sender, the orchestration-registered
+    GateReports and the validation profile used by projections. There is no global mutable graph, no process-global singleton,
+    no request-local database opened from a path, no environment-derived branch or identity, no OS user lookup, no OIDC
+    or JWT and no invented role policy; GET /api/me returns {user, roles, mode} and actor_ref is provenance only. Every
+    request targets the configured branch; A0.2 adds no branch or project selector.
+  - 'Reads, ETag and pagination (Hotfix 063). Every ordinary GET loads the branch head once and answers entirely from
+    that LoadedRevision (no mixed revisions) with ETag = its semantic_hash. The nine A0.2 pageable operations (get_source_spans,
+    list_requirements, list_glossary, list_entities, list_calculations, list_processes, list_findings, list_assumptions,
+    list_decisions) filter, sort by stable public ID ascending, continue exclusively after the cursor''s after_id and
+    then apply limit; without limit all remaining items are returned with next_cursor null, with limit (>= 1) next_cursor
+    is non-null only when more items remain; no default or maximum. Cursor v2 is the lowercase hex of the UTF-8 RFC 8785
+    JSON with exactly {after_id, request_hash, revision, semantic_hash}: revision is the head RevisionId of the page (semantic_hash
+    is not revision identity: evidence-only revisions keep it while changing page content) and request_hash is the generic
+    SHA-256 of RFC 8785 {operation_id, path: all path parameters as wire strings, query: only the present query parameters
+    other than cursor and limit}. A cursor whose revision or semantic_hash differs from the current head is 409 E_CURSOR_BASELINE_CHANGED;
+    a valid cursor of another request (operation, path or filters) is 400 E_CURSOR_REQUEST_MISMATCH; uppercase or odd-length
+    hex, invalid UTF-8 or JSON, non-canonical bytes, unknown or missing fields, an invalid RevisionId, a wrong hash kind
+    or an after_id absent from the filtered collection is 400 E_CURSOR_INVALID. Nothing is normalized, translated or rebased.'
+  - 'Write pipeline (Hotfix 063). Every A0.2 POST parses and validates input, loads the head once, compares If-Match literally
+    with its semantic_hash (mismatch: 412 with the current revision and semantic_hash), builds the typed proposal against
+    that graph, runs plumb_intake::intake with IntakeValidationInput::empty() (no GateReport is synthesized), enforces
+    plumb_intake::validate_required_rationale and commits with SqliteRevisionStore::commit(branch, expected_head = the
+    loaded RevisionId, patch_set, RevisionWriteMeta {decision_refs: [], created_by: actor_ref, created_at: one Clock read}).
+    A report requiring a reason is 409 E_INTAKE_REASON_REQUIRED with details {proposal_ref, reason_codes} and nothing
+    is committed; none of the nine A0.2 writes is MaterialDecision or HUMAN_DECISION, so a reason arises only from intake
+    findings (exact equivalent, declared conflict, ambiguous term). A patch the engine rejects is 422 E_PATCH_REJECTED.
+    StaleBase from the store is 412 built from the reloaded head, never retried or rebased. Success returns version =
+    revision = the new RevisionId string and the committed semantic_hash (an evidence-only write may keep it) and broadcasts
+    exactly one DesignEvent {kind: the operationId, ids: the sorted unique union of the commit delta''s added, removed
+    and modified nodes and edges, version: the new RevisionId} after the commit and before the response; failed writes
+    and reads emit nothing. Handlers never mutate a Graph directly.'
+  - 'The nine writes (Hotfix 063). create_source: S0 import below. classify_requirement {class}: class must be a RequirementKind
+    wire value (else 400); ReplacePayload of the Requirement with only requirement_kind changed under its element-hash
+    precondition; stage S1, Semantic / HUMAN_CONFIRM (the S1.1 classification precedent). accept_requirement_ears {text}:
+    text is required, non-empty, without surrounding whitespace or control characters (else 400); ReplacePayload changing
+    only statement (the S1.2 precedent); stage S1, Semantic / HUMAN_CONFIRM; no EARS suggestion is looked up or regenerated.
+    confirm_glossary: the Term must be Proposed (else 422 E_SEMANTIC_INVARIANT); SetStatus Proposed -> Accepted; stage
+    S1, Semantic / HUMAN_CONFIRM. edit_glossary {term, aliases?}: term must equal the existing Term.term exactly because
+    it is the S1.4 normalized identity key (else 422 E_TERM_IDENTITY_CHANGE); aliases are clean, unique, differ from term
+    and are stored sorted, an absent or empty list storing none; ReplacePayload of the Term changing only aliases; stage
+    S1, Semantic / HUMAN_CONFIRM. set_attribute_type {type}: type must equal the name of an Accepted Concept of kind value_type
+    (S2.1 derives value types from such Concepts; else 422); ReplacePayload changing only value_type. set_attribute_unit
+    {unit}: unit is clean text; ReplacePayload changing only unit. set_attribute_class {class}: class is exactly pii,
+    financial or confidential (PilotDataClass; else 400) and is set only while data_classification is absent because S2.3
+    never overwrites a classification (else 409 E_ATTRIBUTE_ALREADY_CLASSIFIED); ReplacePayload changing only data_classification.
+    The attribute writes use stage S2, Semantic / HUMAN_CONFIRM, and {id} is the Attribute node ID. confirm_calculation:
+    the Calculation must be Proposed (else 422 E_SEMANTIC_INVARIANT); SetStatus Proposed -> Accepted; stage S2, Semantic
+    / HUMAN_CONFIRM. Proposals carry no evidence or derivation refs and no confidence. A write that changes nothing is
+    422 E_NO_CHANGE; an {id} that is not a node of the operation''s type is 404 E_NOT_FOUND.'
+  - 'Source upload (Hotfix 063). POST /api/sources takes multipart/form-data whose file part has a non-empty filename,
+    used verbatim as display_name (else 400; no generated fallback name), and a content type of exactly text/markdown
+    -> import_markdown, text/plain -> import_plain_text or application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    -> import_docx; anything else is 415 E_UNSUPPORTED_MEDIA_TYPE, with no extension or content sniffing and no second
+    importer after a failure. The importer runs with ImportAudit {created_by: actor_ref, created_at: the write''s Clock
+    read}; its original and extracted artifacts are persisted to the artifact store before the CAS commit and remain as
+    orphaned immutable content-addressed artifacts if the commit fails (never deleted or mutated; the graph is unchanged).
+    The proposal adds the importer''s Accepted SourceArtifact and then its EvidenceFragments in importer order as one
+    Compound, stage S0, NonSemantic / AUTO_NON_SEMANTIC. An existing identical source node is 409 E_SOURCE_EXISTS and
+    a different node at the derived ID is 409 E_SOURCE_CONFLICT. The response adds id (source node ID), hash (its content_hash)
+    and spans_count (fragment count). No segmentation, model call, Requirement or later stage runs.'
+  - 'Read projections, part 1 (Hotfix 063). get_model_version: version = revision = head RevisionId, hash = semantic_hash,
+    evidence_hash. get_gates: the registered GateReports that validate and match the head on baseline_semantic_hash, baseline_evidence_hash,
+    profile_id, profile_hash and rule_pack_hash, ordered I0, F1, F2, F3, F4; gate = report gate, passed = result Pass,
+    findings = sorted finding IDs; 0..5 entries, a missing gate is unevaluated, never failed; stale reports are never
+    presented. events_websocket: a live forward-only server-to-client stream of committed DesignEvents with no history,
+    journal or synthetic initial event; a lagged or closed receiver terminates the socket. get_source: SourceArtifact
+    {id, hash = content_hash, media_type, source_kind}. get_source_spans: the source''s EvidenceFragments {id, source_ref,
+    locator_kind = locator wire kind, start and end for TextRange locators else null, content_hash}. list_requirements
+    / get_requirement: id, text = statement, class = requirement_kind wire value, status = element status, coverage.operations
+    = linked.operations = targets of Proposed or Accepted specified_by edges that are Operations, linked.processes = such
+    targets that are Processes, coverage.scenarios = linked.scenarios = Scenario nodes whose requirement_refs contain
+    the requirement, spans = its evidence refs, readiness = null, ears_suggestion = null (suggestions are not graph state),
+    smells = sorted unique lint rule IDs of the current F1 report''s PLUMB.F1.REQ.QUALITY_FINDINGS_CLEAR evidence entries
+    lint:{rule}:{requirement}:{start}:{end} naming the requirement (error-severity diagnostics of Accepted Requirements),
+    lint_findings = sorted IDs of the current F1 report''s findings whose affected_refs contain it; without a current
+    F1 report these reads are 409 E_GATE_REPORT_UNAVAILABLE. Filters: status (element status wire value), class (requirement_kind
+    wire value), q (non-blank, case-insensitive substring of the statement). list_glossary: Terms {id, term, language,
+    aliases (empty when none), definition_ref, status = element status}.'
+  - 'Read projections, part 2 (Hotfix 063). list_entities / get_entity: Entity nodes {id, name, attributes from Proposed
+    or Accepted has_attribute targets {name, type = value_type, nullable, unit, class = data_classification}, relationships
+    from DomainRelationship nodes whose from_entity is the entity {id, target = to_entity, kind = relationship_kind, cardinality
+    = "<cardinality_from>:<cardinality_to>"}, states = has_state targets, transitions from Transition nodes whose stateful_ref
+    is the entity {from = from_state, to = to_state, operation = its transitions_via target when that is an Operation,
+    else null}, tags = node tags}, each list sorted by ID. list_calculations: {id, name, expr = expression}. list_processes
+    / get_process: name; plumb_validation::process_analysis::analyze_process in AcceptedOnly mode for an Accepted Process
+    and ActiveOverlay otherwise; steps = its node_refs, lanes = sorted unique performed_by targets of those nodes, branches
+    = member nodes of kind exclusive_gateway or parallel_split, validation = sorted unique codes missing_start, missing_end,
+    unreachable:<id>, invalid_terminal:<id>, unresolved_task:<node>, unsupported_node:<node>, boundary_violation:<edge>,
+    node_shape:<node> and <parallel issue kind>:<ref> for each affected ref. list_findings: Finding nodes {id, code, family,
+    severity, status, message, affected_refs, waiver_ref} with exact status, severity, code and family filters. list_assumptions:
+    Assumption nodes with default_value projected only when it is a JSON string, number or boolean; any other stored default
+    is 422 E_UNREPRESENTABLE_ASSUMPTION_DEFAULT naming the assumption. list_decisions: ResolutionDecision nodes {id, proposal_ref,
+    question_ref, decided_by, decided_at, rationale}; by matches decided_by exactly, kind matches the answer marker''s
+    kind string exactly, since is an RFC 3339 lower bound on decided_at (invalid: 400). get_requirement_readiness (404
+    for an unknown Requirement) and get_readiness (group validated): overall and all five sub-scores null and contributing
+    empty until a readiness calculation is frozen; readiness never influences a gate. export_model: functional -> functional.yaml,
+    report -> model-report.md, decisions -> decisions.jsonl, glossary -> glossary.md from plumb_functional::project_functional_pilot(graph,
+    profile, current F4 report); without a current F4 report 409 E_GATE_REPORT_UNAVAILABLE, never a fabricated report.
+    get_model_diff: from and to are RevisionIds; to defaults to the head, from to the parent of to (none: 422 E_DIFF_NO_PARENT;
+    unknown revision: 404); added, removed and modified are the sorted node and edge IDs present only in to, only in from,
+    or in both with different element hashes.'
+  - 'Errors (Hotfix 063). Every error is {code, message, details}; 412 adds the current revision and semantic_hash. 400:
+    malformed path, query, body, header or multipart (E_INVALID_REQUEST), E_CURSOR_INVALID, E_CURSOR_REQUEST_MISMATCH;
+    404: E_NOT_FOUND; 409: E_CURSOR_BASELINE_CHANGED, E_INTAKE_REASON_REQUIRED, E_SOURCE_EXISTS, E_SOURCE_CONFLICT, E_ATTRIBUTE_ALREADY_CLASSIFIED,
+    E_GATE_REPORT_UNAVAILABLE; 412: E_PRECONDITION_FAILED for If-Match and StaleBase; 415: E_UNSUPPORTED_MEDIA_TYPE; 422:
+    E_PATCH_REJECTED, E_SEMANTIC_INVARIANT, E_TERM_IDENTITY_CHANGE, E_NO_CHANGE, E_UNREPRESENTABLE_ASSUMPTION_DEFAULT,
+    E_DIFF_NO_PARENT; 500: E_INTERNAL for unexpected store, artifact or serialization failures. Subsystem errors keep
+    their stable names in details. No HTML, panic text or debug string is a response body.'
+  - 'Files and tests (Hotfix 063). Only the 13 listed files change. tests/http_core.rs covers: exactly the 30 A0.2 operationIds
+    routed and none of the 42 A0.3 operations; If-Match on all 9 POSTs; wrong If-Match 412; a CAS race 412 without retry;
+    every write through intake and the rationale guard; new revision metadata; one exact event only after commit; source
+    upload of md, txt and docx, unsupported media and orphaned artifacts on a forced CAS failure; single-revision reads
+    and ETag; all 9 pageable routes with stable ID order, absent and present limit, cursor canonical lowercase hex, request
+    hash, revision, semantic hash, an evidence-only revision change, wrong request, endpoint, filter or path, invalid
+    cursors and a missing after_id; GateReport freshness and missing gates; all-null readiness; model-version aliases;
+    every filter; model diff by RevisionId; the real exports and their missing-F4 conflict; each write mapping above;
+    and a source guard that route modules contain no direct graph mutation.'
   tests:
   - cargo test -p plumb-api http_core
+  - cargo test -p plumb-api --no-fail-fast
   acceptance:
   - Wrong If-Match returns 412; pagination returns next_cursor; no handler bypasses patch commit path in tests.
+  - 'Exactly the 30 A0.2 operations are routed over one explicit branch: reads answer from one loaded revision with ETag
+    and cursor-v2 pagination bound to revision and request, and the nine writes go through If-Match, the existing intake
+    and rationale guard and the store''s CAS commit, emitting one exact DesignEvent per commit.'
+  - Every response field comes from the PSG, typed relations, existing projections or current GateReports, or is the explicitly
+    frozen null or typed conflict (readiness, EARS suggestion, missing gate reports); nothing is fabricated and no A0.3
+    operation is implemented.
   source_refs:
   - SRCREF-E08AB8CE58
   - SRCREF-48A9B980DD
-  forbidden: []
+  forbidden:
+  - Do not route any A0.3 operation, map Requirements to Sentences, add PSG node types, patch primitives or non-API production
+    code, copy private identity algorithms, build domain compilers in handlers, synthesize validation inputs or GateReports,
+    fabricate field values, mutate a Graph directly, retry or rebase writes, add dependencies beyond tower and hex, or
+    add a server binary, OIDC or branch selector.
   commands:
   - cargo test -p plumb-api http_core
+  - cargo test -p plumb-api --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'A0.2: Implement source, requirement, model and gate HTTP handlers'
 - id: A0.3
   title: Implement questions, proposals, sessions, scenarios and jobs HTTP handlers
@@ -7678,7 +7832,22 @@ tasks:
   - crates/plumb-api/src/routes/scenarios.rs
   - crates/plumb-api/src/routes/jobs.rs
   - crates/plumb-api/tests/http_workflow.rs
+  - crates/plumb-api/src/routes/mod.rs
+  - crates/plumb-api/src/routes/sentences.rs
   steps:
+  - 'Ownership and implementation gate (Hotfix 063). A0.3 owns exactly 42 contract operations (28 POST, 14 GET): search_model,
+    run_stage, get_job, list_sentences, accept_sentence, edit_sentence, reject_sentence, split_requirement, waive_requirement_finding,
+    mark_requirement_duplicate, merge_glossary, get_crud_matrix, get_calculation_example, list_rules, get_rule, set_rule_cell,
+    mutate_process_steps, import_process, export_process, list_scenarios, confirm_scenario, correct_scenario, confirm_derived_scenarios,
+    run_scenarios, get_scenario_run, waive_finding, resolve_assumption, list_questions, answer_question, create_round,
+    get_round, intake_proposal, link_proposal, merge_proposal, supersede_proposal, create_proposal, reject_proposal, accept_proposal,
+    create_session, create_session_turn, get_session, get_session_metrics. A0.3 MUST NOT start directly after A0.2: before
+    A0.3 implementation, a separate contract-freeze hotfix must resolve the deferred compatibility semantics, supporting
+    domain services and tests, including at least search path and snippet, requirement split identity, duplicate governance,
+    waivers versus the X1.3 rationale guard, Term merge governance, Sentence compatibility (there is no v3 Sentence node
+    type), CRUD create/update/delete semantics, the calculation-example adapter, DecisionTable encoding and the rule endpoints,
+    process-step mutation, Mermaid import and export, and assumption resolution; that freeze also completes this write
+    allowlist. Pageable A0.3 operations use the shared cursor v2 contract. Nothing here is solved by Hotfix 063.'
   - Implement endpoint behavior exactly from v2 §5 through PSG-backed services.
   - Question answer returns proposal_id, intake and patch_preview before commit action.
   - Proposal accept/link/merge/supersede/create/reject uses intake result and ResolutionDecision semantics.
@@ -7729,7 +7898,7 @@ tasks:
   phase: UI
   scope: NOW
   depends_on:
-  - A0.1
+  - A0.3
   files:
   - ui/package.json
   - ui/package-lock.json
@@ -7745,13 +7914,16 @@ tasks:
   - ui/src/i18n/en.json
   - ui/src/i18n/pl.json
   steps:
-  - Use React 19, TypeScript strict, Vite, TanStack Router/Query, Zustand view-state only, Radix, Tailwind, ELK.js, openapi-fetch, openapi-typescript,
-    MSW, Playwright, axe and the v2 dependency set.
+  - Use React 19, TypeScript strict, Vite, TanStack Router/Query, Zustand view-state only, Radix, Tailwind, ELK.js, openapi-fetch,
+    openapi-typescript, MSW, Playwright, axe and the v2 dependency set.
   - Generate schema.d.ts from api/modeller.openapi.json; never hand-edit it.
   - Configure hard-coded JSX string lint except test files and i18n infrastructure.
-  - 'Set package.json scripts exactly to: "typecheck": "tsc --noEmit"; "lint": "eslint ."; "test": "vitest run"; "e2e": "playwright test"; "api:generate":
-    "openapi-typescript ../api/modeller.openapi.json -o src/api/schema.d.ts"; "api:check": "openapi-typescript ../api/modeller.openapi.json -o
-    /tmp/plumb-schema.d.ts && cmp -s /tmp/plumb-schema.d.ts src/api/schema.d.ts".'
+  - 'Set package.json scripts exactly to: "typecheck": "tsc --noEmit"; "lint": "eslint ."; "test": "vitest run"; "e2e":
+    "playwright test"; "api:generate": "openapi-typescript ../api/modeller.openapi.json -o src/api/schema.d.ts"; "api:check":
+    "openapi-typescript ../api/modeller.openapi.json -o /tmp/plumb-schema.d.ts && cmp -s /tmp/plumb-schema.d.ts src/api/schema.d.ts".'
+  - Ordering (Hotfix 063). U0.1 depends on A0.3 because the generated client must come from the final pilot contract and
+    the A0.3 compatibility semantics may still change in their pre-A0.3 contract freeze; every later UI task follows U0.1
+    and therefore A0.3.
   tests:
   - cd ui && npm ci && npm run api:generate && npm run api:check && npm run typecheck && npm run lint && npm run test
   acceptance:

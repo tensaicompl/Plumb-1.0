@@ -14,7 +14,7 @@ use thiserror::Error;
 use utoipa::{OpenApi, ToSchema};
 
 /// The contract version recorded as `x-plumb-contract-version`.
-pub const CONTRACT_VERSION: u64 = 1;
+pub const CONTRACT_VERSION: u64 = 2;
 
 const FIXTURE_CONTRACT: &str = include_str!("../../../fixtures/hr-leave/fixture-contract.yaml");
 const COMPONENT_PREFIX: &str = "#/components/schemas/";
@@ -54,6 +54,8 @@ pub struct OperationSpec {
     pub tag: &'static str,
     /// Returns `Page {items, next_cursor}` and takes `cursor` and `limit`.
     pub pageable: bool,
+    /// The implementation task that owns the runtime handler (Hotfix 063).
+    pub owner: &'static str,
 }
 
 const fn op(
@@ -63,6 +65,7 @@ const fn op(
     operation_id: &'static str,
     tag: &'static str,
     pageable: bool,
+    owner: &'static str,
 ) -> OperationSpec {
     OperationSpec {
         number,
@@ -71,13 +74,14 @@ const fn op(
         operation_id,
         tag,
         pageable,
+        owner,
     }
 }
 
 /// The 72 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
 /// accept.
 pub const OPERATIONS: [OperationSpec; 72] = [
-    op(1, "GET", "/api/me", "get_me", "meta", false),
+    op(1, "GET", "/api/me", "get_me", "meta", false, "A0.2"),
     op(
         2,
         "GET",
@@ -85,11 +89,36 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_model_version",
         "meta",
         false,
+        "A0.2",
     ),
-    op(3, "GET", "/api/gates", "get_gates", "meta", false),
-    op(4, "GET", "/api/search", "search_model", "meta", true),
-    op(5, "GET", "/api/events", "events_websocket", "meta", false),
-    op(6, "POST", "/api/sources", "create_source", "sources", false),
+    op(3, "GET", "/api/gates", "get_gates", "meta", false, "A0.2"),
+    op(
+        4,
+        "GET",
+        "/api/search",
+        "search_model",
+        "meta",
+        true,
+        "A0.3",
+    ),
+    op(
+        5,
+        "GET",
+        "/api/events",
+        "events_websocket",
+        "meta",
+        false,
+        "A0.2",
+    ),
+    op(
+        6,
+        "POST",
+        "/api/sources",
+        "create_source",
+        "sources",
+        false,
+        "A0.2",
+    ),
     op(
         7,
         "GET",
@@ -97,6 +126,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_source",
         "sources",
         false,
+        "A0.2",
     ),
     op(
         8,
@@ -105,6 +135,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_source_spans",
         "sources",
         true,
+        "A0.2",
     ),
     op(
         9,
@@ -113,8 +144,17 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "run_stage",
         "stages",
         false,
+        "A0.3",
     ),
-    op(10, "GET", "/api/jobs/{id}", "get_job", "stages", false),
+    op(
+        10,
+        "GET",
+        "/api/jobs/{id}",
+        "get_job",
+        "stages",
+        false,
+        "A0.3",
+    ),
     op(
         11,
         "GET",
@@ -122,6 +162,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_requirements",
         "requirements",
         true,
+        "A0.2",
     ),
     op(
         12,
@@ -130,6 +171,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_requirement",
         "requirements",
         false,
+        "A0.2",
     ),
     op(
         13,
@@ -138,6 +180,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "classify_requirement",
         "requirements",
         false,
+        "A0.2",
     ),
     op(
         14,
@@ -146,6 +189,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "accept_requirement_ears",
         "requirements",
         false,
+        "A0.2",
     ),
     op(
         15,
@@ -154,6 +198,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "split_requirement",
         "requirements",
         false,
+        "A0.3",
     ),
     op(
         16,
@@ -162,6 +207,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "waive_requirement_finding",
         "requirements",
         false,
+        "A0.3",
     ),
     op(
         17,
@@ -170,6 +216,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "mark_requirement_duplicate",
         "requirements",
         false,
+        "A0.3",
     ),
     op(
         18,
@@ -178,6 +225,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_glossary",
         "glossary",
         true,
+        "A0.2",
     ),
     op(
         19,
@@ -186,6 +234,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "confirm_glossary",
         "glossary",
         false,
+        "A0.2",
     ),
     op(
         20,
@@ -194,6 +243,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "edit_glossary",
         "glossary",
         false,
+        "A0.2",
     ),
     op(
         21,
@@ -202,6 +252,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "merge_glossary",
         "glossary",
         false,
+        "A0.3",
     ),
     op(
         22,
@@ -210,6 +261,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_sentences",
         "sentences",
         true,
+        "A0.3",
     ),
     op(
         23,
@@ -218,6 +270,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "accept_sentence",
         "sentences",
         false,
+        "A0.3",
     ),
     op(
         24,
@@ -226,6 +279,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "edit_sentence",
         "sentences",
         false,
+        "A0.3",
     ),
     op(
         25,
@@ -234,6 +288,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "reject_sentence",
         "sentences",
         false,
+        "A0.3",
     ),
     op(
         26,
@@ -242,6 +297,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_entities",
         "entities",
         true,
+        "A0.2",
     ),
     op(
         27,
@@ -250,6 +306,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_entity",
         "entities",
         false,
+        "A0.2",
     ),
     op(
         28,
@@ -258,6 +315,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_crud_matrix",
         "entities",
         false,
+        "A0.3",
     ),
     op(
         29,
@@ -266,6 +324,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "set_attribute_type",
         "entities",
         false,
+        "A0.2",
     ),
     op(
         30,
@@ -274,6 +333,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "set_attribute_unit",
         "entities",
         false,
+        "A0.2",
     ),
     op(
         31,
@@ -282,6 +342,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "set_attribute_class",
         "entities",
         false,
+        "A0.2",
     ),
     op(
         32,
@@ -290,6 +351,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_calculations",
         "calculations",
         true,
+        "A0.2",
     ),
     op(
         33,
@@ -298,6 +360,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_calculation_example",
         "calculations",
         false,
+        "A0.3",
     ),
     op(
         34,
@@ -306,8 +369,17 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "confirm_calculation",
         "calculations",
         false,
+        "A0.2",
     ),
-    op(35, "GET", "/api/model/rules", "list_rules", "rules", true),
+    op(
+        35,
+        "GET",
+        "/api/model/rules",
+        "list_rules",
+        "rules",
+        true,
+        "A0.3",
+    ),
     op(
         36,
         "GET",
@@ -315,6 +387,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_rule",
         "rules",
         false,
+        "A0.3",
     ),
     op(
         37,
@@ -323,6 +396,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "set_rule_cell",
         "rules",
         false,
+        "A0.3",
     ),
     op(
         38,
@@ -331,6 +405,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_processes",
         "processes",
         true,
+        "A0.2",
     ),
     op(
         39,
@@ -339,6 +414,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_process",
         "processes",
         false,
+        "A0.2",
     ),
     op(
         40,
@@ -347,6 +423,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "mutate_process_steps",
         "processes",
         false,
+        "A0.3",
     ),
     op(
         41,
@@ -355,6 +432,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "import_process",
         "processes",
         false,
+        "A0.3",
     ),
     op(
         42,
@@ -363,6 +441,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "export_process",
         "processes",
         false,
+        "A0.3",
     ),
     op(
         43,
@@ -371,6 +450,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_scenarios",
         "scenarios",
         true,
+        "A0.3",
     ),
     op(
         44,
@@ -379,6 +459,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "confirm_scenario",
         "scenarios",
         false,
+        "A0.3",
     ),
     op(
         45,
@@ -387,6 +468,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "correct_scenario",
         "scenarios",
         false,
+        "A0.3",
     ),
     op(
         46,
@@ -395,6 +477,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "confirm_derived_scenarios",
         "scenarios",
         false,
+        "A0.3",
     ),
     op(
         47,
@@ -403,6 +486,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "run_scenarios",
         "scenarios",
         false,
+        "A0.3",
     ),
     op(
         48,
@@ -411,6 +495,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_scenario_run",
         "scenarios",
         false,
+        "A0.3",
     ),
     op(
         49,
@@ -419,6 +504,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_findings",
         "findings",
         true,
+        "A0.2",
     ),
     op(
         50,
@@ -427,6 +513,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "waive_finding",
         "findings",
         false,
+        "A0.3",
     ),
     op(
         51,
@@ -435,6 +522,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_assumptions",
         "assumptions",
         true,
+        "A0.2",
     ),
     op(
         52,
@@ -443,6 +531,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "resolve_assumption",
         "assumptions",
         false,
+        "A0.3",
     ),
     op(
         53,
@@ -451,6 +540,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_questions",
         "questions",
         true,
+        "A0.3",
     ),
     op(
         54,
@@ -459,6 +549,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "answer_question",
         "questions",
         false,
+        "A0.3",
     ),
     op(
         55,
@@ -467,6 +558,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "create_round",
         "questions",
         false,
+        "A0.3",
     ),
     op(
         56,
@@ -475,6 +567,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_round",
         "questions",
         false,
+        "A0.3",
     ),
     op(
         57,
@@ -483,6 +576,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "intake_proposal",
         "proposals",
         false,
+        "A0.3",
     ),
     op(
         58,
@@ -491,6 +585,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "link_proposal",
         "proposals",
         false,
+        "A0.3",
     ),
     op(
         59,
@@ -499,6 +594,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "merge_proposal",
         "proposals",
         false,
+        "A0.3",
     ),
     op(
         60,
@@ -507,6 +603,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "supersede_proposal",
         "proposals",
         false,
+        "A0.3",
     ),
     op(
         61,
@@ -515,6 +612,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "create_proposal",
         "proposals",
         false,
+        "A0.3",
     ),
     op(
         62,
@@ -523,6 +621,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "reject_proposal",
         "proposals",
         false,
+        "A0.3",
     ),
     op(
         63,
@@ -531,6 +630,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "accept_proposal",
         "proposals",
         false,
+        "A0.3",
     ),
     op(
         64,
@@ -539,6 +639,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "create_session",
         "sessions",
         false,
+        "A0.3",
     ),
     op(
         65,
@@ -547,6 +648,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "create_session_turn",
         "sessions",
         false,
+        "A0.3",
     ),
     op(
         66,
@@ -555,6 +657,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_session",
         "sessions",
         false,
+        "A0.3",
     ),
     op(
         67,
@@ -563,6 +666,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_session_metrics",
         "sessions",
         false,
+        "A0.3",
     ),
     op(
         68,
@@ -571,6 +675,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "list_decisions",
         "decisions",
         true,
+        "A0.2",
     ),
     op(
         69,
@@ -579,6 +684,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_requirement_readiness",
         "readiness",
         false,
+        "A0.2",
     ),
     op(
         70,
@@ -587,6 +693,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_readiness",
         "readiness",
         false,
+        "A0.2",
     ),
     op(
         71,
@@ -595,6 +702,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "export_model",
         "export",
         false,
+        "A0.2",
     ),
     op(
         72,
@@ -603,6 +711,7 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "get_model_diff",
         "export",
         false,
+        "A0.2",
     ),
 ];
 
@@ -859,9 +968,11 @@ pub struct RequirementSummary {
     pub text: String,
     pub class: String,
     pub status: String,
+    /// Error-severity lint rule IDs recorded for this requirement by the current F1 gate report
+    /// (F1 evaluates Accepted Requirements only).
     pub smells: Vec<String>,
     pub coverage: RequirementCoverage,
-    /// Advisory, uncalibrated readiness.
+    /// Advisory readiness; `null` means not calculated by the current pilot runtime.
     pub readiness: Option<f64>,
 }
 page!(RequirementPage, RequirementSummary);
@@ -885,6 +996,8 @@ pub struct RequirementDetail {
     pub coverage: RequirementCoverage,
     pub readiness: Option<f64>,
     pub spans: Vec<String>,
+    /// IDs of the current F1 gate report's findings whose affected refs include this
+    /// requirement.
     pub lint_findings: Vec<String>,
     pub ears_suggestion: Option<String>,
     pub linked: RequirementLinks,
@@ -896,10 +1009,13 @@ pub struct ClassifyRequest {
     pub class: String,
 }
 
+/// The exact EARS-normalized statement the caller reviewed. EARS suggestions are not graph
+/// state, so the server never rediscovers or regenerates one; the text replaces the current
+/// statement through a human-confirm proposal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptEarsRequest {
-    pub text: Option<String>,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1462,17 +1578,24 @@ pub struct Decision {
 }
 page!(DecisionPage, Decision);
 
+/// Readiness sub-scores. `null` means not calculated by the current pilot runtime, not zero.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadinessSubScores {
-    pub clarity: f64,
-    pub completeness: f64,
-    pub consistency: f64,
-    pub verifiability: f64,
-    pub confirmation: f64,
+    #[schema(required = true)]
+    pub clarity: Option<f64>,
+    #[schema(required = true)]
+    pub completeness: Option<f64>,
+    #[schema(required = true)]
+    pub consistency: Option<f64>,
+    #[schema(required = true)]
+    pub verifiability: Option<f64>,
+    #[schema(required = true)]
+    pub confirmation: Option<f64>,
 }
 
-/// Readiness; `overall` is an uncalibrated, non-authoritative pilot composite.
+/// Readiness; `overall` is an uncalibrated, non-authoritative pilot composite. `null` means not
+/// calculated by the current pilot runtime; readiness never influences a gate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Readiness {
@@ -2521,20 +2644,20 @@ fn apply_http_contract(doc: &mut Value) -> Result<(), OpenApiContractError> {
                 "name": "cursor",
                 "in": "query",
                 "required": false,
-                "description": "Opaque cursor from next_cursor: lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}.",
+                "description": "Opaque cursor from next_cursor (cursor v2): lowercase hex of the UTF-8 RFC 8785 JSON {\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"} with exactly these four fields. revision is the branch-head RevisionId of the page; request_hash is the generic SHA-256 of the RFC 8785 JSON {operation_id, path, query} of the request (all path parameters, only present query parameters other than cursor and limit). A malformed or non-canonical cursor is 400 E_CURSOR_INVALID and a cursor of another request is 400 E_CURSOR_REQUEST_MISMATCH.",
                 "schema": {"type": "string"}
             }));
             parameters.push(json!({
                 "name": "limit",
                 "in": "query",
                 "required": false,
-                "description": "Maximum number of items.",
+                "description": "Maximum number of items (at least 1). Absent: all remaining items and next_cursor null.",
                 "schema": {"type": "integer", "minimum": 1}
             }));
             responses_mut(operation)?.insert(
                 "409".to_owned(),
                 json!({
-                    "description": "Conflict: the cursor was issued for another semantic_hash (E_CURSOR_BASELINE_CHANGED).",
+                    "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED).",
                     "content": {"application/json": {"schema": component_ref("CursorConflictResponse")}}
                 }),
             );
@@ -2723,11 +2846,13 @@ An operation listed here is not operational until its handler task is done.\n\n"
         "Every `POST` (including dry-run intake, stage runs and session creation and turns) requires an `If-Match` header with the current `semantic_hash`. A mismatch returns `412 Precondition Failed` with `code`, `message`, `details` and the current branch-head `revision` and `semantic_hash`.",
         "Every successful write returns `version`, `revision`, `semantic_hash` and `events` (DesignEvent `{kind, ids, version}`); `version` is the compatibility alias of `revision`. Endpoint-specific results add fields to these four.",
         "`GET /api/model/version` returns `version`, `hash`, `revision`, `semantic_hash` and `evidence_hash`, where `version` == `revision` and `hash` == `semantic_hash`.",
-        "Paged lists return `{items, next_cursor}` and accept `cursor` and `limit` (minimum 1). A non-null cursor is the lowercase hex of the UTF-8 RFC 8785 JSON `{\"after_id\":\"<last-returned-id>\",\"semantic_hash\":\"psg:sha256:...\"}`; a cursor issued for another `semantic_hash` returns `409` with `E_CURSOR_BASELINE_CHANGED`.",
+        "Paged lists return `{items, next_cursor}` and accept `cursor` and `limit` (minimum 1). Items are filtered, sorted by stable public ID ascending, continued exclusively after the cursor's `after_id` and then limited; without `limit` all remaining items are returned and `next_cursor` is null.",
+        "Cursor v2: a non-null cursor is the lowercase hex of the UTF-8 RFC 8785 JSON `{\"after_id\":\"<last-returned-id>\",\"request_hash\":\"sha256:...\",\"revision\":\"rev:...\",\"semantic_hash\":\"psg:sha256:...\"}`. `revision` is the branch-head revision of the page: `semantic_hash` is not a revision identity, and evidence-only revisions can change page content while keeping it. `request_hash` is the generic SHA-256 of the RFC 8785 JSON `{operation_id, path, query}` (all path parameters; only the present query parameters other than `cursor` and `limit`). Another revision or semantic hash returns `409` `E_CURSOR_BASELINE_CHANGED`; another request returns `400` `E_CURSOR_REQUEST_MISMATCH`; a malformed or non-canonical cursor returns `400` `E_CURSOR_INVALID`.",
         "`/api/events` is a WebSocket upgrade endpoint; the OpenAPI GET operation exists for compatibility/documentation and must not be treated as an ordinary JSON GET call. Server messages are DesignEvent (`x-plumb-websocket`).",
         "`GET /api/gates` reports the NOW gates I0, F1, F2, F3 and F4 in this order (`x-plumb-gate-order`); later gates are not in the NOW API.",
         "Stage jobs report `status` (queued, acquiring, evaluating, ready, stale, failed, committed) and the `base_revision` they captured; `stale` is a status, and stale output is never committed directly.",
-        "Readiness `overall` is nullable and advisory: the composite is uncalibrated and non-authoritative in the pilot; the sub-scores are clarity, completeness, consistency, verifiability and confirmation.",
+        "Readiness `overall` and the sub-scores clarity, completeness, consistency, verifiability and confirmation are nullable and advisory: the composite is uncalibrated and non-authoritative in the pilot. `null` means not calculated by the current pilot runtime, not zero; readiness never influences a gate.",
+        "`POST /api/requirements/{id}/accept-ears` requires `text`: the exact EARS-normalized statement the caller reviewed. EARS suggestions are not graph state and are never rediscovered by the server.",
         "Examples come from `fixtures/hr-leave/fixture-contract.yaml` (requirement HR-001, entity ApprovalRecord, calculation AnnualBalanceDelta, rule AnnualLeaveEligibility, process CancelApprovedLeave) or from the deterministic schema fallback.",
     ] {
         out.push_str(&format!("- {line}\n"));
@@ -2742,13 +2867,29 @@ An operation listed here is not operational until its handler task is done.\n\n"
     ] {
         out.push_str(&format!("- {line}\n"));
     }
+    let owned = |owner: &str, method: &str| {
+        OPERATIONS
+            .iter()
+            .filter(|s| s.owner == owner && (method.is_empty() || s.method == method))
+            .count()
+    };
+    out.push_str("\n## Implementation ownership\n\n");
+    for owner in ["A0.2", "A0.3"] {
+        out.push_str(&format!(
+            "- {owner}: {} operations ({} POST, {} GET).\n",
+            owned(owner, ""),
+            owned(owner, "POST"),
+            owned(owner, "GET")
+        ));
+    }
     out.push_str(
-        "\n## Operations\n\n| # | Method | Path | operationId | Tag |\n|---|---|---|---|---|\n",
+        "- A0.3 must not start directly after A0.2: its deferred compatibility operations need a separate contract freeze of their wire semantics, supporting domain services and tests first.\n",
     );
+    out.push_str("\n## Operations\n\n| # | Method | Path | operationId | Tag | Owner |\n|---|---|---|---|---|---|\n");
     for spec in &OPERATIONS {
         out.push_str(&format!(
-            "| {} | {} | `{}` | `{}` | {} |\n",
-            spec.number, spec.method, spec.path, spec.operation_id, spec.tag
+            "| {} | {} | `{}` | `{}` | {} | {} |\n",
+            spec.number, spec.method, spec.path, spec.operation_id, spec.tag, spec.owner
         ));
     }
     Ok(out)
