@@ -110,7 +110,7 @@ tasks:
 - id: A0.1
   status: done
 - id: A0.2
-  status: pending
+  status: done
 - id: A0.3
   status: pending
 - id: A0.4

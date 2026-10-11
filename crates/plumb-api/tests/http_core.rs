@@ -1,0 +1,2496 @@
+//! A0.2 contract tests for the core HTTP runtime (Hotfix 063, Hotfix 064).
+//!
+//! Every test lives in `http_core` (`cargo test -p plumb-api http_core`) and drives the real
+//! Axum router with `tower::ServiceExt` over a temporary SQLite revision and artifact store.
+//! Gate reports come from the real validation evaluators over the stored head graph.
+
+mod http_core {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Method, Request, StatusCode};
+    use axum::Router;
+    use plumb_api::openapi::{DesignEvent, OPERATIONS};
+    use plumb_api::{router, ApiIdentity, ApiState, ApiStateError};
+    use plumb_artifacts::{ArtifactStore, SqliteArtifactStore};
+    use plumb_core::{to_canonical_json, Clock, FixedClock, GateId, Hash, Id, Timestamp};
+    use plumb_patch::{PatchSet, SemanticPatch};
+    use plumb_psg::{source_artifact_id, Edge, Graph, Node};
+    use plumb_store::{BranchName, RevisionWriteMeta, SqliteRevisionStore};
+    use plumb_validation::{
+        load_builtin_software_profile, rules, EvaluatorRegistry, F1RequirementValidationInput,
+        F1ValidationInputs, F4ApplicabilityInput, F4ValidationInputs, GateReport,
+        ValidationContext, ValidationPolicy, ValidationProfile, ValidationRegistry,
+    };
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    const PROJECT: &str = "project:pilot";
+    const PROFILE: &str = "profile:plumb-software-2026.1";
+    const T0: &str = "2026-01-01T00:00:00.000000000Z";
+    const T1: &str = "2026-03-01T09:00:00.000000000Z";
+    const T2: &str = "2026-04-01T09:00:00.000000000Z";
+    const NOW: &str = "2026-05-01T12:00:00.000000000Z";
+    const ACTOR: &str = "agent:api";
+    const DOCX: &[u8] = include_bytes!("../../../fixtures/hr-leave/requirements.docx");
+    const DOCX_MIME: &str =
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const ROUTE_SOURCES: [(&str, &str); 6] = [
+        ("mod.rs", include_str!("../src/routes/mod.rs")),
+        ("meta.rs", include_str!("../src/routes/meta.rs")),
+        ("sources.rs", include_str!("../src/routes/sources.rs")),
+        (
+            "requirements.rs",
+            include_str!("../src/routes/requirements.rs"),
+        ),
+        ("model.rs", include_str!("../src/routes/model.rs")),
+        ("gates.rs", include_str!("../src/routes/gates.rs")),
+    ];
+
+    // ------------------------------------------------------------------ graph builders
+
+    fn id(s: &str) -> Id {
+        s.parse().unwrap()
+    }
+
+    fn ts(s: &str) -> Timestamp {
+        s.parse().unwrap()
+    }
+
+    fn audit() -> Value {
+        json!({"created_by": "agent:analyst", "created_at": T0, "updated_by": null, "updated_at": null})
+    }
+
+    fn node(node_id: &str, status: &str, tag: &str, data: Value) -> Node {
+        serde_json::from_value(json!({
+            "id": node_id, "revision": 1, "status": status,
+            "payload": {"type": tag, "data": data},
+            "evidence": [], "derivations": [], "standards": [], "tags": [], "extensions": {},
+            "audit": audit()
+        }))
+        .unwrap_or_else(|e| panic!("{node_id}: {e}"))
+    }
+
+    fn edge(edge_id: &str, kind: &str, from: &str, to: &str) -> Edge {
+        serde_json::from_value(json!({
+            "id": edge_id, "revision": 1, "status": "Accepted", "kind": kind,
+            "from": from, "to": to, "properties": {}, "evidence": [], "derivations": [],
+            "standards": [], "audit": audit()
+        }))
+        .unwrap_or_else(|e| panic!("{edge_id}: {e}"))
+    }
+
+    fn requirement(node_id: &str, status: &str, kind: &str, statement: &str) -> Node {
+        node(
+            node_id,
+            status,
+            "Requirement",
+            json!({
+                "statement": statement, "requirement_kind": kind, "level": "system",
+                "modality": "shall", "title": null, "rationale": null, "priority": null,
+                "source_identifier": null, "verification_method": null, "owner_refs": null,
+                "stakeholder_refs": null
+            }),
+        )
+    }
+
+    fn term(node_id: &str, status: &str, term: &str, aliases: Option<Vec<&str>>) -> Node {
+        node(
+            node_id,
+            status,
+            "Term",
+            json!({"term": term, "language": "en", "definition_ref": null, "aliases": aliases, "status": null}),
+        )
+    }
+
+    fn attribute(node_id: &str, name: &str, value_type: &str, class: Option<&str>) -> Node {
+        node(
+            node_id,
+            "Accepted",
+            "Attribute",
+            json!({
+                "name": name, "value_type": value_type, "nullable": false, "unit": null,
+                "precision": null, "enum_values": null, "data_classification": class
+            }),
+        )
+    }
+
+    fn calculation(node_id: &str, status: &str, name: &str) -> Node {
+        node(
+            node_id,
+            status,
+            "Calculation",
+            json!({
+                "name": name, "expression": "1 + 1", "result_type": "Int", "unit": null,
+                "rounding": null, "calendar_ref": null, "examples": null
+            }),
+        )
+    }
+
+    fn finding(
+        node_id: &str,
+        code: &str,
+        family: &str,
+        severity: &str,
+        status: &str,
+        affected: &[&str],
+    ) -> Node {
+        node(
+            node_id,
+            "Accepted",
+            "Finding",
+            json!({
+                "code": code, "family": family, "severity": severity, "message": "Finding.",
+                "status": status, "affected_refs": affected, "standard_rule_ref": null,
+                "suggested_resolution": null, "waiver_ref": null
+            }),
+        )
+    }
+
+    fn assumption(node_id: &str, default_value: Value) -> Node {
+        node(
+            node_id,
+            "Accepted",
+            "Assumption",
+            json!({
+                "statement": "Half days count as 0.5.", "owner_ref": "actor:employee",
+                "status": "Open", "finding_ref": null, "default_value": default_value,
+                "expires_at": null, "risk_ref": null
+            }),
+        )
+    }
+
+    fn decision(node_id: &str, kind: &str, by: &str, at: &str) -> Node {
+        node(
+            node_id,
+            "Accepted",
+            "ResolutionDecision",
+            json!({
+                "question_ref": null, "proposal_ref": "prop:0000000000000001",
+                "answer": {"kind": kind}, "decided_by": by, "decided_at": at,
+                "patch_ref": Hash::content_sha256(node_id.as_bytes()), "rationale": "Agreed.",
+                "supersedes": null
+            }),
+        )
+    }
+
+    /// The fixture PSG: requirements with coverage, terms, a domain, calculations, a process,
+    /// findings, an assumption and decisions.
+    fn fixture_parts() -> (Vec<Node>, Vec<Edge>) {
+        let nodes = vec![
+            requirement(
+                "req:a",
+                "Accepted",
+                "functional",
+                "The system shall export PDF, CSV, etc.",
+            ),
+            requirement(
+                "req:b",
+                "Accepted",
+                "functional",
+                "Managers shall approve leave requests.",
+            ),
+            requirement(
+                "req:c",
+                "Accepted",
+                "operational",
+                "Managers shall approve leave requests.",
+            ),
+            requirement(
+                "req:p",
+                "Proposed",
+                "functional",
+                "Employees shall cancel leave requests.",
+            ),
+            node(
+                "op:submit",
+                "Accepted",
+                "Operation",
+                json!({
+                    "name": "SubmitLeave", "operation_kind": "command", "input_schema_ref": null,
+                    "output_schema_ref": null, "preconditions": null, "postconditions": null,
+                    "idempotency": null, "transaction_semantics": null
+                }),
+            ),
+            node(
+                "actor:employee",
+                "Accepted",
+                "Actor",
+                json!({"name": "Employee", "actor_kind": "human"}),
+            ),
+            node(
+                "proc:leave",
+                "Accepted",
+                "Process",
+                json!({"name": "Leave", "description": null, "process_kind": null}),
+            ),
+            node(
+                "pn:start",
+                "Accepted",
+                "ProcessNode",
+                json!({
+                    "process_ref": "proc:leave", "node_kind": "start", "operation_ref": null,
+                    "condition_expr": null, "message_ref": null, "timer_expr": null
+                }),
+            ),
+            node(
+                "pn:task",
+                "Accepted",
+                "ProcessNode",
+                json!({
+                    "process_ref": "proc:leave", "node_kind": "human_task", "operation_ref": "op:submit",
+                    "condition_expr": null, "message_ref": null, "timer_expr": null
+                }),
+            ),
+            node(
+                "pn:end",
+                "Accepted",
+                "ProcessNode",
+                json!({
+                    "process_ref": "proc:leave", "node_kind": "end", "operation_ref": null,
+                    "condition_expr": null, "message_ref": null, "timer_expr": null
+                }),
+            ),
+            node(
+                "scn:a",
+                "Accepted",
+                "Scenario",
+                json!({
+                    "name": "Submit", "scenario_kind": "boundary", "given": [],
+                    "when": {"operation": "op:submit"}, "then": [], "requirement_refs": ["req:a"],
+                    "derived_from_refs": null, "confirmation_status": null
+                }),
+            ),
+            term(
+                "term:leave",
+                "Accepted",
+                "leave request",
+                Some(vec!["absence"]),
+            ),
+            term("term:ot", "Proposed", "overtime", None),
+            node(
+                "concept:decimal",
+                "Accepted",
+                "Concept",
+                json!({
+                    "name": "Decimal", "definition": "A decimal number.", "concept_kind": "value_type"
+                }),
+            ),
+            node(
+                "entity:request",
+                "Accepted",
+                "Entity",
+                json!({"name": "LeaveRequest", "description": null, "aggregate_root": null}),
+            ),
+            node(
+                "entity:employee",
+                "Accepted",
+                "Entity",
+                json!({"name": "Employee", "description": null, "aggregate_root": null}),
+            ),
+            attribute("attr:days", "days", "Integer", None),
+            attribute("attr:salary", "salary", "Decimal", Some("financial")),
+            node("state:draft", "Accepted", "State", json!({"name": "Draft"})),
+            node(
+                "state:submitted",
+                "Accepted",
+                "State",
+                json!({"name": "Submitted"}),
+            ),
+            node(
+                "trans:submit",
+                "Accepted",
+                "Transition",
+                json!({
+                    "stateful_ref": "entity:request", "from_state": "state:draft",
+                    "to_state": "state:submitted", "guard_expr": null, "effect_refs": null
+                }),
+            ),
+            node(
+                "domainrel:req-emp",
+                "Accepted",
+                "DomainRelationship",
+                json!({
+                    "from_entity": "entity:request", "to_entity": "entity:employee",
+                    "relationship_kind": "association", "cardinality_from": "*", "cardinality_to": "1",
+                    "name": null, "snapshot_semantics": null, "ownership": null
+                }),
+            ),
+            calculation("calc:days", "Accepted", "Days"),
+            calculation("calc:p", "Proposed", "Pending"),
+            finding(
+                "finding:open",
+                "PLUMB.F2.X",
+                "F2",
+                "error",
+                "Open",
+                &["req:a"],
+            ),
+            finding(
+                "finding:closed",
+                "PLUMB.F1.Y",
+                "F1",
+                "warn",
+                "Resolved",
+                &["req:b"],
+            ),
+            assumption("assumption:a", json!(5)),
+            assumption("assumption:b", json!("manual")),
+            node(
+                "proc:broken",
+                "Accepted",
+                "Process",
+                json!({"name": "Broken", "description": null, "process_kind": null}),
+            ),
+            node(
+                "pn:orphan",
+                "Accepted",
+                "ProcessNode",
+                json!({
+                    "process_ref": "proc:broken", "node_kind": "human_task", "operation_ref": "op:submit",
+                    "condition_expr": null, "message_ref": null, "timer_expr": null
+                }),
+            ),
+            decision("decision:d1", "cardinality", "agent:alice", T1),
+            decision("decision:d2", "trigger", "agent:bob", T2),
+        ];
+        let edges = vec![
+            edge("rel:spec-op", "specified_by", "req:a", "op:submit"),
+            edge("rel:spec-proc", "specified_by", "req:a", "proc:leave"),
+            edge("rel:next-1", "next", "pn:start", "pn:task"),
+            edge("rel:next-2", "next", "pn:task", "pn:end"),
+            edge("rel:perf", "performed_by", "op:submit", "actor:employee"),
+            edge("rel:perf-task", "performed_by", "pn:task", "actor:employee"),
+            edge(
+                "rel:attr-days",
+                "has_attribute",
+                "entity:request",
+                "attr:days",
+            ),
+            edge(
+                "rel:attr-salary",
+                "has_attribute",
+                "entity:request",
+                "attr:salary",
+            ),
+            edge(
+                "rel:state-draft",
+                "has_state",
+                "entity:request",
+                "state:draft",
+            ),
+            edge(
+                "rel:state-submitted",
+                "has_state",
+                "entity:request",
+                "state:submitted",
+            ),
+            edge("rel:via", "transitions_via", "trans:submit", "op:submit"),
+            edge("rel:res-1", "resolves", "decision:d1", "finding:closed"),
+            edge("rel:res-2", "resolves", "decision:d2", "finding:closed"),
+        ];
+        (nodes, edges)
+    }
+
+    fn graph_of(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+        Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap_or_else(|v| panic!("{v:?}"))
+    }
+
+    fn fixture_graph() -> Graph {
+        let (nodes, edges) = fixture_parts();
+        graph_of(nodes, edges)
+    }
+
+    // ------------------------------------------------------------------ gate reports
+
+    fn profile() -> ValidationProfile {
+        load_builtin_software_profile().unwrap()
+    }
+
+    fn base_context(graph: &Graph, metadata: &ValidationRegistry) -> ValidationContext {
+        ValidationContext::new(
+            graph,
+            metadata,
+            ValidationPolicy::default(),
+            graph.evidence_hash().unwrap(),
+            vec![],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    /// The real report of `gate` over `graph` (I0, F1 or F4).
+    fn gate_report(graph: &Graph, gate: GateId) -> GateReport {
+        let metadata = ValidationRegistry::new(profile()).unwrap();
+        let mut registry = EvaluatorRegistry::new(metadata.clone());
+        rules::register_i0_evaluators(&mut registry).unwrap();
+        rules::register_f1_evaluators(&mut registry).unwrap();
+        rules::register_f4_evaluators(&mut registry).unwrap();
+        let ctx = base_context(graph, &metadata);
+        let ctx = match gate {
+            GateId::F1 => ctx.with_f1_inputs(graph, f1_inputs(graph)).unwrap(),
+            GateId::F4 => ctx
+                .with_f4_inputs(
+                    graph,
+                    F4ValidationInputs::new(
+                        F4ApplicabilityInput::default(),
+                        vec![],
+                        vec![],
+                        vec![],
+                    ),
+                )
+                .unwrap(),
+            _ => ctx,
+        };
+        let report = registry.evaluate_gate(gate, graph, &ctx).unwrap();
+        report.validate().unwrap();
+        report
+    }
+
+    fn f1_inputs(graph: &Graph) -> F1ValidationInputs {
+        let requirements = graph
+            .nodes()
+            .values()
+            .filter(|n| n.status == plumb_psg::ElementStatus::Accepted)
+            .filter_map(|n| match &n.payload {
+                plumb_psg::NodePayload::Requirement(r) => Some((n, r)),
+                _ => None,
+            })
+            .map(|(n, r)| F1RequirementValidationInput {
+                requirement_ref: n.id.clone(),
+                vocabulary_dependencies: vec![],
+                lint_input: serde_json::from_value(json!({
+                    "requirement_ref": n.id, "statement": r.statement,
+                    "evidence_refs": n.evidence.iter().map(|e| e.as_id().clone()).collect::<Vec<_>>(),
+                    "source_anchor": null, "term_context": null
+                }))
+                .unwrap(),
+            })
+            .collect();
+        F1ValidationInputs::new(requirements, vec![], Default::default())
+    }
+
+    // ------------------------------------------------------------------ app fixture
+
+    struct App {
+        _dir: tempfile::TempDir,
+        path: PathBuf,
+        state: ApiState,
+        router: Router,
+    }
+
+    fn open_store(path: &Path) -> SqliteRevisionStore {
+        SqliteRevisionStore::open(path).unwrap()
+    }
+
+    fn meta(at: &str) -> RevisionWriteMeta {
+        RevisionWriteMeta {
+            decision_refs: vec![],
+            created_by: id("agent:other"),
+            created_at: ts(at),
+        }
+    }
+
+    /// Initializes a store with `graph` and builds the router; `gates` selects which real
+    /// reports over the stored head are registered.
+    fn app_with(graph: Graph, gates: &[GateId], clock: Arc<dyn Clock + Send + Sync>) -> App {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plumb.sqlite");
+        let profile = profile();
+        let mut store = open_store(&path);
+        let rev = store
+            .create_initial_revision(
+                &graph,
+                profile.profile_hash().unwrap(),
+                profile.rule_pack_hash().unwrap(),
+                meta(T0),
+            )
+            .unwrap();
+        let head = store.load_revision(&rev.id).unwrap();
+        let reports = gates.iter().map(|g| gate_report(&head.graph, *g)).collect();
+        let artifacts = SqliteArtifactStore::open(&path).unwrap();
+        let state = state_with(store, artifacts, clock, reports);
+        let router = router(state.clone());
+        App {
+            _dir: dir,
+            path,
+            state,
+            router,
+        }
+    }
+
+    fn state_with(
+        store: SqliteRevisionStore,
+        artifacts: SqliteArtifactStore,
+        clock: Arc<dyn Clock + Send + Sync>,
+        reports: Vec<GateReport>,
+    ) -> ApiState {
+        let identity = ApiIdentity::new(
+            "alice".into(),
+            id(ACTOR),
+            vec!["analyst".into(), "reviewer".into()],
+            "pilot".into(),
+        )
+        .unwrap();
+        ApiState::new(
+            BranchName::main(),
+            store,
+            artifacts,
+            identity,
+            clock,
+            reports,
+            profile(),
+        )
+        .unwrap()
+    }
+
+    fn app() -> App {
+        app_with(
+            fixture_graph(),
+            &[GateId::I0, GateId::F1, GateId::F4],
+            fixed(),
+        )
+    }
+
+    /// Uploads a Markdown source through the API, then rebuilds the state over the same
+    /// database with real I0, F1 and F4 reports for the new head, so gate-dependent reads
+    /// stay current.
+    async fn app_with_source(file: &str, body: &[u8]) -> (App, String) {
+        let app = app();
+        let r = upload(
+            &app,
+            Some(&semantic(&app)),
+            Some(file),
+            "text/markdown",
+            body,
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        let source = r.json()["id"].as_str().unwrap().to_owned();
+        let App { _dir, path, .. } = app;
+        let store = open_store(&path);
+        let head = store
+            .load_revision(&store.head(&BranchName::main()).unwrap().unwrap())
+            .unwrap();
+        let reports = [GateId::I0, GateId::F1, GateId::F4]
+            .iter()
+            .map(|g| gate_report(&head.graph, *g))
+            .collect();
+        let artifacts = SqliteArtifactStore::open(&path).unwrap();
+        let state = state_with(store, artifacts, fixed(), reports);
+        let router = router(state.clone());
+        (
+            App {
+                _dir,
+                path,
+                state,
+                router,
+            },
+            source,
+        )
+    }
+
+    fn fixed() -> Arc<dyn Clock + Send + Sync> {
+        Arc::new(FixedClock::new(ts(NOW)))
+    }
+
+    struct Reply {
+        status: StatusCode,
+        headers: axum::http::HeaderMap,
+        bytes: Vec<u8>,
+    }
+
+    impl Reply {
+        fn json(&self) -> Value {
+            serde_json::from_slice(&self.bytes)
+                .unwrap_or_else(|e| panic!("{e}: {:?}", String::from_utf8_lossy(&self.bytes)))
+        }
+
+        fn code(&self) -> String {
+            self.json()["code"].as_str().unwrap_or_default().to_owned()
+        }
+
+        fn etag(&self) -> Option<String> {
+            self.headers
+                .get("etag")
+                .map(|v| v.to_str().unwrap().to_owned())
+        }
+    }
+
+    async fn send(router: &Router, request: Request<Body>) -> Reply {
+        let response = router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        Reply {
+            status,
+            headers,
+            bytes,
+        }
+    }
+
+    async fn get(app: &App, uri: &str) -> Reply {
+        send(&app.router, Request::get(uri).body(Body::empty()).unwrap()).await
+    }
+
+    async fn post(app: &App, uri: &str, if_match: Option<&str>, body: Option<Value>) -> Reply {
+        let mut request = Request::post(uri);
+        if let Some(value) = if_match {
+            request = request.header("if-match", value);
+        }
+        let body = match body {
+            Some(v) => {
+                request = request.header(header::CONTENT_TYPE, "application/json");
+                Body::from(serde_json::to_vec(&v).unwrap())
+            }
+            None => Body::empty(),
+        };
+        send(&app.router, request.body(body).unwrap()).await
+    }
+
+    fn multipart(filename: Option<&str>, media_type: &str, bytes: &[u8]) -> (String, Vec<u8>) {
+        let boundary = "plumb-boundary-7f3a";
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        match filename {
+            Some(name) => body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n")
+                    .as_bytes(),
+            ),
+            None => body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"\r\n"),
+        }
+        body.extend_from_slice(format!("Content-Type: {media_type}\r\n\r\n").as_bytes());
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        (format!("multipart/form-data; boundary={boundary}"), body)
+    }
+
+    async fn upload(
+        app: &App,
+        if_match: Option<&str>,
+        filename: Option<&str>,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Reply {
+        let (content_type, body) = multipart(filename, media_type, bytes);
+        let mut request = Request::post("/api/sources").header(header::CONTENT_TYPE, content_type);
+        if let Some(value) = if_match {
+            request = request.header("if-match", value);
+        }
+        send(&app.router, request.body(Body::from(body)).unwrap()).await
+    }
+
+    /// The current head via a separate store connection.
+    fn head(app: &App) -> plumb_store::LoadedRevision {
+        let store = open_store(&app.path);
+        let head = store.head(&BranchName::main()).unwrap().unwrap();
+        store.load_revision(&head).unwrap()
+    }
+
+    fn semantic(app: &App) -> String {
+        head(app).revision.semantic_hash.to_string()
+    }
+
+    fn revision_count(app: &App) -> u64 {
+        head(app).revision.id.version()
+    }
+
+    fn artifact_exists(app: &App, hash: &Hash) -> bool {
+        SqliteArtifactStore::open(&app.path)
+            .unwrap()
+            .exists(hash)
+            .unwrap()
+    }
+
+    /// The importer output the API produces for `bytes` (same actor and clock).
+    fn imported(media_type: &str, name: &str, bytes: &[u8]) -> plumb_import::ImportedSource {
+        let audit = plumb_import::ImportAudit {
+            created_by: id(ACTOR),
+            created_at: ts(NOW),
+        };
+        match media_type {
+            "text/markdown" => plumb_import::import_markdown(name, bytes, &audit),
+            "text/plain" => plumb_import::import_plain_text(name, bytes, &audit),
+            _ => plumb_import::import_docx(name, bytes, &audit),
+        }
+        .unwrap()
+    }
+
+    /// A store writer outside the API advancing the branch with `patch`.
+    fn external_commit(app: &App, patch: SemanticPatch) -> plumb_store::GraphRevision {
+        let mut store = open_store(&app.path);
+        let head = store.head(&BranchName::main()).unwrap().unwrap();
+        let loaded = store.load_revision(&head).unwrap();
+        store
+            .commit(
+                &BranchName::main(),
+                &head,
+                &PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch,
+                },
+                meta(T1),
+            )
+            .unwrap()
+            .revision
+    }
+
+    /// A clock whose first read lets another store writer commit first: a real CAS race.
+    struct RacingClock {
+        path: std::sync::OnceLock<PathBuf>,
+        reads: std::sync::atomic::AtomicUsize,
+        fired: AtomicBool,
+    }
+
+    impl Clock for RacingClock {
+        fn now(&self) -> Timestamp {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if !self.fired.swap(true, Ordering::SeqCst) {
+                let mut store = open_store(self.path.get().unwrap());
+                let head = store.head(&BranchName::main()).unwrap().unwrap();
+                let loaded = store.load_revision(&head).unwrap();
+                let patch = PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch: SemanticPatch::AddNode {
+                        node: finding(
+                            "finding:race",
+                            "PLUMB.F2.R",
+                            "F2",
+                            "info",
+                            "Open",
+                            &["req:b"],
+                        ),
+                    },
+                };
+                store
+                    .commit(&BranchName::main(), &head, &patch, meta(T1))
+                    .unwrap();
+            }
+            ts(NOW)
+        }
+    }
+
+    fn racing_app() -> (App, Arc<RacingClock>) {
+        let clock = Arc::new(RacingClock {
+            path: std::sync::OnceLock::new(),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            fired: AtomicBool::new(false),
+        });
+        let app = app_with(fixture_graph(), &[GateId::F1], clock.clone());
+        clock.path.set(app.path.clone()).unwrap();
+        (app, clock)
+    }
+
+    /// Independent request hash: generic SHA-256 of RFC 8785 {operation_id, path, query}.
+    fn request_hash(operation_id: &str, path: Value, query: Value) -> Hash {
+        Hash::content_sha256(
+            &to_canonical_json(
+                &json!({"operation_id": operation_id, "path": path, "query": query}),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn cursor_for(
+        after_id: &str,
+        request_hash: &Hash,
+        revision: &str,
+        semantic_hash: &str,
+    ) -> String {
+        hex::encode(
+            to_canonical_json(&json!({
+                "after_id": after_id, "request_hash": request_hash,
+                "revision": revision, "semantic_hash": semantic_hash
+            }))
+            .unwrap(),
+        )
+    }
+
+    fn ids_of(page: &Value) -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn sample_path(path: &str) -> String {
+        path.replace("{id}", "x:1").replace("{stage}", "lint")
+    }
+
+    // ------------------------------------------------------------------ routing
+
+    #[tokio::test]
+    async fn http_core_routes_exactly_the_a02_operations() {
+        let app = app();
+        let (mut a02, mut a03) = (Vec::new(), Vec::new());
+        for spec in OPERATIONS.iter() {
+            let method = Method::from_bytes(spec.method.as_bytes()).unwrap();
+            let request = Request::builder()
+                .method(method)
+                .uri(sample_path(spec.path))
+                .body(Body::empty())
+                .unwrap();
+            let reply = send(&app.router, request).await;
+            // An unregistered operation is a bare 404, or a bare 405 when an A0.2 operation
+            // shares the path shape and the Allow header does not list the A0.3 method.
+            let allow = reply
+                .headers
+                .get("allow")
+                .map(|v| v.to_str().unwrap().to_owned())
+                .unwrap_or_default();
+            let absent = reply.bytes.is_empty()
+                && (reply.status == StatusCode::NOT_FOUND
+                    || (reply.status == StatusCode::METHOD_NOT_ALLOWED
+                        && !allow.split(',').any(|m| m.trim() == spec.method)));
+            if spec.owner == "A0.2" {
+                assert!(
+                    !absent && reply.status != StatusCode::METHOD_NOT_ALLOWED,
+                    "{} unrouted",
+                    spec.operation_id
+                );
+                assert!(
+                    reply.status.is_success() || !reply.code().is_empty(),
+                    "{} {} {:?}",
+                    spec.operation_id,
+                    reply.status,
+                    String::from_utf8_lossy(&reply.bytes)
+                );
+                a02.push((spec.operation_id, spec.method));
+            } else {
+                assert!(
+                    absent,
+                    "A0.3 {} is routed ({})",
+                    spec.operation_id, reply.status
+                );
+                a03.push((spec.operation_id, spec.method));
+            }
+        }
+        let count = |list: &[(&str, &str)], m: &str| list.iter().filter(|(_, x)| *x == m).count();
+        assert_eq!(
+            (a02.len(), count(&a02, "POST"), count(&a02, "GET")),
+            (30, 9, 21)
+        );
+        assert_eq!(
+            (a03.len(), count(&a03, "POST"), count(&a03, "GET")),
+            (42, 28, 14)
+        );
+        // An unregistered path is a plain 404.
+        let r = get(&app, "/api/nowhere").await;
+        assert_eq!(
+            (r.status, r.bytes.is_empty()),
+            (StatusCode::NOT_FOUND, true)
+        );
+    }
+
+    // ------------------------------------------------------------------ reads
+
+    /// The 20 ordinary A0.2 GETs (all A0.2 GETs except the WebSocket upgrade).
+    const ORDINARY_GETS: [&str; 20] = [
+        "/api/me",
+        "/api/model/version",
+        "/api/gates",
+        "/api/sources/SOURCE",
+        "/api/sources/SOURCE/spans",
+        "/api/requirements",
+        "/api/requirements/req:a",
+        "/api/glossary",
+        "/api/model/entities",
+        "/api/model/entities/entity:request",
+        "/api/model/calculations",
+        "/api/processes",
+        "/api/processes/proc:leave",
+        "/api/findings",
+        "/api/assumptions",
+        "/api/decisions",
+        "/api/requirements/req:a/readiness",
+        "/api/readiness",
+        "/api/model/export?format=functional",
+        "/api/model/diff",
+    ];
+
+    #[tokio::test]
+    async fn http_core_every_ordinary_get_carries_the_loaded_etag() {
+        let (app, source) = app_with_source(
+            "policy.md",
+            b"# Policy\n\nLeave needs approval.\n\nHalf days count.\n",
+        )
+        .await;
+        let expected = semantic(&app);
+        for uri in ORDINARY_GETS {
+            let uri = uri.replace("SOURCE", &source);
+            let r = get(&app, &uri).await;
+            assert_eq!(
+                r.status,
+                StatusCode::OK,
+                "{uri}: {:?}",
+                String::from_utf8_lossy(&r.bytes)
+            );
+            assert_eq!(r.etag().as_deref(), Some(expected.as_str()), "{uri}");
+        }
+        let a02_gets = OPERATIONS
+            .iter()
+            .filter(|s| {
+                s.owner == "A0.2" && s.method == "GET" && s.operation_id != "events_websocket"
+            })
+            .count();
+        assert_eq!(a02_gets, ORDINARY_GETS.len());
+    }
+
+    #[tokio::test]
+    async fn http_core_meta_and_gates() {
+        let app = app();
+        let me = get(&app, "/api/me").await.json();
+        assert_eq!(
+            me,
+            json!({"user": "alice", "roles": ["analyst", "reviewer"], "mode": "pilot"})
+        );
+        let version = get(&app, "/api/model/version").await.json();
+        let h = head(&app).revision;
+        assert_eq!(version["version"], h.id.to_string());
+        assert_eq!(version["revision"], h.id.to_string());
+        assert_eq!(version["hash"], h.semantic_hash.to_string());
+        assert_eq!(version["semantic_hash"], h.semantic_hash.to_string());
+        assert_eq!(version["evidence_hash"], h.evidence_hash.to_string());
+        // Current reports in gate order; the current I0 FAIL is still current.
+        let gates = get(&app, "/api/gates").await.json();
+        let names: Vec<&str> = gates
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["gate"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["I0", "F1", "F4"]);
+        let report = gate_report(&head(&app).graph, GateId::I0);
+        let mut findings: Vec<String> = report.findings.iter().map(|f| f.id.to_string()).collect();
+        findings.sort();
+        assert_eq!(
+            gates[0],
+            json!({"gate": "I0", "passed": false, "findings": findings})
+        );
+        assert_eq!(gates[2]["passed"], true);
+        // Identity validation.
+        assert_eq!(
+            ApiIdentity::new(" ".into(), id(ACTOR), vec![], "m".into()),
+            Err(ApiStateError::BlankUser)
+        );
+        assert_eq!(
+            ApiIdentity::new("u".into(), id(ACTOR), vec![], "".into()),
+            Err(ApiStateError::BlankMode)
+        );
+        assert_eq!(
+            ApiIdentity::new(
+                "u".into(),
+                id(ACTOR),
+                vec!["b".into(), "a".into()],
+                "m".into()
+            ),
+            Err(ApiStateError::UnsortedRoles)
+        );
+        assert_eq!(
+            ApiIdentity::new(
+                "u".into(),
+                id(ACTOR),
+                vec!["a".into(), "a".into()],
+                "m".into()
+            ),
+            Err(ApiStateError::UnsortedRoles)
+        );
+    }
+
+    #[tokio::test]
+    async fn http_core_gate_report_freshness() {
+        // No current reports: no gates, and the F1/F4-dependent reads conflict.
+        let bare = app_with(fixture_graph(), &[], fixed());
+        assert_eq!(get(&bare, "/api/gates").await.json(), json!([]));
+        for uri in [
+            "/api/requirements",
+            "/api/requirements/req:a",
+            "/api/model/export?format=report",
+        ] {
+            let r = get(&bare, uri).await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (StatusCode::CONFLICT, "E_GATE_REPORT_UNAVAILABLE"),
+                "{uri}"
+            );
+        }
+        // Stale and mismatched reports are never presented.
+        let graph = fixture_graph();
+        let current = gate_report(&graph, GateId::I0);
+        let (mut nodes, edges) = fixture_parts();
+        nodes.push(requirement(
+            "req:z",
+            "Accepted",
+            "functional",
+            "Another requirement shall exist.",
+        ));
+        let stale_semantic = gate_report(&graph_of(nodes, edges.clone()), GateId::I0);
+        let (mut nodes, _) = fixture_parts();
+        let content = Hash::content_sha256(b"other");
+        nodes.push(node(source_artifact_id(&content).unwrap().as_str(), "Accepted", "SourceArtifact", json!({
+            "source_kind": "markdown", "display_name": "o.md", "content_hash": content,
+            "media_type": "text/markdown", "external_uri": null, "external_version": null,
+            "producer": null, "created_at_source": null, "language": null, "classification": null
+        })));
+        let evidence_graph = graph_of(nodes, edges);
+        assert_eq!(
+            evidence_graph.semantic_hash().unwrap(),
+            graph.semantic_hash().unwrap()
+        );
+        let stale_evidence = gate_report(&evidence_graph, GateId::I0);
+        let mut wrong_profile = current.clone();
+        wrong_profile.profile_id = id("profile:other");
+        let mut wrong_profile_hash = current.clone();
+        wrong_profile_hash.profile_hash = Hash::content_sha256(b"p");
+        let mut wrong_pack = current.clone();
+        wrong_pack.rule_pack_hash = Hash::content_sha256(b"r");
+        for (label, report) in [
+            ("semantic", stale_semantic),
+            ("evidence", stale_evidence),
+            ("profile", wrong_profile),
+            ("profile hash", wrong_profile_hash),
+            ("rule pack", wrong_pack),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("db.sqlite");
+            let mut store = open_store(&path);
+            store
+                .create_initial_revision(
+                    &graph,
+                    profile().profile_hash().unwrap(),
+                    profile().rule_pack_hash().unwrap(),
+                    meta(T0),
+                )
+                .unwrap();
+            let state = state_with(
+                store,
+                SqliteArtifactStore::open(&path).unwrap(),
+                fixed(),
+                vec![report],
+            );
+            let r = send(
+                &router(state),
+                Request::get("/api/gates").body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(r.json(), json!([]), "{label}");
+        }
+        // Registration order does not matter.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let mut store = open_store(&path);
+        store
+            .create_initial_revision(
+                &graph,
+                profile().profile_hash().unwrap(),
+                profile().rule_pack_hash().unwrap(),
+                meta(T0),
+            )
+            .unwrap();
+        let reports = vec![
+            gate_report(&graph, GateId::F4),
+            gate_report(&graph, GateId::F1),
+            current,
+        ];
+        let state = state_with(
+            store,
+            SqliteArtifactStore::open(&path).unwrap(),
+            fixed(),
+            reports,
+        );
+        let r = send(
+            &router(state),
+            Request::get("/api/gates").body(Body::empty()).unwrap(),
+        )
+        .await;
+        let names: Vec<String> = r
+            .json()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["gate"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(names, ["I0", "F1", "F4"]);
+    }
+
+    #[tokio::test]
+    async fn http_core_requirement_projection_and_filters() {
+        let app = app();
+        let f1 = gate_report(&head(&app).graph, GateId::F1);
+        let detail = get(&app, "/api/requirements/req:a").await.json();
+        let mut lint: Vec<String> = f1
+            .findings
+            .iter()
+            .filter(|f| f.payload.affected_refs.contains(&id("req:a")))
+            .map(|f| f.id.to_string())
+            .collect();
+        lint.sort();
+        assert!(!lint.is_empty());
+        assert_eq!(
+            detail,
+            json!({
+                "id": "req:a", "text": "The system shall export PDF, CSV, etc.", "class": "functional",
+                "status": "Accepted", "smells": ["PLUMB.LINT.REQ.OPEN_LIST"],
+                "coverage": {"operations": ["op:submit"], "scenarios": ["scn:a"]},
+                "readiness": null, "spans": [], "lint_findings": lint, "ears_suggestion": null,
+                "linked": {"operations": ["op:submit"], "processes": ["proc:leave"], "scenarios": ["scn:a"]}
+            })
+        );
+        let list = get(&app, "/api/requirements").await.json();
+        assert_eq!(ids_of(&list), ["req:a", "req:b", "req:c", "req:p"]);
+        assert_eq!(list["items"][3]["smells"], json!([]));
+        assert_eq!(
+            ids_of(&get(&app, "/api/requirements?status=Proposed").await.json()),
+            ["req:p"]
+        );
+        assert_eq!(
+            ids_of(
+                &get(&app, "/api/requirements?class=operational")
+                    .await
+                    .json()
+            ),
+            ["req:c"]
+        );
+        assert_eq!(
+            ids_of(&get(&app, "/api/requirements?q=MANAGERS").await.json()),
+            ["req:b", "req:c"]
+        );
+        assert_eq!(
+            ids_of(
+                &get(&app, "/api/requirements?q=managers&class=functional")
+                    .await
+                    .json()
+            ),
+            ["req:b"]
+        );
+        for bad in [
+            "/api/requirements?q=%20",
+            "/api/requirements?status=proposed",
+            "/api/requirements?class=bogus",
+            "/api/requirements?other=1",
+            "/api/requirements?q=a&q=b",
+        ] {
+            let r = get(&app, bad).await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST"),
+                "{bad}"
+            );
+        }
+        let r = get(&app, "/api/requirements/term:leave").await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "E_NOT_FOUND")
+        );
+        // Readiness is uncalculated.
+        let readiness = json!({
+            "overall": null,
+            "sub": {"clarity": null, "completeness": null, "consistency": null, "verifiability": null, "confirmation": null},
+            "contributing": []
+        });
+        assert_eq!(
+            get(&app, "/api/requirements/req:a/readiness").await.json(),
+            readiness
+        );
+        assert_eq!(
+            get(&app, "/api/readiness?group=project").await.json(),
+            readiness
+        );
+        assert_eq!(get(&app, "/api/readiness").await.json(), readiness);
+        assert_eq!(
+            get(&app, "/api/readiness?group=team").await.status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            get(&app, "/api/requirements/req:none/readiness")
+                .await
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn http_core_model_projections() {
+        let app = app();
+        assert_eq!(
+            get(&app, "/api/model/entities/entity:request").await.json(),
+            json!({
+                "id": "entity:request", "name": "LeaveRequest",
+                "attributes": [
+                    {"name": "days", "type": "Integer", "nullable": false, "unit": null, "class": null},
+                    {"name": "salary", "type": "Decimal", "nullable": false, "unit": null, "class": "financial"}
+                ],
+                "relationships": [{"id": "domainrel:req-emp", "target": "entity:employee", "kind": "association", "cardinality": "*:1"}],
+                "states": ["state:draft", "state:submitted"],
+                "transitions": [{"from": "state:draft", "to": "state:submitted", "operation": "op:submit"}],
+                "tags": []
+            })
+        );
+        assert_eq!(
+            ids_of(&get(&app, "/api/model/entities").await.json()),
+            ["entity:employee", "entity:request"]
+        );
+        assert_eq!(
+            get(&app, "/api/glossary").await.json()["items"][0],
+            json!({"id": "term:leave", "term": "leave request", "language": "en", "aliases": ["absence"], "definition_ref": null, "status": "Accepted"})
+        );
+        assert_eq!(
+            get(&app, "/api/model/calculations").await.json()["items"][0],
+            json!({"id": "calc:days", "name": "Days", "expr": "1 + 1"})
+        );
+        // Processes use the existing analyzer.
+        let leave = get(&app, "/api/processes/proc:leave").await.json();
+        assert_eq!(leave["lanes"], json!(["actor:employee"]));
+        assert_eq!(leave["steps"], json!(["pn:end", "pn:start", "pn:task"]));
+        assert_eq!(leave["branches"], json!([]));
+        let graph = head(&app).graph;
+        let analysis = plumb_validation::analyze_process(
+            &graph,
+            &id("proc:broken"),
+            plumb_validation::ProcessAnalysisMode::AcceptedOnly,
+        )
+        .unwrap();
+        assert!(analysis.missing_start() && analysis.missing_end());
+        let broken = get(&app, "/api/processes/proc:broken").await.json();
+        let validation: Vec<&str> = broken["validation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(
+            validation.contains(&"missing_start") && validation.contains(&"missing_end"),
+            "{validation:?}"
+        );
+        let mut sorted = validation.clone();
+        sorted.sort();
+        assert_eq!(sorted, validation);
+        // Findings with exact filters.
+        assert_eq!(
+            ids_of(&get(&app, "/api/findings").await.json()),
+            ["finding:closed", "finding:open"]
+        );
+        assert_eq!(
+            ids_of(&get(&app, "/api/findings?status=Open").await.json()),
+            ["finding:open"]
+        );
+        assert_eq!(
+            ids_of(&get(&app, "/api/findings?severity=warn").await.json()),
+            ["finding:closed"]
+        );
+        assert_eq!(
+            ids_of(&get(&app, "/api/findings?code=PLUMB.F2.X").await.json()),
+            ["finding:open"]
+        );
+        assert_eq!(
+            ids_of(
+                &get(&app, "/api/findings?family=F1&status=Open")
+                    .await
+                    .json()
+            ),
+            Vec::<String>::new()
+        );
+        // Assumptions with scalar defaults.
+        let assumptions = get(&app, "/api/assumptions").await.json();
+        assert_eq!(assumptions["items"][0]["default_value"], json!(5.0));
+        assert_eq!(assumptions["items"][1]["default_value"], json!("manual"));
+        // Decisions with exact filters.
+        assert_eq!(
+            ids_of(&get(&app, "/api/decisions").await.json()),
+            ["decision:d1", "decision:d2"]
+        );
+        assert_eq!(
+            ids_of(&get(&app, "/api/decisions?by=agent:bob").await.json()),
+            ["decision:d2"]
+        );
+        assert_eq!(
+            ids_of(&get(&app, "/api/decisions?kind=cardinality").await.json()),
+            ["decision:d1"]
+        );
+        assert_eq!(
+            ids_of(
+                &get(&app, "/api/decisions?since=2026-03-15T00:00:00Z")
+                    .await
+                    .json()
+            ),
+            ["decision:d2"]
+        );
+        assert_eq!(
+            ids_of(
+                &get(&app, &format!("/api/decisions?since={T1}"))
+                    .await
+                    .json()
+            ),
+            ["decision:d1", "decision:d2"]
+        );
+        assert_eq!(
+            get(&app, "/api/decisions?since=yesterday").await.status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            get(&app, "/api/decisions").await.json()["items"][0],
+            json!({"id": "decision:d1", "proposal_ref": "prop:0000000000000001", "question_ref": null, "decided_by": "agent:alice", "decided_at": T1, "rationale": "Agreed."})
+        );
+    }
+
+    #[tokio::test]
+    async fn http_core_non_scalar_assumption_default_is_reported() {
+        let (mut nodes, edges) = fixture_parts();
+        nodes.push(assumption("assumption:z", json!({"days": 1})));
+        let app = app_with(graph_of(nodes, edges), &[], fixed());
+        let r = get(&app, "/api/assumptions").await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_UNREPRESENTABLE_ASSUMPTION_DEFAULT"
+            )
+        );
+        assert_eq!(r.json()["details"]["assumption"], "assumption:z");
+    }
+
+    #[tokio::test]
+    async fn http_core_exports_are_the_real_projection() {
+        let app = app();
+        let graph = head(&app).graph;
+        let f4 = gate_report(&graph, GateId::F4);
+        let outputs = plumb_functional::project_functional_pilot(&graph, &profile(), &f4).unwrap();
+        for (format, expected) in [
+            ("functional", &outputs.functional_yaml.bytes),
+            ("report", &outputs.model_report_md.bytes),
+            ("decisions", &outputs.decisions_jsonl.bytes),
+            ("glossary", &outputs.glossary_md.bytes),
+        ] {
+            let r = get(&app, &format!("/api/model/export?format={format}")).await;
+            assert_eq!(r.status, StatusCode::OK);
+            assert_eq!(&r.bytes, expected, "{format}");
+            assert_eq!(
+                r.headers.get(header::CONTENT_TYPE).unwrap(),
+                "application/octet-stream"
+            );
+        }
+        assert_eq!(
+            get(&app, "/api/model/export?format=svg").await.status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            get(&app, "/api/model/export").await.status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn http_core_model_diff_by_revision() {
+        let app = app();
+        let first = head(&app).revision;
+        let r = get(&app, "/api/model/diff").await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, "E_DIFF_NO_PARENT")
+        );
+        let w = post(
+            &app,
+            "/api/model/attributes/attr:days/unit",
+            Some(&semantic(&app)),
+            Some(json!({"unit": "day"})),
+        )
+        .await;
+        assert_eq!(w.status, StatusCode::OK);
+        let second = head(&app).revision;
+        let diff = get(&app, "/api/model/diff").await.json();
+        assert_eq!(
+            diff,
+            json!({"from": first.id.to_string(), "to": second.id.to_string(), "added": [], "removed": [], "modified": ["attr:days"]})
+        );
+        let explicit = get(
+            &app,
+            &format!("/api/model/diff?from={}&to={}", second.id, first.id),
+        )
+        .await
+        .json();
+        assert_eq!(explicit["modified"], json!(["attr:days"]));
+        assert_eq!(explicit["from"], second.id.to_string());
+        let r = get(&app, "/api/model/diff?from=rev:9:0000000000000000").await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "E_NOT_FOUND")
+        );
+        assert_eq!(
+            get(&app, "/api/model/diff?to=psg:sha256:00").await.status,
+            StatusCode::BAD_REQUEST
+        );
+        // A semantic hash is not a revision.
+        let r = get(
+            &app,
+            &format!("/api/model/diff?to={}", second.semantic_hash),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    }
+
+    // ------------------------------------------------------------------ sources
+
+    #[tokio::test]
+    async fn http_core_source_uploads() {
+        let app = app();
+        let mut events = app.state.subscribe();
+        let md: &[u8] = b"# Leave\n\nEmployees request leave.\n\nManagers approve leave.\n";
+        let txt: &[u8] = b"Leave requests need approval.\n\nHalf days count as 0.5.\n";
+        for (name, media, bytes) in [
+            ("leave.md", "text/markdown", md),
+            ("leave.txt", "text/plain", txt),
+            ("requirements.docx", DOCX_MIME, DOCX),
+        ] {
+            let before = head(&app).revision;
+            let expected = imported(media, name, bytes);
+            let r = upload(&app, Some(&semantic(&app)), Some(name), media, bytes).await;
+            assert_eq!(r.status, StatusCode::OK, "{name}: {:?}", r.json());
+            let body = r.json();
+            let after = head(&app).revision;
+            assert_eq!(after.parent, Some(before.id.clone()));
+            assert_eq!(body["id"], expected.source.id.to_string());
+            assert_eq!(body["spans_count"], expected.fragments.len());
+            let plumb_psg::NodePayload::SourceArtifact(source) = &expected.source.payload else {
+                panic!()
+            };
+            assert_eq!(body["hash"], source.content_hash.to_string());
+            assert_eq!(body["version"], after.id.to_string());
+            assert_eq!(body["revision"], after.id.to_string());
+            assert_eq!(body["semantic_hash"], after.semantic_hash.to_string());
+            // Evidence only: the semantic hash is unchanged while the revision moves.
+            assert_eq!(after.semantic_hash, before.semantic_hash);
+            assert!(artifact_exists(&app, &expected.original_artifact.hash));
+            assert!(artifact_exists(&app, &expected.extracted_artifact.hash));
+            let event = events.try_recv().unwrap();
+            let mut ids: Vec<String> = std::iter::once(expected.source.id.to_string())
+                .chain(expected.fragments.iter().map(|f| f.id.to_string()))
+                .collect();
+            ids.sort();
+            assert_eq!(
+                event,
+                DesignEvent {
+                    kind: "create_source".into(),
+                    ids,
+                    version: after.id.to_string()
+                }
+            );
+            assert_eq!(body["events"], json!([event]));
+            assert!(events.try_recv().is_err());
+            let graph = head(&app).graph;
+            assert!(!graph
+                .node_ids_by_type(plumb_psg::NodeType::Requirement)
+                .iter()
+                .any(|r| !fixture_graph().node(r).is_some()));
+            // Source and spans reads.
+            let source_json = get(&app, &format!("/api/sources/{}", expected.source.id))
+                .await
+                .json();
+            assert_eq!(
+                source_json,
+                json!({"id": expected.source.id.to_string(), "hash": source.content_hash.to_string(), "media_type": source.media_type, "source_kind": source.source_kind})
+            );
+            let spans = get(&app, &format!("/api/sources/{}/spans", expected.source.id))
+                .await
+                .json();
+            let mut fragment_ids: Vec<String> = expected
+                .fragments
+                .iter()
+                .map(|f| f.id.to_string())
+                .collect();
+            fragment_ids.sort();
+            assert_eq!(ids_of(&spans), fragment_ids);
+            let first = &spans["items"][0];
+            assert_eq!(first["source_ref"], expected.source.id.to_string());
+            assert!(first["locator_kind"].is_string());
+        }
+        // The same content again: the source exists.
+        let r = upload(
+            &app,
+            Some(&semantic(&app)),
+            Some("leave.md"),
+            "text/markdown",
+            md,
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_SOURCE_EXISTS")
+        );
+        // Unsupported media, missing or blank filename.
+        let r = upload(
+            &app,
+            Some(&semantic(&app)),
+            Some("x.pdf"),
+            "application/pdf",
+            b"%PDF",
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "E_UNSUPPORTED_MEDIA_TYPE"
+            )
+        );
+        let r = upload(
+            &app,
+            Some(&semantic(&app)),
+            Some("x.md"),
+            "text/x-markdown",
+            b"# x",
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let r = upload(&app, Some(&semantic(&app)), None, "text/markdown", b"# x").await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
+        );
+        let r = upload(
+            &app,
+            Some(&semantic(&app)),
+            Some(" "),
+            "text/markdown",
+            b"# x",
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        // A failed precondition writes no artifact.
+        let fresh: &[u8] = b"# Fresh\n\nNever stored.\n";
+        let r = upload(
+            &app,
+            Some("psg:sha256:stale"),
+            Some("fresh.md"),
+            "text/markdown",
+            fresh,
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::PRECONDITION_FAILED, "E_PRECONDITION_FAILED")
+        );
+        let not_stored = imported("text/markdown", "fresh.md", fresh);
+        assert!(!artifact_exists(&app, &not_stored.original_artifact.hash));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn http_core_source_artifacts_survive_a_lost_race() {
+        let (app, clock) = racing_app();
+        let before = revision_count(&app);
+        let bytes: &[u8] = b"# Raced\n\nThis upload loses its race.\n";
+        let r = upload(
+            &app,
+            Some(&semantic(&app)),
+            Some("raced.md"),
+            "text/markdown",
+            bytes,
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::PRECONDITION_FAILED, "E_PRECONDITION_FAILED")
+        );
+        let current = head(&app).revision;
+        assert_eq!(current.id.version(), before + 1);
+        assert_eq!(r.json()["revision"], current.id.to_string());
+        let expected = imported("text/markdown", "raced.md", bytes);
+        assert!(artifact_exists(&app, &expected.original_artifact.hash));
+        assert!(artifact_exists(&app, &expected.extracted_artifact.hash));
+        assert!(head(&app).graph.node(&expected.source.id).is_none());
+        assert_eq!(clock.reads.load(Ordering::SeqCst), 1);
+    }
+
+    // ------------------------------------------------------------------ writes
+
+    /// The nine A0.2 writes with a valid body each.
+    fn writes() -> Vec<(&'static str, &'static str, Option<Value>)> {
+        vec![
+            (
+                "classify_requirement",
+                "/api/requirements/req:p/classify",
+                Some(json!({"class": "operational"})),
+            ),
+            (
+                "accept_requirement_ears",
+                "/api/requirements/req:p/accept-ears",
+                Some(json!({"text": "When asked, the system shall cancel the leave request."})),
+            ),
+            ("confirm_glossary", "/api/glossary/term:ot/confirm", None),
+            (
+                "edit_glossary",
+                "/api/glossary/term:leave/edit",
+                Some(json!({"term": "leave request", "aliases": ["time off", "absence"]})),
+            ),
+            (
+                "set_attribute_type",
+                "/api/model/attributes/attr:days/type",
+                Some(json!({"type": "Decimal"})),
+            ),
+            (
+                "set_attribute_unit",
+                "/api/model/attributes/attr:days/unit",
+                Some(json!({"unit": "day"})),
+            ),
+            (
+                "set_attribute_class",
+                "/api/model/attributes/attr:days/class",
+                Some(json!({"class": "pii"})),
+            ),
+            (
+                "confirm_calculation",
+                "/api/model/calculations/calc:p/confirm",
+                None,
+            ),
+        ]
+    }
+
+    fn payload(app: &App, node_id: &str) -> Value {
+        serde_json::to_value(&head(app).graph.node(&id(node_id)).unwrap().payload).unwrap()["data"]
+            .clone()
+    }
+
+    fn status_of(app: &App, node_id: &str) -> String {
+        format!("{:?}", head(app).graph.node(&id(node_id)).unwrap().status)
+    }
+
+    #[tokio::test]
+    async fn http_core_nine_writes_commit_through_intake_and_cas() {
+        let app = app();
+        let mut events = app.state.subscribe();
+        let start = head(&app);
+        for (operation, uri, body) in writes() {
+            let before = head(&app);
+            let r = post(
+                &app,
+                uri,
+                Some(before.revision.semantic_hash.as_str()),
+                body,
+            )
+            .await;
+            assert_eq!(r.status, StatusCode::OK, "{operation}: {:?}", r.json());
+            let after = head(&app);
+            assert_eq!(
+                after.revision.parent,
+                Some(before.revision.id.clone()),
+                "{operation}"
+            );
+            let body = r.json();
+            assert_eq!(body["version"], after.revision.id.to_string());
+            assert_eq!(body["revision"], after.revision.id.to_string());
+            assert_eq!(
+                body["semantic_hash"],
+                after.revision.semantic_hash.to_string()
+            );
+            let event = events.try_recv().unwrap();
+            assert_eq!(event.kind, operation);
+            assert_eq!(event.version, after.revision.id.to_string());
+            assert_eq!(body["events"], json!([event]));
+            assert!(events.try_recv().is_err(), "{operation}: one event");
+            // The committed patch is the accepted Patch artifact of the new revision.
+            assert!(after.revision.accepted_patch_ref.is_some());
+        }
+        // Only the targeted fields changed.
+        let p = payload(&app, "req:p");
+        assert_eq!(p["requirement_kind"], "operational");
+        assert_eq!(
+            p["statement"],
+            "When asked, the system shall cancel the leave request."
+        );
+        assert_eq!(p["modality"], "shall");
+        assert_eq!(status_of(&app, "term:ot"), "Accepted");
+        let leave = payload(&app, "term:leave");
+        assert_eq!(leave["aliases"], json!(["absence", "time off"]));
+        assert_eq!(leave["term"], "leave request");
+        let days = payload(&app, "attr:days");
+        assert_eq!(
+            (
+                days["value_type"].as_str(),
+                days["unit"].as_str(),
+                days["data_classification"].as_str()
+            ),
+            (Some("Decimal"), Some("day"), Some("pii"))
+        );
+        assert_eq!(days["name"], "days");
+        assert_eq!(status_of(&app, "calc:p"), "Accepted");
+        // Untargeted nodes are untouched.
+        for untouched in ["req:a", "req:b", "attr:salary", "calc:days"] {
+            assert_eq!(
+                head(&app).graph.node(&id(untouched)),
+                start.graph.node(&id(untouched)),
+                "{untouched}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn http_core_event_ids_are_the_commit_delta() {
+        let app = app();
+        let mut events = app.state.subscribe();
+        let r = post(
+            &app,
+            "/api/model/calculations/calc:p/confirm",
+            Some(&semantic(&app)),
+            None,
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(events.try_recv().unwrap().ids, ["calc:p"]);
+        let r = post(
+            &app,
+            "/api/glossary/term:leave/edit",
+            Some(&semantic(&app)),
+            Some(json!({"term": "leave request"})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        assert_eq!(events.try_recv().unwrap().ids, ["term:leave"]);
+        assert_eq!(payload(&app, "term:leave")["aliases"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn http_core_writes_require_if_match() {
+        let app = app();
+        let mut events = app.state.subscribe();
+        let start = revision_count(&app);
+        let current = head(&app).revision;
+        let mut all = writes();
+        all.push(("create_source", "/api/sources", None));
+        assert_eq!(all.len(), 9, "the nine A0.2 POST operations");
+        for (operation, uri, body) in &all {
+            for if_match in [
+                None,
+                Some("psg:sha256:0000"),
+                Some(&format!("\"{}\"", current.semantic_hash)[..]),
+            ] {
+                let r = if *operation == "create_source" {
+                    upload(&app, if_match, Some("x.md"), "text/markdown", b"# x\n").await
+                } else {
+                    post(&app, uri, if_match, body.clone()).await
+                };
+                match if_match {
+                    None => assert_eq!(
+                        (r.status, r.code().as_str()),
+                        (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST"),
+                        "{operation}"
+                    ),
+                    Some(_) => {
+                        assert_eq!(
+                            (r.status, r.code().as_str()),
+                            (StatusCode::PRECONDITION_FAILED, "E_PRECONDITION_FAILED"),
+                            "{operation}"
+                        );
+                        assert_eq!(r.json()["revision"], current.id.to_string());
+                        assert_eq!(r.json()["semantic_hash"], current.semantic_hash.to_string());
+                    }
+                }
+            }
+        }
+        assert_eq!(revision_count(&app), start);
+        assert!(events.try_recv().is_err());
+        let posts = OPERATIONS
+            .iter()
+            .filter(|s| s.owner == "A0.2" && s.method == "POST")
+            .count();
+        assert_eq!(posts, 9);
+    }
+
+    #[tokio::test]
+    async fn http_core_cas_race_is_412_without_retry() {
+        let (app, clock) = racing_app();
+        let mut events = app.state.subscribe();
+        let loaded = head(&app).revision;
+        let r = post(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(loaded.semantic_hash.as_str()),
+            Some(json!({"class": "operational"})),
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::PRECONDITION_FAILED, "E_PRECONDITION_FAILED")
+        );
+        let current = head(&app).revision;
+        // Exactly the competing commit happened: no retry produced a further revision.
+        assert_eq!(current.id.version(), loaded.id.version() + 1);
+        assert_eq!(current.parent, Some(loaded.id.clone()));
+        assert!(head(&app).graph.node(&id("finding:race")).is_some());
+        assert_eq!(r.json()["revision"], current.id.to_string());
+        assert_eq!(r.json()["semantic_hash"], current.semantic_hash.to_string());
+        assert_eq!(payload(&app, "req:p")["requirement_kind"], "functional");
+        assert_eq!(clock.reads.load(Ordering::SeqCst), 1);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn http_core_intake_reason_required_blocks_the_write() {
+        let app = app();
+        let mut events = app.state.subscribe();
+        let start = revision_count(&app);
+        // req:c with req:b's class becomes an exact equivalent of Accepted req:b.
+        let r = post(
+            &app,
+            "/api/requirements/req:c/classify",
+            Some(&semantic(&app)),
+            Some(json!({"class": "functional"})),
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_INTAKE_REASON_REQUIRED")
+        );
+        let details = &r.json()["details"];
+        assert!(details["proposal_ref"]
+            .as_str()
+            .unwrap()
+            .starts_with("prop:"));
+        assert_eq!(details["reason_codes"], json!(["exact_equivalent"]));
+        assert_eq!(revision_count(&app), start);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn http_core_write_validation_errors() {
+        let app = app();
+        let h = semantic(&app);
+        let cases: Vec<(&str, Option<Value>, StatusCode, &str)> = vec![
+            (
+                "/api/requirements/req:a/classify",
+                Some(json!({"class": "functional"})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_NO_CHANGE",
+            ),
+            (
+                "/api/requirements/term:leave/classify",
+                Some(json!({"class": "functional"})),
+                StatusCode::NOT_FOUND,
+                "E_NOT_FOUND",
+            ),
+            (
+                "/api/requirements/req:a/classify",
+                Some(json!({"class": "bogus"})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/requirements/req:a/classify",
+                Some(json!({"class": "functional", "x": 1})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/requirements/req:a/accept-ears",
+                Some(json!({})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/requirements/req:a/accept-ears",
+                Some(json!({"text": ""})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/requirements/req:a/accept-ears",
+                Some(json!({"text": " padded "})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/requirements/req:a/accept-ears",
+                Some(json!({"text": "line\nbreak"})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/requirements/req:a/accept-ears",
+                Some(json!({"text": "The system shall export PDF, CSV, etc."})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_NO_CHANGE",
+            ),
+            (
+                "/api/glossary/term:leave/confirm",
+                None,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_SEMANTIC_INVARIANT",
+            ),
+            (
+                "/api/glossary/req:a/confirm",
+                None,
+                StatusCode::NOT_FOUND,
+                "E_NOT_FOUND",
+            ),
+            (
+                "/api/glossary/term:leave/edit",
+                Some(json!({"term": "Leave Request", "aliases": []})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_TERM_IDENTITY_CHANGE",
+            ),
+            (
+                "/api/glossary/term:leave/edit",
+                Some(json!({"term": "leave request", "aliases": ["absence"]})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_NO_CHANGE",
+            ),
+            (
+                "/api/glossary/term:leave/edit",
+                Some(json!({"term": "leave request", "aliases": ["leave request"]})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/glossary/term:leave/edit",
+                Some(json!({"term": "leave request", "aliases": ["a", "a"]})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/model/attributes/attr:days/type",
+                Some(json!({"type": "Money"})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_SEMANTIC_INVARIANT",
+            ),
+            (
+                "/api/model/attributes/attr:days/type",
+                Some(json!({"type": "Integer"})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_SEMANTIC_INVARIANT",
+            ),
+            (
+                "/api/model/attributes/entity:request/unit",
+                Some(json!({"unit": "day"})),
+                StatusCode::NOT_FOUND,
+                "E_NOT_FOUND",
+            ),
+            (
+                "/api/model/attributes/attr:days/unit",
+                Some(json!({"unit": " day"})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/model/attributes/attr:days/class",
+                Some(json!({"class": "PII"})),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/model/attributes/attr:salary/class",
+                Some(json!({"class": "pii"})),
+                StatusCode::CONFLICT,
+                "E_ATTRIBUTE_ALREADY_CLASSIFIED",
+            ),
+            (
+                "/api/model/attributes/attr:salary/class",
+                Some(json!({"class": "financial"})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_NO_CHANGE",
+            ),
+            (
+                "/api/model/calculations/calc:days/confirm",
+                None,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_SEMANTIC_INVARIANT",
+            ),
+        ];
+        let start = revision_count(&app);
+        for (uri, body, status, code) in cases {
+            let r = post(&app, uri, Some(&h), body.clone()).await;
+            assert_eq!(
+                (r.status, r.code()),
+                (status, code.to_owned()),
+                "{uri} {body:?}"
+            );
+        }
+        assert_eq!(revision_count(&app), start);
+        // A non-JSON body is a typed 400, not a framework text error.
+        let r = send(
+            &app.router,
+            Request::post("/api/requirements/req:a/classify")
+                .header("if-match", &h)
+                .body(Body::from("not json"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
+        );
+    }
+
+    // ------------------------------------------------------------------ pagination
+
+    /// The nine pageable A0.2 reads and a setup giving each at least two items.
+    async fn pageable_app() -> (App, Vec<String>) {
+        let (app, source) = app_with_source(
+            "spans.md",
+            b"# Spans\n\nFirst paragraph.\n\nSecond paragraph.\n\nThird paragraph.\n",
+        )
+        .await;
+        let uris = vec![
+            format!("/api/sources/{source}/spans"),
+            "/api/requirements".into(),
+            "/api/glossary".into(),
+            "/api/model/entities".into(),
+            "/api/model/calculations".into(),
+            "/api/processes".into(),
+            "/api/findings".into(),
+            "/api/assumptions".into(),
+            "/api/decisions".into(),
+        ];
+        (app, uris)
+    }
+
+    fn with_query(uri: &str, query: &str) -> String {
+        if uri.contains('?') {
+            format!("{uri}&{query}")
+        } else {
+            format!("{uri}?{query}")
+        }
+    }
+
+    #[tokio::test]
+    async fn http_core_pagination_on_all_nine_lists() {
+        let (app, uris) = pageable_app().await;
+        let pageable = OPERATIONS
+            .iter()
+            .filter(|s| s.owner == "A0.2" && s.pageable)
+            .count();
+        assert_eq!(pageable, uris.len());
+        for uri in &uris {
+            let all = get(&app, uri).await.json();
+            assert_eq!(all["next_cursor"], Value::Null, "{uri}");
+            let all_ids = ids_of(&all);
+            assert!(all_ids.len() >= 2, "{uri}");
+            let mut sorted = all_ids.clone();
+            sorted.sort();
+            assert_eq!(all_ids, sorted, "{uri}: stable ID order");
+            // limit=1 walk.
+            let mut walked = Vec::new();
+            let mut next = Some(with_query(uri, "limit=1"));
+            while let Some(page_uri) = next {
+                let page = get(&app, &page_uri).await;
+                assert_eq!(page.status, StatusCode::OK, "{page_uri}: {:?}", page.json());
+                let page = page.json();
+                let ids = ids_of(&page);
+                assert_eq!(ids.len(), 1);
+                assert!(!walked.contains(&ids[0]), "{uri}: duplicate");
+                walked.push(ids[0].clone());
+                next = page["next_cursor"].as_str().map(|c| {
+                    assert!(c
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+                    let decoded: Value = serde_json::from_slice(&hex::decode(c).unwrap()).unwrap();
+                    assert_eq!(
+                        decoded.as_object().unwrap().keys().collect::<Vec<_>>(),
+                        ["after_id", "request_hash", "revision", "semantic_hash"]
+                    );
+                    assert_eq!(
+                        to_canonical_json(&decoded).unwrap(),
+                        hex::decode(c).unwrap()
+                    );
+                    with_query(uri, &format!("limit=1&cursor={c}"))
+                });
+            }
+            assert_eq!(walked, all_ids, "{uri}");
+            // A large limit returns everything with no cursor.
+            let big = get(&app, &with_query(uri, "limit=1000")).await.json();
+            assert_eq!(
+                (ids_of(&big), big["next_cursor"].clone()),
+                (all_ids.clone(), Value::Null)
+            );
+            for bad in ["limit=0", "limit=-1", "limit=x"] {
+                let r = get(&app, &with_query(uri, bad)).await;
+                assert_eq!(
+                    (r.status, r.code().as_str()),
+                    (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST"),
+                    "{uri} {bad}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn http_core_cursor_v2_contract() {
+        let app = app();
+        let h = head(&app).revision;
+        let first = get(&app, "/api/requirements?status=Accepted&limit=1")
+            .await
+            .json();
+        assert_eq!(ids_of(&first), ["req:a"]);
+        let cursor = first["next_cursor"].as_str().unwrap().to_owned();
+        // Exactly the frozen fields and an independently computed request hash.
+        let rh = request_hash(
+            "list_requirements",
+            json!({}),
+            json!({"status": "Accepted"}),
+        );
+        assert_eq!(
+            cursor,
+            cursor_for("req:a", &rh, &h.id.to_string(), h.semantic_hash.as_str())
+        );
+        // Same request continues; filtering happens before after_id.
+        let second = get(
+            &app,
+            &format!("/api/requirements?status=Accepted&limit=1&cursor={cursor}"),
+        )
+        .await
+        .json();
+        assert_eq!(ids_of(&second), ["req:b"]);
+        let reordered = get(
+            &app,
+            &format!("/api/requirements?cursor={cursor}&limit=1&status=Accepted"),
+        )
+        .await;
+        assert_eq!(ids_of(&reordered.json()), ["req:b"]);
+        // Another filter, an omitted filter, another endpoint: request mismatch.
+        for uri in [
+            format!("/api/requirements?status=Proposed&cursor={cursor}"),
+            format!("/api/requirements?cursor={cursor}"),
+            format!("/api/requirements?status=Accepted&class=functional&cursor={cursor}"),
+            format!("/api/glossary?cursor={cursor}"),
+            format!("/api/findings?status=Accepted&cursor={cursor}"),
+        ] {
+            let r = get(&app, &uri).await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (StatusCode::BAD_REQUEST, "E_CURSOR_REQUEST_MISMATCH"),
+                "{uri}"
+            );
+        }
+        // An after_id outside the filtered collection is invalid.
+        let foreign = cursor_for("req:p", &rh, &h.id.to_string(), h.semantic_hash.as_str());
+        let r = get(
+            &app,
+            &format!("/api/requirements?status=Accepted&cursor={foreign}"),
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "E_CURSOR_INVALID")
+        );
+        // Malformed cursors.
+        let canonical = hex::decode(&cursor).unwrap();
+        let mut pretty: Value = serde_json::from_slice(&canonical).unwrap();
+        let pretty_bytes = serde_json::to_vec_pretty(&pretty).unwrap();
+        pretty["extra"] = json!(1);
+        let extra = hex::encode(to_canonical_json(&pretty).unwrap());
+        let mut missing: Value = serde_json::from_slice(&canonical).unwrap();
+        missing.as_object_mut().unwrap().remove("revision");
+        let missing = hex::encode(to_canonical_json(&missing).unwrap());
+        let wrong_kind = cursor_for(
+            "req:a",
+            &rh,
+            &h.id.to_string(),
+            Hash::content_sha256(b"x").as_str(),
+        );
+        let bad_revision = hex::encode(to_canonical_json(&json!({"after_id": "req:a", "request_hash": rh, "revision": "rev:x", "semantic_hash": h.semantic_hash})).unwrap());
+        let bad_after = cursor_for(
+            "not an id",
+            &rh,
+            &h.id.to_string(),
+            h.semantic_hash.as_str(),
+        );
+        for bad in [
+            cursor.to_uppercase(),
+            cursor[1..].to_owned(),
+            "zz".to_owned(),
+            hex::encode(b"not json"),
+            hex::encode(&pretty_bytes),
+            extra,
+            missing,
+            wrong_kind,
+            bad_revision,
+            bad_after,
+        ] {
+            let r = get(
+                &app,
+                &format!("/api/requirements?status=Accepted&cursor={bad}"),
+            )
+            .await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (StatusCode::BAD_REQUEST, "E_CURSOR_INVALID"),
+                "{bad}"
+            );
+        }
+        // A path parameter is part of the request identity.
+        let a = upload(
+            &app,
+            Some(&semantic(&app)),
+            Some("a.md"),
+            "text/markdown",
+            b"# A\n\nOne.\n\nTwo.\n",
+        )
+        .await
+        .json()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let b = upload(
+            &app,
+            Some(&semantic(&app)),
+            Some("b.md"),
+            "text/markdown",
+            b"# B\n\nThree.\n\nFour.\n",
+        )
+        .await
+        .json()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let page = get(&app, &format!("/api/sources/{a}/spans?limit=1"))
+            .await
+            .json();
+        let span_cursor = page["next_cursor"].as_str().unwrap().to_owned();
+        let r = get(
+            &app,
+            &format!("/api/sources/{b}/spans?cursor={span_cursor}"),
+        )
+        .await;
+        assert_eq!(r.code(), "E_CURSOR_REQUEST_MISMATCH");
+        let r = get(
+            &app,
+            &format!("/api/sources/{a}/spans?cursor={span_cursor}"),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn http_core_cursor_baseline_changes() {
+        let app = app();
+        let page = get(&app, "/api/findings?limit=1").await.json();
+        let cursor = page["next_cursor"].as_str().unwrap().to_owned();
+        let before = head(&app).revision;
+        // Evidence-only revision: a Finding is outside the semantic hash but visible on the page.
+        let after = external_commit(
+            &app,
+            SemanticPatch::AddNode {
+                node: finding(
+                    "finding:new",
+                    "PLUMB.F2.N",
+                    "F2",
+                    "info",
+                    "Open",
+                    &["req:b"],
+                ),
+            },
+        );
+        assert_eq!(after.semantic_hash, before.semantic_hash);
+        assert_ne!(after.id, before.id);
+        assert_eq!(ids_of(&get(&app, "/api/findings").await.json()).len(), 3);
+        let r = get(&app, &format!("/api/findings?limit=1&cursor={cursor}")).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_CURSOR_BASELINE_CHANGED")
+        );
+        // A semantic change is a baseline change too.
+        let page = get(&app, "/api/findings?limit=1").await.json();
+        let cursor = page["next_cursor"].as_str().unwrap().to_owned();
+        let changed = external_commit(
+            &app,
+            SemanticPatch::AddNode {
+                node: requirement(
+                    "req:new",
+                    "Accepted",
+                    "functional",
+                    "A new requirement shall exist.",
+                ),
+            },
+        );
+        assert_ne!(changed.semantic_hash, after.semantic_hash);
+        let r = get(&app, &format!("/api/findings?limit=1&cursor={cursor}")).await;
+        assert_eq!(r.code(), "E_CURSOR_BASELINE_CHANGED");
+    }
+
+    // ------------------------------------------------------------------ events
+
+    async fn read_until(stream: &mut std::net::TcpStream, end: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        let mut byte = [0u8; 1];
+        while !buf.ends_with(end) {
+            stream.read_exact(&mut byte).unwrap();
+            buf.push(byte[0]);
+        }
+        buf
+    }
+
+    fn read_frame(stream: &mut std::net::TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
+        use std::io::Read;
+        let mut head = [0u8; 2];
+        stream.read_exact(&mut head)?;
+        let mut len = (head[1] & 0x7f) as usize;
+        if len == 126 {
+            let mut ext = [0u8; 2];
+            stream.read_exact(&mut ext)?;
+            len = u16::from_be_bytes(ext) as usize;
+        }
+        let mut payload = vec![0u8; len];
+        stream.read_exact(&mut payload)?;
+        Ok((head[0] & 0x0f, payload))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_core_events_websocket_is_forward_only() {
+        use std::io::Write;
+        let app = app();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let server = app.router.clone();
+        tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+        // A committed event before the subscription is never replayed.
+        let r = post(
+            &app,
+            "/api/model/calculations/calc:p/confirm",
+            Some(&semantic(&app)),
+            None,
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK);
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .write_all(
+                b"GET /api/events HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+                  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            )
+            .unwrap();
+        let response = read_until(&mut stream, b"\r\n\r\n").await;
+        assert!(
+            String::from_utf8_lossy(&response).starts_with("HTTP/1.1 101"),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(300)))
+            .unwrap();
+        assert!(
+            read_frame(&mut stream).is_err(),
+            "no history or initial snapshot"
+        );
+        // A later commit arrives exactly as committed.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let r = post(
+            &app,
+            "/api/model/attributes/attr:days/unit",
+            Some(&semantic(&app)),
+            Some(json!({"unit": "day"})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK);
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let (opcode, payload) = read_frame(&mut stream).unwrap();
+        assert_eq!(opcode, 1);
+        let event: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(event, r.json()["events"][0]);
+        // Failed writes emit nothing.
+        let r = post(
+            &app,
+            "/api/model/attributes/attr:days/unit",
+            Some("psg:sha256:stale"),
+            Some(json!({"unit": "hour"})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::PRECONDITION_FAILED);
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(300)))
+            .unwrap();
+        assert!(read_frame(&mut stream).is_err());
+        // Without an upgrade the route answers with a typed error.
+        let r = get(&app, "/api/events").await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
+        );
+    }
+
+    // ------------------------------------------------------------------ source guards
+
+    #[test]
+    fn http_core_route_source_guards() {
+        for (name, source) in ROUTE_SOURCES {
+            let code: String = source
+                .lines()
+                .map(|l| l.split("//").next().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("\n");
+            for token in [
+                "Graph::new",
+                "&mut Graph",
+                "nodes_mut",
+                "edges_mut",
+                "insert_node",
+                "remove_node",
+                "apply_patch",
+                "SqliteRevisionStore",
+                "store.commit(",
+                "revision_store",
+                "std::fs",
+                "SystemTime",
+                "Utc::now",
+                "std::env",
+                "plumb_lint",
+                "plumb_expr",
+                "evaluate_gate",
+                "EvaluatorRegistry",
+                "\"/api/search\"",
+                "/api/model/sentences",
+                "/split\"",
+                "/waive",
+                "/mark-duplicate",
+                "/merge\"",
+                "/api/model/crud",
+                "/example\"",
+                "/api/model/rules",
+                "/steps\"",
+                "/api/processes/import",
+                "{id}/export\"",
+                "/api/scenarios",
+                "/resolve\"",
+                "/api/questions",
+                "/api/rounds",
+                "/api/proposals",
+                "/api/sessions",
+                "/api/jobs",
+                "/api/stages",
+                "501",
+            ] {
+                assert!(!code.contains(token), "{name} contains {token:?}");
+            }
+        }
+        // Writes reach the store only through the shared intake and CAS pipeline.
+        // Seven call sites serve the nine POSTs: the three attribute writes share one.
+        let commits: usize = ROUTE_SOURCES
+            .iter()
+            .map(|(_, s)| s.matches("state.commit(").count())
+            .sum();
+        assert_eq!(commits, 7);
+        let model = ROUTE_SOURCES
+            .iter()
+            .find(|(n, _)| *n == "model.rs")
+            .unwrap()
+            .1;
+        assert_eq!(
+            model.matches("attribute_write(").count(),
+            4,
+            "one definition, three callers"
+        );
+        let lib = include_str!("../src/lib.rs");
+        for token in ["fn main", "axum::serve", "TcpListener", "CorsLayer"] {
+            assert!(!lib.contains(token), "lib.rs contains {token}");
+        }
+    }
+}

@@ -26,10 +26,12 @@ utoipa = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 serde_yaml = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 jsonschema = { workspace = true }
+tower = { workspace = true }
 
 [features]
 default = []

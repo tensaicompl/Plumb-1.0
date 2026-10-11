@@ -1541,6 +1541,7 @@ name = "plumb-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "hex",
  "jsonschema",
  "plumb-artifacts",
  "plumb-compiler",
@@ -1561,6 +1562,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
  "utoipa",
