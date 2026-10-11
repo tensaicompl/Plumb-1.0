@@ -102,7 +102,7 @@ tasks:
 - id: X1.2
   status: done
 - id: X1.3
-  status: pending
+  status: done
 - id: X1.4
   status: pending
 - id: X1.5

@@ -102,7 +102,7 @@ pub struct LexicalIndex {
 }
 
 /// The retrieval text of one node, or `None` when the node is not a retrieval document.
-fn document_text(
+pub(crate) fn document_text(
     payload: &NodePayload,
 ) -> Result<Option<(RetrievalDocumentKind, String)>, CoreError> {
     fn lines<'a>(lines: impl IntoIterator<Item = Option<&'a str>>) -> String {
