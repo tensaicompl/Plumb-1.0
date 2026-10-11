@@ -6803,22 +6803,131 @@ tasks:
   - crates/plumb-intake/src/bm25.rs
   - crates/plumb-intake/src/index.rs
   - crates/plumb-intake/tests/bm25.rs
+  - docs/plan/EXECUTION-STATE.yaml
   steps:
-  - Index requirement statements, domain concepts, rules, calculations, scenarios and evidence text.
-  - Implement deterministic lexical BM25 in Rust; no external search dependency.
-  - Incremental update must produce identical ranking to full rebuild for equal corpus.
-  - EmbeddingProvider path is deferred; retain extension interface only if already defined in v2-compatible API.
+  - 'Boundary (Hotfix 058). Hotfix 058 replaces the earlier X1.2 actions; where they differ, this contract governs. X1.2
+    implements exactly a deterministic in-memory lexical corpus projection of the PSG, deterministic BM25 scoring, deterministic
+    top-k retrieval and deterministic content-diff incremental refresh, in plumb-intake with its existing dependencies
+    only (no Cargo change, no external search engine, NLP, Unicode-normalization or randomization crate). No EmbeddingProvider
+    exists in the live API, so none is retained or added: no embedding, vector, cosine or hashed-vector index and no llm
+    feature; embeddings need a separate future contract. X1.2 performs no persistence (no SQLite, files, ArtifactStore,
+    BlobStore or cache), no network, no inference provider use, no clock and no graph mutation (no SemanticPatch, Proposal
+    or apply), and creates no intake semantics (IntakeReport, requires_reason, novelty, duplicate, covered, conflict or
+    threshold); a BM25 hit is advisory lexical candidate evidence, never a probability, confidence, novelty or similarity
+    percentage, and X1.3 consumes X1.2 candidates.'
+  - 'Corpus (Hotfix 058). The retrieval corpus is current accepted searchable truth: a node is a candidate only when node.status
+    == Accepted (Proposed, Rejected, Suspect, Superseded and Deprecated are excluded; this intentionally differs from
+    is_baseline). One PSG node yields at most one retrieval document whose ID is the node ID (no sentence or other synthetic
+    sub-documents). Exactly six payload families are indexed, as the closed RetrievalDocumentKind {Requirement, Concept,
+    Rule, Calculation, Scenario, Evidence} with wire/display strings requirement, concept, rule, calculation, scenario,
+    evidence. Every other node type (including DecisionTable and Term, which are deliberately not indexed in X1.2) yields
+    no document, no warning and no error, and there is no generic serde-to-text fallback.'
+  - 'Text projection (Hotfix 058). Retrieval text is a read-only projection of the PSG strings (no trimming, rewriting,
+    normalization, stemming or enrichment); lines are joined with exactly one LF and absent optional lines get no placeholder.
+    Requirement: statement only. Concept: name LF definition. Rule: name, then condition_expr when Some, then action_expr
+    when Some. Calculation: name, expression, result_type, then unit when Some, then rounding when Some (calendar_ref
+    and examples excluded). Scenario: name LF the RFC 8785 canonical JSON (existing plumb-core canonical JSON; a failure
+    is IndexError::Core, never a serde_json fallback) of exactly {scenario_kind, given, when, then}; its keys are tokenized
+    normally, and requirement_refs, derived_from_refs and confirmation_status are excluded. EvidenceFragment: exactly
+    extracted_text when Some; None yields no document; source_ref, locator, speaker, source_timestamp and content_hash
+    are excluded. Node IDs, kinds and envelope material (evidence, derivations, standards, tags, audit, revision, extensions)
+    never enter the text. A candidate whose text tokenizes to zero tokens is omitted and does not count toward N, average
+    length or document frequency.'
+  - 'Tokenizer version 1 (Hotfix 058). pub fn tokenize(text: &str) -> Vec<String> (frozen API): map every Unicode scalar
+    through char::to_lowercase (which may emit several scalars), then tokens are the maximal runs of scalars with char::is_alphanumeric()
+    on the lowercased stream; every other scalar (whitespace, punctuation, underscore, hyphen, dot) separates. Examples:
+    "Leave Request" -> [leave, request]; "LEAVE-request" -> [leave, request]; "half-day" -> [half, day]; "0.5 day" ->
+    [0, 5, day]; "Employee.manager" -> [employee, manager]. No NFC/NFD/NFKC/NFKD normalization, stop words, stemming,
+    lemmatization or synonym expansion. Queries use the same tokenizer; query terms are deduplicated into a set (no qtf
+    or k3 factor), and an empty query yields no hits.'
+  - 'BM25 (Hotfix 058). pub const RETRIEVAL_INDEX_VERSION: u32 = 1, pub const BM25_K1: f64 = 1.2 and pub const BM25_B:
+    f64 = 0.75 are exported and not configurable (no configuration object, profile or environment override, field boost,
+    kind boost, per-kind IDF or kind filter). dl(d) is the token count of d including repetitions; tf(t,d) the exact occurrence
+    count; N the number of indexed documents; df(t) the number of indexed documents containing t; avgdl = (sum of dl as
+    f64) / (N as f64) when N > 0; an empty corpus (N = 0) is valid and every search returns []. For a unique query term
+    with df > 0, idf(t) = ln(1 + (N - df + 0.5) / (df + 0.5)); a term with df = 0 contributes 0 and is skipped. term_score(t,d)
+    = idf(t) * tf * (k1 + 1) / (tf + k1 * (1 - b + b * dl / avgdl)); score(d) is the sum over unique query terms with
+    tf > 0, in f64 (ranking math only, never PSG truth). Documents with score 0 are not returned; every returned score
+    is finite and > 0, and a non-finite score is IndexError::NonFiniteScore, never ranked. Hits sort by score descending
+    with f64::total_cmp, then document ID ascending (no kind tie-break); top_k 0 returns [], and top_k beyond the matches
+    returns all matches without padding. No threshold, Jaccard or duplicate logic; no exact-ID special case.'
+  - 'Public API (Hotfix 058). bm25.rs owns tokenization, constants, corpus statistics and scoring/ranking helpers and
+    imports no PSG type. index.rs owns PSG projection, corpus identity and: RetrievalDocumentKind; RetrievalHit {id: Id,
+    kind: RetrievalDocumentKind, score: f64} (no snippet or path); IndexUpdateSummary {added: BTreeSet<Id>, changed: BTreeSet<Id>,
+    removed: BTreeSet<Id>, unchanged: usize}; the closed IndexError {Core(CoreError), ProjectMismatch {expected, actual},
+    ProfileMismatch {expected, actual}, NonFiniteScore {document_ref}}; and LexicalIndex with build(&Graph) -> Result<Self,
+    IndexError>, update(&mut self, &Graph) -> Result<IndexUpdateSummary, IndexError>, search(&self, query, top_k) -> Result<Vec<RetrievalHit>,
+    IndexError> (Result only for the non-finite invariant), corpus_hash, semantic_hash, evidence_hash, project_id, profile_id
+    and document_count. Exact document text stays crate-private. search never mutates the index; for the same corpus,
+    query and top_k it returns identical IDs, kinds, order and scores. lib.rs registers the two modules and exports this
+    API only. The supplied Graph is already validated by construction; X1.2 does not re-run Graph validation.'
+  - 'Corpus identity (Hotfix 058). corpus_hash is a Generic (sha256:) hash of the RFC 8785 canonical JSON {version: 1,
+    project_id, profile_id, documents: [{id, kind, text}]} with documents sorted by node ID ascending and no tokens, frequencies,
+    lengths, constants or scores. It is distinct from the companion graph identities the index also records, graph.semantic_hash()
+    (psg:sha256:) and graph.evidence_hash() (ev:sha256:): the semantic hash covers a different node set and projection,
+    and the evidence hash binds fragment metadata and content hashes but not extracted_text, so neither substitutes for
+    corpus_hash. Scores never enter any hash.'
+  - 'Build and incremental update (Hotfix 058). build iterates graph nodes in ID order, projects eligible documents, omits
+    token-empty ones, tokenizes, computes global statistics and records project_id, profile_id, the companion hashes and
+    corpus_hash; the result is independent of the node order given to Graph::new. update(graph) is content-diff based
+    and takes no caller DirtySet, ChangedSet or delta: a different project_id is ProjectMismatch and a different profile_id
+    is ProfileMismatch (a full rebuild is required); otherwise it projects the current graph and compares with the stored
+    documents by ID: an ID newly eligible is added; an ID no longer eligible (absent, non-Accepted, unsupported, EvidenceFragment
+    without text or token-empty) is removed; an ID whose kind or exact text differs is changed; same ID, kind and text
+    is unchanged regardless of envelope or unrelated metadata. Only added and changed documents are retokenized (unchanged
+    token data is reused); N, total length, avgdl and df are then recomputed globally from the current documents (no floating
+    incremental deltas), and the companion hashes and corpus_hash are refreshed. Update is atomic: the replacement state
+    is computed fully before it is swapped in, and any error leaves the index unchanged and usable. The result equals
+    LexicalIndex::build(graph) in project and profile IDs, companion hashes, corpus hash, documents (IDs, kinds, text),
+    term frequencies, lengths and document frequencies, and in search IDs, kinds and order with scores equal within 1e-12.'
+  - 'Tests (Hotfix 058). tests/bm25.rs (test names under a bm25 module so the focused filter selects them) covers: exact
+    token vectors (ASCII case, punctuation, hyphen, decimal point, underscore, dot, Unicode letters and digits, whitespace,
+    empty and punctuation-only input); exact text projection for each kind (Rule and Calculation optional-line combinations,
+    Scenario canonical JSON line, Evidence text only and None absent); the Accepted-only status matrix for every family;
+    non-indexed Entity, Operation, DecisionTable, Term, Finding and Question; token-empty omission; empty corpus, empty
+    query, top_k 0, no-match and truncation; repeated query terms; no stemming (approved vs approve) and no stop words
+    (shall); Scenario refs not searchable; single-term, multi-term, tf, length-normalization and IDF behaviour; exact
+    ID tie order; node-order independence (proptest permutations where practical, no new dependency); an independent Python
+    RFC 8785 + SHA-256 corpus-hash golden over a representative corpus (at least 2 Requirements, 1 Concept, 1 Rule, 1
+    Calculation, 2 Scenarios and 1 EvidenceFragment plus non-Accepted and unsupported controls) and an independent Python
+    BM25 golden (ranking and scores within 1e-12 absolute); companion and corpus hash distinctions (an extracted_text
+    change alters corpus_hash but not evidence_hash; non-indexed and envelope-only changes keep corpus_hash and rankings);
+    and update-versus-rebuild equivalence with exact summaries for add, text change, removal, Accepted -> Proposed, Proposed
+    -> Accepted, evidence text change, non-indexed change, envelope-only change and a multi-change batch, over single,
+    multiple, repeated, Unicode, numeric and absent query terms; plus project and profile mismatch atomicity.'
+  - Files (Hotfix 058). Only crates/plumb-intake/src/lib.rs, crates/plumb-intake/src/bm25.rs, crates/plumb-intake/src/index.rs,
+    crates/plumb-intake/tests/bm25.rs and, at successful completion, docs/plan/EXECUTION-STATE.yaml change. No Cargo file,
+    plumb-core, plumb-psg, plumb-patch, plumb-validation, plumb-inference or plumb-functional source, fixture, rule or
+    profile changes, and X1.3 files (intake.rs, report.rs, tests/intake.rs) are not created.
   tests:
   - cargo test -p plumb-intake bm25
+  - cargo test -p plumb-intake --no-fail-fast
   acceptance:
-  - Top-k is deterministic and incremental index equals rebuild.
+  - LexicalIndex indexes exactly the Accepted Requirement, Concept, Rule, Calculation, Scenario and text-bearing EvidenceFragment
+    nodes with the frozen text projections and version-1 tokenizer, and returns deterministic positive-score top-k hits
+    under the frozen BM25 constants, formula and score-then-ID ordering.
+  - corpus_hash is the independently reproducible Generic hash of the canonical corpus projection, separate from the recorded
+    semantic and evidence companion hashes, and incremental content-diff update equals a full rebuild for every lifecycle
+    case while failing atomically on project or profile mismatch.
+  - No dependency, embedding, persistence, network, inference, graph mutation or intake semantics is introduced.
   source_refs:
   - SRCREF-5BCC6696BB
-  forbidden: []
+  forbidden:
+  - Do not change Cargo files, PSG types or hashing, patch or DirtySet behaviour, validation, inference or fixtures; add
+    an EmbeddingProvider, vectors, persistence, network, inference or a clock; create intake or report semantics or X1.3
+    files; index non-Accepted nodes, DecisionTable or Term; add configurable BM25 constants, boosts, stemming, stop words,
+    synonyms or Unicode normalization; use nondeterministic ordering; or start X1.3.
   commands:
   - cargo test -p plumb-intake bm25
+  - cargo test -p plumb-intake --no-fail-fast
+  - cargo test -p plumb-patch --no-fail-fast
+  - cargo test -p plumb-psg --no-fail-fast
+  - cargo test -p plumb-validation --no-fail-fast
+  - cargo test --workspace --no-fail-fast
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'X1.2: Implement lexical BM25 retrieval index'
 - id: X1.3
   title: Implement patch-centric intake gate

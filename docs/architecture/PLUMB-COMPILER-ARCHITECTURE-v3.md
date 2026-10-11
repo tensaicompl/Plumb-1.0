@@ -430,6 +430,10 @@ Intake checks:
 - novelty
 - impact radius
 
+### Lexical retrieval corpus (X1.2, Hotfix 058)
+
+Intake candidate retrieval is a deterministic, in-memory lexical index over current accepted searchable truth. Only `Accepted` nodes of six families are indexed, one document per node ID: Requirement (statement), Concept (name and definition), Rule (name, condition, action), Calculation (name, expression, result type, unit, rounding), Scenario (name plus the canonical JSON of its kind, given, when and then) and EvidenceFragment (extracted text, when present). Decision tables, terms, identifiers, references and envelope metadata are not indexed, and token-empty documents are omitted. The version-1 tokenizer lowercases with Unicode simple lowercase mapping and splits on non-alphanumeric scalars, with no normalization, stop words, stemming or synonyms. Scoring is BM25 with k1 = 1.2 and b = 0.75, the IDF `ln(1 + (N - df + 0.5)/(df + 0.5))` over the whole corpus, unique query terms and no boosts; hits are positive-score only, ordered by score descending then node ID. The index records the graph's semantic and evidence hashes as companions and its own Generic `corpus_hash` over the canonical `{version, project_id, profile_id, documents[{id, kind, text}]}` projection; neither graph hash substitutes for it. Incremental refresh diffs the current projection against stored documents by ID, kind and exact text, recomputes corpus statistics globally, is atomic, rejects another project or profile, and must equal a full rebuild. Scores are advisory candidate ranking, not duplicate, coverage, conflict or novelty decisions, which belong to intake. The index is not persisted, and embeddings are not part of the NOW scope.
+
 ### 5.5 Validation engine
 
 Consumes the active rule pack.
