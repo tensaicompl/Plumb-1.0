@@ -1541,6 +1541,7 @@ name = "plumb-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "jsonschema",
  "plumb-artifacts",
  "plumb-compiler",
  "plumb-core",
@@ -1556,6 +1557,7 @@ dependencies = [
  "plumb-validation",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror",
  "tokio",

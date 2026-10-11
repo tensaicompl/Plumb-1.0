@@ -25,9 +25,11 @@ tower-http = { workspace = true }
 utoipa = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+serde_yaml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+jsonschema = { workspace = true }
 
 [features]
 default = []
