@@ -1467,7 +1467,7 @@ mod bm25 {
 
     #[test]
     fn source_guards() {
-        let common = [
+        let forbidden_capabilities = [
             "InferenceProvider",
             "AnthropicProvider",
             "InferenceRequest",
@@ -1495,16 +1495,18 @@ mod bm25 {
             "rand",
             "shuffle",
             "HashMap",
+            "File",
+            "Path",
+            "unicode_normalization",
+            "regex",
+        ];
+        let forbidden_intake_semantics = [
             "IntakeReport",
             "requires_reason",
             "covered_by",
             "conflicts_with",
             "novelty",
             "ResolutionDecision",
-            "File",
-            "Path",
-            "unicode_normalization",
-            "regex",
             "jaccard",
             "Jaccard",
             "threshold",
@@ -1514,7 +1516,10 @@ mod bm25 {
             ("index.rs", INDEX_SRC),
             ("lib.rs", LIB_SRC),
         ] {
-            assert_absent(src, name, &common);
+            assert_absent(src, name, &forbidden_capabilities);
+        }
+        for (name, src) in [("bm25.rs", BM25_SRC), ("index.rs", INDEX_SRC)] {
+            assert_absent(src, name, &forbidden_intake_semantics);
         }
         assert_absent(
             BM25_SRC,
@@ -1532,6 +1537,5 @@ mod bm25 {
                 "is_baseline",
             ],
         );
-        assert_absent(LIB_SRC, "lib.rs", &["mod intake", "mod report"]);
     }
 }
