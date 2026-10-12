@@ -122,7 +122,7 @@ tasks:
 - id: U1.2
   status: done
 - id: U2.1
-  status: pending
+  status: done
 - id: U2.2
   status: pending
 - id: U2.3

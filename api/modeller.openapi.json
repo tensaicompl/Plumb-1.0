@@ -2496,6 +2496,88 @@
         ],
         "type": "string"
       },
+      "SemanticChangePreviewResponse": {
+        "additionalProperties": false,
+        "description": "A server-authoritative semantic change preview (Hotfix 073): the exact domain Proposal is\npersisted as a pending workflow proposal bound to the baseline revision and nothing is\ncommitted. `version`, `revision` and `semantic_hash` are the baseline; `events` is empty.\nConfirmation is the existing proposal action on `proposal_id`.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ProposalKind"
+          },
+          "diff": {
+            "$ref": "#/components/schemas/SemanticElementDiff"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DesignEvent"
+            },
+            "type": "array"
+          },
+          "intake": {
+            "$ref": "#/components/schemas/IntakeReportView"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "semantic_hash": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "semantic_hash",
+          "events",
+          "proposal_id",
+          "action",
+          "intake",
+          "diff"
+        ],
+        "type": "object"
+      },
+      "SemanticElementDiff": {
+        "additionalProperties": false,
+        "description": "The semantic element effect of dry-applying one exact server-built domain Proposal to the\nbaseline graph (Hotfix 073). `candidate_semantic_hash` is the semantic hash of that candidate\ngraph only: it is not a revision identity and not a prediction of the committed\n`semantic_hash`, because acceptance governance (the proposal-acceptance ResolutionDecision)\nmay change it. The ID lists hold only semantic-hash-participating nodes and edges, each\nunique and sorted ascending.",
+        "properties": {
+          "added": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "base_semantic_hash": {
+            "type": "string"
+          },
+          "candidate_semantic_hash": {
+            "type": "string"
+          },
+          "modified": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "base_semantic_hash",
+          "candidate_semantic_hash",
+          "added",
+          "removed",
+          "modified"
+        ],
+        "type": "object"
+      },
       "Sentence": {
         "additionalProperties": false,
         "description": "A compatibility view of exactly one Requirement (there is no Sentence node type).",
@@ -3054,7 +3136,7 @@
     }
   },
   "info": {
-    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4.",
+    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72) and U2.1 (the two semantic change previews, operations 73-74).",
     "title": "Plumb Modeller API",
     "version": "0.1.0"
   },
@@ -3913,6 +3995,153 @@
               }
             },
             "description": "Write result"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "example",
+                  "details": {},
+                  "message": "example",
+                  "revision": "example",
+                  "semantic_hash": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PreconditionFailedResponse"
+                }
+              }
+            },
+            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+          }
+        },
+        "tags": [
+          "glossary"
+        ]
+      }
+    },
+    "/api/glossary/{id}/merge/preview": {
+      "post": {
+        "operationId": "preview_glossary_merge",
+        "parameters": [
+          {
+            "description": "Term ID",
+            "example": "example",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The current semantic_hash of the branch head.",
+            "example": "example",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "into": "example",
+                "reason": "example"
+              },
+              "schema": {
+                "$ref": "#/components/schemas/GlossaryMergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "action": "accept",
+                  "diff": {
+                    "added": [
+                      "example"
+                    ],
+                    "base_semantic_hash": "example",
+                    "candidate_semantic_hash": "example",
+                    "modified": [
+                      "example"
+                    ],
+                    "removed": [
+                      "example"
+                    ]
+                  },
+                  "events": [
+                    {
+                      "ids": [
+                        "example"
+                      ],
+                      "kind": "example",
+                      "version": "example"
+                    }
+                  ],
+                  "intake": {
+                    "conflicts_with": [
+                      {
+                        "reason": "example",
+                        "target_ref": "example"
+                      }
+                    ],
+                    "covered_by": [
+                      {
+                        "covered_by_ref": "example",
+                        "score": 1.0,
+                        "subject_ref": "example"
+                      }
+                    ],
+                    "duplicate_candidates": [
+                      {
+                        "candidate_ref": "example",
+                        "score": 1.0,
+                        "subject_ref": "example"
+                      }
+                    ],
+                    "new_terms": [
+                      "example"
+                    ],
+                    "reason_codes": [
+                      "ambiguous_term"
+                    ],
+                    "refines": [
+                      "example"
+                    ],
+                    "requires_reason": true,
+                    "validation_findings": [
+                      {
+                        "affected_refs": [
+                          "example"
+                        ],
+                        "code": "example",
+                        "family": "example",
+                        "id": "example",
+                        "message": "example",
+                        "severity": "example",
+                        "status": "example"
+                      }
+                    ]
+                  },
+                  "proposal_id": "example",
+                  "revision": "example",
+                  "semantic_hash": "example",
+                  "version": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/SemanticChangePreviewResponse"
+                }
+              }
+            },
+            "description": "Pending merge proposal, intake and semantic element diff; nothing is committed"
           },
           "412": {
             "content": {
@@ -7299,6 +7528,155 @@
               }
             },
             "description": "Write result"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "example",
+                  "details": {},
+                  "message": "example",
+                  "revision": "example",
+                  "semantic_hash": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PreconditionFailedResponse"
+                }
+              }
+            },
+            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+          }
+        },
+        "tags": [
+          "requirements"
+        ]
+      }
+    },
+    "/api/requirements/{id}/split/preview": {
+      "post": {
+        "operationId": "preview_requirement_split",
+        "parameters": [
+          {
+            "description": "Requirement ID",
+            "example": "HR-001",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The current semantic_hash of the branch head.",
+            "example": "example",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "parts": [
+                  "example"
+                ],
+                "reason": "example"
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SplitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "action": "accept",
+                  "diff": {
+                    "added": [
+                      "example"
+                    ],
+                    "base_semantic_hash": "example",
+                    "candidate_semantic_hash": "example",
+                    "modified": [
+                      "example"
+                    ],
+                    "removed": [
+                      "example"
+                    ]
+                  },
+                  "events": [
+                    {
+                      "ids": [
+                        "example"
+                      ],
+                      "kind": "example",
+                      "version": "example"
+                    }
+                  ],
+                  "intake": {
+                    "conflicts_with": [
+                      {
+                        "reason": "example",
+                        "target_ref": "example"
+                      }
+                    ],
+                    "covered_by": [
+                      {
+                        "covered_by_ref": "example",
+                        "score": 1.0,
+                        "subject_ref": "example"
+                      }
+                    ],
+                    "duplicate_candidates": [
+                      {
+                        "candidate_ref": "example",
+                        "score": 1.0,
+                        "subject_ref": "example"
+                      }
+                    ],
+                    "new_terms": [
+                      "example"
+                    ],
+                    "reason_codes": [
+                      "ambiguous_term"
+                    ],
+                    "refines": [
+                      "example"
+                    ],
+                    "requires_reason": true,
+                    "validation_findings": [
+                      {
+                        "affected_refs": [
+                          "example"
+                        ],
+                        "code": "example",
+                        "family": "example",
+                        "id": "example",
+                        "message": "example",
+                        "severity": "example",
+                        "status": "example"
+                      }
+                    ]
+                  },
+                  "proposal_id": "example",
+                  "revision": "example",
+                  "semantic_hash": "example",
+                  "version": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/SemanticChangePreviewResponse"
+                }
+              }
+            },
+            "description": "Pending create-class split proposal, intake and semantic element diff; nothing is committed"
           },
           "412": {
             "content": {

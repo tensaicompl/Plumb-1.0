@@ -238,8 +238,10 @@ describe("HomePage shell", () => {
       ["F4", "Unevaluated"],
     ]);
 
-    // Only the root and Home are registered routes: no placeholder for a future page.
-    expect(Object.keys(router.routesByPath)).toEqual(["/"]);
+    // Only implemented pages are registered routes: no placeholder for a future page.
+    expect(Object.keys(router.routesByPath).sort()).toEqual(
+      ["/", "/model/glossary", "/requirements", "/requirements/$requirementId"],
+    );
   });
 
   it("navigation data is the frozen pilot list", () => {

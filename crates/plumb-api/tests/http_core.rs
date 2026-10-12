@@ -1,5 +1,6 @@
 //! A0.2 contract tests for the core HTTP runtime (Hotfix 063, Hotfix 064), with the post-A0.3
-//! routing and source-guard regression (Hotfix 065).
+//! routing and source-guard regression (Hotfix 065), extended to the two U2.1 semantic change
+//! previews (Hotfix 073: 74 routed operations; Hotfix 074 route-guard exception).
 //!
 //! Every test lives in `http_core` (`cargo test -p plumb-api http_core`) and drives the real
 //! Axum router with `tower::ServiceExt` over a temporary SQLite revision and artifact store.
@@ -835,7 +836,7 @@ mod http_core {
     // ------------------------------------------------------------------ routing
 
     #[tokio::test]
-    async fn http_core_routes_all_72_operations() {
+    async fn http_core_routes_all_74_operations() {
         let app = app();
         let mut routed: Vec<(&str, &str, &str)> = Vec::new();
         for spec in OPERATIONS.iter() {
@@ -858,7 +859,7 @@ mod http_core {
                     || (reply.status == StatusCode::METHOD_NOT_ALLOWED
                         && !allow.split(',').any(|m| m.trim() == spec.method)));
             assert!(
-                ["A0.2", "A0.3", "A0.4"].contains(&spec.owner),
+                ["A0.2", "A0.3", "A0.4", "U2.1"].contains(&spec.owner),
                 "{}",
                 spec.operation_id
             );
@@ -899,7 +900,7 @@ mod http_core {
             ),
             (40, 27, 13)
         );
-        // A0.4 (Hotfix 067) routes exactly run_stage and get_job: all 72 operations.
+        // A0.4 (Hotfix 067) routes exactly run_stage and get_job.
         assert_eq!(
             (
                 count(&routed, "A0.4", None),
@@ -908,7 +909,16 @@ mod http_core {
             ),
             (2, 1, 1)
         );
-        assert_eq!(routed.len(), 72);
+        // U2.1 (Hotfix 073) routes exactly the two semantic change previews: all 74 operations.
+        assert_eq!(
+            (
+                count(&routed, "U2.1", None),
+                count(&routed, "U2.1", Some("POST")),
+                count(&routed, "U2.1", Some("GET"))
+            ),
+            (2, 2, 0)
+        );
+        assert_eq!(routed.len(), 74);
         // An unregistered path is a plain 404.
         let r = get(&app, "/api/nowhere").await;
         assert_eq!(
@@ -2462,7 +2472,6 @@ mod http_core {
                 "edges_mut",
                 "insert_node",
                 "remove_node",
-                "apply_patch",
                 "SqliteRevisionStore",
                 "store.commit(",
                 "revision_store",
@@ -2477,6 +2486,32 @@ mod http_core {
                 "501",
             ] {
                 assert!(!code.contains(token), "{name} contains {token:?}");
+            }
+            // Hotfix 074: the one pure dry-run of the shared U2.1 semantic change preview is the
+            // only route-layer apply_patch; every other route module neither imports nor calls it.
+            if name == "model.rs" {
+                assert_eq!(
+                    code.matches("apply_patch(").count(),
+                    1,
+                    "one production call"
+                );
+                assert_eq!(
+                    code.matches("apply_patch(&loaded.graph, &proposal.patch_set)")
+                        .count(),
+                    1,
+                    "the call is the preview dry-run"
+                );
+                assert_eq!(
+                    code.matches("apply_patch").count(),
+                    2,
+                    "the import and the call only"
+                );
+            } else {
+                assert_eq!(
+                    code.matches("apply_patch").count(),
+                    0,
+                    "{name} uses apply_patch"
+                );
             }
         }
         // Writes reach the store only through the shared state pipeline; the three attribute

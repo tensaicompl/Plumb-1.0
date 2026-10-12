@@ -4,7 +4,10 @@
 //! real Axum router with `tower::ServiceExt` over a temporary SQLite database holding the
 //! revision, artifact and durable workflow stores. The full A0.3 runtime is injected explicitly:
 //! a deterministic test inference provider, a static calendar provider and a test predicate
-//! provider, never anything from the environment or the network.
+//! provider, never anything from the environment or the network. U2.1 (Hotfix 073) adds the
+//! semantic change preview tests (split and Term merge previews, confirmation through the
+//! existing proposal actions and stale-preview rejection); Hotfix 074 makes the split preview
+//! create-class.
 
 mod http_workflow {
     use std::path::{Path, PathBuf};
@@ -33,13 +36,13 @@ mod http_workflow {
         apply_patch, AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
     };
     use plumb_psg::{
-        Edge, ElementStatus, EvidenceRef, Finding, FindingSeverity, Graph, Node, NodePayload,
-        NodeType,
+        edge_contributes_to_semantic_hash, node_contributes_to_semantic_hash, Edge, ElementStatus,
+        EvidenceRef, Finding, FindingSeverity, Graph, Node, NodePayload, NodeType,
     };
     use plumb_session::SessionTurnConfig;
     use plumb_store::{
-        BranchName, RevisionWriteMeta, SqliteRevisionStore, SqliteWorkflowStore,
-        WorkflowProposalState, WorkflowTurnState,
+        BranchName, RevisionWriteMeta, SqliteRevisionStore, SqliteWorkflowStore, WorkflowOrigin,
+        WorkflowProposalKind, WorkflowProposalState, WorkflowTurnState,
     };
     use plumb_validation::{
         finding_id, finding_key, load_builtin_software_profile, GeneratedFinding, ValidationProfile,
@@ -1165,6 +1168,491 @@ mod http_workflow {
             ])
         );
         assert_eq!(acceptance_decisions(&g).len(), 2);
+    }
+
+    // ------------------------------------------------------------------ semantic change previews (Hotfix 073)
+
+    const SPLIT_BODY: &str = r#"{"parts": ["Employees shall submit leave requests.", "Employees shall cancel leave requests."], "reason": "Two behaviours."}"#;
+    const MERGE_BODY: &str = r#"{"into": "term:leave", "reason": "Synonym."}"#;
+
+    /// The branch-head identity as `GET /api/model/version` reports it.
+    async fn version(app: &App) -> Value {
+        get(app, "/api/model/version").await.json()
+    }
+
+    /// The expected semantic element diff of `patch_set` on `base`, recomputed independently from
+    /// the apply_patch delta: added in the candidate, removed in the base, modified in either.
+    fn expected_diff(base: &Graph, patch_set: &PatchSet) -> Value {
+        let applied = apply_patch(base, patch_set).unwrap();
+        let (candidate, delta) = (&applied.graph, &applied.delta);
+        let node = |g: &Graph, i: &Id| g.node(i).is_some_and(node_contributes_to_semantic_hash);
+        let edge = |g: &Graph, i: &Id| {
+            g.edge(i)
+                .is_some_and(|e| edge_contributes_to_semantic_hash(g, e))
+        };
+        let ids = |list: Vec<&Id>| {
+            let mut v: Vec<String> = list.into_iter().map(|i| i.to_string()).collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let added = ids(delta
+            .added_nodes
+            .iter()
+            .filter(|i| node(candidate, i))
+            .chain(delta.added_edges.iter().filter(|i| edge(candidate, i)))
+            .collect());
+        let removed = ids(delta
+            .removed_nodes
+            .iter()
+            .filter(|i| node(base, i))
+            .chain(delta.removed_edges.iter().filter(|i| edge(base, i)))
+            .collect());
+        let modified = ids(delta
+            .modified_nodes
+            .iter()
+            .filter(|i| node(base, i) || node(candidate, i))
+            .chain(
+                delta
+                    .modified_edges
+                    .iter()
+                    .filter(|i| edge(base, i) || edge(candidate, i)),
+            )
+            .collect());
+        json!({
+            "base_semantic_hash": delta.base_semantic_hash.to_string(),
+            "candidate_semantic_hash": delta.result_semantic_hash.to_string(),
+            "added": added, "removed": removed, "modified": modified
+        })
+    }
+
+    /// Asserts that `reply` is a preview of a pending `kind` proposal persisted on the unchanged
+    /// head `before` (a `GET /api/model/version` body) and returns the stored Proposal.
+    fn assert_preview(
+        app: &App,
+        reply: &Reply,
+        before: &Value,
+        base: &Graph,
+        action: &str,
+        kind: WorkflowProposalKind,
+    ) -> Proposal {
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+        let body = reply.json();
+        // Baseline metadata, no events, no candidate revision.
+        assert_eq!(body["version"], before["revision"]);
+        assert_eq!(body["revision"], before["revision"]);
+        assert_eq!(body["semantic_hash"], before["semantic_hash"]);
+        assert_eq!(body["diff"]["base_semantic_hash"], before["semantic_hash"]);
+        assert_eq!(body["events"], json!([]));
+        assert_eq!(body["action"], action);
+        let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            vec![
+                "action",
+                "diff",
+                "events",
+                "intake",
+                "proposal_id",
+                "revision",
+                "semantic_hash",
+                "version"
+            ]
+        );
+        // The real pending workflow proposal, bound to the exact baseline revision.
+        let stored = workflow(app)
+            .proposal(&id(body["proposal_id"].as_str().unwrap()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, WorkflowProposalState::Pending);
+        assert_eq!(stored.proposal_kind, kind);
+        assert_eq!(stored.origin_kind, WorkflowOrigin::Intake);
+        assert_eq!(stored.origin_ref, None);
+        assert_eq!(
+            stored.base_revision_id.to_string(),
+            before["revision"].as_str().unwrap()
+        );
+        let proposal: Proposal = serde_json::from_str(&stored.proposal_json).unwrap();
+        assert_eq!(
+            proposal.id.to_string(),
+            body["proposal_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            proposal.patch_set.base_semantic_hash.to_string(),
+            before["semantic_hash"].as_str().unwrap()
+        );
+        // The diff is exactly the semantic element effect of the persisted PatchSet.
+        assert_eq!(body["diff"], expected_diff(base, &proposal.patch_set));
+        for list in ["added", "removed", "modified"] {
+            let ids: Vec<&str> = body["diff"][list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let mut sorted = ids.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(ids, sorted, "{list} sorted and unique");
+        }
+        proposal
+    }
+
+    #[tokio::test]
+    async fn http_workflow_split_preview_then_create_commits_the_exact_proposal() {
+        let app = app();
+        let body: Value = serde_json::from_str(SPLIT_BODY).unwrap();
+        let uri = "/api/requirements/req:c/split/preview";
+        // If-Match is required and must be current.
+        assert_error(
+            &post(&app, uri, None, Some(body.clone())).await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        assert_error(
+            &post(&app, uri, Some("psg:sha256:stale"), Some(body.clone())).await,
+            StatusCode::PRECONDITION_FAILED,
+            "E_PRECONDITION_FAILED",
+        );
+        let before = version(&app).await;
+        let base = head(&app);
+        let r = write(&app, uri, Some(body)).await;
+        let proposal = assert_preview(
+            &app,
+            &r,
+            &before,
+            &base.graph,
+            "create",
+            WorkflowProposalKind::Create,
+        );
+        let preview = r.json();
+        // The stored split Proposal classifies independently as Create (Hotfix 074): it adds
+        // Requirements and decomposes_to edges and carries no Supersede primitive.
+        let mut leaves = vec![&proposal.patch_set.patch];
+        let mut flat = Vec::new();
+        while let Some(p) = leaves.pop() {
+            match p {
+                SemanticPatch::Compound { patches } => leaves.extend(patches.iter()),
+                leaf => flat.push(leaf),
+            }
+        }
+        assert!(!flat
+            .iter()
+            .any(|p| matches!(p, SemanticPatch::Supersede { .. })));
+        assert!(flat
+            .iter()
+            .any(|p| matches!(p, SemanticPatch::AddNode { .. })));
+        assert!(flat.iter().any(|p| matches!(
+            p,
+            SemanticPatch::SetStatus {
+                to: ElementStatus::Superseded,
+                ..
+            }
+        )));
+        // Nothing was committed: same revision, semantic and evidence hashes.
+        assert_eq!(version(&app).await, before);
+        assert_eq!(head(&app).revision.id, base.revision.id);
+        // The split's domain effect: req:c stays in the projection as Superseded (modified), and
+        // the two Accepted children with their decomposes_to edges are added.
+        let added: Vec<String> = serde_json::from_value(preview["diff"]["added"].clone()).unwrap();
+        let children: Vec<&String> = added.iter().filter(|i| i.starts_with("req:")).collect();
+        assert_eq!(children.len(), 2, "{added:?}");
+        assert!(preview["diff"]["modified"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("req:c")));
+        // No acceptance companion is fabricated by the preview.
+        let in_diff: Vec<&Value> = ["added", "removed", "modified"]
+            .iter()
+            .flat_map(|l| preview["diff"][*l].as_array().unwrap())
+            .collect();
+        assert!(acceptance_decisions(&head(&app).graph).is_empty());
+        // An identical preview on the same head is the same pending proposal.
+        let again = write(&app, uri, Some(serde_json::from_str(SPLIT_BODY).unwrap())).await;
+        assert_eq!(again.json()["proposal_id"], preview["proposal_id"]);
+        assert_eq!(version(&app).await, before);
+        // The normal A0.3 action-kind check refuses a supersede action on the Create-class split
+        // Proposal; nothing is committed and the proposal stays pending.
+        assert_error(
+            &write(
+                &app,
+                &format!("/api/proposals/{}/supersede", proposal.id),
+                Some(json!({"reason": "Two behaviours."})),
+            )
+            .await,
+            StatusCode::CONFLICT,
+            "E_PROPOSAL_ACTION_MISMATCH",
+        );
+        assert_eq!(version(&app).await, before);
+        assert_eq!(
+            workflow(&app)
+                .proposal(&proposal.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            WorkflowProposalState::Pending
+        );
+        // The direct split endpoint is not involved: confirmation is the create action.
+        let r = write(
+            &app,
+            &format!("/api/proposals/{}/create", proposal.id),
+            Some(json!({"reason": "Two behaviours."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let committed = r.json();
+        assert_ne!(committed["revision"], before["revision"]);
+        let loaded = head(&app);
+        assert_eq!(
+            loaded.revision.id.to_string(),
+            committed["revision"].as_str().unwrap()
+        );
+        let g = &loaded.graph;
+        assert_eq!(
+            g.node(&id("req:c")).unwrap().status,
+            ElementStatus::Superseded
+        );
+        for child in &children {
+            assert_eq!(g.node(&id(child)).unwrap().status, ElementStatus::Accepted);
+            assert!(g.edges().values().any(|e| {
+                e.kind == plumb_psg::RelationKind::DecomposesTo
+                    && e.from == id("req:c")
+                    && e.to == id(child)
+                    && e.status == ElementStatus::Accepted
+            }));
+        }
+        let stored = workflow(&app).proposal(&proposal.id).unwrap().unwrap();
+        assert_eq!(stored.state, WorkflowProposalState::Accepted);
+        // Governance adds the acceptance ResolutionDecision on top of the previewed effect: the
+        // decision is not part of the preview diff, and the committed semantic hash is the
+        // final revision's, not the candidate's.
+        let decisions = acceptance_decisions(g);
+        assert_eq!(decisions.len(), 1);
+        let decision = decisions[0].0.to_string();
+        assert!(!in_diff.contains(&&json!(decision)));
+        assert_eq!(decisions[0].1.proposal_ref, Some(proposal.id.clone()));
+        assert_eq!(
+            committed["semantic_hash"].as_str().unwrap(),
+            loaded.revision.semantic_hash.to_string()
+        );
+        assert_ne!(
+            committed["semantic_hash"], preview["diff"]["candidate_semantic_hash"],
+            "the Accepted ResolutionDecision participates in semantic_hash"
+        );
+        // Every previewed semantic effect is present in the committed revision.
+        for added in preview["diff"]["added"].as_array().unwrap() {
+            let i = id(added.as_str().unwrap());
+            assert!(g.node(&i).is_some() || g.edge(&i).is_some(), "{i}");
+        }
+    }
+
+    fn in_list(diff: &Value, list: &str, element: &str) -> bool {
+        diff[list].as_array().unwrap().contains(&json!(element))
+    }
+
+    #[tokio::test]
+    async fn http_workflow_term_merge_preview_then_merge_commits_the_exact_proposal() {
+        let app = app();
+        let uri = "/api/glossary/term:vacation/merge/preview";
+        let body: Value = serde_json::from_str(MERGE_BODY).unwrap();
+        assert_error(
+            &post(&app, uri, None, Some(body.clone())).await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        assert_error(
+            &post(&app, uri, Some("psg:sha256:stale"), Some(body.clone())).await,
+            StatusCode::PRECONDITION_FAILED,
+            "E_PRECONDITION_FAILED",
+        );
+        let before = version(&app).await;
+        let base = head(&app);
+        let r = write(&app, uri, Some(body)).await;
+        let proposal = assert_preview(
+            &app,
+            &r,
+            &before,
+            &base.graph,
+            "merge",
+            WorkflowProposalKind::Merge,
+        );
+        let preview = r.json();
+        assert_eq!(version(&app).await, before);
+        assert!(head(&app).graph.node(&id("term:vacation")).is_some());
+        // Hotfix 074 semantic projection: the Proposed source Term is outside the base semantic
+        // projection, so merging it away does not put it in removed; the Accepted target is
+        // modified. The diff lists semantic-hash participants, not every touched element.
+        assert_eq!(
+            base.graph.node(&id("term:vacation")).unwrap().status,
+            ElementStatus::Proposed
+        );
+        assert!(!node_contributes_to_semantic_hash(
+            base.graph.node(&id("term:vacation")).unwrap()
+        ));
+        let touched = apply_patch(&base.graph, &proposal.patch_set).unwrap().delta;
+        assert!(touched.removed_nodes.contains(&id("term:vacation")));
+        assert_eq!(preview["diff"]["removed"], json!([]));
+        assert!(!in_list(&preview["diff"], "added", "term:vacation"));
+        assert!(!in_list(&preview["diff"], "modified", "term:vacation"));
+        assert!(in_list(&preview["diff"], "modified", "term:leave"));
+        let r = write(
+            &app,
+            &format!("/api/proposals/{}/merge", proposal.id),
+            Some(json!({"reason": "Synonym."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let g = head(&app).graph;
+        assert!(g.node(&id("term:vacation")).is_none());
+        let NodePayload::Term(t) = &g.node(&id("term:leave")).unwrap().payload else {
+            panic!()
+        };
+        assert_eq!(
+            t.aliases,
+            Some(vec![
+                "absence".to_owned(),
+                "holiday".to_owned(),
+                "vacation".to_owned()
+            ])
+        );
+        assert_eq!(
+            workflow(&app)
+                .proposal(&proposal.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            WorkflowProposalState::Accepted
+        );
+        assert_eq!(acceptance_decisions(&g).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn http_workflow_stale_previews_are_rejected_without_rebase() {
+        let app = app();
+        let split = write(
+            &app,
+            "/api/requirements/req:c/split/preview",
+            Some(serde_json::from_str(SPLIT_BODY).unwrap()),
+        )
+        .await;
+        let merge = write(
+            &app,
+            "/api/glossary/term:vacation/merge/preview",
+            Some(serde_json::from_str(MERGE_BODY).unwrap()),
+        )
+        .await;
+        assert_eq!(
+            (split.status, merge.status),
+            (StatusCode::OK, StatusCode::OK)
+        );
+        let a = version(&app).await;
+        // Another write advances the head from revision A to revision B.
+        let r = write(
+            &app,
+            "/api/requirements/req:b/mark-duplicate",
+            Some(json!({"of": "req:a", "reason": "Same."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let b = version(&app).await;
+        assert_ne!(a["revision"], b["revision"]);
+        for (reply, action, reason) in [
+            (&split, "create", "Two behaviours."),
+            (&merge, "merge", "Synonym."),
+        ] {
+            let proposal_id = reply.json()["proposal_id"].as_str().unwrap().to_owned();
+            // The confirmation carries the latest If-Match; the proposal stays bound to A.
+            let r = write(
+                &app,
+                &format!("/api/proposals/{proposal_id}/{action}"),
+                Some(json!({"reason": reason})),
+            )
+            .await;
+            assert_error(&r, StatusCode::CONFLICT, "E_PROPOSAL_BASELINE_CHANGED");
+            let stored = workflow(&app).proposal(&id(&proposal_id)).unwrap().unwrap();
+            assert_eq!(stored.state, WorkflowProposalState::Pending);
+            assert_eq!(
+                stored.base_revision_id.to_string(),
+                a["revision"].as_str().unwrap()
+            );
+        }
+        // Nothing was committed, rebased or retried.
+        assert_eq!(version(&app).await, b);
+        let g = head(&app).graph;
+        assert_eq!(
+            g.node(&id("req:c")).unwrap().status,
+            ElementStatus::Accepted
+        );
+        assert!(g.node(&id("term:vacation")).is_some());
+    }
+
+    #[tokio::test]
+    async fn http_workflow_previews_validate_exactly_like_the_direct_writes() {
+        let app = app();
+        let before = version(&app).await;
+        for bad in [
+            json!({"parts": ["Only one."], "reason": "x"}),
+            json!({"parts": ["A.", " B."], "reason": "x"}),
+            json!({"parts": ["A.", "A."], "reason": "x"}),
+            json!({"parts": ["A.", "B."], "reason": " padded"}),
+            json!({"parts": ["A.", "B."]}),
+        ] {
+            for uri in [
+                "/api/requirements/req:c/split",
+                "/api/requirements/req:c/split/preview",
+            ] {
+                assert_error(
+                    &write(&app, uri, Some(bad.clone())).await,
+                    StatusCode::BAD_REQUEST,
+                    "E_INVALID_REQUEST",
+                );
+            }
+        }
+        let split: Value = serde_json::from_str(SPLIT_BODY).unwrap();
+        for (uri, status, code) in [
+            (
+                "/api/requirements/req:nowhere/split/preview",
+                StatusCode::NOT_FOUND,
+                "E_NOT_FOUND",
+            ),
+            (
+                "/api/requirements/req:p/split/preview",
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_SEMANTIC_INVARIANT",
+            ),
+        ] {
+            assert_error(&write(&app, uri, Some(split.clone())).await, status, code);
+        }
+        for (uri, body, status, code) in [
+            (
+                "/api/glossary/term:urlaub/merge/preview",
+                json!({"into": "term:leave", "reason": "Same."}),
+                StatusCode::CONFLICT,
+                "E_TERM_MERGE_CONFLICT",
+            ),
+            (
+                "/api/glossary/term:leave/merge/preview",
+                json!({"into": "term:leave", "reason": "Same."}),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/glossary/term:vacation/merge/preview",
+                json!({"into": "not an id", "reason": "Same."}),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/glossary/term:ghost/merge/preview",
+                json!({"into": "term:leave", "reason": "Same."}),
+                StatusCode::NOT_FOUND,
+                "E_NOT_FOUND",
+            ),
+        ] {
+            assert_error(&write(&app, uri, Some(body)).await, status, code);
+        }
+        // No rejected preview persisted or committed anything.
+        assert_eq!(version(&app).await, before);
     }
 
     // ------------------------------------------------------------------ sentences and CRUD

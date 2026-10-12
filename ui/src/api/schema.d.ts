@@ -180,6 +180,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/glossary/{id}/merge/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["preview_glossary_merge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{id}": {
         parameters: {
             query?: never;
@@ -862,6 +878,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["split_requirement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/requirements/{id}/split/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["preview_requirement_split"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1817,6 +1849,37 @@ export interface components {
          * @enum {string}
          */
         SearchScope: "requirement" | "concept" | "rule" | "calculation" | "scenario" | "evidence";
+        /**
+         * @description A server-authoritative semantic change preview (Hotfix 073): the exact domain Proposal is
+         *     persisted as a pending workflow proposal bound to the baseline revision and nothing is
+         *     committed. `version`, `revision` and `semantic_hash` are the baseline; `events` is empty.
+         *     Confirmation is the existing proposal action on `proposal_id`.
+         */
+        SemanticChangePreviewResponse: {
+            action: components["schemas"]["ProposalKind"];
+            diff: components["schemas"]["SemanticElementDiff"];
+            events: components["schemas"]["DesignEvent"][];
+            intake: components["schemas"]["IntakeReportView"];
+            proposal_id: string;
+            revision: string;
+            semantic_hash: string;
+            version: string;
+        };
+        /**
+         * @description The semantic element effect of dry-applying one exact server-built domain Proposal to the
+         *     baseline graph (Hotfix 073). `candidate_semantic_hash` is the semantic hash of that candidate
+         *     graph only: it is not a revision identity and not a prediction of the committed
+         *     `semantic_hash`, because acceptance governance (the proposal-acceptance ResolutionDecision)
+         *     may change it. The ID lists hold only semantic-hash-participating nodes and edges, each
+         *     unique and sorted ascending.
+         */
+        SemanticElementDiff: {
+            added: string[];
+            base_semantic_hash: string;
+            candidate_semantic_hash: string;
+            modified: string[];
+            removed: string[];
+        };
         /** @description A compatibility view of exactly one Requirement (there is no Sentence node type). */
         Sentence: {
             evidence: string[];
@@ -2664,6 +2727,142 @@ export interface operations {
                      *     }
                      */
                     "application/json": components["schemas"]["WriteResult"];
+                };
+            };
+            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": "example",
+                     *       "details": {},
+                     *       "message": "example",
+                     *       "revision": "example",
+                     *       "semantic_hash": "example"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["PreconditionFailedResponse"];
+                };
+            };
+        };
+    };
+    preview_glossary_merge: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description The current semantic_hash of the branch head.
+                 * @example example
+                 */
+                "If-Match": string;
+            };
+            path: {
+                /**
+                 * @description Term ID
+                 * @example example
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "into": "example",
+                 *       "reason": "example"
+                 *     }
+                 */
+                "application/json": components["schemas"]["GlossaryMergeRequest"];
+            };
+        };
+        responses: {
+            /** @description Pending merge proposal, intake and semantic element diff; nothing is committed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "action": "accept",
+                     *       "diff": {
+                     *         "added": [
+                     *           "example"
+                     *         ],
+                     *         "base_semantic_hash": "example",
+                     *         "candidate_semantic_hash": "example",
+                     *         "modified": [
+                     *           "example"
+                     *         ],
+                     *         "removed": [
+                     *           "example"
+                     *         ]
+                     *       },
+                     *       "events": [
+                     *         {
+                     *           "ids": [
+                     *             "example"
+                     *           ],
+                     *           "kind": "example",
+                     *           "version": "example"
+                     *         }
+                     *       ],
+                     *       "intake": {
+                     *         "conflicts_with": [
+                     *           {
+                     *             "reason": "example",
+                     *             "target_ref": "example"
+                     *           }
+                     *         ],
+                     *         "covered_by": [
+                     *           {
+                     *             "covered_by_ref": "example",
+                     *             "score": 1,
+                     *             "subject_ref": "example"
+                     *           }
+                     *         ],
+                     *         "duplicate_candidates": [
+                     *           {
+                     *             "candidate_ref": "example",
+                     *             "score": 1,
+                     *             "subject_ref": "example"
+                     *           }
+                     *         ],
+                     *         "new_terms": [
+                     *           "example"
+                     *         ],
+                     *         "reason_codes": [
+                     *           "ambiguous_term"
+                     *         ],
+                     *         "refines": [
+                     *           "example"
+                     *         ],
+                     *         "requires_reason": true,
+                     *         "validation_findings": [
+                     *           {
+                     *             "affected_refs": [
+                     *               "example"
+                     *             ],
+                     *             "code": "example",
+                     *             "family": "example",
+                     *             "id": "example",
+                     *             "message": "example",
+                     *             "severity": "example",
+                     *             "status": "example"
+                     *           }
+                     *         ]
+                     *       },
+                     *       "proposal_id": "example",
+                     *       "revision": "example",
+                     *       "semantic_hash": "example",
+                     *       "version": "example"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SemanticChangePreviewResponse"];
                 };
             };
             /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
@@ -5574,6 +5773,144 @@ export interface operations {
                      *     }
                      */
                     "application/json": components["schemas"]["WriteResult"];
+                };
+            };
+            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": "example",
+                     *       "details": {},
+                     *       "message": "example",
+                     *       "revision": "example",
+                     *       "semantic_hash": "example"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["PreconditionFailedResponse"];
+                };
+            };
+        };
+    };
+    preview_requirement_split: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description The current semantic_hash of the branch head.
+                 * @example example
+                 */
+                "If-Match": string;
+            };
+            path: {
+                /**
+                 * @description Requirement ID
+                 * @example HR-001
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "parts": [
+                 *         "example"
+                 *       ],
+                 *       "reason": "example"
+                 *     }
+                 */
+                "application/json": components["schemas"]["SplitRequest"];
+            };
+        };
+        responses: {
+            /** @description Pending create-class split proposal, intake and semantic element diff; nothing is committed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "action": "accept",
+                     *       "diff": {
+                     *         "added": [
+                     *           "example"
+                     *         ],
+                     *         "base_semantic_hash": "example",
+                     *         "candidate_semantic_hash": "example",
+                     *         "modified": [
+                     *           "example"
+                     *         ],
+                     *         "removed": [
+                     *           "example"
+                     *         ]
+                     *       },
+                     *       "events": [
+                     *         {
+                     *           "ids": [
+                     *             "example"
+                     *           ],
+                     *           "kind": "example",
+                     *           "version": "example"
+                     *         }
+                     *       ],
+                     *       "intake": {
+                     *         "conflicts_with": [
+                     *           {
+                     *             "reason": "example",
+                     *             "target_ref": "example"
+                     *           }
+                     *         ],
+                     *         "covered_by": [
+                     *           {
+                     *             "covered_by_ref": "example",
+                     *             "score": 1,
+                     *             "subject_ref": "example"
+                     *           }
+                     *         ],
+                     *         "duplicate_candidates": [
+                     *           {
+                     *             "candidate_ref": "example",
+                     *             "score": 1,
+                     *             "subject_ref": "example"
+                     *           }
+                     *         ],
+                     *         "new_terms": [
+                     *           "example"
+                     *         ],
+                     *         "reason_codes": [
+                     *           "ambiguous_term"
+                     *         ],
+                     *         "refines": [
+                     *           "example"
+                     *         ],
+                     *         "requires_reason": true,
+                     *         "validation_findings": [
+                     *           {
+                     *             "affected_refs": [
+                     *               "example"
+                     *             ],
+                     *             "code": "example",
+                     *             "family": "example",
+                     *             "id": "example",
+                     *             "message": "example",
+                     *             "severity": "example",
+                     *             "status": "example"
+                     *           }
+                     *         ]
+                     *       },
+                     *       "proposal_id": "example",
+                     *       "revision": "example",
+                     *       "semantic_hash": "example",
+                     *       "version": "example"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SemanticChangePreviewResponse"];
                 };
             };
             /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */

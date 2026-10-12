@@ -1,7 +1,7 @@
 //! Requirement routes (plan A0.2): requirement reads projected from the PSG and the current F1
 //! gate report, classification and human-reviewed EARS replacement. A0.3 (Hotfix 065) adds the
 //! governed split, duplicate supersession and requirement-scoped waiver through their domain
-//! helpers.
+//! helpers. U2.1 (Hotfix 073) adds the split preview over the shared semantic change preview.
 
 use std::collections::BTreeSet;
 
@@ -11,7 +11,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use plumb_core::{GateId, Id, StageId};
+use plumb_core::{GateId, Id, StageId, Timestamp};
 use plumb_functional::{
     propose_duplicate_supersession, propose_requirement_split, DuplicateMarkError,
     RequirementSplitError, RequirementSplitInput,
@@ -28,7 +28,7 @@ use plumb_validation::GateReport;
 
 use crate::error::ApiError;
 use crate::openapi::{
-    AcceptEarsRequest, ClassifyRequest, MarkDuplicateRequest, RequirementCoverage,
+    AcceptEarsRequest, ClassifyRequest, MarkDuplicateRequest, ProposalKind, RequirementCoverage,
     RequirementDetail, RequirementLinks, RequirementPage, RequirementSummary, SplitRequest,
     WaiveRequirementFindingRequest,
 };
@@ -36,6 +36,8 @@ use crate::state::{
     check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
     require_clean_reason, wire, ApiState, PageRequest, QueryParams,
 };
+
+use super::model::semantic_change_preview;
 
 /// The F1 rule whose evidence records requirement lint diagnostics.
 const QUALITY_RULE: &str = "PLUMB.F1.REQ.QUALITY_FINDINGS_CLEAR";
@@ -53,6 +55,10 @@ pub(crate) fn routes() -> Router<ApiState> {
             post(accept_requirement_ears),
         )
         .route("/api/requirements/{id}/split", post(split_requirement))
+        .route(
+            "/api/requirements/{id}/split/preview",
+            post(preview_requirement_split),
+        )
         .route(
             "/api/requirements/{id}/mark-duplicate",
             post(mark_requirement_duplicate),
@@ -342,15 +348,24 @@ async fn accept_requirement_ears(
 
 // ============================================================================ A0.3 (Hotfix 065)
 
-/// `split_requirement`: an explicit human-governed split into Accepted children, through
-/// `plumb_functional::requirements`; the parent is superseded.
-async fn split_requirement(
-    State(state): State<ApiState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response, ApiError> {
-    let request: SplitRequest = parse_body(&body)?;
+/// A validated requirement split: the loaded head, the exact `propose_requirement_split`
+/// Proposal, the clean reason and the one Clock read.
+struct RequirementSplit {
+    loaded: LoadedRevision,
+    proposal: Proposal,
+    reason: String,
+    created_at: Timestamp,
+}
+
+/// The shared validation and Proposal construction of `split_requirement` and
+/// `preview_requirement_split`, in the frozen order.
+fn requirement_split(
+    state: &ApiState,
+    id: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<RequirementSplit, ApiError> {
+    let request: SplitRequest = parse_body(body)?;
     if request.parts.len() < 2 {
         return Err(ApiError::invalid("parts needs at least two entries"));
     }
@@ -368,9 +383,9 @@ async fn split_requirement(
     }
     require_clean_reason(&request.reason)?;
     let loaded = state.load_head()?;
-    check_if_match(&headers, &loaded)?;
+    check_if_match(headers, &loaded)?;
     let created_at = state.now();
-    let (node, _) = requirement(&loaded.graph, &id)?;
+    let (node, _) = requirement(&loaded.graph, id)?;
     let proposal = propose_requirement_split(
         &loaded.graph,
         &RequirementSplitInput {
@@ -387,15 +402,52 @@ async fn split_requirement(
         }
         other => ApiError::semantic("RequirementSplitError", other.to_string()),
     })?;
-    let write = state.write(
-        &loaded,
-        &proposal,
-        true,
-        Some(&request.reason),
+    Ok(RequirementSplit {
+        loaded,
+        proposal,
+        reason: request.reason,
         created_at,
+    })
+}
+
+/// `split_requirement`: an explicit human-governed split into Accepted children, through
+/// `plumb_functional::requirements`; the parent is superseded.
+async fn split_requirement(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let split = requirement_split(&state, &id, &headers, &body)?;
+    let write = state.write(
+        &split.loaded,
+        &split.proposal,
+        true,
+        Some(&split.reason),
+        split.created_at,
         "split_requirement",
     )?;
     Ok(Json(write).into_response())
+}
+
+/// `preview_requirement_split` (U2.1, Hotfix 073): the exact `split_requirement` Proposal,
+/// persisted pending with its semantic element diff and committed only by `POST
+/// /api/proposals/{id}/create` (a create-class Proposal, Hotfix 074: the split adds child
+/// Requirements and `decomposes_to` edges and supersedes the parent only through `SetStatus`).
+async fn preview_requirement_split(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let split = requirement_split(&state, &id, &headers, &body)?;
+    semantic_change_preview(
+        &state,
+        &split.loaded,
+        &split.proposal,
+        ProposalKind::Create,
+        split.created_at,
+    )
 }
 
 /// `mark_requirement_duplicate`: canonical supersession of the duplicate (path) by `of`,

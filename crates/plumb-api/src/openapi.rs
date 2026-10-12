@@ -1,5 +1,6 @@
 //! The pilot HTTP API contract (plan A0.1, Hotfix 062): compatibility DTOs, contract-only
-//! utoipa operation stubs for the 72 NOW operations, deterministic compatibility patches,
+//! utoipa operation stubs for the 74 NOW operations (the 72 of Hotfix 062 plus the two U2.1
+//! semantic change previews of Hotfix 073), deterministic compatibility patches,
 //! HR-fixture-seeded and schema-fallback examples, and the rendered OpenAPI document and API
 //! reference.
 //!
@@ -56,7 +57,7 @@ pub struct OperationSpec {
     /// Returns `Page {items, next_cursor}` and takes `cursor` and `limit`.
     pub pageable: bool,
     /// The implementation task that owns the runtime handler (Hotfix 063; Hotfix 065 moves
-    /// `run_stage` and `get_job` to A0.4).
+    /// `run_stage` and `get_job` to A0.4; Hotfix 073 adds the two U2.1 previews).
     pub owner: &'static str,
 }
 
@@ -80,9 +81,9 @@ const fn op(
     }
 }
 
-/// The 72 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
-/// accept.
-pub const OPERATIONS: [OperationSpec; 72] = [
+/// The 74 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
+/// accept (01-72, Hotfix 062), then the two U2.1 semantic change previews (73-74, Hotfix 073).
+pub const OPERATIONS: [OperationSpec; 74] = [
     op(1, "GET", "/api/me", "get_me", "meta", false, "A0.2"),
     op(
         2,
@@ -714,6 +715,24 @@ pub const OPERATIONS: [OperationSpec; 72] = [
         "export",
         false,
         "A0.2",
+    ),
+    op(
+        73,
+        "POST",
+        "/api/requirements/{id}/split/preview",
+        "preview_requirement_split",
+        "requirements",
+        false,
+        "U2.1",
+    ),
+    op(
+        74,
+        "POST",
+        "/api/glossary/{id}/merge/preview",
+        "preview_glossary_merge",
+        "glossary",
+        false,
+        "U2.1",
     ),
 ];
 
@@ -1649,6 +1668,39 @@ pub struct IntakeResponse {
     pub intake: IntakeReportView,
 }
 
+/// The semantic element effect of dry-applying one exact server-built domain Proposal to the
+/// baseline graph (Hotfix 073). `candidate_semantic_hash` is the semantic hash of that candidate
+/// graph only: it is not a revision identity and not a prediction of the committed
+/// `semantic_hash`, because acceptance governance (the proposal-acceptance ResolutionDecision)
+/// may change it. The ID lists hold only semantic-hash-participating nodes and edges, each
+/// unique and sorted ascending.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticElementDiff {
+    pub base_semantic_hash: String,
+    pub candidate_semantic_hash: String,
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub modified: Vec<String>,
+}
+
+/// A server-authoritative semantic change preview (Hotfix 073): the exact domain Proposal is
+/// persisted as a pending workflow proposal bound to the baseline revision and nothing is
+/// committed. `version`, `revision` and `semantic_hash` are the baseline; `events` is empty.
+/// Confirmation is the existing proposal action on `proposal_id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticChangePreviewResponse {
+    pub version: String,
+    pub revision: String,
+    pub semantic_hash: String,
+    pub events: Vec<DesignEvent>,
+    pub proposal_id: String,
+    pub action: ProposalKind,
+    pub intake: IntakeReportView,
+    pub diff: SemanticElementDiff,
+}
+
 /// A proposal action; `reason` is required at runtime when intake demands one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -2202,9 +2254,21 @@ mod stubs {
                ("to" = Option<String>, Query, description = "To revision")),
         responses((status = 200, description = "Structured diff", body = ModelDiff)))]
     pub fn get_model_diff() {}
+
+    #[utoipa::path(post, path = "/api/requirements/{id}/split/preview", operation_id = "preview_requirement_split", tag = "requirements",
+        params(("id" = String, Path, description = "Requirement ID")),
+        request_body(content = SplitRequest),
+        responses((status = 200, description = "Pending create-class split proposal, intake and semantic element diff; nothing is committed", body = SemanticChangePreviewResponse)))]
+    pub fn preview_requirement_split() {}
+
+    #[utoipa::path(post, path = "/api/glossary/{id}/merge/preview", operation_id = "preview_glossary_merge", tag = "glossary",
+        params(("id" = String, Path, description = "Term ID")),
+        request_body(content = GlossaryMergeRequest),
+        responses((status = 200, description = "Pending merge proposal, intake and semantic element diff; nothing is committed", body = SemanticChangePreviewResponse)))]
+    pub fn preview_glossary_merge() {}
 }
 
-/// The utoipa base contract of the 72 operations.
+/// The utoipa base contract of the 74 operations.
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Plumb Modeller API"),
@@ -2230,7 +2294,8 @@ mod stubs {
         stubs::reject_proposal, stubs::accept_proposal, stubs::create_session,
         stubs::create_session_turn, stubs::get_session, stubs::get_session_metrics,
         stubs::list_decisions, stubs::get_requirement_readiness, stubs::get_readiness,
-        stubs::export_model, stubs::get_model_diff,
+        stubs::export_model, stubs::get_model_diff, stubs::preview_requirement_split,
+        stubs::preview_glossary_merge,
     ),
     components(schemas(
         DesignEvent, PreconditionFailedResponse, CursorConflictResponse, CursorErrorCode, StageName,
@@ -2755,7 +2820,7 @@ fn check_inventory(doc: &Value) -> Result<(), OpenApiContractError> {
     expected.sort();
     if found != expected {
         return Err(invariant(
-            "operations differ from the frozen 72-operation inventory",
+            "operations differ from the frozen 74-operation inventory",
         ));
     }
     Ok(())
@@ -2991,7 +3056,7 @@ pub fn openapi_document() -> Result<Value, OpenApiContractError> {
     let mut api = ApiDoc::openapi();
     api.info.version = env!("CARGO_PKG_VERSION").to_owned();
     api.info.description = Some(
-        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4."
+        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72) and U2.1 (the two semantic change previews, operations 73-74)."
             .to_owned(),
     );
     api.info.license = None;
@@ -3032,7 +3097,7 @@ The machine-readable contract is `api/modeller.openapi.json`, the source of the 
         OPERATIONS.len()
     ));
     out.push_str(
-        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers. \
+        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72 and U2.1 those of operations 73-74. \
 An operation listed here is not operational until its handler task is done.\n\n",
     );
     out.push_str("## Conventions\n\n");
@@ -3070,7 +3135,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
             .count()
     };
     out.push_str("\n## Implementation ownership\n\n");
-    for owner in ["A0.2", "A0.3", "A0.4"] {
+    for owner in ["A0.2", "A0.3", "A0.4", "U2.1"] {
         out.push_str(&format!(
             "- {owner}: {} operations ({} POST, {} GET).\n",
             owned(owner, ""),
@@ -3081,6 +3146,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
     for line in [
         "Hotfix 065 froze the deferred A0.3 compatibility semantics (contract version 3).",
         "A0.4 owns `run_stage` and `get_job` and must not start before its separate stage-orchestration contract freeze.",
+        "Hotfix 073 appends operations 73 and 74, the U2.1 semantic change previews: the server builds the exact domain Proposal, persists it pending on the baseline revision and returns its semantic element diff without committing; `candidate_semantic_hash` is not a prediction of the committed `semantic_hash`. Confirmation is the existing proposal action: create for a requirement split (Hotfix 074), merge for a Term merge.",
     ] {
         out.push_str(&format!("- {line}\n"));
     }

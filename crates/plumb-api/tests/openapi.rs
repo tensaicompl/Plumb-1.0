@@ -41,8 +41,9 @@ mod openapi {
     const LIB_SRC: &str = include_str!("../src/lib.rs");
     const OPENAPI_SRC: &str = include_str!("../src/openapi.rs");
 
-    /// The frozen Hotfix 062 inventory, written independently of the production table.
-    const INVENTORY: [(&str, &str, &str); 72] = [
+    /// The frozen Hotfix 062 inventory (01-72) with the two U2.1 semantic change previews
+    /// appended by Hotfix 073 (73-74), written independently of the production table.
+    const INVENTORY: [(&str, &str, &str); 74] = [
         ("GET", "/api/me", "get_me"),
         ("GET", "/api/model/version", "get_model_version"),
         ("GET", "/api/gates", "get_gates"),
@@ -175,6 +176,16 @@ mod openapi {
         ("GET", "/api/readiness", "get_readiness"),
         ("GET", "/api/model/export", "export_model"),
         ("GET", "/api/model/diff", "get_model_diff"),
+        (
+            "POST",
+            "/api/requirements/{id}/split/preview",
+            "preview_requirement_split",
+        ),
+        (
+            "POST",
+            "/api/glossary/{id}/merge/preview",
+            "preview_glossary_merge",
+        ),
     ];
 
     const PAGEABLE: [&str; 14] = [
@@ -386,7 +397,7 @@ mod openapi {
     fn openapi_inventory_is_exact() {
         let doc = doc();
         let ops = operations(&doc);
-        assert_eq!(ops.len(), 72);
+        assert_eq!(ops.len(), 74);
         let found: BTreeSet<(String, String, String)> = ops
             .iter()
             .map(|(m, p, o)| {
@@ -403,7 +414,7 @@ mod openapi {
             .collect();
         assert_eq!(found, expected);
         let ids: BTreeSet<&str> = INVENTORY.iter().map(|i| i.2).collect();
-        assert_eq!(ids.len(), 72);
+        assert_eq!(ids.len(), 74);
         // The production table is the frozen order.
         let production: Vec<(&str, &str, &str)> = OPERATIONS
             .iter()
@@ -412,7 +423,7 @@ mod openapi {
         assert_eq!(production, INVENTORY.to_vec());
         assert_eq!(
             OPERATIONS.iter().map(|s| s.number).collect::<Vec<_>>(),
-            (1..=72).collect::<Vec<_>>()
+            (1..=74).collect::<Vec<_>>()
         );
         // Tags match the production table and every operation has exactly one.
         for spec in &OPERATIONS {
@@ -432,7 +443,7 @@ mod openapi {
             .map(|(p, _)| p)
             .collect();
         assert!(shared.is_empty(), "{shared:?}");
-        assert_eq!(doc["paths"].as_object().unwrap().len(), 72);
+        assert_eq!(doc["paths"].as_object().unwrap().len(), 74);
     }
 
     #[test]
@@ -573,7 +584,7 @@ mod openapi {
             }
             assert!(schema(&doc, name).get("allOf").is_none());
         }
-        assert_eq!(posts, 37);
+        assert_eq!(posts, 39);
         assert_eq!(
             properties(&doc, "PreconditionFailedResponse"),
             set(&["code", "message", "details", "revision", "semantic_hash"])
@@ -607,6 +618,10 @@ mod openapi {
             set(&["reply", "proposals", "asked_question"])
         );
         assert_eq!(extra("IntakeResponse"), set(&["intake"]));
+        assert_eq!(
+            extra("SemanticChangePreviewResponse"),
+            set(&["proposal_id", "action", "intake", "diff"])
+        );
     }
 
     #[test]
@@ -1509,8 +1524,8 @@ mod openapi {
         ));
         for needle in [
             "Contract version 3",
-            "72 operations",
-            "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers.",
+            "74 operations",
+            "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72 and U2.1 those of operations 73-74.",
             "ETag",
             "If-Match",
             "412 Precondition Failed",
@@ -1526,6 +1541,9 @@ mod openapi {
             "- A0.2: 30 operations (9 POST, 21 GET).",
             "- A0.3: 40 operations (27 POST, 13 GET).",
             "- A0.4: 2 operations (1 POST, 1 GET).",
+            "- U2.1: 2 operations (2 POST, 0 GET).",
+            "- Hotfix 073 appends operations 73 and 74, the U2.1 semantic change previews",
+            "`candidate_semantic_hash` is not a prediction of the committed `semantic_hash`",
             "- Hotfix 065 froze the deferred A0.3 compatibility semantics (contract version 3).",
             "- A0.4 owns `run_stage` and `get_job` and must not start before its separate stage-orchestration contract freeze.",
             "`version` == `revision` and `hash` == `semantic_hash`",
@@ -1542,7 +1560,7 @@ mod openapi {
             .lines()
             .filter(|l| l.starts_with("| ") && !l.starts_with("| #"))
             .collect();
-        assert_eq!(rows.len(), 72);
+        assert_eq!(rows.len(), 74);
         for ((row, (method, path, id)), spec) in rows.iter().zip(INVENTORY).zip(OPERATIONS.iter()) {
             assert!(
                 row.contains(&format!("| {method} | `{path}` | `{id}` |")),
@@ -1635,7 +1653,28 @@ mod openapi {
         );
         assert!(OPERATIONS
             .iter()
-            .all(|s| ["A0.2", "A0.3", "A0.4"].contains(&s.owner)));
+            .all(|s| ["A0.2", "A0.3", "A0.4", "U2.1"].contains(&s.owner)));
+        assert_eq!(
+            (
+                count("U2.1", None),
+                count("U2.1", Some("POST")),
+                count("U2.1", Some("GET"))
+            ),
+            (2, 2, 0)
+        );
+        // Hotfix 073/074: U2.1 owns exactly the two appended semantic change previews.
+        let u21: Vec<(u32, &str)> = OPERATIONS
+            .iter()
+            .filter(|s| s.owner == "U2.1")
+            .map(|s| (s.number, s.operation_id))
+            .collect();
+        assert_eq!(
+            u21,
+            vec![
+                (73, "preview_requirement_split"),
+                (74, "preview_glossary_merge")
+            ]
+        );
         let a04: BTreeSet<&str> = OPERATIONS
             .iter()
             .filter(|s| s.owner == "A0.4")
@@ -1690,9 +1729,9 @@ mod openapi {
             .into_iter()
             .collect()
         );
-        // No operation was added or removed.
+        // Only Hotfix 073 added operations (73 and 74); none was removed.
         let doc = doc();
-        assert_eq!(operations(&doc).len(), 72);
+        assert_eq!(operations(&doc).len(), 74);
     }
 
     #[test]
@@ -1870,7 +1909,7 @@ mod openapi {
                 ops.iter().filter(|o| o.0 == "POST").count(),
                 ops.iter().filter(|o| o.0 == "GET").count()
             ),
-            (72, 37, 35)
+            (74, 39, 35)
         );
         let (_, counts) = example_locations(&doc);
         assert_eq!(
@@ -1881,10 +1920,13 @@ mod openapi {
                 counts.headers,
                 counts.websocket
             ),
-            (135, 32, 122, 34, 1)
+            // Hotfix 073 adds two path IDs, two If-Match headers, two request bodies and two
+            // 200 plus two 412 responses.
+            (139, 34, 126, 34, 1)
         );
         let schemas = doc["components"]["schemas"].as_object().unwrap();
-        assert_eq!(schemas.len(), 115);
+        // Hotfix 073 adds SemanticElementDiff and SemanticChangePreviewResponse.
+        assert_eq!(schemas.len(), 117);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -2272,6 +2314,182 @@ mod openapi {
             query_param(&doc, "GET", "/api/scenarios", "status")["schema"],
             component_ref("ScenarioStatus")
         );
+    }
+
+    // ------------------------------------------------------------------ Hotfix 073
+
+    #[test]
+    fn openapi_hotfix_073_semantic_change_previews() {
+        let doc = doc();
+        assert_eq!(doc["x-plumb-contract-version"], json!(3));
+        // Operations 73 and 74 are appended; 01-72 keep their frozen order.
+        let tail: Vec<_> = OPERATIONS[72..]
+            .iter()
+            .map(|s| {
+                (
+                    s.number,
+                    s.method,
+                    s.path,
+                    s.operation_id,
+                    s.tag,
+                    s.pageable,
+                    s.owner,
+                )
+            })
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                (
+                    73,
+                    "POST",
+                    "/api/requirements/{id}/split/preview",
+                    "preview_requirement_split",
+                    "requirements",
+                    false,
+                    "U2.1"
+                ),
+                (
+                    74,
+                    "POST",
+                    "/api/glossary/{id}/merge/preview",
+                    "preview_glossary_merge",
+                    "glossary",
+                    false,
+                    "U2.1"
+                ),
+            ]
+        );
+        for (path, request, tag) in [
+            (
+                "/api/requirements/{id}/split/preview",
+                "SplitRequest",
+                "requirements",
+            ),
+            (
+                "/api/glossary/{id}/merge/preview",
+                "GlossaryMergeRequest",
+                "glossary",
+            ),
+        ] {
+            let op = operation(&doc, "POST", path);
+            assert_eq!(op["tags"], json!([tag]), "{path}");
+            assert_eq!(
+                op["requestBody"]["content"]["application/json"]["schema"],
+                component_ref(request),
+                "{path}"
+            );
+            assert_eq!(op["requestBody"]["required"], json!(true), "{path}");
+            assert_eq!(
+                op["responses"]["200"]["content"]["application/json"]["schema"],
+                component_ref("SemanticChangePreviewResponse"),
+                "{path}"
+            );
+            assert_eq!(
+                op["responses"]["412"]["content"]["application/json"]["schema"],
+                component_ref("PreconditionFailedResponse"),
+                "{path}"
+            );
+            let params = op["parameters"].as_array().unwrap();
+            let names: Vec<(&str, &str, bool)> = params
+                .iter()
+                .map(|p| {
+                    (
+                        p["name"].as_str().unwrap(),
+                        p["in"].as_str().unwrap(),
+                        p["required"].as_bool().unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                names,
+                vec![("id", "path", true), ("If-Match", "header", true)],
+                "{path}"
+            );
+            assert_eq!(
+                op["responses"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .collect::<Vec<_>>(),
+                vec!["200", "412"],
+                "{path}"
+            );
+            assert!(op["responses"]["200"].get("headers").is_none(), "{path}");
+        }
+        let diff = schema(&doc, "SemanticElementDiff");
+        assert_eq!(diff["type"], "object");
+        assert_eq!(diff["additionalProperties"], json!(false));
+        assert_eq!(
+            required(&doc, "SemanticElementDiff"),
+            set(&[
+                "base_semantic_hash",
+                "candidate_semantic_hash",
+                "added",
+                "removed",
+                "modified"
+            ])
+        );
+        assert_eq!(
+            properties(&doc, "SemanticElementDiff"),
+            required(&doc, "SemanticElementDiff")
+        );
+        for field in ["base_semantic_hash", "candidate_semantic_hash"] {
+            assert_eq!(
+                diff["properties"][field],
+                json!({"type": "string"}),
+                "{field}"
+            );
+        }
+        for field in ["added", "removed", "modified"] {
+            assert_eq!(
+                diff["properties"][field],
+                json!({"type": "array", "items": {"type": "string"}}),
+                "{field}"
+            );
+        }
+        let preview = schema(&doc, "SemanticChangePreviewResponse");
+        assert_eq!(preview["additionalProperties"], json!(false));
+        let fields = set(&[
+            "version",
+            "revision",
+            "semantic_hash",
+            "events",
+            "proposal_id",
+            "action",
+            "intake",
+            "diff",
+        ]);
+        assert_eq!(required(&doc, "SemanticChangePreviewResponse"), fields);
+        assert_eq!(properties(&doc, "SemanticChangePreviewResponse"), fields);
+        assert_eq!(
+            preview["properties"]["action"],
+            component_ref("ProposalKind")
+        );
+        assert_eq!(
+            preview["properties"]["intake"],
+            component_ref("IntakeReportView")
+        );
+        assert_eq!(
+            preview["properties"]["diff"],
+            component_ref("SemanticElementDiff")
+        );
+        assert_eq!(
+            preview["properties"]["events"],
+            json!({"type": "array", "items": component_ref("DesignEvent")})
+        );
+        // No final-hash field: the candidate hash is not a revision identity.
+        assert!(preview["properties"].get("result_semantic_hash").is_none());
+        assert!(diff["properties"].get("result_semantic_hash").is_none());
+        // The direct compatibility operations are unchanged write results.
+        for path in ["/api/requirements/{id}/split", "/api/glossary/{id}/merge"] {
+            assert_eq!(
+                operation(&doc, "POST", path)["responses"]["200"]["content"]["application/json"]
+                    ["schema"],
+                component_ref("WriteResult"),
+                "{path}"
+            );
+        }
     }
 
     // ------------------------------------------------------------------ source guards

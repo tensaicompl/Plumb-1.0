@@ -2,6 +2,8 @@
 //! findings, assumptions, decisions, exports and revision diffs. A0.3 (Hotfix 065) adds the
 //! Term merge, the CRUD view, calculation examples, rules and decision-table cells, linear
 //! process editing with canonical Mermaid interchange, waivers and assumption resolution.
+//! U2.1 (Hotfix 073) adds the Term merge preview and the shared semantic change preview
+//! pipeline the requirement split preview also uses.
 //!
 //! Reads project typed PSG material, typed relations and existing analyses of one loaded
 //! revision; writes are typed status or payload replacements committed through the shared
@@ -28,13 +30,15 @@ use plumb_functional::{
     ProcessStepError, TermMergeError,
 };
 use plumb_patch::{
-    AcceptancePolicy, ElementPrecondition, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
+    apply_patch, AcceptancePolicy, ElementPrecondition, GraphDelta, PatchSet, Proposal,
+    ProposalMateriality, SemanticPatch,
 };
 use plumb_psg::{
-    edge_element_hash, node_element_hash, ConceptKind, ElementStatus, Graph, Node, NodePayload,
-    NodeType, ProcessNodeKind, RelationKind,
+    edge_contributes_to_semantic_hash, edge_element_hash, node_contributes_to_semantic_hash,
+    node_element_hash, ConceptKind, ElementStatus, Graph, Node, NodePayload, NodeType,
+    ProcessNodeKind, RelationKind,
 };
-use plumb_store::{LoadedRevision, RevisionId};
+use plumb_store::{LoadedRevision, RevisionId, WorkflowOrigin};
 use plumb_validation::waiver::WaiverRequest;
 use plumb_validation::{analyze_process, ParallelAnalysis, ProcessAnalysisMode};
 use plumb_validation::{GeneratedFinding, ValidationPolicy};
@@ -48,13 +52,17 @@ use crate::openapi::{
     Decision, DecisionPage, Entity, EntityAttribute, EntityPage, EntityRelationship,
     EntityTransition, ExportFormat, Finding, FindingPage, GlossaryEditRequest,
     GlossaryMergeRequest, GlossaryPage, ModelDiff, Process, ProcessFormat, ProcessImportRequest,
-    ProcessPage, ProcessStepRequest, ReasonRequest, Rule, RuleCellRequest, RulePage, RuleRow,
-    RuleViewKind, ScalarValue, WriteResult,
+    ProcessPage, ProcessStepRequest, ProposalKind, ReasonRequest, Rule, RuleCellRequest, RulePage,
+    RuleRow, RuleViewKind, ScalarValue, SemanticChangePreviewResponse, SemanticElementDiff,
+    WriteResult,
 };
 use crate::state::{
     check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
-    require_clean_reason, wire, with_etag, ApiState, PageRequest, QueryParams,
+    require_clean_reason, run_intake, wire, with_etag, ApiState, PageRequest, QueryParams,
 };
+use crate::workflow::{classify, intake_view};
+
+use super::proposals::{persist_pending, Origin};
 
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
@@ -82,6 +90,10 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/model/export", get(export_model))
         .route("/api/model/diff", get(get_model_diff))
         .route("/api/glossary/{id}/merge", post(merge_glossary))
+        .route(
+            "/api/glossary/{id}/merge/preview",
+            post(preview_glossary_merge),
+        )
         .route("/api/model/crud", get(get_crud_matrix))
         .route(
             "/api/model/calculations/{id}/example",
@@ -961,24 +973,33 @@ fn id_collision(id: &Id) -> ApiError {
 
 // ---------------------------------------------------------------------------- glossary
 
-/// `merge_glossary`: the source Term (path) merges into the Accepted target through
-/// `plumb_functional::vocabulary`.
-async fn merge_glossary(
-    State(state): State<ApiState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response, ApiError> {
-    let request: GlossaryMergeRequest = parse_body(&body)?;
+/// A validated Term merge: the loaded head, the exact `propose_term_merge` Proposal, the
+/// clean reason and the one Clock read.
+struct TermMerge {
+    loaded: LoadedRevision,
+    proposal: Proposal,
+    reason: String,
+    created_at: Timestamp,
+}
+
+/// The shared validation and Proposal construction of `merge_glossary` and
+/// `preview_glossary_merge`, in the frozen order.
+fn term_merge(
+    state: &ApiState,
+    id: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<TermMerge, ApiError> {
+    let request: GlossaryMergeRequest = parse_body(body)?;
     let into = parse_id(&request.into).ok_or_else(|| ApiError::invalid("into is not an ID"))?;
     if request.into == id {
         return Err(ApiError::invalid("a term cannot be merged into itself"));
     }
     require_clean_reason(&request.reason)?;
     let loaded = state.load_head()?;
-    check_if_match(&headers, &loaded)?;
+    check_if_match(headers, &loaded)?;
     let created_at = state.now();
-    let source = typed_node(&loaded.graph, &id, NodeType::Term, "term")?;
+    let source = typed_node(&loaded.graph, id, NodeType::Term, "term")?;
     let target = typed_node(&loaded.graph, into.as_str(), NodeType::Term, "term")?;
     let proposal =
         propose_term_merge(&loaded.graph, &source.id, &target.id).map_err(|error| match error {
@@ -994,15 +1015,158 @@ async fn merge_glossary(
             .with_details(json!({ "patch_error": reason })),
             other => ApiError::semantic("TermMergeError", other.to_string()),
         })?;
-    let write = state.write(
-        &loaded,
-        &proposal,
-        true,
-        Some(&request.reason),
+    Ok(TermMerge {
+        loaded,
+        proposal,
+        reason: request.reason,
         created_at,
+    })
+}
+
+/// `merge_glossary`: the source Term (path) merges into the Accepted target through
+/// `plumb_functional::vocabulary`.
+async fn merge_glossary(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let merge = term_merge(&state, &id, &headers, &body)?;
+    let write = state.write(
+        &merge.loaded,
+        &merge.proposal,
+        true,
+        Some(&merge.reason),
+        merge.created_at,
         "merge_glossary",
     )?;
     Ok(Json(write).into_response())
+}
+
+/// `preview_glossary_merge` (U2.1, Hotfix 073): the exact `merge_glossary` Proposal, persisted
+/// pending with its semantic element diff and committed only by `POST
+/// /api/proposals/{id}/merge`.
+async fn preview_glossary_merge(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let merge = term_merge(&state, &id, &headers, &body)?;
+    semantic_change_preview(
+        &state,
+        &merge.loaded,
+        &merge.proposal,
+        ProposalKind::Merge,
+        merge.created_at,
+    )
+}
+
+// ---------------------------------------------------------------------------- previews
+
+/// The shared semantic change preview (Hotfix 073) of an exact, already-built domain Proposal:
+/// its server action class must be `expected` (anything else is an internal error, never a
+/// preview); `apply_patch` dry-applies it once to the loaded graph for the semantic element
+/// diff; X1.3 intake runs; the Proposal and report are persisted pending (origin intake) bound
+/// to the loaded revision. Nothing is committed: no CAS, revision or DesignEvent.
+pub(super) fn semantic_change_preview(
+    state: &ApiState,
+    loaded: &LoadedRevision,
+    proposal: &Proposal,
+    expected: ProposalKind,
+    created_at: Timestamp,
+) -> Result<Response, ApiError> {
+    let action = classify(&loaded.graph, proposal)?;
+    if action != expected {
+        return Err(ApiError::internal("preview_action"));
+    }
+    let applied = apply_patch(&loaded.graph, &proposal.patch_set).map_err(|error| {
+        ApiError::unprocessable(
+            "E_PATCH_REJECTED",
+            "the proposed change cannot be applied to the current graph",
+        )
+        .with_details(json!({ "patch_error": error.to_string() }))
+    })?;
+    let diff = semantic_element_diff(&loaded.graph, &applied.graph, &applied.delta);
+    let report = run_intake(loaded, proposal)?;
+    let stored = persist_pending(
+        state,
+        loaded,
+        proposal,
+        &report,
+        Origin {
+            kind: WorkflowOrigin::Intake,
+            reference: None,
+        },
+        created_at,
+    )?;
+    let revision = loaded.revision.id.to_string();
+    Ok(Json(SemanticChangePreviewResponse {
+        version: revision.clone(),
+        revision,
+        semantic_hash: loaded.revision.semantic_hash.to_string(),
+        events: Vec::new(),
+        proposal_id: stored.proposal.id.to_string(),
+        action,
+        intake: intake_view(&stored.intake)?,
+        diff,
+    })
+    .into_response())
+}
+
+/// The semantic element diff of one `apply_patch` result: added elements that contribute to
+/// `semantic_hash` in the candidate graph, removed elements that contributed in the base graph,
+/// and modified elements that contribute in either graph (a lifecycle move into or out of the
+/// projection stays modified). Node and edge IDs are merged, unique and sorted ascending.
+fn semantic_element_diff(
+    base: &Graph,
+    candidate: &Graph,
+    delta: &GraphDelta,
+) -> SemanticElementDiff {
+    let node_in = |graph: &Graph, id: &Id| {
+        graph
+            .node(id)
+            .is_some_and(node_contributes_to_semantic_hash)
+    };
+    let edge_in = |graph: &Graph, id: &Id| {
+        graph
+            .edge(id)
+            .is_some_and(|edge| edge_contributes_to_semantic_hash(graph, edge))
+    };
+    let collect = |nodes: &BTreeSet<Id>,
+                   edges: &BTreeSet<Id>,
+                   keep_node: &dyn Fn(&Id) -> bool,
+                   keep_edge: &dyn Fn(&Id) -> bool| {
+        let ids: BTreeSet<String> = nodes
+            .iter()
+            .filter(|id| keep_node(id))
+            .chain(edges.iter().filter(|id| keep_edge(id)))
+            .map(Id::to_string)
+            .collect();
+        ids.into_iter().collect::<Vec<String>>()
+    };
+    SemanticElementDiff {
+        base_semantic_hash: delta.base_semantic_hash.to_string(),
+        candidate_semantic_hash: delta.result_semantic_hash.to_string(),
+        added: collect(
+            &delta.added_nodes,
+            &delta.added_edges,
+            &|id| node_in(candidate, id),
+            &|id| edge_in(candidate, id),
+        ),
+        removed: collect(
+            &delta.removed_nodes,
+            &delta.removed_edges,
+            &|id| node_in(base, id),
+            &|id| edge_in(base, id),
+        ),
+        modified: collect(
+            &delta.modified_nodes,
+            &delta.modified_edges,
+            &|id| node_in(base, id) || node_in(candidate, id),
+            &|id| edge_in(base, id) || edge_in(candidate, id),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------- CRUD
