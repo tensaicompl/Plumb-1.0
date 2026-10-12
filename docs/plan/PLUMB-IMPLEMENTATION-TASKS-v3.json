@@ -3443,13 +3443,16 @@
         "Generate schema.d.ts from api/modeller.openapi.json; never hand-edit it.",
         "Configure hard-coded JSX string lint except test files and i18n infrastructure.",
         "Set package.json scripts exactly to: \"typecheck\": \"tsc --noEmit\"; \"lint\": \"eslint .\"; \"test\": \"vitest run\"; \"e2e\": \"playwright test\"; \"api:generate\": \"openapi-typescript ../api/modeller.openapi.json -o src/api/schema.d.ts\"; \"api:check\": \"openapi-typescript ../api/modeller.openapi.json -o /tmp/plumb-schema.d.ts && cmp -s /tmp/plumb-schema.d.ts src/api/schema.d.ts\".",
-        "Ordering (Hotfix 063, Hotfix 065). U0.1 depends on A0.3 because the generated client must come from the final pilot contract: Hotfix 065 froze the complete OpenAPI wire contract as contract version 3 in the A0.3 era, including run_stage and get_job, whose handlers become live only in A0.4 (the backend end-to-end chain already waits for A0.4); every later UI task follows U0.1 and therefore A0.3."
+        "Ordering (Hotfix 063, Hotfix 065). U0.1 depends on A0.3 because the generated client must come from the final pilot contract: Hotfix 065 froze the complete OpenAPI wire contract as contract version 3 in the A0.3 era, including run_stage and get_job, whose handlers become live only in A0.4 (the backend end-to-end chain already waits for A0.4); every later UI task follows U0.1 and therefore A0.3.",
+        "Playwright Test runner (Hotfix 070). The frozen script \"e2e\": \"playwright test\" is the Playwright Test runner, which ships in @playwright/test (playwright is the browser automation library). U0.1 therefore adds exactly @playwright/test@1.63.0 to ui/package.json devDependencies and its deterministic ui/package-lock.json entries with `cd ui && npm install --save-dev --save-exact --strict-peer-deps --strict-allow-scripts @playwright/test@1.63.0`: no npm update, no dynamic, caret or tilde version, no unrelated lockfile refresh, no --force, --legacy-peer-deps, --ignore-scripts or npm overrides. playwright@1.63.0 stays a direct dependency unchanged (the versions intentionally match) and no other JavaScript dependency is added, removed or upgraded; @stoplight/prism-cli stays forbidden and MSW stays the pilot API mocking dependency. `playwright test` must resolve from that local dependency graph (never npx remote execution, a global install, @playwright/cli, a custom runner or Vitest browser mode), and ui/playwright.config.ts may use `import { defineConfig } from \"@playwright/test\"`. After the addition npm ci --strict-peer-deps --strict-allow-scripts, npm ls --depth=0 and npm audit --audit-level=high must succeed with zero HIGH and zero CRITICAL findings, no peer conflict, no unsupported engine and no unauthorized install script; otherwise STOP BLOCKED-UI-DEPENDENCY (no other version without another plan amendment). U0.1 creates no production E2E scenario; later UI tasks add tests within their own allowlists.",
+        "Vitest empty scaffold (Hotfix 070). U0.1 owns no *.test.* file but runs `vitest run`, so ui/vite.config.ts configures Vitest with passWithNoTests: true and the intentionally empty U0.1 unit-test set succeeds. This never suppresses real failures: once tests exist, failing tests fail. The package scripts stay exactly as frozen above (\"test\": \"vitest run\", \"e2e\": \"playwright test\"), and the U0.1 write allowlist stays exactly the 13 files listed."
       ],
       "tests": [
         "cd ui && npm ci && npm run api:generate && npm run api:check && npm run typecheck && npm run lint && npm run test"
       ],
       "acceptance": [
-        "Generated client has no drift and UI checks pass."
+        "Generated client has no drift and UI checks pass.",
+        "After adding @playwright/test@1.63.0 under Hotfix 070, npm ci --strict-peer-deps --strict-allow-scripts, npm ls --depth=0 and npm audit --audit-level=high exit 0 with zero HIGH and zero CRITICAL findings; every other direct UI dependency keeps its exact P0.2 version; playwright test resolves from the local dependency graph; vitest run passes with the empty U0.1 test set."
       ],
       "source_refs": [
         "SRCREF-25A1B72D82"
@@ -3458,7 +3461,10 @@
       "commands": [
         "cd ui && npm ci && npm run api:generate && npm run api:check && npm run typecheck && npm run lint && npm run test",
         "cd ui && npm run typecheck",
-        "cd ui && npm run lint"
+        "cd ui && npm run lint",
+        "cd ui && npm ci --strict-peer-deps --strict-allow-scripts",
+        "cd ui && npm ls --depth=0",
+        "cd ui && npm audit --audit-level=high"
       ],
       "commit_message": "U0.1: Scaffold strict React UI and generated API client"
     },

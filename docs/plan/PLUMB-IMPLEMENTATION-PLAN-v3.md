@@ -236,9 +236,23 @@ npm install --save-exact --strict-peer-deps --strict-allow-scripts react@19.3.0 
 npm install --save-dev --save-exact --strict-peer-deps --strict-allow-scripts typescript@5.9.3 vite@8.3.1 vitest@5.0.2 jsdom@30.1.1 @types/react@19.3.0 @types/react-dom@19.3.0 @types/node@26.6.3 @testing-library/react@16.3.3 @testing-library/dom@10.4.2 @testing-library/user-event@14.6.7 msw@2.15.0 openapi-typescript@7.13.0 playwright@1.63.0 @axe-core/playwright@4.13.0 eslint@9.39.5 typescript-eslint@8.71.0 eslint-plugin-jsx-a11y@6.10.2 eslint-plugin-react-hooks@7.1.1 prettier@3.9.9
 ```
 
-P0.2 resolves no direct JavaScript dependency versions dynamically. Direct runtime and development dependency versions are fixed by this plan. Transitive versions are frozen by ui/package-lock.json. No direct version or lockfile may be changed after P0.2 except through a human-approved plan revision.
+**Hotfix 070 (human-approved plan revision).** The exact UI development dependency set also contains `@playwright/test@1.63.0`, next to `playwright@1.63.0`. `playwright` is the browser automation library; `@playwright/test` is the Playwright Test runner that the frozen U0.1 script `"e2e": "playwright test"` invokes. P0.2 installed the set above without it; `U0.1` adds it to `ui/package.json` and `ui/package-lock.json` with exactly:
 
-The resulting `ui/package-lock.json` is committed by `P0.2` and is authoritative thereafter. No later task may run `npm update`, change package versions, or add another package.
+```bash
+npm install --save-dev --save-exact --strict-peer-deps --strict-allow-scripts @playwright/test@1.63.0
+```
+
+The exact UI development dependency set after Hotfix 070 is therefore:
+
+```text
+typescript@5.9.3 vite@8.3.1 vitest@5.0.2 jsdom@30.1.1 @types/react@19.3.0 @types/react-dom@19.3.0 @types/node@26.6.3 @testing-library/react@16.3.3 @testing-library/dom@10.4.2 @testing-library/user-event@14.6.7 msw@2.15.0 openapi-typescript@7.13.0 playwright@1.63.0 @playwright/test@1.63.0 @axe-core/playwright@4.13.0 eslint@9.39.5 typescript-eslint@8.71.0 eslint-plugin-jsx-a11y@6.10.2 eslint-plugin-react-hooks@7.1.1 prettier@3.9.9
+```
+
+The two Playwright versions intentionally match; `playwright@1.63.0` stays a direct dependency unchanged, and no other JavaScript dependency is added, removed or upgraded.
+
+P0.2 resolves no direct JavaScript dependency versions dynamically. Direct runtime and development dependency versions are fixed by this plan. Transitive versions are frozen by ui/package-lock.json. No direct version or lockfile may be changed after P0.2 except through a human-approved plan revision. Hotfix 070 is that approved revision for `@playwright/test@1.63.0` only.
+
+The resulting `ui/package-lock.json` is committed by `P0.2` and is authoritative thereafter. No later task may run `npm update`, change package versions, or add another package, except that `U0.1` adds exactly `@playwright/test@1.63.0` and its deterministic lockfile entries under Hotfix 070.
 
 `@stoplight/prism-cli` is not an allowed Plumb dependency; the v3 build does not use Prism. MSW is the approved API mocking dependency for the pilot.
 
@@ -5035,6 +5049,8 @@ python3 scripts/verify-plan-contract.py
 3. Configure hard-coded JSX string lint except test files and i18n infrastructure.
 4. Set package.json scripts exactly to: "typecheck": "tsc --noEmit"; "lint": "eslint ."; "test": "vitest run"; "e2e": "playwright test"; "api:generate": "openapi-typescript ../api/modeller.openapi.json -o src/api/schema.d.ts"; "api:check": "openapi-typescript ../api/modeller.openapi.json -o /tmp/plumb-schema.d.ts && cmp -s /tmp/plumb-schema.d.ts src/api/schema.d.ts".
 5. Ordering (Hotfix 063, Hotfix 065). U0.1 depends on A0.3 because the generated client must come from the final pilot contract: Hotfix 065 froze the complete OpenAPI wire contract as contract version 3 in the A0.3 era, including run_stage and get_job, whose handlers become live only in A0.4 (the backend end-to-end chain already waits for A0.4); every later UI task follows U0.1 and therefore A0.3.
+6. Playwright Test runner (Hotfix 070). The frozen script "e2e": "playwright test" is the Playwright Test runner, which ships in @playwright/test (playwright is the browser automation library). U0.1 therefore adds exactly @playwright/test@1.63.0 to ui/package.json devDependencies and its deterministic ui/package-lock.json entries with `cd ui && npm install --save-dev --save-exact --strict-peer-deps --strict-allow-scripts @playwright/test@1.63.0`: no npm update, no dynamic, caret or tilde version, no unrelated lockfile refresh, no --force, --legacy-peer-deps, --ignore-scripts or npm overrides. playwright@1.63.0 stays a direct dependency unchanged (the versions intentionally match) and no other JavaScript dependency is added, removed or upgraded; @stoplight/prism-cli stays forbidden and MSW stays the pilot API mocking dependency. `playwright test` must resolve from that local dependency graph (never npx remote execution, a global install, @playwright/cli, a custom runner or Vitest browser mode), and ui/playwright.config.ts may use `import { defineConfig } from "@playwright/test"`. After the addition npm ci --strict-peer-deps --strict-allow-scripts, npm ls --depth=0 and npm audit --audit-level=high must succeed with zero HIGH and zero CRITICAL findings, no peer conflict, no unsupported engine and no unauthorized install script; otherwise STOP BLOCKED-UI-DEPENDENCY (no other version without another plan amendment). U0.1 creates no production E2E scenario; later UI tasks add tests within their own allowlists.
+7. Vitest empty scaffold (Hotfix 070). U0.1 owns no *.test.* file but runs `vitest run`, so ui/vite.config.ts configures Vitest with passWithNoTests: true and the intentionally empty U0.1 unit-test set succeeds. This never suppresses real failures: once tests exist, failing tests fail. The package scripts stay exactly as frozen above ("test": "vitest run", "e2e": "playwright test"), and the U0.1 write allowlist stays exactly the 13 files listed.
 
 **Commands**
 
@@ -5042,6 +5058,9 @@ python3 scripts/verify-plan-contract.py
 cd ui && npm ci && npm run api:generate && npm run api:check && npm run typecheck && npm run lint && npm run test
 cd ui && npm run typecheck
 cd ui && npm run lint
+cd ui && npm ci --strict-peer-deps --strict-allow-scripts
+cd ui && npm ls --depth=0
+cd ui && npm audit --audit-level=high
 ```
 
 **Tests**
@@ -5051,6 +5070,7 @@ cd ui && npm run lint
 **Acceptance**
 
 - Generated client has no drift and UI checks pass.
+- After adding @playwright/test@1.63.0 under Hotfix 070, npm ci --strict-peer-deps --strict-allow-scripts, npm ls --depth=0 and npm audit --audit-level=high exit 0 with zero HIGH and zero CRITICAL findings; every other direct UI dependency keeps its exact P0.2 version; playwright test resolves from the local dependency graph; vitest run passes with the empty U0.1 test set.
 
 **Supporting references**
 
