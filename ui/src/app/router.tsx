@@ -1,20 +1,28 @@
-import { createRootRoute, createRoute, createRouter, Outlet } from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, type RouterHistory } from "@tanstack/react-router";
 
-// The typed route scaffold. Routes are registered explicitly by the task that adds each page
-// (U1.1 mounts the shell and Home; U2.x add their own pages); there is no route discovery.
+import { HomePage } from "../features/home/HomePage";
+import { AppShell } from "./AppShell";
+
+// The explicit route tree. Each page is registered by the task that implements it (Hotfix 071);
+// there is no route discovery and no placeholder route.
 const rootRoute = createRootRoute({
-  component: Outlet,
+  component: AppShell,
 });
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: () => null,
+  component: HomePage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute]);
+export const routeTree = rootRoute.addChildren([indexRoute]);
 
-export const router = createRouter({ routeTree });
+/** A router over the route tree (browser history unless `history` is given). */
+export function createAppRouter(history?: RouterHistory) {
+  return createRouter({ routeTree, ...(history === undefined ? {} : { history }) });
+}
+
+export const router = createAppRouter();
 
 declare module "@tanstack/react-router" {
   interface Register {
