@@ -8,7 +8,12 @@
   },
   "packageManager": "npm@11.19.0",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "api:generate": "openapi-typescript ../api/modeller.openapi.json -o src/api/schema.d.ts",
+    "api:check": "openapi-typescript ../api/modeller.openapi.json -o /tmp/plumb-schema.d.ts && cmp -s /tmp/plumb-schema.d.ts src/api/schema.d.ts"
   },
   "allowScripts": {
     "msw": false
@@ -37,6 +42,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.63.0",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",
