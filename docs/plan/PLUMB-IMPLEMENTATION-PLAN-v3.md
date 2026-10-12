@@ -681,6 +681,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `api/modeller.openapi.json`
 - `config/profiles/plumb-software-2026.1-rules.yaml`
 - `crates/plumb-api/Cargo.toml`
+- `crates/plumb-api/src/application.rs`
 - `crates/plumb-api/src/error.rs`
 - `crates/plumb-api/src/lib.rs`
 - `crates/plumb-api/src/openapi.rs`
@@ -693,10 +694,23 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-api/src/routes/questions.rs`
 - `crates/plumb-api/src/routes/requirements.rs`
 - `crates/plumb-api/src/routes/scenarios.rs`
+- `crates/plumb-api/src/routes/sentences.rs`
 - `crates/plumb-api/src/routes/sessions.rs`
 - `crates/plumb-api/src/routes/sources.rs`
+- `crates/plumb-api/src/routes/stages.rs`
+- `crates/plumb-api/src/runtime.rs`
+- `crates/plumb-api/src/server.rs`
+- `crates/plumb-api/src/stage/acceptance.rs`
+- `crates/plumb-api/src/stage/acquire.rs`
+- `crates/plumb-api/src/stage/gates.rs`
+- `crates/plumb-api/src/stage/mod.rs`
+- `crates/plumb-api/src/stage/phases.rs`
+- `crates/plumb-api/src/stage/recipe.rs`
+- `crates/plumb-api/src/stage/scenario_execution.rs`
 - `crates/plumb-api/src/state.rs`
+- `crates/plumb-api/src/workflow.rs`
 - `crates/plumb-api/tests/http_core.rs`
+- `crates/plumb-api/tests/http_stages.rs`
 - `crates/plumb-api/tests/http_workflow.rs`
 - `crates/plumb-api/tests/openapi.rs`
 - `crates/plumb-artifacts/Cargo.toml`
@@ -707,6 +721,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-artifacts/tests/store.rs`
 - `crates/plumb-cli/Cargo.toml`
 - `crates/plumb-cli/src/commands.rs`
+- `crates/plumb-cli/src/config.rs`
 - `crates/plumb-cli/src/main.rs`
 - `crates/plumb-cli/tests/cli.rs`
 - `crates/plumb-compiler/Cargo.toml`
@@ -773,6 +788,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-functional/src/verification.rs`
 - `crates/plumb-functional/src/vocabulary.rs`
 - `crates/plumb-functional/src/vocabulary_exceptions.rs`
+- `crates/plumb-functional/src/waiver.rs`
 - `crates/plumb-functional/tests/assumption.rs`
 - `crates/plumb-functional/tests/authorization.rs`
 - `crates/plumb-functional/tests/calculation.rs`
@@ -877,13 +893,18 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-store/src/revisions.rs`
 - `crates/plumb-store/src/schema.rs`
 - `crates/plumb-store/src/sqlite.rs`
+- `crates/plumb-store/src/stages.rs`
+- `crates/plumb-store/src/workflow.rs`
 - `crates/plumb-store/tests/revisions.rs`
+- `crates/plumb-store/tests/stages.rs`
+- `crates/plumb-store/tests/workflow.rs`
 - `crates/plumb-validation/Cargo.toml`
 - `crates/plumb-validation/src/evaluator.rs`
 - `crates/plumb-validation/src/external.rs`
 - `crates/plumb-validation/src/finding.rs`
 - `crates/plumb-validation/src/lib.rs`
 - `crates/plumb-validation/src/model.rs`
+- `crates/plumb-validation/src/process_analysis.rs`
 - `crates/plumb-validation/src/profile.rs`
 - `crates/plumb-validation/src/registry.rs`
 - `crates/plumb-validation/src/rules/f1.rs`
@@ -899,6 +920,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-validation/tests/f3.rs`
 - `crates/plumb-validation/tests/f4.rs`
 - `crates/plumb-validation/tests/i0.rs`
+- `crates/plumb-validation/tests/process_analysis.rs`
 - `crates/plumb-validation/tests/profile.rs`
 - `crates/plumb-validation/tests/waiver.rs`
 - `docs/api.md`
@@ -929,9 +951,13 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `prompts/s1-segment-requirements.md`
 - `prompts/s1-vocabulary.md`
 - `prompts/s2-calculation.md`
+- `prompts/s2-data-classification.md`
 - `prompts/s2-domain.md`
+- `prompts/s2-lifecycle.md`
+- `prompts/s2-operation.md`
 - `prompts/s2-process.md`
 - `prompts/s4-scenario.md`
+- `prompts/session-turn.md`
 - `rust-toolchain.toml`
 - `schemas/functional-v2.schema.json`
 - `schemas/inference/s1-ears.schema.json`
@@ -939,9 +965,13 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `schemas/inference/s1-segmentation.schema.json`
 - `schemas/inference/s1-vocabulary.schema.json`
 - `schemas/inference/s2-calculation.schema.json`
+- `schemas/inference/s2-data-classification.schema.json`
 - `schemas/inference/s2-domain.schema.json`
+- `schemas/inference/s2-lifecycle.schema.json`
+- `schemas/inference/s2-operation.schema.json`
 - `schemas/inference/s2-process.schema.json`
 - `schemas/inference/s4-scenario.schema.json`
+- `schemas/inference/session-turn.schema.json`
 - `scripts/check-placeholders.sh`
 - `scripts/manual-llm-smoke.sh`
 - `scripts/run-pilot-e2e.sh`
@@ -949,6 +979,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `tests/support/hr_fixture.rs`
 - `ui/e2e/pilot.spec.ts`
 - `ui/eslint.config.js`
+- `ui/index.html`
 - `ui/package-lock.json`
 - `ui/package.json`
 - `ui/playwright.config.ts`
@@ -999,11 +1030,19 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `ui/src/features/sessions/SessionPanel.tsx`
 - `ui/src/features/sessions/session.test.tsx`
 - `ui/src/i18n/en.json`
+- `ui/src/i18n/index.ts`
 - `ui/src/i18n/pl.json`
 - `ui/src/main.tsx`
 - `ui/src/test/msw.ts`
 - `ui/tsconfig.json`
 - `ui/vite.config.ts`
+
+**Hotfix 072 synchronization rule.**
+
+- Every path present in any task `files` allowlist must appear in this section.
+- This section may additionally contain immutable fixture inputs, supporting files, blocker paths or other globally controlled paths that are not written by an implementation task.
+- Membership in this section does not itself authorize a task to write a path.
+- The individual task's `files` list remains the exact write boundary (task allowlist ⊆ this registry; the registry is not permission to edit).
 
 The checksummed HR fixture inputs are read-only. Directories may contain build outputs ignored by Git, but production source files not named by a task are not authorized.
 
