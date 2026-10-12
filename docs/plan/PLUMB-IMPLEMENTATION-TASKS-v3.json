@@ -3585,6 +3585,7 @@
         "ui/src/features/glossary/GlossaryPage.tsx",
         "ui/src/features/glossary/glossary.test.tsx",
         "ui/src/app/router.tsx",
+        "ui/src/features/home/HomePage.test.tsx",
         "ui/src/i18n/en.json",
         "ui/src/i18n/pl.json",
         "crates/plumb-api/src/openapi.rs",
@@ -3603,6 +3604,7 @@
         "Every write uses generated API client and versioned mutation hook.",
         "Glossary merge displays resulting semantic diff before commit.",
         "Route and catalogue ownership (Hotfix 071). U2.1 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.",
+        "Progressive route-regression ownership (Hotfix 075). Because ui/src/features/home/HomePage.test.tsx contains the central regression assertion that the router registers only actually implemented product routes and no placeholder future routes, every U2.x task that owns ui/src/app/router.tsx also owns the narrow update of that assertion: U2.1 may change only the assertion and its comment so that the expected route set exactly equals the cumulative product routes implemented through U2.1 (no future placeholder route; registration stays explicit, with no dynamic route discovery, import glob, fake feature component or placeholder page; the assertion evolves only when a task actually implements a route). U2.1 must not modify any unrelated HomePage, shell, search, role, event, conflict, navigation or mutation behavior in HomePage.test.tsx, and general ownership of the test is not transferred. U1.1's original assertion remains correct for its historical repository state. Before completion U2.1 also runs the full UI suite (cd ui && npm run test) as a cross-feature regression check, in addition to its targeted test command, because route-tree changes can invalidate earlier UI regression tests that the targeted command does not select. Ratification note: the U2.1 delivery at 98754a3b1e134538a019f972f1e85d0f6d17b545 updated that assertion from [\"/\"] to exactly [\"/\", \"/model/glossary\", \"/requirements\", \"/requirements/$requirementId\"], with its comment changed from only root/Home to only implemented pages. HomePage.test.tsx was not part of the pre-Hotfix-075 U2.1 allowlist: the change was human-approved during U2.1 execution, and Hotfix 075 ratifies the necessary cross-task regression-test ownership discovered there. No other HomePage.test.tsx behavior is U2.1-owned.",
         "Blocker resolution and write boundary (Hotfix 073, semantic change previews). Hotfix 073 ratifies and renumbers the semantic-preview specification amendment; Hotfix 072 remains exclusively the target-path synchronization rule. U2.1 depends on A0.3 because the preview workflow relies on A0.3-owned runtime machinery (routes::proposals::persist_pending, workflow proposal persistence, ApiState::act_on_proposal, the proposal action endpoints and E_PROPOSAL_BASELINE_CHANGED). This resolves docs/blockers/U2.1.md (BLOCKED-SPEC-MISSING): U2.1 inherits v2 U2 'split (diff preview)' and requires 'Glossary merge displays resulting semantic diff before commit', but the 72-operation contract had no server-authoritative pre-commit semantic-change preview. U2.1 therefore additionally owns the minimum backend/API contract repair, and its write allowlist is exactly the 8 UI files plus crates/plumb-api/src/openapi.rs, crates/plumb-api/src/routes/requirements.rs, crates/plumb-api/src/routes/model.rs, crates/plumb-api/tests/openapi.rs, crates/plumb-api/tests/http_core.rs, crates/plumb-api/tests/http_workflow.rs, api/modeller.openapi.json, docs/api.md and ui/src/api/schema.d.ts. Not authorized: Cargo.toml, Cargo.lock, crates/plumb-patch/*, crates/plumb-psg/*, crates/plumb-functional/*, crates/plumb-store/*, crates/plumb-api/src/state.rs, crates/plumb-api/src/application.rs, crates/plumb-api/src/routes/proposals.rs, ui/package.json, ui/package-lock.json, ui/src/api/client.ts, ui/src/api/useVersionedMutation.ts, ui/src/app/nav.ts and ui/src/components/DiffViewer.tsx. No new dependency, PSG type, patch primitive or WorkflowOrigin value. If implementation proves one of the unauthorized files must change: STOP with BLOCKED-SPEC-MISSING (do not expand the allowlist).",
         "Operation inventory (Hotfix 073, semantic change previews). The frozen 72-operation inventory of A0.1 (Hotfix 062) is extended by appending exactly two operations; operations 01-72 stay byte- and semantically compatible and are not renumbered, so the pilot contract has exactly 74 operations from U2.1 onward: 73 POST /api/requirements/{id}/split/preview preview_requirement_split requirements; 74 POST /api/glossary/{id}/merge/preview preview_glossary_merge glossary. Both require the If-Match header (the current semantic_hash), document 412 PreconditionFailedResponse, take the existing request DTO, return SemanticChangePreviewResponse and carry deterministic generated examples. x-plumb-contract-version stays 3. No other operation is added, removed or changed. Both appended operations are owned by U2.1 (Hotfix 074): operations 01-72 keep their owners exactly (A0.2 30, A0.3 40, A0.4 2) and U2.1 owns exactly preview_requirement_split and preview_glossary_merge (74 operations).",
         "Preview model and reused authorities (Hotfix 073, semantic change previews). A preview is the server-authoritative semantic effect of the exact domain Proposal before confirmation-time governance material is added: the semantic change the user is asked to approve (loaded accepted graph -> exact server-generated domain Proposal -> plumb_patch::apply_patch -> candidate graph / domain semantic effect). It is not a byte-for-byte preview of every governance element of the eventual accepted revision; confirmation adds the normal governance material through the existing acceptance path and the original domain Proposal stays unchanged. the existing domain helper builds the real Proposal, plumb_patch::apply_patch dry-applies its PatchSet to the loaded Graph, the server derives the semantic element diff, crate::state::run_intake runs X1.3 intake, and routes::proposals::persist_pending persists the exact Proposal and intake report as a pending workflow proposal with Origin { kind: WorkflowOrigin::Intake, reference: None }, bound by the workflow store to base_revision_id = the loaded RevisionId. Confirmation uses ApiState::act_on_proposal through the existing proposal action endpoints. Reused, never duplicated: plumb_functional::propose_requirement_split, plumb_functional::vocabulary::propose_term_merge, plumb_patch::apply_patch, crate::state::run_intake, routes::proposals::persist_pending, WorkflowOrigin::Intake, ApiState::act_on_proposal. Forbidden: a second merge or split algorithm, a second patch interpreter, a second workflow store, a preview branch, a temporary branch-head commit, commit-then-GET /api/model/diff, rollback, optimistic mutation, and any client-generated Proposal or SemanticPatch.",
@@ -3628,7 +3630,7 @@
         "cargo test -p plumb-api http_core",
         "cargo test -p plumb-api http_workflow",
         "cargo test -p plumb-api --no-fail-fast",
-        "cd ui && npm run test -- requirements glossary"
+        "cd ui && npm run test -- HomePage requirements glossary"
       ],
       "acceptance": [
         "Requirement actions send If-Match.",
@@ -3653,7 +3655,8 @@
         "cargo test -p plumb-api http_core",
         "cargo test -p plumb-api http_workflow",
         "cargo test -p plumb-api --no-fail-fast",
-        "cd ui && npm run test -- requirements glossary",
+        "cd ui && npm run test -- HomePage requirements glossary",
+        "cd ui && npm run test",
         "cd ui && npm run typecheck",
         "cd ui && npm run lint",
         "cargo test --workspace --no-fail-fast",
@@ -3679,6 +3682,7 @@
         "ui/src/features/questions/QuestionsPage.tsx",
         "ui/src/features/questions/questions.test.tsx",
         "ui/src/app/router.tsx",
+        "ui/src/features/home/HomePage.test.tsx",
         "ui/src/i18n/en.json",
         "ui/src/i18n/pl.json"
       ],
@@ -3688,10 +3692,11 @@
         "Bulk accept may call one proposal/action per semantic item but must advance ETag after each successful commit; stop on first 412.",
         "Question round manager never permits more than profile max.",
         "Typed answer controls (Hotfix 065) are driven by the Question's kind and answer_schema of contract v3; generation-time slots are not persisted and are not part of the API.",
-        "Route and catalogue ownership (Hotfix 071). U2.2 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical."
+        "Route and catalogue ownership (Hotfix 071). U2.2 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.",
+        "Progressive route-regression ownership (Hotfix 075). Because ui/src/features/home/HomePage.test.tsx contains the central regression assertion that the router registers only actually implemented product routes and no placeholder future routes, every U2.x task that owns ui/src/app/router.tsx also owns the narrow update of that assertion: U2.2 may change only the assertion and its comment so that the expected route set exactly equals the cumulative product routes implemented through U2.2 (no future placeholder route; registration stays explicit, with no dynamic route discovery, import glob, fake feature component or placeholder page; the assertion evolves only when a task actually implements a route). U2.2 must not modify any unrelated HomePage, shell, search, role, event, conflict, navigation or mutation behavior in HomePage.test.tsx, and general ownership of the test is not transferred. U1.1's original assertion remains correct for its historical repository state. Before completion U2.2 also runs the full UI suite (cd ui && npm run test) as a cross-feature regression check, in addition to its targeted test command, because route-tree changes can invalidate earlier UI regression tests that the targeted command does not select."
       ],
       "tests": [
-        "cd ui && npm run test -- sentences questions"
+        "cd ui && npm run test -- HomePage sentences questions"
       ],
       "acceptance": [
         "Inline answer path produces decision/proposal preview; bulk accept stops on version conflict."
@@ -3701,7 +3706,8 @@
       ],
       "forbidden": [],
       "commands": [
-        "cd ui && npm run test -- sentences questions",
+        "cd ui && npm run test -- HomePage sentences questions",
+        "cd ui && npm run test",
         "cd ui && npm run typecheck",
         "cd ui && npm run lint"
       ],
@@ -3721,6 +3727,7 @@
         "ui/src/features/sessions/ProposalCard.tsx",
         "ui/src/features/sessions/session.test.tsx",
         "ui/src/app/router.tsx",
+        "ui/src/features/home/HomePage.test.tsx",
         "ui/src/app/AppShell.tsx",
         "ui/src/i18n/en.json",
         "ui/src/i18n/pl.json"
@@ -3730,10 +3737,11 @@
         "Render proposal intake results and engine Question IDs.",
         "Do not render a model-generated free-form question as an engine question unless API returns an existing question_id.",
         "All commit actions use proposal endpoints, not direct model endpoints.",
-        "Integration ownership (Hotfix 071). U2.3 modifies ui/src/app/AppShell.tsx only to mount the project/scoped session panel into the existing shell, registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) including any project-room route the frozen behavior requires, leaves unrelated shell and navigation behavior unchanged, and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical."
+        "Integration ownership (Hotfix 071). U2.3 modifies ui/src/app/AppShell.tsx only to mount the project/scoped session panel into the existing shell, registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) including any project-room route the frozen behavior requires, leaves unrelated shell and navigation behavior unchanged, and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.",
+        "Progressive route-regression ownership (Hotfix 075). Because ui/src/features/home/HomePage.test.tsx contains the central regression assertion that the router registers only actually implemented product routes and no placeholder future routes, every U2.x task that owns ui/src/app/router.tsx also owns the narrow update of that assertion: U2.3 may change only the assertion and its comment so that the expected route set exactly equals the cumulative product routes implemented through U2.3 (no future placeholder route; registration stays explicit, with no dynamic route discovery, import glob, fake feature component or placeholder page; the assertion evolves only when a task actually implements a route). U2.3 must not modify any unrelated HomePage, shell, search, role, event, conflict, navigation or mutation behavior in HomePage.test.tsx, and general ownership of the test is not transferred. U1.1's original assertion remains correct for its historical repository state. Before completion U2.3 also runs the full UI suite (cd ui && npm run test) as a cross-feature regression check, in addition to its targeted test command, because route-tree changes can invalidate earlier UI regression tests that the targeted command does not select."
       ],
       "tests": [
-        "cd ui && npm run test -- session"
+        "cd ui && npm run test -- HomePage session"
       ],
       "acceptance": [
         "Invented question fixture is displayed only as assistant text, not actionable typed question; proposal commit path uses proposal endpoint."
@@ -3744,7 +3752,8 @@
       ],
       "forbidden": [],
       "commands": [
-        "cd ui && npm run test -- session",
+        "cd ui && npm run test -- HomePage session",
+        "cd ui && npm run test",
         "cd ui && npm run typecheck",
         "cd ui && npm run lint"
       ],
@@ -3763,6 +3772,7 @@
         "ui/src/features/processes/ProcessDiagram.tsx",
         "ui/src/features/processes/processes.test.tsx",
         "ui/src/app/router.tsx",
+        "ui/src/features/home/HomePage.test.tsx",
         "ui/src/i18n/en.json",
         "ui/src/i18n/pl.json"
       ],
@@ -3772,10 +3782,11 @@
         "A move/reorder action sends a semantic process patch proposal; visual drag coordinates alone stay local view metadata.",
         "Do not implement branch editing or BPMN import in NOW scope.",
         "SVG export is view projection only.",
-        "Route and catalogue ownership (Hotfix 071). U2.4 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical."
+        "Route and catalogue ownership (Hotfix 071). U2.4 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.",
+        "Progressive route-regression ownership (Hotfix 075). Because ui/src/features/home/HomePage.test.tsx contains the central regression assertion that the router registers only actually implemented product routes and no placeholder future routes, every U2.x task that owns ui/src/app/router.tsx also owns the narrow update of that assertion: U2.4 may change only the assertion and its comment so that the expected route set exactly equals the cumulative product routes implemented through U2.4 (no future placeholder route; registration stays explicit, with no dynamic route discovery, import glob, fake feature component or placeholder page; the assertion evolves only when a task actually implements a route). U2.4 must not modify any unrelated HomePage, shell, search, role, event, conflict, navigation or mutation behavior in HomePage.test.tsx, and general ownership of the test is not transferred. U1.1's original assertion remains correct for its historical repository state. Before completion U2.4 also runs the full UI suite (cd ui && npm run test) as a cross-feature regression check, in addition to its targeted test command, because route-tree changes can invalidate earlier UI regression tests that the targeted command does not select."
       ],
       "tests": [
-        "cd ui && npm run test -- processes"
+        "cd ui && npm run test -- HomePage processes"
       ],
       "acceptance": [
         "Layout is deterministic for equal data; visual position change alone sends no semantic mutation; semantic move does."
@@ -3787,7 +3798,8 @@
       ],
       "forbidden": [],
       "commands": [
-        "cd ui && npm run test -- processes",
+        "cd ui && npm run test -- HomePage processes",
+        "cd ui && npm run test",
         "cd ui && npm run typecheck",
         "cd ui && npm run lint"
       ],
@@ -3807,6 +3819,7 @@
         "ui/src/features/scenarios/ScenarioTrace.tsx",
         "ui/src/features/scenarios/scenarios.test.tsx",
         "ui/src/app/router.tsx",
+        "ui/src/features/home/HomePage.test.tsx",
         "ui/src/i18n/en.json",
         "ui/src/i18n/pl.json"
       ],
@@ -3815,10 +3828,11 @@
         "Correction creates proposal; it does not edit accepted scenario locally.",
         "Bulk confirmation is limited to derived scenarios returned as confirmable by API.",
         "Undecidable trace displays missing semantic element IDs/names.",
-        "Route and catalogue ownership (Hotfix 071). U2.5 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical."
+        "Route and catalogue ownership (Hotfix 071). U2.5 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.",
+        "Progressive route-regression ownership (Hotfix 075). Because ui/src/features/home/HomePage.test.tsx contains the central regression assertion that the router registers only actually implemented product routes and no placeholder future routes, every U2.x task that owns ui/src/app/router.tsx also owns the narrow update of that assertion: U2.5 may change only the assertion and its comment so that the expected route set exactly equals the cumulative product routes implemented through U2.5 (no future placeholder route; registration stays explicit, with no dynamic route discovery, import glob, fake feature component or placeholder page; the assertion evolves only when a task actually implements a route). U2.5 must not modify any unrelated HomePage, shell, search, role, event, conflict, navigation or mutation behavior in HomePage.test.tsx, and general ownership of the test is not transferred. U1.1's original assertion remains correct for its historical repository state. Before completion U2.5 also runs the full UI suite (cd ui && npm run test) as a cross-feature regression check, in addition to its targeted test command, because route-tree changes can invalidate earlier UI regression tests that the targeted command does not select."
       ],
       "tests": [
-        "cd ui && npm run test -- scenarios"
+        "cd ui && npm run test -- HomePage scenarios"
       ],
       "acceptance": [
         "Correction path uses proposal; undecidable fixture names missing element."
@@ -3828,7 +3842,8 @@
       ],
       "forbidden": [],
       "commands": [
-        "cd ui && npm run test -- scenarios",
+        "cd ui && npm run test -- HomePage scenarios",
+        "cd ui && npm run test",
         "cd ui && npm run typecheck",
         "cd ui && npm run lint"
       ],
@@ -3850,6 +3865,7 @@
         "ui/src/features/calculations/CalculationsPage.tsx",
         "ui/src/features/analyst/analyst.test.tsx",
         "ui/src/app/router.tsx",
+        "ui/src/features/home/HomePage.test.tsx",
         "ui/src/i18n/en.json",
         "ui/src/i18n/pl.json"
       ],
@@ -3859,10 +3875,11 @@
         "Rules view exposes uncovered/overlap findings and explicit cell-fill proposal.",
         "Calculations show worked example read-only; no free-form formula editor in NOW scope.",
         "Findings view distinguishes rule_class external_standard, external_interoperability, plumb_core and profile/organization.",
-        "Route and catalogue ownership (Hotfix 071). U2.6 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical."
+        "Route and catalogue ownership (Hotfix 071). U2.6 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.",
+        "Progressive route-regression ownership (Hotfix 075). Because ui/src/features/home/HomePage.test.tsx contains the central regression assertion that the router registers only actually implemented product routes and no placeholder future routes, every U2.x task that owns ui/src/app/router.tsx also owns the narrow update of that assertion: U2.6 may change only the assertion and its comment so that the expected route set exactly equals the cumulative product routes implemented through U2.6 (no future placeholder route; registration stays explicit, with no dynamic route discovery, import glob, fake feature component or placeholder page; the assertion evolves only when a task actually implements a route). U2.6 must not modify any unrelated HomePage, shell, search, role, event, conflict, navigation or mutation behavior in HomePage.test.tsx, and general ownership of the test is not transferred. U1.1's original assertion remains correct for its historical repository state. Before completion U2.6 also runs the full UI suite (cd ui && npm run test) as a cross-feature regression check, in addition to its targeted test command, because route-tree changes can invalidate earlier UI regression tests that the targeted command does not select."
       ],
       "tests": [
-        "cd ui && npm run test -- analyst"
+        "cd ui && npm run test -- HomePage analyst"
       ],
       "acceptance": [
         "All four views render fixture data and rule-class distinction is visible."
@@ -3873,7 +3890,8 @@
       ],
       "forbidden": [],
       "commands": [
-        "cd ui && npm run test -- analyst",
+        "cd ui && npm run test -- HomePage analyst",
+        "cd ui && npm run test",
         "cd ui && npm run typecheck",
         "cd ui && npm run lint"
       ],
@@ -3893,6 +3911,7 @@
         "ui/src/features/gates/gates.test.tsx",
         "ui/src/features/decisions/decisions.test.tsx",
         "ui/src/app/router.tsx",
+        "ui/src/features/home/HomePage.test.tsx",
         "ui/src/i18n/en.json",
         "ui/src/i18n/pl.json"
       ],
@@ -3901,10 +3920,11 @@
         "Do not display a single 'ISO compliant' badge.",
         "Decisions log distinguishes ResolutionDecision from architecture/business decision types even when only ResolutionDecision exists in pilot data.",
         "Readiness may appear only as advisory secondary data labeled uncalibrated when present.",
-        "Route and catalogue ownership (Hotfix 071). U2.7 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical."
+        "Route and catalogue ownership (Hotfix 071). U2.7 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.",
+        "Progressive route-regression ownership (Hotfix 075). Because ui/src/features/home/HomePage.test.tsx contains the central regression assertion that the router registers only actually implemented product routes and no placeholder future routes, every U2.x task that owns ui/src/app/router.tsx also owns the narrow update of that assertion: U2.7 may change only the assertion and its comment so that the expected route set exactly equals the cumulative product routes implemented through U2.7 (no future placeholder route; registration stays explicit, with no dynamic route discovery, import glob, fake feature component or placeholder page; the assertion evolves only when a task actually implements a route). U2.7 must not modify any unrelated HomePage, shell, search, role, event, conflict, navigation or mutation behavior in HomePage.test.tsx, and general ownership of the test is not transferred. U1.1's original assertion remains correct for its historical repository state. Before completion U2.7 also runs the full UI suite (cd ui && npm run test) as a cross-feature regression check, in addition to its targeted test command, because route-tree changes can invalidate earlier UI regression tests that the targeted command does not select."
       ],
       "tests": [
-        "cd ui && npm run test -- gates decisions"
+        "cd ui && npm run test -- HomePage gates decisions"
       ],
       "acceptance": [
         "A failed blocker remains visually failed even with high readiness; waived rule remains distinct from pass."
@@ -3915,7 +3935,8 @@
       ],
       "forbidden": [],
       "commands": [
-        "cd ui && npm run test -- gates decisions",
+        "cd ui && npm run test -- HomePage gates decisions",
+        "cd ui && npm run test",
         "cd ui && npm run typecheck",
         "cd ui && npm run lint"
       ],
