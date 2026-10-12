@@ -8369,6 +8369,9 @@ tasks:
   - crates/plumb-api/src/routes/stages.rs
   - crates/plumb-api/src/routes/proposals.rs
   - crates/plumb-api/src/routes/scenarios.rs
+  - crates/plumb-api/src/routes/gates.rs
+  - crates/plumb-api/src/routes/requirements.rs
+  - crates/plumb-api/src/routes/model.rs
   - crates/plumb-api/tests/http_stages.rs
   - crates/plumb-api/tests/http_core.rs
   - crates/plumb-cli/src/main.rs
@@ -8536,13 +8539,13 @@ tasks:
     prints the structured result (JobResponse plus job_id for stage commands; for ready {revision, semantic_hash, evaluation_at,
     gates [{gate, result, report_hash}]}). ready evaluates I0, F1, F2, F3, F4 on one loaded head, requires f1, f2 and f4 configuration
     before evaluating, and persists every report.
-  - 'Write allowlist (Hotfix 067, exact; no other file, no Cargo manifest or lockfile change, no new dependency; a needed
-    file outside it is STOP BLOCKED-IMPLEMENTATION-CONTRACT): crates/plumb-inference/src/model.rs (materialize_derivation_record_from_artifact
-    and the private builder shared with materialize_derivation_record); crates/plumb-inference/src/lib.rs (export the provenance
-    helper); crates/plumb-inference/tests/artifacts.rs (helper equivalence, golden and rejection tests); crates/plumb-compiler/src/job.rs
-    (StageJob::record_governed_proposal_commit and StageJobError::GovernedCommitMismatch); crates/plumb-compiler/tests/job.rs
-    (governed-recorder contract tests and unchanged plain-path regressions); crates/plumb-store/src/schema.rs (store schema
-    v3, fresh/v1/v2 migration and the workflow_proposals rebuild); crates/plumb-store/src/workflow.rs (WorkflowOrigin::Stage
+  - 'Write allowlist (Hotfix 067 as amended by Hotfix 068, exact: 37 code/test files; no other file, no Cargo manifest or
+    lockfile change, no new dependency; a needed file outside it is STOP BLOCKED-IMPLEMENTATION-CONTRACT): crates/plumb-inference/src/model.rs
+    (materialize_derivation_record_from_artifact and the private builder shared with materialize_derivation_record); crates/plumb-inference/src/lib.rs
+    (export the provenance helper); crates/plumb-inference/tests/artifacts.rs (helper equivalence, golden and rejection tests);
+    crates/plumb-compiler/src/job.rs (StageJob::record_governed_proposal_commit and StageJobError::GovernedCommitMismatch);
+    crates/plumb-compiler/tests/job.rs (governed-recorder contract tests and unchanged plain-path regressions); crates/plumb-store/src/schema.rs
+    (store schema v3, fresh/v1/v2 migration and the workflow_proposals rebuild); crates/plumb-store/src/workflow.rs (WorkflowOrigin::Stage
     and the stage origin_ref rule); crates/plumb-store/src/stages.rs (new SqliteStageStore: recipe jobs, steps, stage jobs,
     proposal links with their workflow rows, gate reports); crates/plumb-store/src/lib.rs (export the stage store); crates/plumb-store/tests/stages.rs
     (new stage persistence, constraint and corruption tests); crates/plumb-store/tests/workflow.rs (schema v3 version and
@@ -8561,11 +8564,14 @@ tasks:
     execution moved unchanged into one shared pure function); crates/plumb-api/src/routes/mod.rs (register the stage routes);
     crates/plumb-api/src/routes/stages.rs (new: run_stage and get_job handlers); crates/plumb-api/src/routes/proposals.rs
     (route stage-linked proposal actions and reconciliation through the stage acceptance service); crates/plumb-api/src/routes/scenarios.rs
-    (run_scenarios calls the shared scenario execution); crates/plumb-api/tests/http_stages.rs (new: HTTP and service orchestration
-    tests); crates/plumb-api/tests/http_core.rs (72/72 routing and the route source guard (drop /api/jobs and /api/stages,
-    add stages.rs)); crates/plumb-cli/src/main.rs (clap tree, dispatch and exit codes); crates/plumb-cli/src/commands.rs (command
-    implementations over the application services); crates/plumb-cli/src/config.rs (new: strict JSON configuration, calendars,
-    provider construction and key file); crates/plumb-cli/tests/cli.rs (new: assert_cmd tests).'
+    (run_scenarios calls the shared scenario execution); crates/plumb-api/src/routes/gates.rs (adapt existing gate list consumption
+    to owned current GateReports (Hotfix 068)); crates/plumb-api/src/routes/requirements.rs (borrow the owned current F1 GateReport
+    for unchanged requirement summaries (Hotfix 068)); crates/plumb-api/src/routes/model.rs (borrow the owned current F4 report
+    for projection and consume owned current reports for waiver lookup (Hotfix 068)); crates/plumb-api/tests/http_stages.rs
+    (new: HTTP and service orchestration tests); crates/plumb-api/tests/http_core.rs (72/72 routing and the route source guard
+    (drop /api/jobs and /api/stages, add stages.rs)); crates/plumb-cli/src/main.rs (clap tree, dispatch and exit codes); crates/plumb-cli/src/commands.rs
+    (command implementations over the application services); crates/plumb-cli/src/config.rs (new: strict JSON configuration,
+    calendars, provider construction and key file); crates/plumb-cli/tests/cli.rs (new: assert_cmd tests).'
   tests:
   - cargo test -p plumb-inference --no-fail-fast
   - cargo test -p plumb-compiler --no-fail-fast
