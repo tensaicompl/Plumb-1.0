@@ -14,24 +14,19 @@ use axum::{Json, Router};
 use plumb_artifacts::{ArtifactKind, ArtifactStore, ArtifactStoreError};
 use plumb_core::{to_canonical_json, Hash, HashKind, Id};
 use plumb_functional::{
-    decode_decision_table, propose_derived_scenario_confirmation, propose_scenario_confirmation,
-    propose_scenario_correction, propose_scenario_run_updates, ScenarioDecisionTableInput,
-    ScenarioLifecycleError, ScenarioRunUpdate, SCENARIO_CONFIRMED,
+    propose_derived_scenario_confirmation, propose_scenario_confirmation,
+    propose_scenario_correction, propose_scenario_run_updates, ScenarioLifecycleError,
 };
-use plumb_psg::{
-    ElementStatus, ExtensionKey, Graph, Node, NodePayload, NodeType, Scenario as PsgScenario,
-    ScenarioRun as PsgScenarioRun,
-};
-use plumb_sim::{
-    build_execution_model, compare_run, run, scenario_run_id, ExecutionInputs, ExecutionRuntime,
-    SCENARIO_TRACE_LINK_EXTENSION,
-};
+use plumb_psg::{Graph, Node, NodePayload, NodeType, Scenario as PsgScenario};
 use serde_json::{json, Value};
 
 use crate::error::ApiError;
 use crate::openapi::{
     ConfirmDerivedRequest, Scenario, ScenarioConfirmationStatus, ScenarioCorrectRequest,
     ScenarioPage, ScenarioRun, ScenarioRunRequest, ScenarioRunResult, ScenarioStatus, WriteResult,
+};
+use crate::stage::scenario_execution::{
+    current_run, execute_scenarios, link_key, run_collision, runnable, ScenarioExecution,
 };
 use crate::state::{
     check_if_match, paginate, parse_body, parse_id, parse_wire, read_json, wire, ApiState,
@@ -62,44 +57,6 @@ fn canonical_text<T: serde::Serialize>(value: &T) -> Result<String, ApiError> {
 fn trace_conflict(code: &'static str, scenario: &Id, reason: &str) -> ApiError {
     ApiError::conflict(code, "the scenario run's trace link or artifact is invalid")
         .with_details(json!({ "scenario": scenario, "reason": reason }))
-}
-
-fn run_collision(run_ref: &Id) -> ApiError {
-    ApiError::unprocessable(
-        "E_SCENARIO_RUN_COLLISION",
-        "the stable scenario run ID holds another element",
-    )
-    .with_details(json!({ "scenario_run": run_ref }))
-}
-
-fn link_key() -> Result<ExtensionKey, ApiError> {
-    SCENARIO_TRACE_LINK_EXTENSION
-        .parse()
-        .map_err(|_| ApiError::internal("scenario_trace_link"))
-}
-
-/// A current ScenarioRun node with its payload.
-type CurrentRun<'g> = Option<(&'g Node, &'g PsgScenarioRun)>;
-
-/// The current ScenarioRun node of `scenario` with its payload, if any; any other element at the
-/// stable ID is a collision.
-fn current_run<'g>(graph: &'g Graph, scenario: &Id) -> Result<(Id, CurrentRun<'g>), ApiError> {
-    let run_ref = scenario_run_id(graph.project_id(), scenario)
-        .map_err(|_| ApiError::internal("scenario_run_id"))?;
-    if graph.edge(&run_ref).is_some() {
-        return Err(run_collision(&run_ref));
-    }
-    let Some(node) = graph.node(&run_ref) else {
-        return Ok((run_ref, None));
-    };
-    match &node.payload {
-        NodePayload::ScenarioRun(payload)
-            if node.status == ElementStatus::Accepted && &payload.scenario_ref == scenario =>
-        {
-            Ok((run_ref, Some((node, payload))))
-        }
-        _ => Err(run_collision(&run_ref)),
-    }
 }
 
 /// The `missing` entries of an Undecidable run: the MissingSemantic entries of the persisted
@@ -458,13 +415,6 @@ async fn correct_scenario(
     Ok(Json(write).into_response())
 }
 
-/// Whether a Scenario is runnable: Accepted and Confirmed, matching simulator admission.
-fn runnable(node: &Node) -> bool {
-    node.status == ElementStatus::Accepted
-        && matches!(&node.payload, NodePayload::Scenario(s)
-            if s.confirmation_status.as_deref() == Some(SCENARIO_CONFIRMED))
-}
-
 /// `run_scenarios`: runs the selected runnable Scenarios with the injected runtime, persists
 /// each ScenarioTrace artifact before the CAS and updates every stable ScenarioRun in one
 /// non-semantic proposal; nothing changes means no CAS.
@@ -520,73 +470,33 @@ async fn run_scenarios(
         }
         scope
     };
-    let mut decision_tables = Vec::new();
-    for id in graph.node_ids_by_type(NodeType::DecisionTable) {
-        let Some(node) = graph.node(id) else {
-            continue;
-        };
-        let NodePayload::DecisionTable(table) = &node.payload else {
-            continue;
-        };
-        if node.status != ElementStatus::Accepted {
-            continue;
-        }
-        let spec = decode_decision_table(table).map_err(|e| {
-            ApiError::conflict(
-                "E_DECISION_TABLE_ENCODING_INVALID",
-                "the persisted decision table encoding is malformed",
-            )
-            .with_details(json!({ "decision_table": node.id, "reason": e.to_string() }))
-        })?;
-        decision_tables.push(ScenarioDecisionTableInput {
-            decision_table_ref: node.id.clone(),
-            spec,
-        });
-    }
-    let simulation =
-        |e: &dyn std::fmt::Debug, text: String| ApiError::semantic(&error_name(&e), text);
-    let model = build_execution_model(
+    let executed = execute_scenarios(
         graph,
-        ExecutionInputs {
-            decision_tables,
-            calculation_scope_overrides: runtime.calculation_scope_overrides.clone(),
-            expression_scopes: runtime.expression_scopes.clone(),
+        &selected,
+        &ScenarioExecution {
+            actor_ref: state.actor_ref(),
+            calendars: runtime.calendars.as_ref(),
+            predicates: runtime.predicates.as_ref(),
+            expression_scopes: &runtime.expression_scopes,
+            calculation_scope_overrides: &runtime.calculation_scope_overrides,
+            runtime_semantic_values: &runtime.runtime_semantic_values,
         },
-    )
-    .map_err(|e| simulation(&e, e.to_string()))?;
-    let execution_runtime = ExecutionRuntime {
-        actor_ref: Some(state.actor_ref().clone()),
-        semantic_values: runtime.runtime_semantic_values.clone(),
-        calendars: runtime.calendars.as_ref(),
-        predicates: runtime.predicates.as_ref(),
-    };
-    let mut updates = Vec::with_capacity(selected.len());
-    for scenario in &selected {
-        let execution =
-            run(&model, scenario, &execution_runtime).map_err(|e| simulation(&e, e.to_string()))?;
-        let comparison = compare_run(&model, &execution, &execution_runtime)
-            .map_err(|e| simulation(&e, e.to_string()))?;
-        let artifact = &comparison.trace_artifact;
+    )?;
+    let mut updates = Vec::with_capacity(executed.len());
+    for item in executed {
         let stored = state.with_artifact_store(|store| {
             store.put(
                 ArtifactKind::ScenarioTrace,
                 "application/json",
-                &artifact.bytes,
+                &item.trace_bytes,
                 created_at,
             )
         })?;
         match stored {
-            Ok(hash) if hash == artifact.hash => {}
+            Ok(hash) if hash == item.trace_hash => {}
             _ => return Err(ApiError::internal("artifact_store")),
         }
-        let (run_ref, _) = current_run(graph, scenario)?;
-        updates.push(ScenarioRunUpdate {
-            run_ref,
-            scenario_ref: scenario.clone(),
-            payload: comparison.scenario_run,
-            link_key: link_key()?,
-            link: artifact.hash.clone(),
-        });
+        updates.push(item.update);
     }
     let proposal = propose_scenario_run_updates(graph, &updates, state.actor_ref(), created_at)
         .map_err(|error| match error {

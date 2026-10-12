@@ -1,6 +1,6 @@
 //! Router composition of the pilot runtime handlers: the 30 A0.2-owned operations (plan A0.2,
-//! Hotfix 063) and the 40 A0.3-owned operations (plan A0.3, Hotfix 065). The two A0.4-owned
-//! stage and job operations are not registered.
+//! Hotfix 063), the 40 A0.3-owned operations (plan A0.3, Hotfix 065) and the two A0.4-owned
+//! stage and job operations (plan A0.4, Hotfix 067): all 72 operations.
 
 use axum::Router;
 
@@ -16,6 +16,7 @@ mod scenarios;
 mod sentences;
 mod sessions;
 mod sources;
+mod stages;
 
 /// The pilot HTTP router over `state`.
 pub fn router(state: ApiState) -> Router {
@@ -30,5 +31,6 @@ pub fn router(state: ApiState) -> Router {
         .merge(proposals::routes())
         .merge(sessions::routes())
         .merge(scenarios::routes())
+        .merge(stages::routes())
         .with_state(state)
 }

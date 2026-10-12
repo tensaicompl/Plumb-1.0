@@ -198,7 +198,7 @@ async fn list_requirements(
         }
         items.push((
             node.id.to_string(),
-            summary(&loaded.graph, f1, node, requirement)?,
+            summary(&loaded.graph, &f1, node, requirement)?,
         ));
     }
     let request = PageRequest {
@@ -229,7 +229,7 @@ async fn get_requirement(
     let loaded = state.load_head()?;
     let (node, payload) = requirement(&loaded.graph, &id)?;
     let f1 = state.current_gate_report(&loaded, GateId::F1)?;
-    let summary = summary(&loaded.graph, f1, node, payload)?;
+    let summary = summary(&loaded.graph, &f1, node, payload)?;
     let mut spans: Vec<String> = node
         .evidence
         .iter()
@@ -245,7 +245,7 @@ async fn get_requirement(
         coverage: summary.coverage.clone(),
         readiness: None,
         spans,
-        lint_findings: lint_findings(f1, &node.id),
+        lint_findings: lint_findings(&f1, &node.id),
         ears_suggestion: None,
         linked: RequirementLinks {
             operations: summary.coverage.operations,

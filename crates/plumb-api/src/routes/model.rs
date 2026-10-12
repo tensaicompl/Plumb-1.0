@@ -16,12 +16,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use plumb_artifacts::{ArtifactKind, ArtifactStore};
-use plumb_core::{to_canonical_json, GateId, Id, StageId, Timestamp};
+use plumb_core::{to_canonical_json, Id, StageId, Timestamp};
 use plumb_functional::decision_table::DecisionOutputCell;
 use plumb_functional::waiver::{create_waiver, WaiverError};
 use plumb_functional::{
     analyze_decision_table, calculation_example, decode_decision_table, encode_decision_table,
-    linear_process_steps, linear_step_key, project_functional_pilot, propose_assumption_resolution,
+    linear_process_steps, linear_step_key, propose_assumption_resolution,
     propose_linear_process_import, propose_process_step_change, propose_term_merge,
     set_output_cell, AssumptionResolutionError, CalculationExampleError, DecisionCellError,
     DecisionCoverage, ExactValue, LinearInterchangeError, PilotDataClass, ProcessStepChange,
@@ -40,15 +40,16 @@ use plumb_validation::{analyze_process, ParallelAnalysis, ProcessAnalysisMode};
 use plumb_validation::{GeneratedFinding, ValidationPolicy};
 use serde_json::{json, Value};
 
+use crate::application::export_artifact;
 use crate::error::ApiError;
 use crate::openapi::{
     Assumption, AssumptionPage, AttributeClassRequest, AttributeTypeRequest, AttributeUnitRequest,
     Calculation, CalculationExample, CalculationPage, CalculationValue, CrudCell, CrudMatrix,
     Decision, DecisionPage, Entity, EntityAttribute, EntityPage, EntityRelationship,
     EntityTransition, ExportFormat, Finding, FindingPage, GlossaryEditRequest,
-    GlossaryMergeRequest, GlossaryPage, GlossaryTerm, ModelDiff, Process, ProcessFormat,
-    ProcessImportRequest, ProcessPage, ProcessStepRequest, ReasonRequest, Rule, RuleCellRequest,
-    RulePage, RuleRow, RuleViewKind, ScalarValue, WriteResult,
+    GlossaryMergeRequest, GlossaryPage, ModelDiff, Process, ProcessFormat, ProcessImportRequest,
+    ProcessPage, ProcessStepRequest, ReasonRequest, Rule, RuleCellRequest, RulePage, RuleRow,
+    RuleViewKind, ScalarValue, WriteResult,
 };
 use crate::state::{
     check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
@@ -418,26 +419,11 @@ async fn list_glossary(
 ) -> Result<Response, ApiError> {
     let query = QueryParams::parse(query.as_deref(), &[], true)?;
     let loaded = state.load_head()?;
-    let mut items = Vec::new();
-    for id in loaded.graph.node_ids_by_type(NodeType::Term) {
-        let Some(node) = loaded.graph.node(id) else {
-            continue;
-        };
-        let NodePayload::Term(term) = &node.payload else {
-            continue;
-        };
-        items.push((
-            node.id.to_string(),
-            GlossaryTerm {
-                id: node.id.to_string(),
-                term: term.term.clone(),
-                language: term.language.clone(),
-                aliases: term.aliases.clone().unwrap_or_default(),
-                definition_ref: term.definition_ref.as_ref().map(Id::to_string),
-                status: wire(&node.status)?,
-            },
-        ));
-    }
+    let items = state
+        .glossary(&loaded)?
+        .into_iter()
+        .map(|term| (term.id.clone(), term))
+        .collect();
     let (items, next_cursor) = simple_page(items, "list_glossary", &query, &loaded)?;
     Ok(read_json(&loaded, GlossaryPage { items, next_cursor }))
 }
@@ -850,17 +836,8 @@ async fn export_model(
         "format",
     )?;
     let loaded = state.load_head()?;
-    let f4 = state.current_gate_report(&loaded, GateId::F4)?;
-    let outputs = project_functional_pilot(&loaded.graph, state.profile(), f4).map_err(|e| {
-        ApiError::unprocessable("E_SEMANTIC_INVARIANT", "the model cannot be projected")
-            .with_details(json!({ "projection_error": e.to_string() }))
-    })?;
-    let artifact = match format {
-        ExportFormat::Functional => outputs.functional_yaml,
-        ExportFormat::Report => outputs.model_report_md,
-        ExportFormat::Decisions => outputs.decisions_jsonl,
-        ExportFormat::Glossary => outputs.glossary_md,
-    };
+    let outputs = state.pilot_projection(&loaded)?;
+    let artifact = export_artifact(outputs, format);
     let mut response = artifact.bytes.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -1612,7 +1589,7 @@ pub(super) fn waive(
     created_at: Timestamp,
     operation_id: &'static str,
 ) -> Result<WriteResult, ApiError> {
-    let reports = state.current_gate_reports(loaded);
+    let reports = state.current_gate_reports(loaded)?;
     let generated: Vec<(&GeneratedFinding, &ValidationPolicy)> = reports
         .iter()
         .flat_map(|r| r.findings.iter().map(move |f| (f, &r.policy)))

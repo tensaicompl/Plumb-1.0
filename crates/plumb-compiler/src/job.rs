@@ -10,7 +10,8 @@
 use std::fmt;
 
 use plumb_core::{to_canonical_json, CoreError, Hash, HashKind, StageId};
-use plumb_patch::{PatchSet, Proposal, ProposalError};
+use plumb_patch::{PatchSet, Proposal, ProposalError, SemanticPatch};
+use plumb_psg::{ElementStatus, NodePayload};
 use plumb_store::{BranchName, CommitResult, LoadedRevision, RevisionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -108,6 +109,10 @@ pub enum StageJobError {
     CommitParentMismatch,
     #[error("committed revision did not accept the selected output's patch set")]
     CommitPatchMismatch,
+    /// The committed PatchSet is not the A0.3 governed-acceptance envelope of the selected
+    /// output (Hotfix 067); the reason names the failing check.
+    #[error("committed patch set is not the governed acceptance of the output: {0}")]
+    GovernedCommitMismatch(&'static str),
 }
 
 /// One stage job: its immutable capture and its lifecycle state. Fields change only through
@@ -578,6 +583,68 @@ impl StageJob {
         self.check_run(run)?;
         let output_ref = self.proposal_output(run, proposal)?;
         self.record_commit(output_ref, &proposal.patch_set, commit)
+    }
+
+    /// Records that the store committed `proposal`, an output of this Ready job's run, inside
+    /// the A0.3 governed-acceptance envelope (Hotfix 067): `committed_patch_set` must be exactly
+    /// `Compound [proposal.patch_set.patch, AddNode(Accepted ResolutionDecision)]` on the same
+    /// base, the decision bound to this proposal and its original PatchSet, and the revision a
+    /// child of the base that accepted exactly `committed_patch_set`. The committed output ref
+    /// stays the original Proposal's canonical ref. Decision IDs, reasons, rationale,
+    /// authorization and intake belong to the governance layer and are not re-validated here.
+    pub fn record_governed_proposal_commit(
+        &mut self,
+        run: &CompileRun,
+        proposal: &Proposal,
+        committed_patch_set: &PatchSet,
+        commit: &CommitResult,
+    ) -> Result<(), StageJobError> {
+        if self.status != StageJobStatus::Ready {
+            return Err(StageJobError::JobNotReady(self.status));
+        }
+        self.check_run(run)?;
+        let output_ref = self.proposal_output(run, proposal)?;
+        let mismatch = StageJobError::GovernedCommitMismatch;
+        if committed_patch_set.base_semantic_hash != proposal.patch_set.base_semantic_hash {
+            return Err(mismatch("base_semantic_hash"));
+        }
+        let SemanticPatch::Compound { patches } = &committed_patch_set.patch else {
+            return Err(mismatch("compound_shape"));
+        };
+        let [original, SemanticPatch::AddNode { node }] = patches.as_slice() else {
+            return Err(mismatch("compound_shape"));
+        };
+        if original != &proposal.patch_set.patch {
+            return Err(mismatch("original_patch"));
+        }
+        if node.validate().is_err() || node.status != ElementStatus::Accepted {
+            return Err(mismatch("decision_status"));
+        }
+        let NodePayload::ResolutionDecision(decision) = &node.payload else {
+            return Err(mismatch("decision_payload"));
+        };
+        if decision.question_ref.is_some() {
+            return Err(mismatch("decision_question_ref"));
+        }
+        if decision.proposal_ref.as_ref() != Some(&proposal.id) {
+            return Err(mismatch("decision_proposal_ref"));
+        }
+        if decision.patch_ref != canonical_ref(&proposal.patch_set)? {
+            return Err(mismatch("decision_patch_ref"));
+        }
+        if decision.supersedes.is_some() {
+            return Err(mismatch("decision_supersedes"));
+        }
+        if commit.revision.parent.as_ref() != Some(&self.base_revision) {
+            return Err(StageJobError::CommitParentMismatch);
+        }
+        if commit.revision.accepted_patch_ref != Some(canonical_ref(committed_patch_set)?) {
+            return Err(mismatch("accepted_patch_ref"));
+        }
+        self.committed_revision = Some(commit.revision.id.clone());
+        self.committed_output_ref = Some(output_ref);
+        self.status = StageJobStatus::Committed;
+        Ok(())
     }
 
     /// Records that the store committed the run's derivation `patch_set` from the base revision.

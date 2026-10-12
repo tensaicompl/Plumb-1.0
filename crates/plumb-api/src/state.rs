@@ -5,13 +5,16 @@
 //! synchronous mutexes (never held across an await), the injected identity and clock, the
 //! design-event broadcaster, the orchestration-registered gate reports and the validation
 //! profile, plus the optional injected A0.3 runtime (durable workflow store, providers, session
-//! configuration and simulator scopes). There is no global graph or provider: every request loads
+//! configuration and simulator scopes) and the optional injected A0.4 stage runtime (durable stage
+//! store, explicit recipe inputs and the recipe worker, Hotfix 067). Current gate reports are the
+//! durable store-v3 reports with the startup-injected ones as compatibility fallback, returned
+//! owned (Hotfix 068). There is no global graph or provider: every request loads
 //! the branch head once and answers or writes against exactly that revision. Writes go through
 //! the existing intake, the rationale guard and the store's compare-and-swap commit; nothing
 //! mutates a graph in place.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, Weak};
 
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
@@ -32,8 +35,8 @@ use plumb_sim::{
     ExecutionCalculationScopeOverride, ExecutionExpressionScopeInput, RuntimeSemanticValue,
 };
 use plumb_store::{
-    BranchName, GraphRevision, LoadedRevision, RevisionId, RevisionWriteMeta, SqliteRevisionStore,
-    SqliteWorkflowStore, StoreError,
+    BranchName, CommitResult, GraphRevision, LoadedRevision, RevisionId, RevisionWriteMeta,
+    SqliteRevisionStore, SqliteStageStore, SqliteWorkflowStore, StoreError,
 };
 use plumb_validation::{GateReport, ValidationProfile};
 use serde::{Deserialize, Serialize};
@@ -43,6 +46,14 @@ use tokio::sync::broadcast;
 
 use crate::error::ApiError;
 use crate::openapi::{DesignEvent, WriteResult};
+use crate::runtime::{
+    A04RuntimeConfig, CalendarConfig, DirectManagerFact, GateInputsConfig, ProviderMode,
+};
+use plumb_functional::{
+    AuthorizationDraft, CalculationScope, DuplicatePolicy, OperationScope, ProcessScope,
+    ScenarioDerivationInputs, VerificationApplicabilityInputs, VocabularyPolicy,
+};
+use plumb_validation::ValidationPolicy;
 
 /// Capacity of the design-event channel; a slower subscriber is disconnected, never skipped.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -60,6 +71,8 @@ pub enum ApiStateError {
     Profile(String),
     #[error("expression scope owner {0} is configured more than once")]
     DuplicateExpressionScope(Id),
+    #[error("invalid A0.4 runtime: {0}")]
+    StageRuntime(String),
 }
 
 /// The typed A0.3 runtime configuration (Hotfix 065): exactly the injected material the A0.3
@@ -96,6 +109,91 @@ pub(crate) struct A03Runtime {
     /// Sessions with turns being processed by this instance, whose prepared turns are not
     /// reconciled meanwhile (a concurrency guard only; workflow state stays durable).
     in_flight_sessions: Mutex<BTreeMap<Id, usize>>,
+}
+
+/// The validated A0.4 stage runtime held by the state (Hotfix 067).
+pub(crate) struct A04Runtime {
+    stage_store: Mutex<SqliteStageStore>,
+    pub(crate) stage_actor_ref: Id,
+    pub(crate) provider_mode: ProviderMode,
+    pub(crate) validation_policy: ValidationPolicy,
+    pub(crate) vocabulary_policy: VocabularyPolicy,
+    pub(crate) duplicate_policy: DuplicatePolicy,
+    pub(crate) calendars: Vec<CalendarConfig>,
+    pub(crate) direct_managers: Vec<DirectManagerFact>,
+    pub(crate) calculation_scope: Option<CalculationScope>,
+    pub(crate) operation_scope: Option<OperationScope>,
+    pub(crate) process_scope: Option<ProcessScope>,
+    pub(crate) authorization_draft: Option<AuthorizationDraft>,
+    pub(crate) scenario_derivation: Option<ScenarioDerivationInputs>,
+    pub(crate) verification_applicability: Option<VerificationApplicabilityInputs>,
+    pub(crate) gates: GateInputsConfig,
+    /// The FIFO queue of the recipe worker of this instance.
+    queue: Mutex<Option<mpsc::Sender<Hash>>>,
+}
+
+impl A04Runtime {
+    fn new(config: A04RuntimeConfig) -> Result<A04Runtime, ApiStateError> {
+        config
+            .validate()
+            .map_err(|e| ApiStateError::StageRuntime(e.to_string()))?;
+        Ok(A04Runtime {
+            stage_store: Mutex::new(config.stage_store),
+            stage_actor_ref: config.stage_actor_ref,
+            provider_mode: config.provider_mode,
+            validation_policy: config.validation_policy,
+            vocabulary_policy: config.vocabulary_policy,
+            duplicate_policy: config.duplicate_policy,
+            calendars: config.calendars,
+            direct_managers: config.direct_managers,
+            calculation_scope: config.calculation_scope,
+            operation_scope: config.operation_scope,
+            process_scope: config.process_scope,
+            authorization_draft: config.authorization_draft,
+            scenario_derivation: config.scenario_derivation,
+            verification_applicability: config.verification_applicability,
+            gates: config.gates,
+            queue: Mutex::new(None),
+        })
+    }
+
+    /// Installs the worker queue of this instance.
+    pub(crate) fn set_queue(&self, sender: mpsc::Sender<Hash>) -> Result<(), ApiError> {
+        *self
+            .queue
+            .lock()
+            .map_err(|_| ApiError::internal("stage_queue"))? = Some(sender);
+        Ok(())
+    }
+
+    /// Enqueues a recipe job for the worker; false when no worker runs.
+    pub(crate) fn enqueue(&self, id: &Hash) -> Result<bool, ApiError> {
+        let queue = self
+            .queue
+            .lock()
+            .map_err(|_| ApiError::internal("stage_queue"))?;
+        Ok(match queue.as_ref() {
+            Some(sender) => sender.send(id.clone()).is_ok(),
+            None => false,
+        })
+    }
+}
+
+/// A non-owning handle to the state, held by the recipe worker so it never keeps the state
+/// alive.
+#[derive(Clone)]
+pub(crate) struct WeakState(Weak<Inner>);
+
+impl WeakState {
+    pub(crate) fn upgrade(&self) -> Option<ApiState> {
+        self.0.upgrade().map(|inner| ApiState { inner })
+    }
+}
+
+/// What a governed or plain write committed: the exact PatchSet and the store result.
+pub(crate) struct Committed {
+    pub(crate) patch_set: PatchSet,
+    pub(crate) commit: CommitResult,
 }
 
 /// Marks a session as having a turn in flight until dropped.
@@ -228,6 +326,7 @@ struct Inner {
     profile_hash: Hash,
     rule_pack_hash: Hash,
     runtime: Option<A03Runtime>,
+    stage: Option<A04Runtime>,
 }
 
 /// Cheaply cloneable shared state of the pilot HTTP API.
@@ -288,6 +387,42 @@ impl ApiState {
         )
     }
 
+    /// Builds the full A0.4 state: the A0.3 state plus the injected A0.4 stage runtime
+    /// (Hotfix 067). Construction fails every recipe job and compiler child left in flight by a
+    /// previous process (`E_JOB_INTERRUPTED`; nothing resumes), reconciles interrupted stage
+    /// acceptances and starts this instance's recipe worker.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_stage_runtime(
+        branch: BranchName,
+        revision_store: SqliteRevisionStore,
+        artifact_store: SqliteArtifactStore,
+        identity: ApiIdentity,
+        clock: Arc<dyn Clock + Send + Sync>,
+        gate_reports: Vec<GateReport>,
+        profile: ValidationProfile,
+        runtime: A03RuntimeConfig,
+        stage: A04RuntimeConfig,
+    ) -> Result<ApiState, ApiStateError> {
+        let runtime = A03Runtime::new(runtime)?;
+        let stage = A04Runtime::new(stage)?;
+        let mut state = ApiState::build(
+            branch,
+            revision_store,
+            artifact_store,
+            identity,
+            clock,
+            gate_reports,
+            profile,
+            Some(runtime),
+        )?;
+        Arc::get_mut(&mut state.inner)
+            .ok_or_else(|| ApiStateError::StageRuntime("state is shared".into()))?
+            .stage = Some(stage);
+        crate::stage::start(&state)
+            .map_err(|e| ApiStateError::StageRuntime(e.body().code.to_owned()))?;
+        Ok(state)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build(
         branch: BranchName,
@@ -319,6 +454,7 @@ impl ApiState {
                 profile_hash,
                 rule_pack_hash,
                 runtime,
+                stage: None,
             }),
         })
     }
@@ -357,6 +493,37 @@ impl ApiState {
             .ok_or_else(|| ApiError::runtime_unavailable(capability))
     }
 
+    /// The A0.4 stage runtime, or 503 naming the missing `capability`.
+    pub(crate) fn stage_runtime(&self, capability: &str) -> Result<&A04Runtime, ApiError> {
+        self.inner
+            .stage
+            .as_ref()
+            .ok_or_else(|| ApiError::runtime_unavailable(capability))
+    }
+
+    /// Runs `f` with the durable stage store; 503 when the A0.4 runtime is absent.
+    pub(crate) fn with_stage_store<R>(
+        &self,
+        f: impl FnOnce(&mut SqliteStageStore) -> R,
+    ) -> Result<R, ApiError> {
+        let runtime = self.stage_runtime("stage_store")?;
+        let mut store = runtime
+            .stage_store
+            .lock()
+            .map_err(|_| ApiError::internal("stage_store"))?;
+        Ok(f(&mut store))
+    }
+
+    /// The branch this state reads and writes.
+    pub(crate) fn branch(&self) -> &BranchName {
+        &self.inner.branch
+    }
+
+    /// A non-owning handle for the recipe worker.
+    pub(crate) fn downgrade(&self) -> WeakState {
+        WeakState(Arc::downgrade(&self.inner))
+    }
+
     /// Runs `f` with the durable workflow store; 503 when the runtime is absent.
     pub(crate) fn with_workflow_store<R>(
         &self,
@@ -382,7 +549,7 @@ impl ApiState {
         Ok(f(&mut store))
     }
 
-    fn with_revision_store<R>(
+    pub(crate) fn with_revision_store<R>(
         &self,
         f: impl FnOnce(&mut SqliteRevisionStore) -> R,
     ) -> Result<R, ApiError> {
@@ -418,33 +585,77 @@ impl ApiState {
         })?
     }
 
-    /// The registered gate reports that are current for `loaded`, in I0, F1, F2, F3, F4 order.
-    pub(crate) fn current_gate_reports(&self, loaded: &LoadedRevision) -> Vec<&GateReport> {
+    /// Whether `report` is current for `loaded` under this profile (the A0.2 currency rule).
+    fn is_current(&self, report: &GateReport, loaded: &LoadedRevision) -> bool {
         let inner = &self.inner;
-        let mut current: Vec<&GateReport> = inner
-            .gate_reports
-            .iter()
-            .filter(|r| {
-                r.validate().is_ok()
-                    && r.baseline_semantic_hash == loaded.revision.semantic_hash
-                    && r.baseline_evidence_hash == loaded.revision.evidence_hash
-                    && r.profile_id == inner.profile.profile_id
-                    && r.profile_hash == inner.profile_hash
-                    && r.rule_pack_hash == inner.rule_pack_hash
-            })
-            .collect();
-        current.sort_by_key(|r| GateId::ALL.iter().position(|g| *g == r.gate));
-        current.dedup_by_key(|r| r.gate);
-        current
+        report.validate().is_ok()
+            && report.baseline_semantic_hash == loaded.revision.semantic_hash
+            && report.baseline_evidence_hash == loaded.revision.evidence_hash
+            && report.profile_id == inner.profile.profile_id
+            && report.profile_hash == inner.profile_hash
+            && report.rule_pack_hash == inner.rule_pack_hash
     }
 
-    /// The current report of `gate`, or 409 `E_GATE_REPORT_UNAVAILABLE`.
+    /// The gate reports that are current for `loaded`, owned, in I0, F1, F2, F3, F4 order and one
+    /// per gate (Hotfix 067, Hotfix 068). Durable store-v3 reports take precedence: among the
+    /// current durable rows of a gate the head revision's row wins, else the latest `created_at`,
+    /// ties by revision ID; the startup-injected reports are the compatibility fallback. A report
+    /// persisted by this process is current on the next read. Corrupt stored reports are 500.
+    pub(crate) fn current_gate_reports(
+        &self,
+        loaded: &LoadedRevision,
+    ) -> Result<Vec<GateReport>, ApiError> {
+        let mut durable: BTreeMap<usize, (bool, Timestamp, RevisionId, GateReport)> =
+            BTreeMap::new();
+        if self.inner.stage.is_some() {
+            let records = self
+                .with_stage_store(|store| store.gate_reports())?
+                .map_err(|_| ApiError::workflow_corrupt("gate reports"))?;
+            for record in records {
+                let report = crate::stage::gates::decode_report(&record)?;
+                if !self.is_current(&report, loaded) {
+                    continue;
+                }
+                let Some(position) = GateId::ALL.iter().position(|g| *g == report.gate) else {
+                    continue;
+                };
+                let head = record.revision_id == loaded.revision.id;
+                let key = (head, record.created_at, record.revision_id.clone());
+                let better = match durable.get(&position) {
+                    None => true,
+                    Some((h, at, rev, _)) => {
+                        (key.0, key.1, std::cmp::Reverse(&key.2))
+                            > (*h, *at, std::cmp::Reverse(rev))
+                    }
+                };
+                if better {
+                    durable.insert(position, (key.0, key.1, key.2, report));
+                }
+            }
+        }
+        let mut current: Vec<GateReport> = Vec::new();
+        for (position, gate) in GateId::ALL.iter().enumerate() {
+            if let Some((_, _, _, report)) = durable.remove(&position) {
+                current.push(report);
+            } else if let Some(report) = self
+                .inner
+                .gate_reports
+                .iter()
+                .find(|r| r.gate == *gate && self.is_current(r, loaded))
+            {
+                current.push(report.clone());
+            }
+        }
+        Ok(current)
+    }
+
+    /// The current report of `gate`, owned, or 409 `E_GATE_REPORT_UNAVAILABLE`.
     pub(crate) fn current_gate_report(
         &self,
         loaded: &LoadedRevision,
         gate: GateId,
-    ) -> Result<&GateReport, ApiError> {
-        self.current_gate_reports(loaded)
+    ) -> Result<GateReport, ApiError> {
+        self.current_gate_reports(loaded)?
             .into_iter()
             .find(|r| r.gate == gate)
             .ok_or_else(|| {
@@ -521,11 +732,36 @@ impl ApiState {
         created_at: Timestamp,
         operation_id: &'static str,
     ) -> Result<WriteResult, ApiError> {
+        self.write_with_report_detailed(
+            loaded,
+            proposal,
+            report,
+            governed,
+            reason,
+            created_at,
+            operation_id,
+        )
+        .map(|(write, _)| write)
+    }
+
+    /// [`ApiState::write_with_report`] also returning the exact committed PatchSet (the
+    /// proposal's own, or the governed acceptance companion) and the store result (A0.4).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_with_report_detailed(
+        &self,
+        loaded: &LoadedRevision,
+        proposal: &Proposal,
+        report: &IntakeReport,
+        governed: bool,
+        reason: Option<&str>,
+        created_at: Timestamp,
+        operation_id: &'static str,
+    ) -> Result<(WriteResult, Committed), ApiError> {
         if report.requires_reason && reason.is_none() {
             return Err(reason_required(proposal, report));
         }
         if !(governed || report.requires_reason) {
-            return self.commit_patch_set(
+            return self.commit_patch_set_detailed(
                 loaded,
                 &proposal.patch_set,
                 Vec::new(),
@@ -582,7 +818,7 @@ impl ApiState {
         }
         let mut decision_refs = introduced_decisions(&proposal.patch_set.patch);
         decision_refs.insert(companion.decision_ref.clone());
-        self.commit_patch_set(
+        self.commit_patch_set_detailed(
             loaded,
             &companion.patch_set,
             decision_refs.into_iter().collect(),
@@ -601,6 +837,19 @@ impl ApiState {
         created_at: Timestamp,
         operation_id: &'static str,
     ) -> Result<WriteResult, ApiError> {
+        self.commit_patch_set_detailed(loaded, patch_set, decision_refs, created_at, operation_id)
+            .map(|(write, _)| write)
+    }
+
+    /// [`ApiState::commit_patch_set`] also returning the committed PatchSet and store result.
+    pub(crate) fn commit_patch_set_detailed(
+        &self,
+        loaded: &LoadedRevision,
+        patch_set: &PatchSet,
+        decision_refs: Vec<Id>,
+        created_at: Timestamp,
+        operation_id: &'static str,
+    ) -> Result<(WriteResult, Committed), ApiError> {
         let meta = RevisionWriteMeta {
             decision_refs,
             created_by: self.inner.identity.actor_ref.clone(),
@@ -645,12 +894,19 @@ impl ApiState {
         };
         // No subscriber is not an error: the event stream is forward-only.
         let _ = self.inner.events.send(event.clone());
-        Ok(WriteResult {
+        let write = WriteResult {
             version: revision.clone(),
             revision,
             semantic_hash: result.revision.semantic_hash.to_string(),
             events: vec![event],
-        })
+        };
+        Ok((
+            write,
+            Committed {
+                patch_set: patch_set.clone(),
+                commit: result,
+            },
+        ))
     }
 }
 

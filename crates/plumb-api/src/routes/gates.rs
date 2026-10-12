@@ -27,7 +27,7 @@ pub(crate) fn routes() -> Router<ApiState> {
 async fn get_gates(State(state): State<ApiState>) -> Result<Response, ApiError> {
     let loaded = state.load_head()?;
     let mut gates = Vec::new();
-    for report in state.current_gate_reports(&loaded) {
+    for report in state.current_gate_reports(&loaded)? {
         let Ok(gate) = parse_wire::<GateName>(&wire(&report.gate)?, "gate") else {
             continue; // Later gates are outside the NOW API.
         };

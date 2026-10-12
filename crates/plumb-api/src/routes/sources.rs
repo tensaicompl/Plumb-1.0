@@ -11,20 +11,13 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use plumb_artifacts::ArtifactStore;
-use plumb_core::{Id, StageId};
-use plumb_import::{import_docx, import_markdown, import_plain_text, ImportAudit};
-use plumb_patch::{AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch};
+use plumb_core::Id;
 use plumb_psg::{EvidenceLocator, NodePayload, NodeType};
-use serde_json::json;
 
+use crate::application::require_importable;
 use crate::error::ApiError;
-use crate::openapi::{Source, SourceUploadResponse, Span, SpanPage};
+use crate::openapi::{Source, Span, SpanPage};
 use crate::state::{check_if_match, paginate, read_json, ApiState, PageRequest, QueryParams};
-
-const MARKDOWN: &str = "text/markdown";
-const PLAIN_TEXT: &str = "text/plain";
-const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
@@ -77,94 +70,22 @@ async fn read_upload(multipart: Result<Multipart, MultipartRejection>) -> Result
     upload.ok_or_else(|| ApiError::invalid("the multipart part `file` is required"))
 }
 
-/// `create_source`.
+/// `create_source`: the transport of the shared import service (415 before If-Match).
 async fn create_source(
     State(state): State<ApiState>,
     headers: HeaderMap,
     multipart: Result<Multipart, MultipartRejection>,
 ) -> Result<Response, ApiError> {
     let upload = read_upload(multipart).await?;
-    let importer = match upload.media_type.as_str() {
-        MARKDOWN => import_markdown,
-        PLAIN_TEXT => import_plain_text,
-        DOCX => import_docx,
-        other => return Err(ApiError::unsupported_media_type(other)),
-    };
+    require_importable(&upload.media_type)?;
     let loaded = state.load_head()?;
     check_if_match(&headers, &loaded)?;
-    let created_at = state.now();
-    let imported = importer(
+    let body = state.create_source(
+        &loaded,
         &upload.display_name,
+        &upload.media_type,
         &upload.bytes,
-        &ImportAudit {
-            created_by: state.identity().actor_ref().clone(),
-            created_at,
-        },
-    )
-    .map_err(|e| {
-        ApiError::invalid("the uploaded file cannot be imported as its declared media type")
-            .with_details(json!({ "import_error": e.to_string() }))
-    })?;
-    if let Some(existing) = loaded.graph.node(&imported.source.id) {
-        let code = if existing == &imported.source {
-            "E_SOURCE_EXISTS"
-        } else {
-            "E_SOURCE_CONFLICT"
-        };
-        return Err(
-            ApiError::conflict(code, "a source with this content already exists")
-                .with_details(json!({ "id": imported.source.id })),
-        );
-    }
-    for artifact in [&imported.original_artifact, &imported.extracted_artifact] {
-        let stored = state.with_artifact_store(|store| {
-            store.put(
-                artifact.kind,
-                &artifact.media_type,
-                &artifact.bytes,
-                artifact.created_at,
-            )
-        })?;
-        match stored {
-            Ok(hash) if hash == artifact.hash => {}
-            _ => return Err(ApiError::internal("artifact_store")),
-        }
-    }
-    let mut patches = vec![SemanticPatch::AddNode {
-        node: imported.source.clone(),
-    }];
-    patches.extend(
-        imported
-            .fragments
-            .iter()
-            .map(|node| SemanticPatch::AddNode { node: node.clone() }),
-    );
-    let proposal = Proposal::new(
-        StageId::S0,
-        PatchSet {
-            base_semantic_hash: loaded.revision.semantic_hash.clone(),
-            patch: SemanticPatch::Compound { patches },
-        },
-        Vec::new(),
-        Vec::new(),
-        ProposalMateriality::NonSemantic,
-        AcceptancePolicy::AutoNonSemantic,
-        None,
-    )
-    .map_err(|_| ApiError::internal("proposal"))?;
-    let write = state.commit(&loaded, &proposal, created_at, "create_source")?;
-    let NodePayload::SourceArtifact(source) = &imported.source.payload else {
-        return Err(ApiError::internal("importer"));
-    };
-    let body = SourceUploadResponse {
-        version: write.version,
-        revision: write.revision,
-        semantic_hash: write.semantic_hash,
-        events: write.events,
-        id: imported.source.id.to_string(),
-        hash: source.content_hash.to_string(),
-        spans_count: imported.fragments.len() as u64,
-    };
+    )?;
     Ok(Json(body).into_response())
 }
 

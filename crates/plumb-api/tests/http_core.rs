@@ -39,7 +39,7 @@ mod http_core {
     const DOCX_MIME: &str =
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     /// Every route module registered by `routes/mod.rs`.
-    const ROUTE_SOURCES: [(&str, &str); 11] = [
+    const ROUTE_SOURCES: [(&str, &str); 12] = [
         ("mod.rs", include_str!("../src/routes/mod.rs")),
         ("meta.rs", include_str!("../src/routes/meta.rs")),
         ("sources.rs", include_str!("../src/routes/sources.rs")),
@@ -54,6 +54,7 @@ mod http_core {
         ("proposals.rs", include_str!("../src/routes/proposals.rs")),
         ("sessions.rs", include_str!("../src/routes/sessions.rs")),
         ("scenarios.rs", include_str!("../src/routes/scenarios.rs")),
+        ("stages.rs", include_str!("../src/routes/stages.rs")),
     ];
 
     // ------------------------------------------------------------------ graph builders
@@ -834,10 +835,9 @@ mod http_core {
     // ------------------------------------------------------------------ routing
 
     #[tokio::test]
-    async fn http_core_routes_exactly_the_a02_and_a03_operations() {
+    async fn http_core_routes_all_72_operations() {
         let app = app();
         let mut routed: Vec<(&str, &str, &str)> = Vec::new();
-        let mut unrouted: Vec<(&str, &str, &str)> = Vec::new();
         for spec in OPERATIONS.iter() {
             let method = Method::from_bytes(spec.method.as_bytes()).unwrap();
             let request = Request::builder()
@@ -857,34 +857,26 @@ mod http_core {
                 && (reply.status == StatusCode::NOT_FOUND
                     || (reply.status == StatusCode::METHOD_NOT_ALLOWED
                         && !allow.split(',').any(|m| m.trim() == spec.method)));
-            match spec.owner {
-                "A0.2" | "A0.3" => {
-                    assert!(
-                        !absent && reply.status != StatusCode::METHOD_NOT_ALLOWED,
-                        "{} {} unrouted",
-                        spec.owner,
-                        spec.operation_id
-                    );
-                    assert!(
-                        reply.status.is_success() || !reply.code().is_empty(),
-                        "{} {} {:?}",
-                        spec.operation_id,
-                        reply.status,
-                        String::from_utf8_lossy(&reply.bytes)
-                    );
-                    assert_ne!(reply.status.as_u16(), 501, "{}", spec.operation_id);
-                    routed.push((spec.owner, spec.operation_id, spec.method));
-                }
-                owner => {
-                    assert_eq!(owner, "A0.4", "{}", spec.operation_id);
-                    assert!(
-                        absent,
-                        "A0.4 {} is routed ({})",
-                        spec.operation_id, reply.status
-                    );
-                    unrouted.push((owner, spec.operation_id, spec.method));
-                }
-            }
+            assert!(
+                ["A0.2", "A0.3", "A0.4"].contains(&spec.owner),
+                "{}",
+                spec.operation_id
+            );
+            assert!(
+                !absent && reply.status != StatusCode::METHOD_NOT_ALLOWED,
+                "{} {} unrouted",
+                spec.owner,
+                spec.operation_id
+            );
+            assert!(
+                reply.status.is_success() || !reply.code().is_empty(),
+                "{} {:?} {:?}",
+                spec.operation_id,
+                reply.status,
+                String::from_utf8_lossy(&reply.bytes)
+            );
+            assert_ne!(reply.status.as_u16(), 501, "{}", spec.operation_id);
+            routed.push((spec.owner, spec.operation_id, spec.method));
         }
         let count = |list: &[(&str, &str, &str)], owner: &str, m: Option<&str>| {
             list.iter()
@@ -907,13 +899,16 @@ mod http_core {
             ),
             (40, 27, 13)
         );
-        assert_eq!(routed.len(), 70);
-        // Exactly the two A0.4 operations stay unregistered: one POST and one GET.
-        unrouted.sort();
+        // A0.4 (Hotfix 067) routes exactly run_stage and get_job: all 72 operations.
         assert_eq!(
-            unrouted,
-            [("A0.4", "get_job", "GET"), ("A0.4", "run_stage", "POST")]
+            (
+                count(&routed, "A0.4", None),
+                count(&routed, "A0.4", Some("POST")),
+                count(&routed, "A0.4", Some("GET"))
+            ),
+            (2, 1, 1)
         );
+        assert_eq!(routed.len(), 72);
         // An unregistered path is a plain 404.
         let r = get(&app, "/api/nowhere").await;
         assert_eq!(
@@ -2479,8 +2474,6 @@ mod http_core {
                 "plumb_expr",
                 "evaluate_gate",
                 "EvaluatorRegistry",
-                "/api/jobs",
-                "/api/stages",
                 "501",
             ] {
                 assert!(!code.contains(token), "{name} contains {token:?}");

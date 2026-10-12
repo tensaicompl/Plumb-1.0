@@ -18,8 +18,9 @@ pub mod provider;
 
 pub use mock::MockProvider;
 pub use model::{
-    materialize_derivation_record, persist_inference_bundle, InferenceArtifact, InferenceError,
-    InferenceRequest, PersistedInferenceRefs, ProviderExecution, ProviderPolicy, JSON_MEDIA_TYPE,
+    materialize_derivation_record, materialize_derivation_record_from_artifact,
+    persist_inference_bundle, InferenceArtifact, InferenceError, InferenceRequest,
+    PersistedInferenceRefs, ProviderExecution, ProviderPolicy, JSON_MEDIA_TYPE,
 };
 pub use null::NullProvider;
 pub use plumb_core::{CanonicalJson, StageId};

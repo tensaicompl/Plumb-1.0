@@ -17,7 +17,8 @@ mod job {
     };
     use plumb_psg::{
         node_element_hash, source_artifact_id, AuditMeta, ElementStatus, Graph, Modality, Node,
-        NodePayload, Requirement, RequirementKind, RequirementLevel, SourceArtifact,
+        NodePayload, Requirement, RequirementKind, RequirementLevel, ResolutionDecision,
+        SourceArtifact,
     };
     use plumb_store::{
         BranchName, CommitResult, GraphRevision, LoadedRevision, RevisionId, RevisionWriteMeta,
@@ -1008,6 +1009,212 @@ mod job {
             job.record_proposal_commit(&o.run, &o.p2, &result),
             Err(StageJobError::JobNotReady(Committed))
         ));
+    }
+
+    // ------------------------------------------------------------------ governed recording
+
+    /// The A0.3 acceptance companion of `p`: its original patch then one Accepted decision.
+    fn decision(p: &Proposal) -> ResolutionDecision {
+        ResolutionDecision {
+            question_ref: None,
+            proposal_ref: Some(p.id.clone()),
+            answer: json!({"kind": "proposal_acceptance", "reason_codes": []}),
+            decided_by: id("agent:analyst"),
+            decided_at: ts(AT),
+            patch_ref: patch_ref(&p.patch_set),
+            rationale: None,
+            supersedes: None,
+        }
+    }
+
+    fn companion_with(p: &Proposal, status: ElementStatus, payload: NodePayload) -> PatchSet {
+        PatchSet {
+            base_semantic_hash: p.patch_set.base_semantic_hash.clone(),
+            patch: SemanticPatch::Compound {
+                patches: vec![
+                    p.patch_set.patch.clone(),
+                    SemanticPatch::AddNode {
+                        node: node("dec:00000000000000a1", status, payload),
+                    },
+                ],
+            },
+        }
+    }
+
+    fn companion(p: &Proposal) -> PatchSet {
+        companion_with(p, Accepted, NodePayload::ResolutionDecision(decision(p)))
+    }
+
+    fn governed_mismatch(result: Result<(), StageJobError>, reason: &str) {
+        match result {
+            Err(StageJobError::GovernedCommitMismatch(r)) => assert_eq!(r, reason),
+            other => panic!("expected {reason}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn governed_store_commit_is_recorded() {
+        let mut w = world();
+        let o = w.outputs();
+        let mut job = ready(&w, &o);
+        let output = job
+            .validate_proposal_commit(&w.head(), &o.run, &o.p1)
+            .unwrap();
+        let governed = companion(&o.p1);
+        let base = job.base_revision().clone();
+        let result = w
+            .store
+            .commit(job.branch(), &base, &governed, meta())
+            .unwrap();
+        assert_eq!(
+            result.revision.accepted_patch_ref,
+            Some(patch_ref(&governed))
+        );
+        // The plain recorder cannot record a governed envelope.
+        assert!(matches!(
+            job.record_proposal_commit(&o.run, &o.p1, &result),
+            Err(StageJobError::CommitPatchMismatch)
+        ));
+        assert_eq!(job.status(), Ready);
+        job.record_governed_proposal_commit(&o.run, &o.p1, &governed, &result)
+            .unwrap();
+        assert_eq!(job.status(), Committed);
+        assert_eq!(job.committed_revision(), Some(&result.revision.id));
+        // The selected output, not the companion or its decision.
+        assert_eq!(job.committed_output_ref(), Some(&output));
+        assert_eq!(job.committed_output_ref(), Some(&proposal_ref(&o.p1)));
+        assert_ne!(job.committed_output_ref(), Some(&patch_ref(&governed)));
+        job.validate().unwrap();
+        // Identity and serialization are unchanged by recording.
+        assert_eq!(job.id(), &job.recompute_id().unwrap());
+        let round =
+            serde_json::from_value::<StageJob>(serde_json::to_value(&job).unwrap()).unwrap();
+        assert_eq!(round, job);
+        assert!(matches!(
+            job.record_governed_proposal_commit(&o.run, &o.p1, &governed, &result),
+            Err(StageJobError::JobNotReady(Committed))
+        ));
+    }
+
+    #[test]
+    fn governed_recording_rejects_every_envelope_mismatch() {
+        let mut w = world();
+        let o = w.outputs();
+        let job = ready(&w, &o);
+        let governed = companion(&o.p1);
+        let base = w.rev1.id.clone();
+        let result = w.store.commit(&main(), &base, &governed, meta()).unwrap();
+        let check = |set: &PatchSet, commit: &CommitResult, proposal: &Proposal| {
+            let mut j = job.clone();
+            let r = j.record_governed_proposal_commit(&o.run, proposal, set, commit);
+            assert_eq!(j.status(), Ready);
+            r
+        };
+        // Base semantic hash.
+        let mut wrong = governed.clone();
+        wrong.base_semantic_hash = Hash::content_sha256(b"x");
+        governed_mismatch(check(&wrong, &result, &o.p1), "base_semantic_hash");
+        // Shape: not a compound, extra child, reordered children.
+        governed_mismatch(check(&o.p1.patch_set, &result, &o.p1), "compound_shape");
+        let SemanticPatch::Compound { patches } = &governed.patch else {
+            unreachable!()
+        };
+        let mut extra = governed.clone();
+        extra.patch = SemanticPatch::Compound {
+            patches: [patches.clone(), vec![patches[1].clone()]].concat(),
+        };
+        governed_mismatch(check(&extra, &result, &o.p1), "compound_shape");
+        let mut reordered = governed.clone();
+        reordered.patch = SemanticPatch::Compound {
+            patches: vec![patches[1].clone(), patches[0].clone()],
+        };
+        governed_mismatch(check(&reordered, &result, &o.p1), "compound_shape");
+        // Original patch differs.
+        let mut other = governed.clone();
+        other.patch = SemanticPatch::Compound {
+            patches: vec![o.p2.patch_set.patch.clone(), patches[1].clone()],
+        };
+        governed_mismatch(check(&other, &result, &o.p1), "original_patch");
+        // Decision node status and payload.
+        let d = NodePayload::ResolutionDecision(decision(&o.p1));
+        governed_mismatch(
+            check(&companion_with(&o.p1, Proposed, d), &result, &o.p1),
+            "decision_status",
+        );
+        let not_decision = req("dec:00000000000000a1", Accepted, "Not a decision.").payload;
+        governed_mismatch(
+            check(
+                &companion_with(&o.p1, Accepted, not_decision),
+                &result,
+                &o.p1,
+            ),
+            "decision_payload",
+        );
+        let with = |edit: &dyn Fn(&mut ResolutionDecision)| {
+            let mut d = decision(&o.p1);
+            edit(&mut d);
+            companion_with(&o.p1, Accepted, NodePayload::ResolutionDecision(d))
+        };
+        governed_mismatch(
+            check(&with(&|d| d.question_ref = Some(id("q:x"))), &result, &o.p1),
+            "decision_question_ref",
+        );
+        governed_mismatch(
+            check(
+                &with(&|d| d.proposal_ref = Some(o.p2.id.clone())),
+                &result,
+                &o.p1,
+            ),
+            "decision_proposal_ref",
+        );
+        governed_mismatch(
+            check(&with(&|d| d.patch_ref = generic('e')), &result, &o.p1),
+            "decision_patch_ref",
+        );
+        governed_mismatch(
+            check(
+                &with(&|d| d.supersedes = Some(id("dec:00000000000000b2"))),
+                &result,
+                &o.p1,
+            ),
+            "decision_supersedes",
+        );
+        // Commit parent and accepted patch.
+        let mut wrong_parent = result.clone();
+        wrong_parent.revision.parent = Some(result.revision.id.clone());
+        assert!(matches!(
+            check(&governed, &wrong_parent, &o.p1),
+            Err(StageJobError::CommitParentMismatch)
+        ));
+        let mut wrong_patch = result.clone();
+        wrong_patch.revision.accepted_patch_ref = Some(patch_ref(&o.p1.patch_set));
+        governed_mismatch(check(&governed, &wrong_patch, &o.p1), "accepted_patch_ref");
+        // A proposal that is not an output of the run.
+        let foreign = w.proposal(
+            w.add(req("req:z", Proposed, "The system shall be foreign.")),
+            None,
+        );
+        assert!(matches!(
+            check(&companion(&foreign), &result, &foreign),
+            Err(StageJobError::ProposalMismatch(_))
+        ));
+        // Wrong status.
+        let mut queued = w.capture();
+        assert!(matches!(
+            queued.record_governed_proposal_commit(&o.run, &o.p1, &governed, &result),
+            Err(StageJobError::JobNotReady(Queued))
+        ));
+        let mut stale = job.clone();
+        assert_eq!(stale.observe_head(&result.revision.id), Stale);
+        assert!(matches!(
+            stale.record_governed_proposal_commit(&o.run, &o.p1, &governed, &result),
+            Err(StageJobError::JobNotReady(Stale))
+        ));
+        // A successful governed recording still accepts the exact envelope.
+        let mut ok = job.clone();
+        ok.record_governed_proposal_commit(&o.run, &o.p1, &governed, &result)
+            .unwrap();
+        assert_eq!(ok.status(), Committed);
     }
 
     #[test]

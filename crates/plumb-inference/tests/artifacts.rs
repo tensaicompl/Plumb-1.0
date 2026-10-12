@@ -776,6 +776,88 @@ fn derivation_record_inputs_are_validated() {
 }
 
 #[test]
+fn derivation_record_from_artifact_is_byte_identical() {
+    // A0.4 (Hotfix 067): the artifact path needs no raw bytes and forks no identity.
+    let r = request();
+    let e = execution(&r);
+    let old = materialize_derivation_record(&r, &e, &persisted(), outputs(), ts(T1)).unwrap();
+    let new = materialize_derivation_record_from_artifact(
+        &r,
+        &e.artifact,
+        &persisted(),
+        outputs(),
+        ts(T1),
+    )
+    .unwrap();
+    assert_eq!(new.id.as_str(), GOLDEN_DRV_ID);
+    assert_eq!(
+        to_canonical_json(&new).unwrap(),
+        to_canonical_json(&old).unwrap()
+    );
+    // The frozen A0.4 provenance shape: the validated-inference ref is the only output.
+    let refs = persisted();
+    let a04 = vec![refs.validated_inference_ref.to_string()];
+    let via_execution = materialize_derivation_record(&r, &e, &refs, a04.clone(), ts(T2)).unwrap();
+    let via_artifact =
+        materialize_derivation_record_from_artifact(&r, &e.artifact, &refs, a04, ts(T2)).unwrap();
+    assert_eq!(via_artifact, via_execution);
+    assert_eq!(via_artifact.output_refs, vec![GOLDEN_VALIDATED_REF]);
+}
+
+#[test]
+fn derivation_record_from_artifact_rejects_every_mismatch() {
+    let r = request();
+    let a = execution(&r).artifact;
+    let mut refs = persisted();
+    refs.raw_response_ref = hash(H1);
+    assert!(matches!(
+        materialize_derivation_record_from_artifact(&r, &a, &refs, outputs(), ts(T1)),
+        Err(InferenceError::PersistedRawResponseMismatch { .. })
+    ));
+    let mut refs = persisted();
+    refs.request_artifact_ref = hash(&format!("ev:sha256:{}", "c".repeat(64)));
+    assert!(matches!(
+        materialize_derivation_record_from_artifact(&r, &a, &refs, outputs(), ts(T1)),
+        Err(InferenceError::NonGenericHash {
+            field: "request_artifact_ref",
+            ..
+        })
+    ));
+    let mut wrong = a.clone();
+    wrong.request_hash = hash(H1);
+    assert!(matches!(
+        materialize_derivation_record_from_artifact(&r, &wrong, &persisted(), outputs(), ts(T1)),
+        Err(InferenceError::RequestHashMismatch { .. })
+    ));
+    let mut wrong = a.clone();
+    wrong.provider = "openai".to_owned();
+    assert!(matches!(
+        materialize_derivation_record_from_artifact(&r, &wrong, &persisted(), outputs(), ts(T1)),
+        Err(InferenceError::ProviderMismatch { .. })
+    ));
+    let mut invalid = r.clone();
+    invalid.task_kind = "changed".to_owned();
+    assert!(materialize_derivation_record_from_artifact(
+        &invalid,
+        &a,
+        &persisted(),
+        outputs(),
+        ts(T1)
+    )
+    .is_err());
+    assert!(matches!(
+        materialize_derivation_record_from_artifact(
+            &r,
+            &a,
+            &persisted(),
+            vec!["prop:hr-001".to_owned(), "prop:hr-001".to_owned()],
+            ts(T1)
+        ),
+        Err(InferenceError::DuplicateOutputRef(_))
+    ));
+}
+
+#[test]
 fn psg_provenance_types_are_reused_not_duplicated() {
     let agent = Agent {
         agent_kind: AgentKind::LlmModel,

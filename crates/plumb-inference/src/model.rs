@@ -537,15 +537,48 @@ pub fn materialize_derivation_record(
     request: &InferenceRequest,
     execution: &ProviderExecution,
     persisted: &PersistedInferenceRefs,
-    mut output_refs: Vec<String>,
+    output_refs: Vec<String>,
     created_at: Timestamp,
 ) -> Result<DerivationRecord, InferenceError> {
     execution.validate_for(request)?;
+    derivation_record(
+        request,
+        &execution.artifact,
+        persisted,
+        output_refs,
+        created_at,
+    )
+}
+
+/// [`materialize_derivation_record`] from an already-persisted validated-inference artifact,
+/// without the raw response bytes (A0.4, Hotfix 067). The request, the artifact for the
+/// request and the persisted refs are validated, and `persisted.raw_response_ref` must equal
+/// `artifact.raw_response_hash`; equal logical inputs give the byte-identical record and ID.
+pub fn materialize_derivation_record_from_artifact(
+    request: &InferenceRequest,
+    artifact: &InferenceArtifact,
+    persisted: &PersistedInferenceRefs,
+    output_refs: Vec<String>,
+    created_at: Timestamp,
+) -> Result<DerivationRecord, InferenceError> {
+    request.validate()?;
+    artifact.validate_for(request)?;
+    derivation_record(request, artifact, persisted, output_refs, created_at)
+}
+
+/// The one DerivationRecord builder shared by both public entry points.
+fn derivation_record(
+    request: &InferenceRequest,
+    artifact: &InferenceArtifact,
+    persisted: &PersistedInferenceRefs,
+    mut output_refs: Vec<String>,
+    created_at: Timestamp,
+) -> Result<DerivationRecord, InferenceError> {
     persisted.validate()?;
-    if persisted.raw_response_ref != execution.artifact.raw_response_hash {
+    if persisted.raw_response_ref != artifact.raw_response_hash {
         return Err(InferenceError::PersistedRawResponseMismatch {
             persisted: persisted.raw_response_ref.clone(),
-            expected: execution.artifact.raw_response_hash.clone(),
+            expected: artifact.raw_response_hash.clone(),
         });
     }
     output_refs.sort();
@@ -571,7 +604,6 @@ pub fn materialize_derivation_record(
     input_refs.sort();
     input_refs.dedup();
 
-    let artifact = &execution.artifact;
     let mut record = DerivationRecord {
         // Placeholder replaced below; the identity input excludes `id`.
         id: "drv:0000000000000000".parse()?,

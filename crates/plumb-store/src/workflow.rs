@@ -1,5 +1,5 @@
 //! Durable workflow state of the pilot API (Hotfix 065): pending proposals, sessions and session
-//! turns in the store schema v2 workflow tables.
+//! turns in the workflow tables (store schema v2; v3 adds the `stage` origin, Hotfix 067).
 //!
 //! The store keeps canonical opaque JSON (RFC 8785 text) together with the workflow metadata and
 //! owns identity, state transitions, canonical bytes, lookup, durability and uniqueness. Typed
@@ -73,6 +73,7 @@ workflow_vocabulary!(
         Intake => "intake",
         Question => "question",
         Session => "session",
+        Stage => "stage",
     }
 );
 
@@ -504,7 +505,9 @@ impl SqliteWorkflowStore {
 
 // ============================================================================ row access
 
-fn canonical_text<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, StoreError> {
+pub(crate) fn canonical_text<T: serde::Serialize + ?Sized>(
+    value: &T,
+) -> Result<String, StoreError> {
     let bytes = to_canonical_json(value)?;
     String::from_utf8(bytes).map_err(|_| StoreError::CorruptWorkflowRecord {
         kind: "json",
@@ -513,7 +516,7 @@ fn canonical_text<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, Sto
     })
 }
 
-fn require_revision(tx: &Transaction<'_>, id: &RevisionId) -> Result<(), StoreError> {
+pub(crate) fn require_revision(tx: &Transaction<'_>, id: &RevisionId) -> Result<(), StoreError> {
     if revision_exists(tx, id)? {
         Ok(())
     } else {
@@ -521,7 +524,7 @@ fn require_revision(tx: &Transaction<'_>, id: &RevisionId) -> Result<(), StoreEr
     }
 }
 
-fn expect_state(
+pub(crate) fn expect_state(
     kind: &'static str,
     id: &Id,
     actual: &str,
@@ -539,7 +542,7 @@ fn expect_state(
     }
 }
 
-fn insert_proposal_on(
+pub(crate) fn insert_proposal_on(
     tx: &Transaction<'_>,
     proposal: &NewWorkflowProposal,
     state: WorkflowProposalState,
@@ -552,6 +555,12 @@ fn insert_proposal_on(
             kind: "proposal",
             id: proposal.proposal_id.to_string(),
             to: state.as_str(),
+        });
+    }
+    if proposal.origin_kind == WorkflowOrigin::Stage && proposal.origin_ref.is_some() {
+        return Err(StoreError::WorkflowInvalidOrigin {
+            id: proposal.proposal_id.to_string(),
+            reason: "a stage proposal has no origin_ref",
         });
     }
     require_revision(tx, &proposal.base_revision_id)?;
@@ -575,7 +584,7 @@ fn insert_proposal_on(
     Ok(())
 }
 
-fn corrupt(kind: &'static str, id: &str, reason: impl Into<String>) -> StoreError {
+pub(crate) fn corrupt(kind: &'static str, id: &str, reason: impl Into<String>) -> StoreError {
     StoreError::CorruptWorkflowRecord {
         kind,
         id: id.to_owned(),
@@ -583,7 +592,7 @@ fn corrupt(kind: &'static str, id: &str, reason: impl Into<String>) -> StoreErro
     }
 }
 
-fn parse_field<T: FromStr>(
+pub(crate) fn parse_field<T: FromStr>(
     kind: &'static str,
     id: &str,
     field: &str,
@@ -593,7 +602,7 @@ fn parse_field<T: FromStr>(
         .map_err(|_| corrupt(kind, id, format!("invalid {field}")))
 }
 
-fn parse_optional<T: FromStr>(
+pub(crate) fn parse_optional<T: FromStr>(
     kind: &'static str,
     id: &str,
     field: &str,
@@ -657,7 +666,10 @@ impl RawProposal {
     }
 }
 
-fn proposal_on(conn: &Connection, id: &Id) -> Result<Option<WorkflowProposal>, StoreError> {
+pub(crate) fn proposal_on(
+    conn: &Connection,
+    id: &Id,
+) -> Result<Option<WorkflowProposal>, StoreError> {
     let raw = conn
         .query_row(
             &format!("SELECT {PROPOSAL_COLUMNS} FROM workflow_proposals WHERE proposal_id = ?1"),

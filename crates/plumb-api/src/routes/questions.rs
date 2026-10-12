@@ -16,22 +16,17 @@ use plumb_core::Id;
 use plumb_functional::resolution::{
     resolve_question, ResolutionContext, ResolutionError, ResolutionInput,
 };
-use plumb_functional::{
-    compose_question_round_for_stakeholder, parse_priority, round_id, QuestionRoundConfig,
-    QuestionRoundDisposition, RoundError, MAX_QUESTION_ROUND_SIZE,
-};
-use plumb_psg::{ElementStatus, FindingSeverity, Graph, Node, NodePayload, NodeType};
+use plumb_psg::{ElementStatus, NodeType};
 use plumb_store::WorkflowOrigin;
-use serde_json::{json, Value};
 
+use crate::application::round_size;
 use crate::error::ApiError;
 use crate::openapi::{
-    AnswerRequest, AnswerResponse, CreateRoundRequest, CreateRoundResponse, Question, QuestionKind,
-    QuestionPage, QuestionStatus, Round,
+    AnswerRequest, AnswerResponse, CreateRoundRequest, QuestionPage, QuestionStatus,
 };
 use crate::state::{
-    check_if_match, paginate, parse_body, parse_id, parse_wire, read_json, run_intake, wire,
-    ApiState, PageRequest, QueryParams,
+    check_if_match, paginate, parse_body, parse_id, parse_wire, read_json, run_intake, ApiState,
+    PageRequest, QueryParams,
 };
 use crate::workflow::intake_view;
 
@@ -51,60 +46,6 @@ pub(super) fn error_name<T: std::fmt::Debug>(error: &T) -> String {
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect()
-}
-
-fn projection_invalid(question: &Id, field: &str, value: Value) -> ApiError {
-    ApiError::conflict(
-        "E_QUESTION_PROJECTION_INVALID",
-        "a persisted Question is outside the pilot projection",
-    )
-    .with_details(json!({ "question": question, "field": field, "value": value }))
-}
-
-/// The view of one persisted Accepted Question; malformed material is a typed conflict.
-fn question_view(node: &Node, q: &plumb_psg::Question) -> Result<Question, ApiError> {
-    let status: QuestionStatus = serde_json::from_value(Value::String(q.status.clone()))
-        .map_err(|_| projection_invalid(&node.id, "status", json!(q.status)))?;
-    if q.answer_schema.as_ref().is_some_and(|s| !s.is_object()) {
-        return Err(projection_invalid(
-            &node.id,
-            "answer_schema",
-            q.answer_schema.clone().unwrap_or(Value::Null),
-        ));
-    }
-    let priority = match &q.priority {
-        None => None,
-        Some(text) => Some(
-            parse_priority(text)
-                .ok_or_else(|| projection_invalid(&node.id, "priority", json!(text)))?,
-        ),
-    };
-    let kind: QuestionKind = parse_wire(&wire(&q.question_kind)?, "question kind")
-        .map_err(|_| ApiError::internal("question_kind"))?;
-    Ok(Question {
-        id: node.id.to_string(),
-        kind,
-        text: q.prompt.clone(),
-        status,
-        answer_schema: q.answer_schema.clone(),
-        stakeholder_ref: q.stakeholder_ref.as_ref().map(Id::to_string),
-        priority,
-        round_ref: q.round_ref.as_ref().map(Id::to_string),
-        context_refs: q.context_refs.iter().flatten().map(Id::to_string).collect(),
-    })
-}
-
-/// Every Accepted Question node with its payload.
-fn accepted_questions(graph: &Graph) -> impl Iterator<Item = (&Node, &plumb_psg::Question)> {
-    graph
-        .node_ids_by_type(NodeType::Question)
-        .iter()
-        .filter_map(|id| graph.node(id))
-        .filter(|n| n.status == ElementStatus::Accepted)
-        .filter_map(|n| match &n.payload {
-            NodePayload::Question(q) => Some((n, q)),
-            _ => None,
-        })
 }
 
 /// `list_questions`: persisted Accepted Questions filtered by stakeholder, round and status.
@@ -127,19 +68,18 @@ async fn list_questions(
         .transpose()?;
     let loaded = state.load_head()?;
     let mut items = Vec::new();
-    for (node, q) in accepted_questions(&loaded.graph) {
-        let view = question_view(node, q)?;
+    for view in state.questions(&loaded)? {
         if stakeholder
             .as_ref()
-            .is_some_and(|s| q.stakeholder_ref.as_ref() != Some(s))
+            .is_some_and(|s| view.stakeholder_ref != Some(s.to_string()))
             || round
                 .as_ref()
-                .is_some_and(|r| q.round_ref.as_ref() != Some(r))
+                .is_some_and(|r| view.round_ref != Some(r.to_string()))
             || status.is_some_and(|s| s != view.status)
         {
             continue;
         }
-        items.push((node.id.to_string(), view));
+        items.push((view.id.clone(), view));
     }
     let request = PageRequest {
         operation_id: "list_questions",
@@ -240,8 +180,8 @@ async fn answer_question(
     .into_response())
 }
 
-/// `create_round`: one targeted round for an Accepted Stakeholder through the S3.2 kernel; the
-/// non-semantic round assignment is committed and the composed round returned.
+/// `create_round`: the transport of the shared round service (stakeholder and size are
+/// validated before If-Match).
 async fn create_round(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -250,137 +190,19 @@ async fn create_round(
     let request: CreateRoundRequest = parse_body(&body)?;
     let stakeholder = parse_id(&request.stakeholder)
         .ok_or_else(|| ApiError::invalid("stakeholder is not an ID"))?;
-    let size = usize::try_from(request.max)
-        .ok()
-        .filter(|n| (1..=MAX_QUESTION_ROUND_SIZE).contains(n))
-        .ok_or_else(|| {
-            ApiError::invalid(format!("max must be within 1..={MAX_QUESTION_ROUND_SIZE}"))
-        })?;
+    let size = round_size(request.max)?;
     let loaded = state.load_head()?;
     check_if_match(&headers, &loaded)?;
-    let created_at = state.now();
-    let result = compose_question_round_for_stakeholder(
-        &loaded.graph,
-        &stakeholder,
-        &QuestionRoundConfig {
-            question_round_size: size,
-        },
-    )
-    .map_err(|error| match error {
-        RoundError::StakeholderMissing(id) => {
-            ApiError::not_found(format!("stakeholder {id} not found"))
-        }
-        RoundError::StakeholderInvalid(id) => ApiError::conflict(
-            "E_ROUND_STAKEHOLDER_INVALID",
-            "the stakeholder is not an Accepted Stakeholder",
-        )
-        .with_details(json!({ "stakeholder": id })),
-        other => ApiError::conflict(
-            "E_ROUND_COMPOSITION_FAILED",
-            "the round cannot be composed from the current questions",
-        )
-        .with_details(json!({ "error": error_name(&other), "reason": other.to_string() })),
-    })?;
-    let failed = result.dispositions.iter().any(|d| {
-        matches!(
-            d,
-            QuestionRoundDisposition::RoundIdCollision { .. }
-                | QuestionRoundDisposition::InvalidRoundProposal { .. }
-        )
-    });
-    let (Some(round), Some(proposal), false) =
-        (result.rounds.first(), result.proposal.as_ref(), failed)
-    else {
-        if failed {
-            return Err(ApiError::conflict(
-                "E_ROUND_COMPOSITION_FAILED",
-                "the round cannot be composed from the current questions",
-            )
-            .with_details(json!({
-                "dispositions": serde_json::to_value(&result.dispositions)
-                    .map_err(|_| ApiError::internal("dispositions"))?
-            })));
-        }
-        return Err(ApiError::conflict(
-            "E_NO_QUESTIONS_FOR_ROUND",
-            "the stakeholder has no eligible unassigned question",
-        )
-        .with_details(json!({ "stakeholder": stakeholder })));
-    };
-    let write = state.write(&loaded, proposal, false, None, created_at, "create_round")?;
-    Ok(Json(CreateRoundResponse {
-        version: write.version,
-        revision: write.revision,
-        semantic_hash: write.semantic_hash,
-        events: write.events,
-        round: Round {
-            id: round.id.to_string(),
-            stakeholder: round.stakeholder_ref.to_string(),
-            questions: round.question_refs.iter().map(Id::to_string).collect(),
-        },
-    })
-    .into_response())
+    let body = state.create_round(&loaded, &stakeholder, size)?;
+    Ok(Json(body).into_response())
 }
 
-/// `get_round`: reconstructs the round from the Accepted Questions whose `round_ref` is the
-/// path ID and verifies its stakeholder, ordering and deterministic identity.
+/// `get_round`: the shared reconstruction of round `id` on the head.
 async fn get_round(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let loaded = state.load_head()?;
-    let missing = || ApiError::not_found(format!("round {id} not found"));
-    let round_ref = parse_id(&id).ok_or_else(missing)?;
-    let inconsistent = |reason: &str| {
-        ApiError::conflict(
-            "E_ROUND_INCONSISTENT",
-            "the round's questions do not reproduce its identity",
-        )
-        .with_details(json!({ "round": round_ref, "reason": reason }))
-    };
-    let mut members: Vec<(bool, u64, Id)> = Vec::new();
-    let mut stakeholders = std::collections::BTreeSet::new();
-    for (node, q) in accepted_questions(&loaded.graph) {
-        if q.round_ref.as_ref() != Some(&round_ref) {
-            continue;
-        }
-        let Some(stakeholder) = &q.stakeholder_ref else {
-            return Err(inconsistent("a member has no stakeholder"));
-        };
-        stakeholders.insert(stakeholder.clone());
-        let priority = q
-            .priority
-            .as_deref()
-            .and_then(parse_priority)
-            .ok_or_else(|| inconsistent("a member has no canonical priority"))?;
-        let blocking = match loaded.graph.node(&q.finding_ref).map(|n| &n.payload) {
-            Some(NodePayload::Finding(f)) => f.severity == FindingSeverity::Blocker,
-            _ => return Err(inconsistent("a member's finding is missing")),
-        };
-        members.push((blocking, priority, node.id.clone()));
-    }
-    if members.is_empty() {
-        return Err(missing());
-    }
-    let stakeholders: Vec<Id> = stakeholders.into_iter().collect();
-    let [stakeholder] = stakeholders.as_slice() else {
-        return Err(inconsistent("members have different stakeholders"));
-    };
-    members.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
-    let ordered: Vec<Id> = members.into_iter().map(|(_, _, id)| id).collect();
-    let expected = round_id(loaded.graph.project_id(), stakeholder, &ordered)
-        .map_err(|_| ApiError::internal("round_id"))?;
-    if expected != round_ref {
-        return Err(inconsistent(
-            "the round ID does not match its ordered members",
-        ));
-    }
-    Ok(read_json(
-        &loaded,
-        Round {
-            id: round_ref.to_string(),
-            stakeholder: stakeholder.to_string(),
-            questions: ordered.iter().map(Id::to_string).collect(),
-        },
-    ))
+    let round = state.round(&loaded, &id)?;
+    Ok(read_json(&loaded, round))
 }

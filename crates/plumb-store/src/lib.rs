@@ -1,11 +1,13 @@
 //! Immutable PSG graph revisions, branch heads and compare-and-swap commit over the pilot
 //! SQLite database (compiler architecture §§4.1, 5.8, 21; plan §6), plus the durable workflow
-//! records of store schema v2 (Hotfix 065).
+//! records of store schema v2 (Hotfix 065) and the stage-orchestration records of store schema v3
+//! (A0.4, Hotfix 067).
 
 pub mod branches;
 pub mod revisions;
 pub mod schema;
 pub mod sqlite;
+pub mod stages;
 pub mod workflow;
 
 use plumb_artifacts::ArtifactStoreError;
@@ -20,6 +22,10 @@ pub use revisions::{
 };
 pub use schema::{PSG_SCHEMA_VERSION, STORE_SCHEMA_VERSION};
 pub use sqlite::SqliteRevisionStore;
+pub use stages::{
+    GateReportRecord, NewGateReport, NewStageRecipeJob, NewStageStep, SqliteStageStore,
+    StageJobRecord, StageProposalLink, StageRecipeJobRecord, StageStatus, StageStepRecord,
+};
 pub use workflow::{
     NewWorkflowProposal, NewWorkflowSession, NewWorkflowTurn, SqliteWorkflowStore, WorkflowInsert,
     WorkflowOrigin, WorkflowProposal, WorkflowProposalKind, WorkflowProposalState, WorkflowSession,
@@ -130,6 +136,12 @@ pub enum StoreError {
         id: String,
         to: &'static str,
     },
+    /// A workflow proposal's origin is not allowed (Hotfix 067: a stage proposal has no ref).
+    #[error("workflow proposal {id} has an invalid origin: {reason}")]
+    WorkflowInvalidOrigin { id: String, reason: &'static str },
+    /// A stage proposal ID is already stored under another origin or without a stage link.
+    #[error("stage proposal {id} conflicts with a stored workflow proposal")]
+    StageProposalConflict { id: String },
     /// A stored workflow record fails an integrity check.
     #[error("corrupt workflow {kind} {id}: {reason}")]
     CorruptWorkflowRecord {

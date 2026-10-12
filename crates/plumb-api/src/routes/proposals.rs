@@ -15,21 +15,16 @@ use plumb_core::{Id, Timestamp};
 use plumb_intake::IntakeReport;
 use plumb_patch::Proposal;
 use plumb_store::{
-    LoadedRevision, NewWorkflowProposal, RevisionId, StoreError, WorkflowInsert, WorkflowOrigin,
-    WorkflowProposal, WorkflowProposalState,
+    LoadedRevision, NewWorkflowProposal, WorkflowInsert, WorkflowOrigin, WorkflowProposalState,
 };
-use serde_json::json;
 
+pub(super) use crate::application::workflow_error;
+use crate::application::{baseline_changed, not_pending, ProposalAction};
 use crate::error::ApiError;
-use crate::openapi::{
-    IntakeRequest, IntakeResponse, ProposalActionRequest, ProposalKind, WriteResult,
-};
-use crate::state::{
-    check_if_match, parse_body, parse_id, require_clean_reason, run_intake, ApiState,
-};
+use crate::openapi::{IntakeRequest, IntakeResponse, ProposalActionRequest};
+use crate::state::{check_if_match, parse_body, require_clean_reason, run_intake, ApiState};
 use crate::workflow::{
-    acceptance_decisions, classify, decode_proposal, intake_view, require_kind, store_kind,
-    stored_json, StoredProposal,
+    classify, decode_proposal, intake_view, require_kind, store_kind, stored_json, StoredProposal,
 };
 
 pub(crate) fn routes() -> Router<ApiState> {
@@ -41,27 +36,6 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/proposals/{id}/create", post(create_proposal))
         .route("/api/proposals/{id}/accept", post(accept_proposal))
         .route("/api/proposals/{id}/reject", post(reject_proposal))
-}
-
-/// Maps a workflow-store failure: a corrupt record is 500 `E_WORKFLOW_CORRUPT`, anything else
-/// unexpected is 500 `E_INTERNAL`.
-pub(super) fn workflow_error(error: StoreError) -> ApiError {
-    match error {
-        StoreError::CorruptWorkflowRecord { kind, id, .. } => {
-            ApiError::workflow_corrupt(&format!("{kind} {id}"))
-        }
-        StoreError::WorkflowStateConflict { id, actual, .. } => {
-            ApiError::conflict("E_PROPOSAL_NOT_PENDING", "the proposal is not pending")
-                .with_details(json!({ "proposal": id, "state": actual }))
-        }
-        _ => ApiError::internal("workflow_store"),
-    }
-}
-
-/// 409 `E_PROPOSAL_NOT_PENDING`.
-fn not_pending(record: &WorkflowProposal) -> ApiError {
-    ApiError::conflict("E_PROPOSAL_NOT_PENDING", "the proposal is not pending")
-        .with_details(json!({ "proposal": record.proposal_id, "state": record.state.as_str() }))
 }
 
 /// The store vocabulary of a workflow origin.
@@ -112,46 +86,6 @@ pub(super) fn persist_pending(
             }
             Ok(existing)
         }
-    }
-}
-
-/// Loads and decodes the workflow proposal `id` (404 when unknown), then reconciles an
-/// interrupted acceptance: a pending proposal whose acceptance decision is already in the graph
-/// becomes accepted; several such decisions are corrupt workflow state.
-pub(super) fn load_reconciled(
-    state: &ApiState,
-    loaded: &LoadedRevision,
-    id: &str,
-) -> Result<StoredProposal, ApiError> {
-    let missing = || ApiError::not_found(format!("proposal {id} not found"));
-    let proposal_id = parse_id(id).ok_or_else(missing)?;
-    let record = state
-        .with_workflow_store(|store| store.proposal(&proposal_id))?
-        .map_err(workflow_error)?
-        .ok_or_else(missing)?;
-    let stored = decode_proposal(record)?;
-    if stored.record.state != WorkflowProposalState::Pending {
-        return Ok(stored);
-    }
-    let decisions = acceptance_decisions(&loaded.graph, &proposal_id);
-    match decisions.as_slice() {
-        [] => Ok(stored),
-        [(_, decided_at)] => {
-            let repaired = state
-                .with_workflow_store(|store| {
-                    store.resolve_proposal(
-                        &proposal_id,
-                        WorkflowProposalState::Accepted,
-                        &loaded.revision.id,
-                        *decided_at,
-                    )
-                })?
-                .map_err(workflow_error)?;
-            decode_proposal(repaired)
-        }
-        _ => Err(ApiError::workflow_corrupt(&format!(
-            "proposal {proposal_id}"
-        ))),
     }
 }
 
@@ -208,15 +142,6 @@ async fn intake_proposal(
     .into_response())
 }
 
-/// 409 `E_PROPOSAL_BASELINE_CHANGED`.
-fn baseline_changed(proposal: &Id) -> ApiError {
-    ApiError::conflict(
-        "E_PROPOSAL_BASELINE_CHANGED",
-        "the proposal was built on another revision; it is never rebased",
-    )
-    .with_details(json!({ "proposal_ref": proposal }))
-}
-
 /// The optional clean reason of a proposal action.
 fn action_reason(body: &Bytes) -> Result<Option<String>, ApiError> {
     let request: ProposalActionRequest = parse_body(body)?;
@@ -226,68 +151,21 @@ fn action_reason(body: &Bytes) -> Result<Option<String>, ApiError> {
     Ok(request.reason)
 }
 
-/// Shared link/merge/supersede/create/accept: commits the stored proposal unchanged with its
-/// proposal-acceptance decision when its derived class is `required`.
+/// Shared transport of the six proposal actions: the reason is validated before the runtime
+/// and If-Match checks; the action itself is the shared application service.
 async fn act(
     state: ApiState,
     id: String,
     headers: HeaderMap,
     body: Bytes,
-    required: ProposalKind,
-    operation_id: &'static str,
+    action: ProposalAction,
 ) -> Result<Response, ApiError> {
     let reason = action_reason(&body)?;
     state.runtime("workflow_store")?;
     let loaded = state.load_head()?;
     check_if_match(&headers, &loaded)?;
-    let created_at = state.now();
-    let stored = load_reconciled(&state, &loaded, &id)?;
-    if stored.record.state != WorkflowProposalState::Pending {
-        return Err(not_pending(&stored.record));
-    }
-    if stored.record.base_revision_id != loaded.revision.id {
-        return Err(baseline_changed(&stored.proposal.id));
-    }
-    let kind = classify(&loaded.graph, &stored.proposal)?;
-    require_kind(&stored.proposal, kind, required)?;
-    // Stored intake is history; acceptance re-runs X1.3 on the current head.
-    let report = run_intake(&loaded, &stored.proposal)?;
-    let write = state.write_with_report(
-        &loaded,
-        &stored.proposal,
-        &report,
-        true,
-        reason.as_deref(),
-        created_at,
-        operation_id,
-    )?;
-    finalize(&state, &stored.proposal.id, &write, created_at)?;
+    let write = state.act_on_proposal(&loaded, &id, action, reason)?;
     Ok(Json(write).into_response())
-}
-
-/// Moves the committed proposal pending -> accepted; an interruption here is reconciled later
-/// from the acceptance decision in the graph.
-fn finalize(
-    state: &ApiState,
-    proposal_id: &Id,
-    write: &WriteResult,
-    resolved_at: Timestamp,
-) -> Result<(), ApiError> {
-    let revision: RevisionId = write
-        .revision
-        .parse()
-        .map_err(|_| ApiError::internal("revision_id"))?;
-    state
-        .with_workflow_store(|store| {
-            store.resolve_proposal(
-                proposal_id,
-                WorkflowProposalState::Accepted,
-                &revision,
-                resolved_at,
-            )
-        })?
-        .map_err(workflow_error)?;
-    Ok(())
 }
 
 /// `link_proposal`.
@@ -297,15 +175,7 @@ async fn link_proposal(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    act(
-        state,
-        id,
-        headers,
-        body,
-        ProposalKind::Link,
-        "link_proposal",
-    )
-    .await
+    act(state, id, headers, body, ProposalAction::Link).await
 }
 
 /// `merge_proposal`.
@@ -315,15 +185,7 @@ async fn merge_proposal(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    act(
-        state,
-        id,
-        headers,
-        body,
-        ProposalKind::Merge,
-        "merge_proposal",
-    )
-    .await
+    act(state, id, headers, body, ProposalAction::Merge).await
 }
 
 /// `supersede_proposal`.
@@ -333,15 +195,7 @@ async fn supersede_proposal(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    act(
-        state,
-        id,
-        headers,
-        body,
-        ProposalKind::Supersede,
-        "supersede_proposal",
-    )
-    .await
+    act(state, id, headers, body, ProposalAction::Supersede).await
 }
 
 /// `create_proposal`.
@@ -351,15 +205,7 @@ async fn create_proposal(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    act(
-        state,
-        id,
-        headers,
-        body,
-        ProposalKind::Create,
-        "create_proposal",
-    )
-    .await
+    act(state, id, headers, body, ProposalAction::Create).await
 }
 
 /// `accept_proposal`.
@@ -369,15 +215,7 @@ async fn accept_proposal(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    act(
-        state,
-        id,
-        headers,
-        body,
-        ProposalKind::Accept,
-        "accept_proposal",
-    )
-    .await
+    act(state, id, headers, body, ProposalAction::Accept).await
 }
 
 /// `reject_proposal`: pending -> rejected without changing the PSG.
@@ -387,31 +225,5 @@ async fn reject_proposal(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    action_reason(&body)?;
-    state.runtime("workflow_store")?;
-    let loaded = state.load_head()?;
-    check_if_match(&headers, &loaded)?;
-    let resolved_at = state.now();
-    let stored = load_reconciled(&state, &loaded, &id)?;
-    if stored.record.state != WorkflowProposalState::Pending {
-        return Err(not_pending(&stored.record));
-    }
-    state
-        .with_workflow_store(|store| {
-            store.resolve_proposal(
-                &stored.proposal.id,
-                WorkflowProposalState::Rejected,
-                &loaded.revision.id,
-                resolved_at,
-            )
-        })?
-        .map_err(workflow_error)?;
-    let revision = loaded.revision.id.to_string();
-    Ok(Json(WriteResult {
-        version: revision.clone(),
-        revision,
-        semantic_hash: loaded.revision.semantic_hash.to_string(),
-        events: Vec::new(),
-    })
-    .into_response())
+    act(state, id, headers, body, ProposalAction::Reject).await
 }
