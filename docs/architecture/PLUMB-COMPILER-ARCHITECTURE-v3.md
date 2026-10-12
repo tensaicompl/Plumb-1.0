@@ -1706,7 +1706,279 @@ Hotfix 065 is the contract freeze that the A0.2 section required before A0.3. It
 
 `POST /api/stages/{stage}/run` and `GET /api/jobs/{id}` belong to A0.4 together with the CLI. A0.4 must not start before a separate stage-orchestration contract freeze defines the stage-name mapping to concrete application services, concrete stage planning and evaluation, provider acquisition, inference artifact persistence, job persistence and lookup, progress transitions, scope, proposal production, the automatic and human acceptance boundaries, gate report production, the final CAS, X1.5 stale-result protection, the run and job response semantics and the failure and retry policy. Hotfix 065 freezes only their unchanged wire DTOs.
 
-Hotfix 066 repaired only the inference material-acquisition boundary that such orchestration will use (PLAN produces request and material, ACQUIRE calls `provider.execute(request, material)`, the provider validates the binding, the validated result is persisted, EVALUATE receives acquired artifacts only). It freezes no orchestration semantics: A0.4 remains pending and blocked on the mandatory Hotfix 067 stage-orchestration freeze, and must not begin directly after Hotfix 066.
+Hotfix 066 repaired only the inference material-acquisition boundary that such orchestration will use (PLAN produces request and material, ACQUIRE calls `provider.execute(request, material)`, the provider validates the binding, the validated result is persisted, EVALUATE receives acquired artifacts only). It froze no orchestration semantics; that freeze is Hotfix 067 (next section), against which the still-pending A0.4 is implemented.
+
+### A0.4 stage orchestration contract (Hotfix 067)
+
+Hotfix 067 is the mandatory pre-A0.4 freeze required by the two sections above. It is normative for A0.4; A0.4 implements it and invents nothing. It changes no StageId, StagePlan semantics, CompileRun identity, StageJob identity or one-run binding, InferenceRequest identity, Proposal or PatchSet identity, ArtifactKind, PSG node or relation vocabulary, SemanticPatch vocabulary, OpenAPI path or DTO (contract v3 stays byte-identical; A0.4 routes exactly `run_stage` and `get_job`, reaching 72 of 72 routed operations). The only compiler-side additions are one identity-neutral X1.5 recording method and one identity-preserving inference provenance helper, both frozen below. A0.4 needs no new crate, no Cargo manifest change and no new third-party dependency.
+
+#### Feasibility findings this freeze is built on
+
+- **Multi-pass extraction.** Segmentation inference, `evaluate_segmentation`, `SegmentCandidate[]`, `build_requirement_classification_request`, classification inference and `compile_requirement_candidates` form a chain whose second request cannot be planned before the first output exists. `SegmentCandidate` is runtime intermediate material, not PSG state, and one compiler `StageJob` binds exactly one `CompileRun`. No SegmentCandidate node, no new `StageName` and no multi-run StageJob is introduced.
+- **Inference provenance.** Inference-backed domain analysers require a `DerivationRef`. `materialize_derivation_record` needs the full `ProviderExecution` (raw bytes are used only to validate it), while EVALUATE receives only validated-inference `ArtifactInput`s. Orchestration never reproduces the DerivationRecord identity algorithm.
+- **Policy-sensitive acceptance.** `propose_scenario_run_updates` returns one `NonSemantic` / `AUTO_NON_SEMANTIC` proposal that A0.3 commits immediately, and `analyze_data_classification` legitimately returns 0..N `AUTO_DERIVATION` dictionary proposals together with 0..N `HUMAN_CONFIRM` inference proposals. A blanket "never accept" or "fail on multiplicity" rule is therefore wrong; the policy below is per output set.
+- **Governed acceptance.** Every A0.3 proposal action commits `build_acceptance_companion`'s `companion.patch_set` = `Compound [proposal.patch_set.patch, AddNode(Accepted ResolutionDecision {question_ref: None, proposal_ref: Some(proposal.id), patch_ref: hash(proposal.patch_set), supersedes: None})]`, so the revision's `accepted_patch_ref` is the companion hash and the existing `record_proposal_commit` (which expects the original PatchSet hash) cannot record it.
+- **Typed inputs.** Every explicit input type below already has a strict serde form (`deny_unknown_fields`) and is embedded unchanged in the A0.4 configuration; no field is re-modelled as loose JSON.
+
+#### Two job levels
+
+- **`StageRecipeJob`** (application layer, `plumb-api`) is the public job: `run_stage` creates or reuses it and `get_job` reads it. It executes one public `StageName` compatibility recipe as an ordered list of phases, each phase optionally owning one compiler child. It owns the recipe, the initial base revision, the requested scope, the deterministic recipe configuration, the ordered step records, the overall status, the overall failure and the result revision.
+- **`StageJob`** (compiler X1.5, unchanged) remains one captured compiler stage: one base revision, one `StageId`, one scope, one config hash, one `CompileRun`. Its identity, fields, transition table and `compile_run_ref: Option<Hash>` are unchanged; no second CompileRun may complete it. All semantic commit protection keeps using child StageJobs.
+
+`StageName -> recipe -> one or more phases -> zero or more child StageJobs`. StageName values never become StageIds; compiler ownership stays S0->I0, S1->F1, S2->F2, S3->F3, S4->F4.
+
+**Identity.** `StageRecipeJob.id` is the generic SHA-256 of the RFC 8785 JSON of exactly `{"version": 1, "branch", "initial_base_revision", "initial_base_semantic_hash", "recipe", "scope", "profile_hash", "config_hash"}`, where `recipe` is the lowercase `StageName` wire value, `scope` is `null` or the canonical sorted ID array, `profile_hash` is the base revision's and `config_hash` is the generic SHA-256 of the RFC 8785 recipe configuration projection below. It is computed once in the application service, never from child IDs, time or randomness, and is golden-tested. The same branch, base, recipe, scope, profile and deterministic configuration always give the same ID.
+
+**Child identity.** Every child uses the existing `capture_stage_job` unchanged. Its `CompileContext.config` (hence the StageJob and CompileRun `config_hash`) is the RFC 8785 object `{"version": 1, "recipe", "phase", "audit": {"actor_ref", "created_at"}, "provider", "inputs"}`: `audit.actor_ref` is the configured `stage_actor_ref`, `audit.created_at` is the child input revision's `created_at` (deterministic replay; no wall clock), `provider` is the parent projection's provider object, and `inputs` is the phase's typed inputs including any intermediate Projection ref and value. This keeps `lint`, `extract` and `consolidate` (all S1) and the two phases of one recipe from colliding without touching StageJob identity.
+
+**Recipe configuration projection.** `{"version": 1, "recipe", "provider", "stage_actor_ref", "inputs"}`. `provider` is `{"mode": "null"|"replay"|"anthropic", "policy": ProviderPolicy, "replay_fixtures_hash": Hash|null}` for recipes with an inference phase (extract, consolidate, calc, analyse, flows, scenarios, tags) and `null` otherwise; `replay_fixtures_hash` is the generic SHA-256 of the RFC 8785 JSON of the validated replay execution list sorted by request hash. `inputs` holds exactly the recipe-relevant configuration values listed in the recipe matrix, each as its existing typed value (`null` when an optional value is absent). Excluded: API key bytes, file path spellings, process or thread IDs, wall clock, working directory, socket addresses, logging and transport state.
+
+#### Recipe and phase matrix
+
+Scope column: "requirements" means Requirement IDs whose status is Proposed or Accepted (the builders' own rule); `None` means all such IDs sorted. "whole" means only `None` is accepted. An empty effective target set completes the recipe Ready with no step.
+
+| StageName | Phase (ordinal) | StageId | Child | Inference | Intermediate | Output | Acceptance | Gate | Next base |
+|---|---|---|---|---|---|---|---|---|---|
+| `intake` | `i0` (0) | S0 | no | no | no | GateReport | none | I0 | - |
+| `lint` | `f1` (0) | S1 | no | no | no | GateReport | none | F1 | - |
+| `extract` | `segmentation` (0) | S1 | yes | `SegmentationRequest` | segmentation Projection | empty StageEvaluation | none | - | same base (head must not move) |
+| `extract` | `classification` (1) | S1 | yes | `RequirementClassificationRequest` | - | proposals | pending (all HUMAN) | - | - |
+| `consolidate` | `consolidate` (0) | S1 | yes | `VocabularyRequest`, `EarsRequest` | - | proposals | pending (all HUMAN) | - | - |
+| `calc` | `calc` (0) | S2 | yes | `CalculationRequest` | - | proposals | pending (all HUMAN) | - | - |
+| `rules` | `rules` (0) | S2 | no | no | rules Projection | analysis | none | - | - |
+| `analyse` | `analyse` (0) | S2 | yes | `DomainRequest`, `LifecycleRequest` | - | proposals | pending (all HUMAN) | - | same base |
+| `analyse` | `f2` (1, only when `gates.f2` is configured) | S2 | no | no | no | GateReport | none | F2 | - |
+| `flows` | `flows` (0) | S2 | yes | `OperationRequest`, `ProcessRequest` | - | proposals | pending (all HUMAN) | - | - |
+| `scenarios` | `scenarios` (0) | S4 | yes | one `ScenarioRequest` per skeleton with value slots | - | proposals | pending (all HUMAN) | - | - |
+| `tags` | `tags` (0) | S2 | yes | `DataClassRequest` | - | proposals | Cases A-D | - | - |
+| `run` | `execute` (0) | S4 | yes | no | ScenarioTrace artifacts | one AUTO_NON_SEMANTIC proposal or none | auto-commit (Case B) | - | committed revision, else same base |
+| `run` | `verification` (1) | S4 | yes | no | - | proposals | pending (all HUMAN) | - | same as its input |
+| `run` | `f4` (2) | S4 | no | no | no | GateReport | none | F4 | - |
+
+Scope per recipe: `intake`, `lint`, `analyse`, `scenarios`, `tags`: whole. `extract`: EvidenceFragment IDs that are baseline-participating, carry `plumb_import:fragment` and have non-empty `extracted_text` (`None` = all such). `consolidate`, `calc`, `flows`: requirements. `rules`: Accepted DecisionTable IDs (`None` = all). `run`: Accepted, Confirmed Scenario IDs (`None` = all; the A0.3 runnable rule). The child compiler `Scope` is `Scope::Project` for `None` and `Scope::elements(ids)` otherwise.
+
+Recipe-relevant configuration inputs: `intake` {validation_policy}; `lint` {validation_policy, f1}; `extract` {}; `consolidate` {vocabulary_policy, duplicate_policy}; `calc` {calculation_scope}; `rules` {}; `analyse` {validation_policy, f2}; `flows` {operation_scope, process_scope, authorization_draft}; `scenarios` {scenario_derivation}; `tags` {}; `run` {validation_policy, verification_applicability, f4, calendars, direct_managers, expression_scopes, calculation_scope_overrides, runtime_semantic_values}. Required (non-null) at capture: `lint` f1; `calc` calculation_scope; `flows` operation_scope and process_scope; `scenarios` scenario_derivation; `run` verification_applicability and f4. A missing required value is rejected synchronously (`E_STAGE_CONFIG_MISSING`), never discovered mid-run.
+
+Exact helpers per phase (planning, then evaluation; every inference phase builds its requests with the domain builder, takes material from `inference_material()` (Hotfix 066) and evaluates with the domain analyser; the per-phase audit is `{created_by: stage_actor_ref, created_at: child input revision created_at}`):
+
+- `i0`: `ValidationContext::new` with evidence artifacts = the `EvidenceManifest` artifact of `plumb_import::build_evidence_manifest(graph)` via `evidence_manifest_artifact`, plus every stored `SourceOriginal` (`content_hash`) and `SourceExtracted` (`plumb_import:source_artifacts.extracted_ref`) artifact of each baseline SourceArtifact node (a missing artifact is simply absent, so I0 reports it); then `EvaluatorRegistry::evaluate_gate(I0, ...)`.
+- `f1`, `f2`: `ValidationContext::new(..)` then `with_f1_inputs` / `with_f2_inputs` with the configured value, then `evaluate_gate`.
+- `segmentation`: `build_segmentation_request(fragments, policy)`; `evaluate_segmentation(request, fragments, Some(artifact), audit)`.
+- `classification`: `build_requirement_classification_request(graph, candidates, policy)`; `compile_requirement_candidates(graph, candidates, request, Some(inference), audit)`. If segmentation produced no `requirement_candidate`, no classification step is created.
+- `consolidate`: `build_vocabulary_request(graph, refs, vocabulary_policy, policy)`, `build_ears_request(graph, refs, policy)`; `analyze_vocabulary`, `evaluate_ears_normalization`, `analyze_requirement_duplicates(graph, duplicate_policy)`; proposals are the union of the vocabulary and EARS proposals and the `proposal` of every `DuplicateResolutionProposal`.
+- `calc`: `build_calculation_request(graph, refs, calculation_scope, policy)`; `analyze_calculations`.
+- `rules`: for each selected Accepted DecisionTable, `decode_decision_table` (strict; malformed encoding fails the recipe) then `plumb_validation::analyze_decision_table(spec)`; the Projection is `{"version": 1, "tables": [{"decision_table_ref", "analysis"}]}` sorted by ref. No Rule or DecisionTable producer, no LLM, no fabricated cell answer.
+- `analyse`: `build_domain_request`, `build_lifecycle_request`; `analyze_domain`, `analyze_lifecycle`.
+- `flows`: `build_operation_request(graph, refs, operation_scope, policy)`, `build_process_request(graph, refs, process_scope, policy)`; `analyze_operations`, `analyze_processes`; when `authorization_draft` is configured, `analyze_authorization(graph, draft, audit)` (deterministic compilation of supplied structured semantics; never inferred from operation or process output).
+- `scenarios`: `analyze_scenarios(graph, scenario_derivation)`; `build_scenario_request` for each skeleton that has value slots; `derive_scenarios(graph, scenario_derivation, audit, inferences)`. Decision-table inputs come only from the configured `ScenarioDerivationInputs`; boundaries are never derived from text.
+- `tags`: `build_data_class_request(graph, policy)`; `analyze_data_classification(graph, request, Some(inference))`. No new algorithm, no merged Compound proposal.
+- `execute`: the A0.3 scenario execution (`build_execution_model`, `run`, `compare_run`, the `plumb_sim:scenario_trace_artifact` link) moved unchanged into one shared pure function used by both `run_scenarios` and this phase; `propose_scenario_run_updates(graph, updates, stage_actor_ref, audit.created_at)`.
+- `verification`: `compile_verification_obligations(graph, verification_applicability, audit)`.
+- `f4`: `ValidationContext::new(..).with_f4_inputs(graph, F4ValidationInputs)` built as frozen below, then `evaluate_gate(F4, ...)`.
+
+A plan or evaluation error of a domain helper fails the recipe (`E_STAGE_PLAN_FAILED` / `E_STAGE_EVALUATION_FAILED`, details carry the phase and the typed error name). Only `extract` and `run` are multi-phase with dependent children; all other children plan purely from the graph and configuration.
+
+#### Extract recipe
+
+**Phase `segmentation` (S1).** Builds and acquires the existing `SegmentationRequest` with Hotfix 066 request/material, evaluates with `evaluate_segmentation`, and produces an empty `StageEvaluation { derivation_patch_set: None, proposals: [] }`; the `CompileRun` still records its exact inference input. The application persists the segmentation intermediate as an `ArtifactKind::Projection`, `application/json` artifact whose bytes are the RFC 8785 JSON of exactly `{"version": 1, "candidates": [SegmentCandidate...], "mode": "inference"|"fallback", "fallback_reason": "<FallbackReason wire value>"|null, "fallback_derivation": <Node>|null}` (candidates in result order; the existing serde forms of `SegmentCandidate`, the closed vocabularies and `Node`). The DTO is application-owned and strict; it adds no semantic content. The fallback DerivationRecord node stays detached provenance inside the intermediate and is never committed or turned into a patch. The step row links the intermediate's hash; the segmentation child is completed and stays Ready (it has no output to commit).
+
+**Phase `classification` (S1).** Before capturing, the application loads the current head; if it is not the recipe's initial base the recipe becomes Stale (no classification, no rebase of candidates, no replay). Otherwise it loads the Projection by hash, requires kind, media type, canonical bytes and a strict decode, and places `{"segmentation_ref": <hash>, "segmentation": <the decoded object>}` in the child `inputs`, so the pure PLAN builds the classification request from configuration, not from a store. `compile_requirement_candidates` yields the existing `Semantic` / `HUMAN_CONFIRM` proposals, persisted pending for human review.
+
+#### Inference acquisition and provenance
+
+Per inference child, for each `PlannedInferenceRequest` in plan order: call `provider.execute(&planned.request, &planned.material)` outside every store lock and off the async executor; persist with `persist_inference_bundle` (operational `created_at`); give EVALUATE the validated-inference `ArtifactInput` only. Deterministic planned artifacts are stored by content hash. A non-empty `external_validation_requests` list fails the recipe with `E_EXTERNAL_VALIDATOR_UNAVAILABLE` (the pilot has no validator transport; no fabricated validation artifact, no implicit shell or network validator). Provider errors fail the recipe with `E_INFERENCE_FAILED` (details carry the `ProviderError` variant name, never a secret).
+
+A0.4 adds to `plumb-inference` (identity-preserving):
+
+```rust
+pub fn materialize_derivation_record_from_artifact(
+    request: &InferenceRequest,
+    artifact: &InferenceArtifact,
+    persisted: &PersistedInferenceRefs,
+    output_refs: Vec<String>,
+    created_at: Timestamp,
+) -> Result<DerivationRecord, InferenceError>
+```
+
+It validates the request, `artifact.validate_for(request)`, `persisted.validate()` and `persisted.raw_response_ref == artifact.raw_response_hash`, then uses one private builder shared with `materialize_derivation_record`, which keeps its existing `ProviderExecution` validation and delegates. Equal logical inputs give byte-identical `DerivationRecord`s and IDs (golden-tested; existing goldens unchanged). Inside the pure EVALUATE the adapter rebuilds `PersistedInferenceRefs` from its inputs only: `request_artifact_ref` = SHA-256 of the RFC 8785 request (the artifact store's content address), `raw_response_ref` = `artifact.raw_response_hash`, `validated_inference_ref` = the `ArtifactInput` hash. `output_refs` is exactly `[validated_inference_ref.to_string()]`; `created_at` is the child input revision's `created_at`. The record ID becomes the analyser's `DerivationRef`. A0.4 never commits these records to the PSG, stores them in no new ArtifactKind and never computes a `drv:` ID itself; they are reproducible from the request, the persisted artifacts and these two rules.
+
+#### Output classes and acceptance
+
+A `StageEvaluation` with `derivation_patch_set != None` and non-empty `proposals` fails the recipe with `E_STAGE_MIXED_OUTPUT` before any commit (no recipe produces it; nothing is combined or rewritten). A derivation-only evaluation is committed with `validate_derivation_commit`, a plain CAS of exactly that PatchSet from the child base and `record_derivation_commit`.
+
+For a proposal output set:
+
+- **Case A, zero proposals:** no commit.
+- **Case B, exactly one proposal whose policy is `AUTO_NON_SEMANTIC` or `AUTO_DERIVATION`:** `validate_proposal_commit`, X1.3 intake against the child base, `requires_reason` must be false (otherwise the recipe fails with `E_AUTO_PROPOSAL_REQUIRES_REASON`; no fabricated decision or rationale), a plain CAS of `proposal.patch_set` with expected head = child base (no companion), then `record_proposal_commit`. Auto-committed proposals are not inserted as workflow proposals; the child records the selected output.
+- **Case C, any `HUMAN_CONFIRM`, `HUMAN_DECISION` or `PROFILE_POLICY` proposal:** every proposal of the run, including AUTO ones, is persisted pending; no commit.
+- **Case D, two or more AUTO proposals and no HUMAN:** every proposal persisted pending; no commit.
+
+Multiplicity is never a failure and no proposal is chosen by ID order or ranking. A deferred AUTO proposal keeps its policy. Pending stage proposals are inserted into `workflow_proposals` (`proposal_kind` from the A0.3 classifier, `intake_json` = X1.3 intake against the child base, `state = pending`, `origin_kind = stage`, `origin_ref = NULL`, `base_revision_id` = child base) together with their `stage_job_proposals` links in one store transaction. An ambiguous action class or a proposal ID already stored with another origin fails the recipe (`E_PROPOSAL_ACTION_AMBIGUOUS` / `E_STAGE_PROPOSAL_CONFLICT`).
+
+**Sibling staleness.** X1.5 records one selected output per child. After one output of a run advances the branch, the other proposals of that run stay immutable and are stale against the child; they are never rebased or re-identified, and a fresh recipe run is required to regenerate still-applicable ones. For `tags` this means a result with several dictionary proposals is incorporated by accepting one, re-running `tags`, accepting another, and so on. This is the intended consequence of the one-output contract.
+
+#### Governed acceptance of stage proposals
+
+A0.4 adds to `StageJob` (no field, identity, serialization or schema change):
+
+```rust
+pub fn record_governed_proposal_commit(
+    &mut self,
+    run: &CompileRun,
+    proposal: &Proposal,
+    committed_patch_set: &PatchSet,
+    commit: &CommitResult,
+) -> Result<(), StageJobError>
+```
+
+It requires `status == Ready`, then the existing `check_run(run)` and `proposal_output(run, proposal)` (valid proposal, same stage, same base semantic hash, canonical ref in `output_proposal_refs`), then: `committed_patch_set.base_semantic_hash == proposal.patch_set.base_semantic_hash`; `committed_patch_set.patch` is exactly `Compound { patches: [proposal.patch_set.patch, AddNode { node }] }` (two children, this order, first structurally equal); `node.validate()` succeeds, `node.status == Accepted`, `node.payload` is `ResolutionDecision` with `question_ref == None`, `proposal_ref == Some(proposal.id)`, `patch_ref` = canonical SHA-256 of `proposal.patch_set`, `supersedes == None`; `commit.revision.parent == Some(base_revision)` (else the existing `CommitParentMismatch`); `commit.revision.accepted_patch_ref == Some(canonical ref of committed_patch_set)`. On success: `committed_revision = commit.revision.id`, `committed_output_ref` = the canonical ref of the original Proposal (not the companion, decision or its hash), `status = Committed`. New error `StageJobError::GovernedCommitMismatch(&'static str)` with exactly the reasons `base_semantic_hash`, `compound_shape`, `original_patch`, `decision_status`, `decision_payload`, `decision_question_ref`, `decision_proposal_ref`, `decision_patch_ref`, `decision_supersedes`, `accepted_patch_ref`. It does not re-validate decision IDs, reason codes, rationale, authorization or intake (A0.3 governance owns those) and uses no `plumb-functional` type. `record_proposal_commit`, `record_derivation_commit`, `validate_proposal_commit` and `validate_derivation_commit` are unchanged.
+
+When a user acts on a stage-linked pending proposal through the existing proposal action routes: load the workflow proposal, its link, the parent StageRecipeJob, the child StageJob and its CompileRun, and the current head; `validate_proposal_commit(head, run, proposal)` (a stale or non-Ready child persists Stale and answers the existing `E_PROPOSAL_BASELINE_CHANGED`); re-run X1.3 intake; run the unchanged A0.3 governed path (companion, rationale validation, original Patch artifact, one CAS of `companion.patch_set`); `record_governed_proposal_commit(run, proposal, &companion.patch_set, &commit)`; persist the child Committed; resolve the workflow proposal Accepted; set the parent Committed with `result_revision` = the commit revision. Plain `record_proposal_commit` is never called after a governed commit. Rejecting a stage proposal only resolves the workflow row.
+
+**Ordering and recovery.** The semantic CAS is first; then child Committed, workflow Accepted, parent update. If a process dies after the CAS, recovery (on any `load_reconciled` of that proposal and in the startup sweep over pending stage links) never re-commits: it finds the Accepted `proposal_acceptance` ResolutionDecision with `proposal_ref` = the proposal (the existing A0.3 rule, then resolves the workflow row), walks parents from the head to the revision R whose parent is the child base and whose `decision_refs` contain that decision, loads R's accepted Patch artifact as the committed PatchSet, rebuilds `CommitResult { revision: R, delta: apply_patch(base graph, committed PatchSet).delta }` deterministically, calls `record_governed_proposal_commit` if the child is still Ready, then updates the parent. Each step is idempotent; if no such R exists the child is observed Stale.
+
+#### Run recipe
+
+- **`execute`.** Against the recipe base: the shared scenario execution over the selected runnable Scenarios with the configured calendars, direct-manager predicates, expression scopes, calculation overrides and runtime semantic values; every `ScenarioTrace` artifact is persisted by its existing hash before the CAS (the application calls the same pure function as EVALUATE and requires each update link to equal the persisted hash); traces are recipe evaluation outputs, never PLAN artifacts or acquisition inputs. A present run-update proposal is committed by Case B; none means no revision.
+- **`verification`.** Captured against the head after `execute`; `compile_verification_obligations` emits `Semantic` / `HUMAN_CONFIRM` proposals, persisted pending (Case C).
+- **`f4`.** Evaluates the exact head after `execute`. `ScenarioRun` is in `SEMANTIC_HASH_EXCLUDED_NODE_TYPES`, so the non-semantic run-update commit creates a new revision with an unchanged semantic hash and the traces bound to that hash stay valid (A0.4 asserts this). Pending verification proposals are not applied hypothetically: missing obligations are F4 violations until accepted and re-run.
+
+A run that committed its ScenarioRun state ends Committed even when F4 FAILs; a gate failure is an evaluated result, never `failed`.
+
+#### Gate inputs
+
+- **F1, F2:** the configured complete `F1ValidationInputs` / `F2ValidationInputs`, installed with `with_f1_inputs` / `with_f2_inputs` (which validate coverage, statements, evidence, vocabulary resolutions, findings, lint policy, decision-table specs, invariant bindings and overrides). Nothing is reconstructed or defaulted; absent required inputs are `E_GATE_INPUTS_MISSING`, never an empty-input evaluation.
+- **F3 (`ready`):** `decision_artifacts` = for each Accepted ResolutionDecision whose `answer.kind` is in `plumb_validation::S3_RESOLUTION_KINDS` or equals `WAIVER_KIND` (exactly the evaluator's current-S3 selection; `proposal_acceptance` and other governance decisions are excluded), `F3DecisionArtifactInput { decision_ref, hash: decision.patch_ref, bytes }` loaded from the artifact store; `assumption_expiry_findings` = the complete result of `analyze_assumption_expiry(graph, &FixedClock::new(evaluation_at))`, where `evaluation_at` is read once from the injected application Clock when `ready` starts (never the revision's `created_at`), recorded with the persisted report and in the `ready` output. Built with `F3ValidationInputs::new` and installed with `with_f3_inputs`.
+- **F4:** `applicability` = the configured `F4ApplicabilityInput` (source, executable-source, in-scope Scenario and blocking Scenario refs and executable coverage with required Scenario kinds, all explicit); `visible_assumption_refs` = configured; `scenario_type_checks` = one per in-scope Scenario: `specification_hash = scenario_specification_hash(id, scenario)`, `status = Valid` when `plumb_functional::validate_scenario(graph, scenario)` succeeds, else `Invalid { issues: [error text] }` (sorted, unique); `scenario_runs` = each Accepted ScenarioRun node with its linked trace artifact hash and bytes (a broken link fails context validation; nothing is reconstructed). Executable, blocking and required-kind status is never inferred from requirement kind, priority, severity, names or text.
+
+`ready` (CLI) evaluates I0, F1, F2, F3, F4 in that order on one loaded head with the inputs above; it requires f1, f2 and f4 configuration before evaluating anything and persists every report. Gate ownership: `intake` -> I0, `lint` -> F1, `analyse` -> F2 (when configured), `run` -> F4, `ready` -> all five; there is no StageName for F3.
+
+#### Durable state: store schema v3
+
+`STORE_SCHEMA_VERSION = 3`. Fresh databases are created at v3; v1 -> v3 and v2 -> v3 migrate in one `BEGIN IMMEDIATE` transaction (all or nothing; no downgrade; v4+ rejected). The v2 -> v3 step rebuilds `workflow_proposals` to admit the closed origin `stage` (SQLite cannot alter a CHECK): `CREATE TABLE workflow_proposals_v3` with the v2 columns and `origin_kind IN ('intake', 'question', 'session', 'stage')` plus `CHECK (origin_kind <> 'stage' OR origin_ref IS NULL)`, `INSERT INTO workflow_proposals_v3 SELECT <all eleven columns> FROM workflow_proposals`, `DROP TABLE workflow_proposals`, `ALTER TABLE workflow_proposals_v3 RENAME TO workflow_proposals`; rows are copied unchanged. v1 -> v3 creates the v3 workflow tables directly. Then the five tables below are created and `schema_meta` is set to 3. `WorkflowOrigin` gains `Stage => "stage"`.
+
+```sql
+CREATE TABLE stage_recipe_jobs (
+  recipe_job_id TEXT PRIMARY KEY,
+  recipe_job_json TEXT NOT NULL,
+  config_json TEXT NOT NULL,
+  recipe TEXT NOT NULL CHECK (recipe IN ('intake', 'lint', 'extract', 'consolidate', 'calc', 'rules',
+    'analyse', 'flows', 'scenarios', 'tags', 'run')),
+  branch TEXT NOT NULL,
+  base_revision_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'acquiring', 'evaluating', 'ready', 'stale',
+    'failed', 'committed')),
+  result_revision_id TEXT NULL,
+  failure_code TEXT NULL,
+  failure_message TEXT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK ((status IN ('ready', 'committed')) = (result_revision_id IS NOT NULL)),
+  CHECK ((status = 'failed') = (failure_code IS NOT NULL)),
+  CHECK ((failure_code IS NULL) = (failure_message IS NULL)),
+  FOREIGN KEY (base_revision_id) REFERENCES graph_revisions(id),
+  FOREIGN KEY (result_revision_id) REFERENCES graph_revisions(id)
+);
+
+CREATE TABLE stage_jobs (
+  stage_job_id TEXT PRIMARY KEY,
+  stage_job_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'acquiring', 'evaluating', 'ready', 'stale',
+    'failed', 'committed')),
+  compile_run_ref TEXT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (compile_run_ref) REFERENCES artifacts(hash)
+);
+
+CREATE TABLE stage_recipe_job_steps (
+  recipe_job_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  phase TEXT NOT NULL CHECK (phase IN ('i0', 'f1', 'f2', 'f4', 'segmentation', 'classification',
+    'consolidate', 'calc', 'rules', 'analyse', 'flows', 'scenarios', 'tags', 'execute',
+    'verification')),
+  compiler_stage TEXT NOT NULL CHECK (compiler_stage IN ('S0', 'S1', 'S2', 'S3', 'S4')),
+  input_revision_id TEXT NOT NULL,
+  stage_job_id TEXT NULL,
+  compile_run_ref TEXT NULL,
+  intermediate_artifact_ref TEXT NULL,
+  gate TEXT NULL CHECK (gate IN ('I0', 'F1', 'F2', 'F3', 'F4')),
+  result_revision_id TEXT NULL,
+  PRIMARY KEY (recipe_job_id, ordinal),
+  UNIQUE (recipe_job_id, phase),
+  FOREIGN KEY (recipe_job_id) REFERENCES stage_recipe_jobs(recipe_job_id),
+  FOREIGN KEY (input_revision_id) REFERENCES graph_revisions(id),
+  FOREIGN KEY (stage_job_id) REFERENCES stage_jobs(stage_job_id),
+  FOREIGN KEY (compile_run_ref) REFERENCES artifacts(hash),
+  FOREIGN KEY (intermediate_artifact_ref) REFERENCES artifacts(hash),
+  FOREIGN KEY (result_revision_id) REFERENCES graph_revisions(id)
+);
+
+CREATE TABLE stage_job_proposals (
+  proposal_id TEXT PRIMARY KEY,
+  recipe_job_id TEXT NOT NULL,
+  stage_job_id TEXT NOT NULL,
+  compile_run_ref TEXT NOT NULL,
+  FOREIGN KEY (proposal_id) REFERENCES workflow_proposals(proposal_id),
+  FOREIGN KEY (recipe_job_id) REFERENCES stage_recipe_jobs(recipe_job_id),
+  FOREIGN KEY (stage_job_id) REFERENCES stage_jobs(stage_job_id),
+  FOREIGN KEY (compile_run_ref) REFERENCES artifacts(hash)
+);
+
+CREATE TABLE gate_reports (
+  revision_id TEXT NOT NULL,
+  gate TEXT NOT NULL CHECK (gate IN ('I0', 'F1', 'F2', 'F3', 'F4')),
+  report_hash TEXT NOT NULL,
+  report_json TEXT NOT NULL,
+  supplemental_input_hash TEXT NULL,
+  evaluation_at TEXT NULL,
+  recipe_job_id TEXT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (revision_id, gate),
+  CHECK ((gate = 'F3') = (evaluation_at IS NOT NULL)),
+  FOREIGN KEY (revision_id) REFERENCES graph_revisions(id),
+  FOREIGN KEY (recipe_job_id) REFERENCES stage_recipe_jobs(recipe_job_id)
+);
+```
+
+JSON columns hold RFC 8785 text; reading re-decodes, re-validates (`StageJob` and `GateReport` through their strict serde, the recipe capture through its identity) and requires byte equality, so corruption is an error and never repaired. `report_hash` is `GateReport::content_hash`; `supplemental_input_hash` is the installed F1-F4 input content hash (`NULL` for I0). A report is written with an upsert on `(revision_id, gate)` (the latest evaluation of that revision and gate replaces the previous row). Current gate reports: among durable rows whose report matches the head's semantic hash, evidence hash, profile and rule pack (the A0.2 currency rule), the head revision's row wins, else the latest `created_at` (ties by `revision_id`); durable reports take precedence over the startup-injected ones, which remain an additive compatibility source. Stored historical reports are never presented as current for another baseline and are never rewritten.
+
+Store writes are one transaction each; recipe proposals and their links are inserted together. A child already stored under the same StageJob ID is reused as stored (Ready, Stale or Committed children are not re-executed; a Failed one fails the new parent with `E_STAGE_CHILD_FAILED`); its proposal links keep their first parent.
+
+#### Status, progress and result
+
+The parent uses the unchanged `JobStatus` vocabulary: `queued` (captured, nothing begun), `acquiring` (an inference, acquisition or intermediate-loading phase is running), `evaluating` (evaluation, gate evaluation or commit preparation is running), `ready` (completed with no automatic commit: pending human proposals or analysis), `stale` (can no longer complete or be current against its required base), `failed` (operational, configuration, validation or persistence failure), `committed` (completed and at least one automatic or later selected child output advanced the branch). Children keep the X1.5 table; a child Ready whose commit fails for a non-staleness reason stays Ready while the parent becomes Failed (`E_STAGE_COMMIT_FAILED` or the intake/governance code); a moved head makes child and parent Stale. Nothing is ever revived: Stale, Failed and Committed parents and children are terminal. A Ready parent observed (by `get_job`) after the head moved from its `result_revision` becomes Stale, together with its Ready children (through `observe_head`).
+
+`progress`: queued 0.00, acquiring 0.25, evaluating 0.75, ready, stale, failed and committed 1.00. `result_version`: null for queued, acquiring, evaluating, failed and stale; for ready the result revision (the initial base for a recipe that committed nothing); for committed the final revision the recipe produced or reached (for `run`, the ScenarioRun-update revision). `base_revision` is always the parent's initial base. `error` is `"<code>: <message>"` for failed and null otherwise; messages are bounded to 512 bytes and never contain stack traces or secrets.
+
+**Execution and restart.** Each application instance runs recipes on one dedicated worker thread consuming a FIFO queue of recipe job IDs; a recipe starts only by a conditional `queued -> acquiring` transition in the store, so a job is executed at most once. On construction of the A0.4 runtime every parent in queued, acquiring or evaluating becomes failed with `E_JOB_INTERRUPTED` and every child in Queued, Acquiring or Evaluating is moved to Failed through `mark_failed`; Ready and Committed children are never touched and nothing resumes. A pilot database is served by one application process at a time. A repeated `run_stage` whose recipe job ID exists returns that job in any status without starting work; a terminal job is never reset; a new base or configuration is a new ID.
+
+#### HTTP
+
+`run_stage` (`POST /api/stages/{stage}/run`, If-Match required as frozen): load the branch head once; `check_if_match` (412 `E_PRECONDITION_FAILED`); parse the body (`StageRunRequest`); `scope` items are exact Plumb IDs (no trimming, globs, wildcards, prefixes, substring or comma splitting; malformed or duplicate -> 400 `E_INVALID_REQUEST`), sorted; an absent ID -> 404 `E_NOT_FOUND`; a present ID not eligible for the recipe, or any `Some` for a whole-scope recipe -> 422 `E_STAGE_SCOPE_INVALID`; resolve the recipe; validate required configuration (409 `E_STAGE_CONFIG_MISSING`, details `{recipe, missing}`); without the A0.3/A0.4 runtime the existing 503 runtime-unavailable error; capture and insert or reuse the parent (queued); enqueue it outside every lock; respond 200 `StageRunResponse { version: base revision, revision: same, semantic_hash: base semantic hash, events: [], job_id }`. Queueing is not a revision and emits no DesignEvent. `Some([])` captures a recipe that completes ready with no step.
+
+`get_job` (`GET /api/jobs/{id}`): the path must parse as a generic `sha256:` hash (else 400 `E_INVALID_REQUEST`); an unknown job is 404 `E_NOT_FOUND`; it loads the head, applies only the legal Ready -> Stale observation (persisted), and returns `JobResponse` with the ETag of the current semantic hash. No other state is mutated.
+
+#### Runtime configuration, providers and CLI
+
+**`A04RuntimeConfig`** is the single validated application runtime, injected when building `ApiState` (additive to `A03RuntimeConfig`, whose meaning is unchanged); never global, static, OnceCell/OnceLock, environment-discovered or built from request text. Its CLI source is one strict JSON file (unknown fields rejected), RFC 8785-canonicalized for hashing:
+
+`{"version": 1, "identity": {"user", "actor_ref", "roles", "mode"}, "stage_actor_ref", "assistant_actor_ref", "provider_policy": ProviderPolicy, "session_turn": SessionTurnConfig, "validation_policy": ValidationPolicy, "calendars": [{"calendar_ref", "weekend": ["monday".."sunday"], "holidays": ["YYYY-MM-DD"]}], "direct_managers": [{"manager_ref", "employee_ref"}], "expression_scopes": [ExecutionExpressionScopeInput], "calculation_scope_overrides": [ExecutionCalculationScopeOverride], "runtime_semantic_values": [RuntimeSemanticValue], "vocabulary_policy": VocabularyPolicy, "duplicate_policy": DuplicatePolicy, "calculation_scope": CalculationScope|null, "operation_scope": OperationScope|null, "process_scope": ProcessScope|null, "authorization_draft": AuthorizationDraft|null, "scenario_derivation": ScenarioDerivationInputs|null, "verification_applicability": VerificationApplicabilityInputs|null, "gates": {"f1": F1ValidationInputs|null, "f2": F2ValidationInputs|null, "f4": {"applicability": F4ApplicabilityInput, "visible_assumption_refs": [Id]}|null}}`
+
+Calendars are converted by the CLI (which has `time`) into `CalendarDefinition`s and one `StaticCalendarProvider`: valid IDs, lowercase English weekday names, `YYYY-MM-DD` dates, no duplicate `calendar_ref`, no duplicate weekday or holiday within a calendar; no locale, time-zone or holiday service. Direct-manager facts build an application-local `PredicateProvider` in `plumb-api`: `direct_manager(actor, employee)` is true exactly when `(actor.value_ref, employee.value_ref)` is a configured pair, false for an unknown pair; construction rejects an exact duplicate pair, a pair with equal refs and an `employee_ref` listed twice; `RefValue` is never configuration.
+
+Providers are built once at startup: `null` -> `NullProvider` (inference phases fail with `E_INFERENCE_FAILED`, `ProviderDisabled`); `replay` -> `MockProvider::with_fixtures` from a strict JSON array of `ProviderExecution` values keyed by `artifact.request_hash` (duplicates rejected, no context-hash lookup); `anthropic` (only with the `llm` feature) -> `AnthropicProvider::new(key)`, the key read once from `--anthropic-api-key-file` (exactly one trailing `\n` or `\r\n` removed; then empty, surrounding whitespace or any control character is rejected; never logged, never in any hash or config).
+
+The CLI calls the same public application services as HTTP (never loopback HTTP, never duplicated route or recipe logic). Global options: `--db <PATH>` (required by every command except `log-effort`), `--branch <NAME>` (default `main`), `--config <PATH>` (required by every command), `--provider null|replay|anthropic` (default `null`), `--replay-fixtures <PATH>` (required with and only with `replay`), `--anthropic-api-key-file <PATH>` (required with and only with `anthropic`; without the `llm` feature `anthropic` is exit 1 `E_PROVIDER_UNAVAILABLE`), `--json`. Commands: `import <FILE> --media-type <TYPE> --name <NAME>` (the `create_source` service); `lint`, `extract`, `consolidate`, `calc`, `rules`, `analyse`, `flows`, `scenarios`, `run`, `tags` (`--scope <ID>`, repeatable; capture and execute the StageRecipeJob in-process and wait); `vocab` (`list_glossary`); `questions` (`list_questions`); `rounds create --stakeholder <ID>` / `rounds show <ID>` (`create_round`, `get_round`); `apply <PROPOSAL_ID> --action accept|create|link|merge|supersede|reject [--reason <TEXT>]` (the proposal action services, including the governed stage path); `ready`; `export --format <FORMAT>` (`export_model`); `report --out <DIR>` (`project_functional_pilot` with the current durable F4 report, writing the six artifacts under their `file_name()`); `serve --listen <ADDR>` (default `127.0.0.1:8080`); `log-effort --file <PATH> --kind stakeholder_hours|analyst_days --amount <DECIMAL> [--note <TEXT>]`. CLI writes use the head they load as the If-Match equivalent and the store CAS as final authority.
+
+Exit codes: 0 success (including a passing gate and a ready or committed recipe without a failing gate); 2 the operation completed but a gate it evaluated failed (`lint` F1, `analyse` F2, `run` F4, `ready` any); 1 operational, configuration, specification, validation, provider or persistence error, and a failed or stale recipe. `--json` prints the structured result (`JobResponse` plus `job_id` for stage commands; for `ready` `{revision, semantic_hash, evaluation_at, gates: [{gate, result, report_hash}]}`).
+
+**serve.** `plumb-api` exposes `pub fn serve_blocking(state: ApiState, listen: SocketAddr) -> Result<(), ServeError>` in its own module (never in `lib.rs`, whose source guard forbids `axum::serve` and `TcpListener`); it builds a multi-thread Tokio runtime, binds the listener and serves `router(state)` until Ctrl-C. `plumb-cli` builds stores, runtime and `ApiState` and calls it; it gains no Tokio, Axum, Tower or reqwest dependency.
+
+**log-effort.** A pilot metric append, not a PSG write: it changes no revision, semantic hash, DesignEvent or gate. It appends one RFC 8785 JSON line `{"version": 1, "recorded_at", "actor_ref", "kind", "amount", "note"}` (`recorded_at` from the CLI's injected clock, `actor_ref` from the configured identity, `amount` a decimal string matching `^[0-9]+(\.[0-9]{1,2})?$` and greater than zero, `note` a clean string or null) plus `\n` to `--file`.
+
+#### A0.4 prohibitions
+
+A0.4 must not change OpenAPI DTOs or paths, add a StageName, PSG node or relation type or SemanticPatch variant, change StageJob, InferenceRequest, Proposal, PatchSet or CompileRun identity or the one-run binding, change accepted domain algorithms, copy private identity functions, infer explicit stage inputs from prose, invent rules or authorization semantics, infer F4 applicability, hold a store lock while calling inference, auto-rebase or retry against a new head, report a failed gate as operational success, keep jobs only in memory, build a provider from HTTP text, read secrets from the environment, add a dependency, implement UI or start U0.1.
 
 ---
 
