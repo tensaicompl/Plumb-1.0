@@ -5041,6 +5041,8 @@ python3 scripts/verify-plan-contract.py
 - `ui/src/test/msw.ts`
 - `ui/src/i18n/en.json`
 - `ui/src/i18n/pl.json`
+- `ui/index.html`
+- `ui/src/i18n/index.ts`
 
 **Required actions**
 
@@ -5050,7 +5052,12 @@ python3 scripts/verify-plan-contract.py
 4. Set package.json scripts exactly to: "typecheck": "tsc --noEmit"; "lint": "eslint ."; "test": "vitest run"; "e2e": "playwright test"; "api:generate": "openapi-typescript ../api/modeller.openapi.json -o src/api/schema.d.ts"; "api:check": "openapi-typescript ../api/modeller.openapi.json -o /tmp/plumb-schema.d.ts && cmp -s /tmp/plumb-schema.d.ts src/api/schema.d.ts".
 5. Ordering (Hotfix 063, Hotfix 065). U0.1 depends on A0.3 because the generated client must come from the final pilot contract: Hotfix 065 froze the complete OpenAPI wire contract as contract version 3 in the A0.3 era, including run_stage and get_job, whose handlers become live only in A0.4 (the backend end-to-end chain already waits for A0.4); every later UI task follows U0.1 and therefore A0.3.
 6. Playwright Test runner (Hotfix 070). The frozen script "e2e": "playwright test" is the Playwright Test runner, which ships in @playwright/test (playwright is the browser automation library). U0.1 therefore adds exactly @playwright/test@1.63.0 to ui/package.json devDependencies and its deterministic ui/package-lock.json entries with `cd ui && npm install --save-dev --save-exact --strict-peer-deps --strict-allow-scripts @playwright/test@1.63.0`: no npm update, no dynamic, caret or tilde version, no unrelated lockfile refresh, no --force, --legacy-peer-deps, --ignore-scripts or npm overrides. playwright@1.63.0 stays a direct dependency unchanged (the versions intentionally match) and no other JavaScript dependency is added, removed or upgraded; @stoplight/prism-cli stays forbidden and MSW stays the pilot API mocking dependency. `playwright test` must resolve from that local dependency graph (never npx remote execution, a global install, @playwright/cli, a custom runner or Vitest browser mode), and ui/playwright.config.ts may use `import { defineConfig } from "@playwright/test"`. After the addition npm ci --strict-peer-deps --strict-allow-scripts, npm ls --depth=0 and npm audit --audit-level=high must succeed with zero HIGH and zero CRITICAL findings, no peer conflict, no unsupported engine and no unauthorized install script; otherwise STOP BLOCKED-UI-DEPENDENCY (no other version without another plan amendment). U0.1 creates no production E2E scenario; later UI tasks add tests within their own allowlists.
-7. Vitest empty scaffold (Hotfix 070). U0.1 owns no *.test.* file but runs `vitest run`, so ui/vite.config.ts configures Vitest with passWithNoTests: true and the intentionally empty U0.1 unit-test set succeeds. This never suppresses real failures: once tests exist, failing tests fail. The package scripts stay exactly as frozen above ("test": "vitest run", "e2e": "playwright test"), and the U0.1 write allowlist stays exactly the 13 files listed.
+7. Vitest empty scaffold (Hotfix 070). U0.1 owns no *.test.* file but runs `vitest run`, so ui/vite.config.ts configures Vitest with passWithNoTests: true and the intentionally empty U0.1 unit-test set succeeds. This never suppresses real failures: once tests exist, failing tests fail. The package scripts stay exactly as frozen above ("test": "vitest run", "e2e": "playwright test"), and the U0.1 write allowlist was left at its 13 files by Hotfix 070 (Hotfix 071 makes it exactly 15).
+8. Vite entry and Tailwind (Hotfix 071). ui/index.html is the minimal, deterministic Vite HTML entry point: one root element with id="root" and the module entry /src/main.tsx; no product shell or feature UI, no CDN, no external script and no Tailwind Play CDN. ui/vite.config.ts configures @tailwindcss/vite and ui/src/main.tsx imports the package stylesheet with `import "tailwindcss/index.css";`, activating the already-installed exact tailwindcss@4.3.3 and @tailwindcss/vite@4.3.3; no src/index.css, src/app.css, tailwind.config.* or postcss.config.* file and no other dependency is added.
+9. Typed i18n (Hotfix 071). ui/src/i18n/index.ts loads en.json and pl.json, exports `Locale = "en" | "pl"`, derives MessageKey from the English catalogue and provides one typed lookup function with English as the pilot default and fallback; it is a typed catalogue lookup layer, not an application-state framework (no third-party i18n dependency, no runtime network loading, no dynamic eval). en.json and pl.json are flat JSON maps from stable dot-separated keys to string values with identical key sets: English is authoritative, Polish may temporarily reuse an English value where translation lags but never omits a key. ui/tsconfig.json enables JSON module imports (e.g. resolveJsonModule). Later UI tasks (U1.1, U1.2, U2.1-U2.7) add or adjust only the catalogue entries their own user-facing UI needs, keep existing keys stable, never delete or repurpose unrelated keys and keep both key sets identical.
+10. Hard-coded JSX string lint (Hotfix 071). The lint configured in ui/eslint.config.js rejects visible JSX text and equivalent user-facing literal labels in production TSX while allowing implementation-only strings (className, ids, route paths, data attributes, technical enum values); test files and the i18n infrastructure and catalogues are exempt; no ESLint dependency is added.
+11. Router scaffold (Hotfix 071). ui/src/app/router.tsx creates the typed TanStack Router scaffold with a minimal root and index route that typechecks and renders no product content. Routes then evolve explicitly with the task that adds each page: U1.1 mounts AppShell, HomePage and the shell route structure; each of U2.1-U2.7 registers only its own newly implemented product route(s). No task rewrites unrelated routes, and there is no dynamic route discovery, import-glob routing, runtime route reflection or placeholder route to a future component.
+12. Vite dev integration (Hotfix 071). ui/vite.config.ts proxies /api in development to the local backend default http://127.0.0.1:8080, including WebSocket forwarding for /api/events; an environment override may exist only as a Vite dev-configuration concern. The UI keeps relative /api paths, the generated client contract is unchanged and no production hostname is embedded in feature code. The package scripts remain exactly the six frozen above (no dev, build or start script); E0.3 later launches the locally installed Vite binary from its runner. The U0.1 write allowlist is exactly 15 files: the 13 earlier ones plus ui/index.html and ui/src/i18n/index.ts.
 
 **Commands**
 
@@ -5093,6 +5100,10 @@ cd ui && npm audit --audit-level=high
 - `ui/src/api/useEvents.ts`
 - `ui/src/features/home/HomePage.tsx`
 - `ui/src/features/home/HomePage.test.tsx`
+- `ui/src/app/router.tsx`
+- `ui/src/components/ConflictDialog.tsx`
+- `ui/src/i18n/en.json`
+- `ui/src/i18n/pl.json`
 
 **Required actions**
 
@@ -5100,6 +5111,7 @@ cd ui && npm audit --audit-level=high
 2. Local auth uses GET /api/me; server roles are authoritative.
 3. useVersionedMutation sends If-Match from latest model semantic_hash and handles 412 by invalidating queries and showing ConflictDialog.
 4. useEvents invalidates affected query keys on WebSocket event; it never applies semantic state from event payload directly.
+5. Integration ownership (Hotfix 071). nav.ts implements the full frozen pilot navigation at U1.1; a destination whose page is not implemented yet may appear in navigation, but routing never uses a fake feature component, and later tasks need not rewrite nav.ts. U1.1 modifies ui/src/app/router.tsx only to mount AppShell, HomePage and the shell route structure. U1.1 creates ui/src/components/ConflictDialog.tsx as the minimum real shared dialog through which useVersionedMutation surfaces a 412 and requires explicit user action (no automatic retry); U1.2 later refines that same component and no second dialog implementation exists. U1.1 adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
 
 **Commands**
 
@@ -5140,6 +5152,8 @@ cd ui && npm run lint
 - `ui/src/components/GateBadge.tsx`
 - `ui/src/components/DiagramFrame.tsx`
 - `ui/src/components/shared.test.tsx`
+- `ui/src/i18n/en.json`
+- `ui/src/i18n/pl.json`
 
 **Required actions**
 
@@ -5148,6 +5162,7 @@ cd ui && npm run lint
 3. ProvenanceDrawer distinguishes evidence, deterministic derivation, human resolution and LLM inference artifact.
 4. GateBadge displays PASS/FAIL/WARN/WAIVED/ERROR without converting to readiness score.
 5. DiagramFrame keeps layout state separate from semantic mutation callbacks.
+6. Catalogue ownership (Hotfix 071). U1.2 refines and tests the ConflictDialog created by U1.1 (never a second implementation), does not modify the router, and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
 
 **Commands**
 
@@ -5185,6 +5200,9 @@ cd ui && npm run lint
 - `ui/src/features/requirements/requirements.test.tsx`
 - `ui/src/features/glossary/GlossaryPage.tsx`
 - `ui/src/features/glossary/glossary.test.tsx`
+- `ui/src/app/router.tsx`
+- `ui/src/i18n/en.json`
+- `ui/src/i18n/pl.json`
 
 **Required actions**
 
@@ -5192,6 +5210,7 @@ cd ui && npm run lint
 2. Requirement detail shows source evidence/provenance, lint findings, original text and EARS proposal separately.
 3. Every write uses generated API client and versioned mutation hook.
 4. Glossary merge displays resulting semantic diff before commit.
+5. Route and catalogue ownership (Hotfix 071). U2.1 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
 
 **Commands**
 
@@ -5227,6 +5246,9 @@ cd ui && npm run lint
 - `ui/src/features/sentences/sentences.test.tsx`
 - `ui/src/features/questions/QuestionsPage.tsx`
 - `ui/src/features/questions/questions.test.tsx`
+- `ui/src/app/router.tsx`
+- `ui/src/i18n/en.json`
+- `ui/src/i18n/pl.json`
 
 **Required actions**
 
@@ -5235,6 +5257,7 @@ cd ui && npm run lint
 3. Bulk accept may call one proposal/action per semantic item but must advance ETag after each successful commit; stop on first 412.
 4. Question round manager never permits more than profile max.
 5. Typed answer controls (Hotfix 065) are driven by the Question's kind and answer_schema of contract v3; generation-time slots are not persisted and are not part of the API.
+6. Route and catalogue ownership (Hotfix 071). U2.2 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
 
 **Commands**
 
@@ -5269,6 +5292,10 @@ cd ui && npm run lint
 - `ui/src/features/sessions/SessionPanel.tsx`
 - `ui/src/features/sessions/ProposalCard.tsx`
 - `ui/src/features/sessions/session.test.tsx`
+- `ui/src/app/router.tsx`
+- `ui/src/app/AppShell.tsx`
+- `ui/src/i18n/en.json`
+- `ui/src/i18n/pl.json`
 
 **Required actions**
 
@@ -5276,6 +5303,7 @@ cd ui && npm run lint
 2. Render proposal intake results and engine Question IDs.
 3. Do not render a model-generated free-form question as an engine question unless API returns an existing question_id.
 4. All commit actions use proposal endpoints, not direct model endpoints.
+5. Integration ownership (Hotfix 071). U2.3 modifies ui/src/app/AppShell.tsx only to mount the project/scoped session panel into the existing shell, registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) including any project-room route the frozen behavior requires, leaves unrelated shell and navigation behavior unchanged, and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
 
 **Commands**
 
@@ -5311,6 +5339,9 @@ cd ui && npm run lint
 - `ui/src/features/processes/ProcessesPage.tsx`
 - `ui/src/features/processes/ProcessDiagram.tsx`
 - `ui/src/features/processes/processes.test.tsx`
+- `ui/src/app/router.tsx`
+- `ui/src/i18n/en.json`
+- `ui/src/i18n/pl.json`
 
 **Required actions**
 
@@ -5319,6 +5350,7 @@ cd ui && npm run lint
 3. A move/reorder action sends a semantic process patch proposal; visual drag coordinates alone stay local view metadata.
 4. Do not implement branch editing or BPMN import in NOW scope.
 5. SVG export is view projection only.
+6. Route and catalogue ownership (Hotfix 071). U2.4 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
 
 **Commands**
 
@@ -5355,6 +5387,9 @@ cd ui && npm run lint
 - `ui/src/features/scenarios/ScenariosPage.tsx`
 - `ui/src/features/scenarios/ScenarioTrace.tsx`
 - `ui/src/features/scenarios/scenarios.test.tsx`
+- `ui/src/app/router.tsx`
+- `ui/src/i18n/en.json`
+- `ui/src/i18n/pl.json`
 
 **Required actions**
 
@@ -5362,6 +5397,7 @@ cd ui && npm run lint
 2. Correction creates proposal; it does not edit accepted scenario locally.
 3. Bulk confirmation is limited to derived scenarios returned as confirmable by API.
 4. Undecidable trace displays missing semantic element IDs/names.
+5. Route and catalogue ownership (Hotfix 071). U2.5 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
 
 **Commands**
 
@@ -5398,6 +5434,9 @@ cd ui && npm run lint
 - `ui/src/features/rules/RulesPage.tsx`
 - `ui/src/features/calculations/CalculationsPage.tsx`
 - `ui/src/features/analyst/analyst.test.tsx`
+- `ui/src/app/router.tsx`
+- `ui/src/i18n/en.json`
+- `ui/src/i18n/pl.json`
 
 **Required actions**
 
@@ -5406,6 +5445,7 @@ cd ui && npm run lint
 3. Rules view exposes uncovered/overlap findings and explicit cell-fill proposal.
 4. Calculations show worked example read-only; no free-form formula editor in NOW scope.
 5. Findings view distinguishes rule_class external_standard, external_interoperability, plumb_core and profile/organization.
+6. Route and catalogue ownership (Hotfix 071). U2.6 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
 
 **Commands**
 
@@ -5442,6 +5482,9 @@ cd ui && npm run lint
 - `ui/src/features/decisions/DecisionsPage.tsx`
 - `ui/src/features/gates/gates.test.tsx`
 - `ui/src/features/decisions/decisions.test.tsx`
+- `ui/src/app/router.tsx`
+- `ui/src/i18n/en.json`
+- `ui/src/i18n/pl.json`
 
 **Required actions**
 
@@ -5449,6 +5492,7 @@ cd ui && npm run lint
 2. Do not display a single 'ISO compliant' badge.
 3. Decisions log distinguishes ResolutionDecision from architecture/business decision types even when only ResolutionDecision exists in pilot data.
 4. Readiness may appear only as advisory secondary data labeled uncalibrated when present.
+5. Route and catalogue ownership (Hotfix 071). U2.7 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
 
 **Commands**
 
@@ -5573,6 +5617,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - `ui/e2e/pilot.spec.ts`
 - `scripts/run-pilot-e2e.sh`
+- `Makefile`
 
 **Required actions**
 
@@ -5580,6 +5625,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 2. Drive UI import -> requirements -> sentences/proposals -> questions -> conflicting chat proposal rejection -> process semantic move -> scenarios -> gates -> export.
 3. Assert visible state only; do not inspect application internals from Playwright.
 4. Run axe on every navigated route and keyboard-only path through the core workflow.
+5. make e2e (Hotfix 071). E0.3 updates the existing Makefile e2e target so `make e2e` executes the complete pilot Playwright workflow by invoking scripts/run-pilot-e2e.sh (it may also run the existing backend E2E test in the same target); it is no longer a file-existence check, and E0.4 may extend make all and quality thresholds but must not undo this real E2E execution. The runner starts the seeded real backend, the local Vite UI through the locally installed binary (ui/node_modules/.bin/vite or another invocation provably resolved from the frozen local dependency graph; never npm install, remote npx execution or a CDN) and Playwright Test, and tears down its child processes.
 
 **Commands**
 
