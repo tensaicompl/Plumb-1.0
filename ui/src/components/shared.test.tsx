@@ -13,7 +13,7 @@ import { DiagramFrame, computeLayout, layoutRequest, type DiagramEdge, type Diag
 import { DiffViewer, type ModelDiff } from "./DiffViewer";
 import { FindingsPanel, type Finding } from "./FindingsPanel";
 import { BADGE_STATUSES, GateBadge } from "./GateBadge";
-import { ProposalReviewBar, type IntakeReport, type ProposalReviewAction } from "./ProposalReviewBar";
+import { isActionEnabled, ProposalReviewBar, type IntakeReport, type ProposalReviewAction } from "./ProposalReviewBar";
 import { PROVENANCE_CATEGORIES, ProvenanceDrawer, type ProvenanceItem } from "./ProvenanceDrawer";
 import {
   TypedAnswerControl,
@@ -79,20 +79,20 @@ describe("shared ProposalReviewBar", () => {
     expect(actionButton("create").disabled).toBe(true);
   });
 
-  it("disables create and accept until a non-blank rationale exists when the server requires one", async () => {
+  it("disables every positive commit action until a non-blank rationale exists when the server requires one (Hotfix 078)", async () => {
     const user = userEvent.setup();
+    const positive = ["accept", "create", "link", "merge", "supersede"] as const;
     render(
       <ProposalReviewBar
         status="pending"
         intake={intake({ requires_reason: true, reason_codes: ["material_decision", "validation_conflict"] })}
-        enabledActions={["accept", "create", "link", "reject"]}
+        enabledActions={[...positive, "reject"]}
         onAction={vi.fn()}
       />,
     );
-    expect(actionButton("accept").disabled).toBe(true);
-    expect(actionButton("create").disabled).toBe(true);
-    // Only accept/create are reason-gated.
-    expect(actionButton("link").disabled).toBe(false);
+    const disabled = () => positive.map((action) => [action, actionButton(action).disabled]);
+    // requires_reason gates all five positive actions alike; reject is never reason-gated.
+    expect(disabled()).toEqual(positive.map((action) => [action, true]));
     expect(actionButton("reject").disabled).toBe(false);
     // The server's reason codes are shown exactly; none is invented or preselected.
     const codes = within(screen.getByTestId("proposal-reason-codes")).getAllByRole("listitem").map((li) => li.textContent);
@@ -100,14 +100,53 @@ describe("shared ProposalReviewBar", () => {
 
     const rationale = screen.getByRole("textbox", { name: "Rationale" });
     expect((rationale as HTMLTextAreaElement).value).toBe("");
-    await user.type(rationale, "   ");
-    expect(actionButton("accept").disabled).toBe(true);
-    expect(actionButton("create").disabled).toBe(true);
+    for (const blank of ["   ", "{Enter}"]) {
+      await user.type(rationale, blank);
+      expect(disabled()).toEqual(positive.map((action) => [action, true]));
+      expect(actionButton("reject").disabled).toBe(false);
+    }
     await user.type(rationale, "Confirmed with HR");
-    expect(actionButton("accept").disabled).toBe(false);
-    expect(actionButton("create").disabled).toBe(false);
+    expect(disabled()).toEqual(positive.map((action) => [action, false]));
+    expect(actionButton("reject").disabled).toBe(false);
     await user.clear(rationale);
+    expect(disabled()).toEqual(positive.map((action) => [action, true]));
+    // The same rule as a pure function, including a newline-only rationale.
+    const report = intake({ requires_reason: true, reason_codes: ["human_decision"] });
+    for (const action of positive) {
+      expect(isActionEnabled(action, [action], report, "\n")).toBe(false);
+      expect(isActionEnabled(action, [action], report, "ok")).toBe(true);
+      expect(isActionEnabled(action, [], report, "ok")).toBe(false);
+    }
+  });
+
+  it("does not expose link, merge or supersede unless offered, while accept/create stay rendered (Hotfix 078)", () => {
+    render(
+      <ProposalReviewBar
+        status="pending"
+        intake={intake({ requires_reason: true, reason_codes: ["material_decision"] })}
+        enabledActions={["create", "reject"]}
+        onAction={vi.fn()}
+      />,
+    );
+    expect(actionButton("create")).toBeTruthy();
+    expect(actionButton("reject")).toBeTruthy();
+    for (const absent of ["link", "merge", "supersede"]) {
+      expect(document.querySelector('button[data-action="' + absent + '"]')).toBeNull();
+    }
+    // The established shared behaviour keeps accept rendered, disabled, when not offered.
     expect(actionButton("accept").disabled).toBe(true);
+  });
+
+  it("does not reason-gate reject, edit or explain (Hotfix 078)", () => {
+    const report = intake({ requires_reason: true, reason_codes: ["declared_conflict"] });
+    for (const action of ["reject", "edit", "explain"] as const) {
+      expect(isActionEnabled(action, [action], report, "")).toBe(true);
+      expect(isActionEnabled(action, [], report, "")).toBe(false);
+    }
+    render(<ProposalReviewBar status="pending" intake={report} enabledActions={["reject", "edit", "explain"]} onAction={vi.fn()} />);
+    for (const action of ["reject", "edit", "explain"] as const) {
+      expect(actionButton(action).disabled).toBe(false);
+    }
   });
 
   it("shows the server intake report and reports actions only through the callback", async () => {

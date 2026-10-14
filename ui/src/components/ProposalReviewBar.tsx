@@ -30,10 +30,17 @@ const ACTION_LABEL: Readonly<Record<ProposalReviewAction, MessageKey>> = {
   explain: "proposal.action.explain",
 };
 
-/** Actions that commit the proposal and therefore need a rationale when intake requires one. */
-const REASON_GATED: ReadonlySet<ProposalReviewAction> = new Set(["accept", "create"]);
+/**
+ * The positive proposal commit actions (Hotfix 078): the backend refuses every one of them without
+ * a reason when intake requires one (requires_reason is independent of the ProposalKind), so each
+ * needs a non-blank rationale then. Reject, edit and explain do not accept the proposal effect.
+ */
+const REASON_GATED: ReadonlySet<ProposalReviewAction> = new Set(["accept", "create", "link", "merge", "supersede"]);
 
-/** Whether `action` can be used: offered by the caller and, for accept/create, reasoned when required. */
+/** Controls rendered (disabled when not offered) even when the caller does not offer them. */
+const ALWAYS_RENDERED: ReadonlySet<ProposalReviewAction> = new Set(["accept", "create"]);
+
+/** Whether `action` can be used: offered by the caller and, for a positive commit action, reasoned when required. */
 export function isActionEnabled(
   action: ProposalReviewAction,
   enabledActions: readonly ProposalReviewAction[],
@@ -175,7 +182,7 @@ export function ProposalReviewBar({
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {PROPOSAL_REVIEW_ACTIONS.filter((action) => enabledActions.includes(action) || REASON_GATED.has(action)).map(
+        {PROPOSAL_REVIEW_ACTIONS.filter((action) => enabledActions.includes(action) || ALWAYS_RENDERED.has(action)).map(
           (action) => {
             const enabled = isActionEnabled(action, enabledActions, intake, rationale);
             return (

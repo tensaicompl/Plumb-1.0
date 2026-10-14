@@ -8790,17 +8790,22 @@ tasks:
   - ui/src/i18n/pl.json
   steps:
   - Implement behaviors inherited from v2 U1.3.
-  - ProposalReviewBar displays intake status and cannot enable create/accept when server says reason required and rationale is empty.
+  - 'ProposalReviewBar displays intake status and cannot enable any positive proposal commit action (accept/create/link/merge/supersede) when intake.requires_reason
+    is true and the rationale is blank (empty or whitespace-only) (Hotfix 078, aligning the shared component with the backend: X1.3 sets requires_reason
+    = !reason_codes.is_empty() independently of ProposalKind and the governed acceptance path refuses every positive action without a reason when it is
+    required). Reject, edit and explain are not acceptance-rationale-gated. Existing visibility behavior is preserved: accept/create may remain rendered
+    disabled; link/merge/supersede render only when offered by enabledActions.'
   - ProvenanceDrawer distinguishes evidence, deterministic derivation, human resolution and LLM inference artifact.
   - GateBadge displays PASS/FAIL/WARN/WAIVED/ERROR without converting to readiness score.
   - DiagramFrame keeps layout state separate from semantic mutation callbacks.
-  - Catalogue ownership (Hotfix 071). U1.2 refines and tests the ConflictDialog created by U1.1 (never a second implementation), does
-    not modify the router, and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs,
-    keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both key sets identical.
+  - Catalogue ownership (Hotfix 071). U1.2 refines and tests the ConflictDialog created by U1.1 (never a second implementation), does not modify the router,
+    and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never
+    deleting or repurposing unrelated keys and keeping both key sets identical.
   tests:
   - cd ui && npm run test -- shared
   acceptance:
-  - All shared behavior tests pass including reason enforcement and gate-state display.
+  - All shared behavior tests pass including reason enforcement for all five positive commit actions (accept/create/link/merge/supersede; reject/edit/explain
+    not reason-gated; accept/create legacy visibility preserved, link/merge/supersede rendered only when offered — Hotfix 078) and gate-state display.
   source_refs:
   - SRCREF-10AF56ADEE
   - SRCREF-AD9DA89616
@@ -9120,15 +9125,17 @@ tasks:
     If-Match; resolve_question; classify the exact result.proposal; persist the patch artifact; run intake; persist the exact same Proposal pending; return
     AnswerResponse including action. A classifier error is returned as is, before any pending workflow Proposal, graph commit or DesignEvent, and classification
     precedes artifact-store persistence so a classifier failure leaves no newly orphaned answer patch artifact.'
-  - Question confirmation (Hotfix 076). U2.2 receives proposal_id, action, intake and patch_preview from the answer response and confirms only through the
-    existing endpoint matching the server-returned action (accept -> POST /api/proposals/{proposal_id}/accept, create -> /create, link -> /link, merge ->
-    /merge, supersede -> /supersede); the mapping is transport only, the UI performs no Proposal classification and there is no fallback action or trial-and-error
+  - 'Question confirmation (Hotfix 076). U2.2 receives proposal_id, action, intake and patch_preview from the answer response and confirms only through
+    the existing endpoint matching the server-returned action (accept -> POST /api/proposals/{proposal_id}/accept, create -> /create, link -> /link, merge
+    -> /merge, supersede -> /supersede); the mapping is transport only, the UI performs no Proposal classification and there is no fallback action or trial-and-error
     action selection. A displayed pending Question-answer Proposal may also be explicitly rejected through POST /api/proposals/{proposal_id}/reject (reject
     is not a ProposalKind and never reinterprets action). The existing ProposalReviewBar is used unmodified with enabled actions exactly [the server-returned
     action, reject], subject to its existing intake reason behavior, and no unrelated proposal action is exposed. After a successful answer preview the
     UI shows the Question, the typed answer, proposal_id, the server action, the intake report and patch_preview. AnswerRequest.rationale (the S3.3 ResolutionDecision
     rationale submitted with the answer) and ProposalActionRequest.reason (the later governed acceptance reason governed by intake.requires_reason and the
-    user's explicit confirmation rationale) are distinct and neither is silently copied into the other.
+    user''s explicit confirmation rationale) are distinct and neither is silently copied into the other. The shared ProposalReviewBar applies Hotfix 078:
+    if intake.requires_reason, the one server-returned positive action is disabled until a non-blank proposal-action rationale exists, regardless of ProposalKind;
+    reject is not reason-gated. ui/src/features/questions/QuestionsPage.tsx is unchanged: the shared component correction supplies the behavior.'
   - 'Question patch preview (Hotfix 076). AnswerResponse.patch_preview is the exact serialized SemanticPatch of the persisted Proposal and is the authoritative
     U2.2 pre-commit preview: U2.2 displays it directly (a readable JSON/tree representation is permitted) and never reconstructs, normalizes, classifies
     or applies it, calculates a graph candidate or semantic hashes, or invents added/removed/modified IDs. This supersedes the inherited v2 U5 ''apply with
@@ -9196,6 +9203,8 @@ tasks:
   - The round manager accepts explicit max 1..=15 and delegates composition/assignment to POST /api/rounds.
   - Sequential sentence bulk accept advances the ETag after each successful item and stops on the first 412.
   - Accepting unviewed sentences requires an explicit visible warning; cancelling it sends no writes.
+  - If intake.requires_reason, the server-returned positive action stays disabled until a non-blank proposal-action rationale exists, regardless of ProposalKind;
+    reject is not reason-gated (Hotfix 078).
   source_refs:
   - SRCREF-50924A0118
   forbidden:
@@ -9359,11 +9368,12 @@ tasks:
     and no payload inspection to infer an action. ProposalCard.tsx displays exactly the server proposal id, kind, payload (a readable raw JSON projection)
     and intake, and never applies, diffs, rewrites, normalizes or derives anything from the payload. The card shows SessionProposalView.intake directly
     and never calls POST /api/proposals/intake again (this supersedes inherited v2 test wording read as requiring an intake call from the card; the acceptance
-    backend reruns intake at commit time as already implemented). A create card whose intake.requires_reason is true keeps Create disabled until a non-blank
-    rationale is supplied (zero /create requests before it; afterwards body.reason is the exact entered rationale), keeping the shared reason gating intact.
-    On 409 E_PROPOSAL_BASELINE_CHANGED the card becomes locally stale and no longer actionable, shows that the model changed and a new turn/proposal is
-    required, and nothing is retried, rebased, resubmitted or sent to another positive endpoint. After a positive action or reject succeeds the card is
-    marked resolved in transient UI state with its actions disabled; no proposal-state GET is assumed or invented.'
+    backend reruns intake at commit time as already implemented). Any positive session proposal action (accept/create/link/merge/supersede) whose intake.requires_reason
+    is true stays disabled until a non-blank rationale exists (Hotfix 078, through the corrected shared ProposalReviewBar, which U2.3 still does not modify):
+    no POST /api/proposals/{id}/{kind} is sent before it and afterwards body.reason is the exact entered rationale; reject remains allowed without it. On
+    409 E_PROPOSAL_BASELINE_CHANGED the card becomes locally stale and no longer actionable, shows that the model changed and a new turn/proposal is required,
+    and nothing is retried, rebased, resubmitted or sent to another positive endpoint. After a positive action or reject succeeds the card is marked resolved
+    in transient UI state with its actions disabled; no proposal-state GET is assumed or invented.'
   - 'Backend tests (Hotfix 077). OpenAPI tests prove SessionProposalView has exactly the fields id, kind, payload, intake, all four required, additionalProperties
     false and kind.$ref = #/components/schemas/ProposalKind, while the operation count stays 74, the contract version 3 and all existing operation ownership
     unchanged. The existing session proposal workflow regression is extended: for the generated requirement proposal response.proposals[0].kind == "create",
@@ -9379,18 +9389,20 @@ tasks:
     turns show both user/assistant pairs and remounting a new SessionPanel restores nothing (no history endpoint, no browser storage); metrics render from
     GET /api/sessions/{id}/metrics and are refetched with updated server values after a successful turn, never incremented locally; a kind = create card
     has only create and reject actionable and never sends accept, link, merge or supersede; with intake.requires_reason true Create cannot send before a
-    non-blank rationale and the entered rationale is sent as ProposalActionRequest.reason; every card action test sees zero POST /api/proposals/intake;
-    the exact server payload is displayed and action requests carry only the existing action request body; 409 E_PROPOSAL_BASELINE_CHANGED marks the card
-    stale and not actionable with no retry or alternate endpoint; a reply ''Which actor approves the request?'' with asked_question null renders assistant
-    text only, with no TypedAnswerControl, QuestionAnswerCard or answer POST; an asked_question found in GET /api/questions?status=Open renders the U2.2
-    QuestionAnswerCard driven by that Question''s kind and answer_schema; and an asked_question absent from that response shows the exact ID as unavailable
-    with no fabricated control. The HomePage route test asserts exactly /, /model/glossary, /model/sentences, /questions, /requirements, /requirements/$requirementId
-    and /sessions.'
+    non-blank rationale and the entered rationale is sent as ProposalActionRequest.reason; (Hotfix 078) at least one non-create positive kind (link, merge
+    or supersede) with intake.requires_reason true is mandatory coverage: that action is disabled with a blank and with a whitespace-only rationale, zero
+    POST /api/proposals/{id}/{kind} is sent before a valid rationale, and with a non-blank rationale it is enabled and its POST sends the exact reason (the
+    shared tests cover all five positive actions); every card action test sees zero POST /api/proposals/intake; the exact server payload is displayed and
+    action requests carry only the existing action request body; 409 E_PROPOSAL_BASELINE_CHANGED marks the card stale and not actionable with no retry or
+    alternate endpoint; a reply ''Which actor approves the request?'' with asked_question null renders assistant text only, with no TypedAnswerControl,
+    QuestionAnswerCard or answer POST; an asked_question found in GET /api/questions?status=Open renders the U2.2 QuestionAnswerCard driven by that Question''s
+    kind and answer_schema; and an asked_question absent from that response shows the exact ID as unavailable with no fabricated control. The HomePage route
+    test asserts exactly /, /model/glossary, /model/sentences, /questions, /requirements, /requirements/$requirementId and /sessions.'
   tests:
   - cargo test -p plumb-api openapi
   - cargo test -p plumb-api http_workflow
   - cargo test -p plumb-api --no-fail-fast
-  - cd ui && npm run test -- HomePage session
+  - cd ui && npm run test -- HomePage shared session
   acceptance:
   - /sessions is the explicit project room and creates sessions with exact scope=[] only after user action.
   - /requirements/$requirementId is the only current resource-scoped session panel; it uses [requirementId] only after the requirement is confirmed Accepted,
@@ -9398,7 +9410,8 @@ tasks:
   - Session turns are ordinary pending->final responses; no fake assistant streaming or durable transcript restoration is implemented.
   - Session proposal kind is the server-derived ProposalKind; a proposal card enables only [kind, reject], displays the server intake/payload, and commits
     only through proposal endpoints.
-  - A create proposal whose intake requires a reason cannot be sent without a non-blank rationale.
+  - Any positive session proposal action (accept/create/link/merge/supersede) whose intake.requires_reason is true cannot be sent until a non-blank rationale
+    exists; reject remains allowed (Hotfix 078).
   - A free-form assistant question is never actionable unless SessionTurnResponse.asked_question identifies an existing Open Question.
   - Session metrics come from GET /api/sessions/{id}/metrics and are refetched after successful turns.
   source_refs:
@@ -9439,7 +9452,7 @@ tasks:
   - cargo test -p plumb-api openapi
   - cargo test -p plumb-api http_workflow
   - cargo test -p plumb-api --no-fail-fast
-  - cd ui && npm run test -- HomePage session
+  - cd ui && npm run test -- HomePage shared session
   - cd ui && npm run test
   - cd ui && npm run typecheck
   - cd ui && npm run lint
