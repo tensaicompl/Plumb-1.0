@@ -1,7 +1,7 @@
-# Plumb 1.0 — Implementation Plan v3.0
+# Plumb 1.0 — Implementation Plan v3.1
 
 **Status:** Claude Code CLI build contract  
-**Plan version:** `3.0-draft.1`  
+**Plan version:** `3.1-draft.1`\
 **Default execution scope:** `pilot-v3-foundation`  
 **Canonical semantic model:** Plumb Specification Graph (PSG)  
 **Default active profile:** `profile:plumb-software-2026.1`
@@ -442,7 +442,7 @@ All hashes use lowercase SHA-256 hex.
 - Finding ID: `fnd:<first16 hex of finding_key>`, where finding_key is defined by the validation rulebook.
 - Question ID: `q:<first16 hex of SHA-256(finding_id || "|" || template_id || "|" || canonical slots JSON)>`.
 - Proposal ID: `prop:<first16 hex of SHA-256(base_semantic_hash || "|" || stage_id || "|" || canonical patch JSON)>`.
-- ResolutionDecision ID: `dec:<first16 hex of SHA-256(question_or_proposal_ref || "|" || canonical answer JSON || "|" || decided_by || "|" || RFC3339 decision timestamp)>`.
+- ResolutionDecision ID (plan v3.1, R0.5; architecture §4.8): an S3.3 answer decision is `dec:<first16 hex of SHA-256(RFC 8785 {project_id, question_ref, answer, decided_by, supersedes})>`; a governed waiver decision is `dec:<first16 hex of SHA-256(RFC 8785 {project_id, waiver_subject_ref, answer, decided_by})>`; a proposal-acceptance companion keeps the metamodel §6.3 formula. The decision timestamp and `patch_ref` are operational provenance and are never identity.
 - Revision version: global positive integer, starting at 1 and incrementing by 1 for every successful new revision.
 - Revision ID: `rev:<version>:<first16 hex from semantic_hash>`.
 - Session ID: `ses:<first16 hex of SHA-256(first_user_turn_evidence_id || "|" || RFC3339 creation timestamp)>`.
@@ -468,7 +468,7 @@ IDs are assigned once on creation and are never recomputed after rename/edit.
 
 Baseline-participating statuses are `Accepted`, `Suspect`, `Superseded` and `Deprecated` (metamodel §17.9). `Proposed` and `Rejected` elements never contribute to either hash.
 
-**Node types excluded from `semantic_hash` entirely** (they remain persisted PSG nodes; they represent evidence, provenance, derived diagnostics/workflow and runtime/conformance/proof outputs, not specification semantics): `SourceArtifact`, `EvidenceFragment`, `DerivationRecord`, `Agent`, `Finding`, `Question`, `ScenarioRun`, `TestExecution`, `TestReceipt`, `CodeBinding`, `ArchitectureCheck` and `CoverageRecord`. Every other node type contributes when baseline-participating, including `ResolutionDecision`, `Assumption`, `Requirement`, `Constraint`, `Scenario`, `VerificationObligation`, `TestCase`, architecture definitions, technical contracts and delivery semantics. A type is never excluded merely because it is generated automatically.
+**Node types excluded from `semantic_hash` entirely** (they remain persisted PSG nodes; they represent evidence, provenance, derived diagnostics/workflow and runtime/conformance/proof outputs, not specification semantics): `SourceArtifact`, `EvidenceFragment`, `DerivationRecord`, `Agent`, `Finding`, `Question`, `ScenarioRun`, `TestExecution`, `TestReceipt`, `CodeBinding`, `ArchitectureCheck` and `CoverageRecord`. Every other node type contributes when baseline-participating, including `ResolutionDecision` (with the plan v3.1 projection below), `Assumption`, `Requirement`, `Constraint`, `Scenario`, `VerificationObligation`, `TestCase`, architecture definitions, technical contracts and delivery semantics. A type is never excluded merely because it is generated automatically.
 
 **Edge participation.** An edge contributes to `semantic_hash` exactly when its status is baseline-participating and both its source and target node types contribute to `semantic_hash`. There is no separate relation-exclusion list.
 
@@ -483,6 +483,8 @@ Baseline-participating statuses are `Accepted`, `Suspect`, `Superseded` and `Dep
 **`evidence_hash` object.** Exactly `{"sources": [], "fragments": []}`, hashed as `HashKind::Evidence` (`ev:sha256:<64 lowercase hex>`). Only baseline-participating `SourceArtifact` and `EvidenceFragment` nodes contribute, each array sorted by node ID. A source contributes exactly `{"id", "content_hash"}`; a fragment exactly `{"id", "source_ref", "locator", "content_hash"}`. Nothing else contributes: not status, revision, audit, envelope evidence/derivations/standards/tags/extensions, SourceArtifact `display_name`, `source_kind`, `media_type`, `external_uri`, `external_version`, `producer`, `created_at_source`, `language`, `classification`, or EvidenceFragment `extracted_text`, `speaker`, `source_timestamp`.
 
 **Consequences.** Changing only audit metadata, element revisions, derivation references, Finding/Question content, ScenarioRun, TestExecution, TestReceipt, CodeBinding, ArchitectureCheck, CoverageRecord, View `layout_ref`/`style_ref`, SourceArtifact display name/media type, or EvidenceFragment extracted text/speaker/timestamp does not change `semantic_hash`. Changing accepted specification semantics, a baseline status, or an attached `evidence` reference on a semantic node does. Changing SourceArtifact/EvidenceFragment identity material changes `evidence_hash`.
+
+**ResolutionDecision projection (plan v3.1, R0.5; architecture §4.8).** A participating `ResolutionDecision` contributes its payload with `decided_at` and `patch_ref` omitted (absent, not `null`); both remain persisted, audited and part of the element hash. A proposal-acceptance companion (`question_ref` absent and `answer.kind = "proposal_acceptance"`) does not contribute to `semantic_hash`, and neither does any edge with such an endpoint; the accepted effect is the original patch committed in the same revision. Every other ResolutionDecision field, its status and its `supersedes` relation contribute unchanged.
 
 If an implementation choice would change these hash inputs, stop with `BLOCKED-SPEC-CONFLICT`; do not improvise.
 
@@ -727,6 +729,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-cli/src/config.rs`
 - `crates/plumb-cli/src/main.rs`
 - `crates/plumb-cli/tests/cli.rs`
+- `crates/plumb-cli/tests/customer_zero.rs`
 - `crates/plumb-compiler/Cargo.toml`
 - `crates/plumb-compiler/src/context.rs`
 - `crates/plumb-compiler/src/job.rs`
@@ -768,6 +771,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-functional/src/calculation.rs`
 - `crates/plumb-functional/src/data_class.rs`
 - `crates/plumb-functional/src/decision_table.rs`
+- `crates/plumb-functional/src/directory.rs`
 - `crates/plumb-functional/src/domain.rs`
 - `crates/plumb-functional/src/duplicates.rs`
 - `crates/plumb-functional/src/ears.rs`
@@ -797,6 +801,7 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-functional/tests/calculation.rs`
 - `crates/plumb-functional/tests/data_class.rs`
 - `crates/plumb-functional/tests/decision_table.rs`
+- `crates/plumb-functional/tests/directory.rs`
 - `crates/plumb-functional/tests/domain.rs`
 - `crates/plumb-functional/tests/duplicates.rs`
 - `crates/plumb-functional/tests/ears.rs`
@@ -936,6 +941,11 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `docs/plan/EXECUTION-STATE.yaml`
 - `docs/plan/POST-PILOT-SCOPE.md`
 - `docs/status.md`
+- `fixtures/customer-zero/README.md`
+- `fixtures/customer-zero/config.json`
+- `fixtures/customer-zero/inference-outputs.json`
+- `fixtures/customer-zero/replay-fixtures.json`
+- `fixtures/customer-zero/source.md`
 - `fixtures/hr-leave/README.md`
 - `fixtures/hr-leave/expert-answers.yaml`
 - `fixtures/hr-leave/fixture-contract.yaml`
@@ -1144,12 +1154,19 @@ A task is complete only when every acceptance statement is true and every test/c
 | 65 | `U2.5` — Implement Scenarios view and business-semantic traces | UI | NOW | U2.4, A0.3 |
 | 66 | `U2.6` — Implement Findings, Entities, Rules and Calculations analyst views | UI | NOW | U2.5, A0.2 |
 | 67 | `U2.7` — Implement Gates and Decisions views | UI | NOW | U2.6 |
-| 68 | `E0.1` — Generate derived HR reference artifacts from the authoritative fixture contract | E2E | NOW | A0.4, U2.7 |
-| 69 | `E0.2` — Implement backend end-to-end pilot test | E2E | NOW | E0.1 |
-| 70 | `E0.3` — Implement Playwright pilot workflow against real backend | E2E | NOW | E0.2 |
-| 71 | `E0.4` — Enforce coverage, mutation and no-placeholder quality bar | E2E | NOW | E0.3 |
-| 72 | `E0.5` — Produce pilot build and standards-alignment report | E2E | NOW | E0.4 |
-| 73 | `POST.0` — Post-pilot boundary marker; do not execute under NOW scope | PostPilot | LATER | E0.5 |
+| 68 | `R0.1` — Make project bootstrap a user-accessible product operation | R0 | NOW | A0.4, U2.7 |
+| 69 | `R0.2` — Repair provider optionality and deterministic fallback without weakening replay | R0 | NOW | R0.1 |
+| 70 | `R0.3` — Add atomic acceptance of compatible same-baseline proposal sets | R0 | NOW | R0.2 |
+| 71 | `R0.4` — Assemble current gate inputs from PSG plus genuinely external inputs | R0 | NOW | R0.3 |
+| 72 | `R0.5` — Make governed semantic identity replay-stable | R0 | NOW | R0.4 |
+| 73 | `R0.6` — Close pilot-critical semantic producer gaps | R0 | NOW | R0.5 |
+| 74 | `R0.7` — Add a customer-zero horizontal regression flow | R0 | NOW | R0.6 |
+| 75 | `E0.1` — Generate derived HR reference artifacts from the authoritative fixture contract | E2E | NOW | A0.4, U2.7, R0.7 |
+| 76 | `E0.2` — Implement backend end-to-end pilot test | E2E | NOW | E0.1 |
+| 77 | `E0.3` — Implement Playwright pilot workflow against real backend | E2E | NOW | E0.2 |
+| 78 | `E0.4` — Enforce coverage, mutation and no-placeholder quality bar | E2E | NOW | E0.3 |
+| 79 | `E0.5` — Produce pilot build and standards-alignment report | E2E | NOW | E0.4 |
+| 80 | `POST.0` — Post-pilot boundary marker; do not execute under NOW scope | PostPilot | LATER | E0.5 |
 
 ---
 
@@ -5863,11 +5880,517 @@ git diff --check
 - `SRCREF-FBD9DC478A` — `docs/plan/merged-implementation-plan-v2.md §8:U10`
 
 
+### `R0.1` — Make project bootstrap a user-accessible product operation
+
+**Phase:** `R0`\
+**Scope:** `NOW`\
+**Dependencies:** `A0.4`, `U2.7`\
+**Commit:** `R0.1: Add CLI project bootstrap`
+
+**Write allowlist**
+
+- `crates/plumb-api/src/application.rs`
+- `crates/plumb-cli/src/main.rs`
+- `crates/plumb-cli/src/commands.rs`
+- `crates/plumb-cli/src/config.rs`
+- `crates/plumb-cli/tests/cli.rs`
+
+**Required actions**
+
+1. Add the application service bootstrap_project_database(db, project_id, profile, config identity, clock) in crates/plumb-api/src/application.rs. It refuses an existing path (any existing file, including an empty or non-SQLite file) before opening anything, writes the initial revision through the canonical SqliteRevisionStore::create_initial_revision path on branch main with the built-in profile's ID, profile hash and rule-pack hash, created_by = configured identity.actor_ref and created_at = the injected clock, and removes the file it created when any later step fails. initialize_project_database and its existing callers are unchanged.
+2. The initial graph contains exactly the three configured Agents as Accepted nodes with explicit IDs and no evidence: identity.actor_ref (agent_kind human), stage_actor_ref (compiler stage) and assistant_actor_ref (LLM model), using the existing metamodel Agent payload and enum values only. Duplicate configured actor IDs are a configuration error before any write. Agents are excluded from semantic_hash, so the initial semantic_hash equals that of the empty project graph with the same project and profile.
+3. Add the CLI command init --project <ID> in crates/plumb-cli/src/main.rs and commands.rs. It requires the existing --db and --config options, validates the project ID with the core Id grammar, rejects any --branch other than main as a usage error, and never calls commands::open before the database exists. On success it prints exactly the project ID, branch, revision ID, semantic_hash and evidence_hash on stable labelled lines; on failure it exits non-zero with the typed error and leaves no file.
+4. crates/plumb-cli/src/config.rs exposes the validated identity, stage_actor_ref and assistant_actor_ref to init without adding, renaming or defaulting any configuration field.
+5. Update crates/plumb-cli/tests/cli.rs: the command registry pin grows from 20 to 21 entries with init, the exact help list includes init, and the --config-is-required loop covers init.
+
+**Commands**
+
+```bash
+cargo test -p plumb-cli --test cli
+cargo test -p plumb-api
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**Tests**
+
+- `cargo test -p plumb-cli --test cli init_creates_project_database_with_configured_agents`
+- `cargo test -p plumb-cli --test cli init_refuses_existing_path_without_writing`
+- `cargo test -p plumb-cli --test cli init_failure_leaves_no_database_file`
+- `cargo test -p plumb-cli --test cli init_database_opens_for_every_command`
+- `cargo test -p plumb-cli --test cli`
+
+**Acceptance**
+
+- A user with only a configuration file and a source document creates a project with plumb init --project <ID> --db <path> --config <file> and then runs import, stage, gate and export commands against it with no test helper, fixture builder or manual SQL.
+- init refuses an existing path without changing its bytes, and a failed init leaves no file at the path.
+- The initial revision is on main, carries the three configured Agents as Accepted provenance nodes, and has the same semantic_hash as the empty project graph.
+- initialize_project_database and every existing CLI command behave exactly as before.
+
+**Supporting references**
+
+- `SRCREF-D32DB0990A` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§4.1,5.8,21`
+- `SRCREF-1EFC3F56F4` — `docs/plan/merged-implementation-plan-v2.md §7:M11.2`
+- `SRCREF-9C906A7B51` — `docs/plan/PLUMB-IMPLEMENTATION-PLAN-v3.md §§1-4`
+
+**Task-specific prohibitions**
+
+- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json, ui/, Makefile or .github/workflows/ci.yml.
+- Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
+- Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
+- Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
+- Do not add an HTTP bootstrap operation; the server still requires an opened database.
+- Do not create any branch other than main, any semantic node other than the three configured Agents, or any default configuration value.
+
+
+### `R0.2` — Repair provider optionality and deterministic fallback without weakening replay
+
+**Phase:** `R0`\
+**Scope:** `NOW`\
+**Dependencies:** `R0.1`\
+**Commit:** `R0.2: Declare inference absence policy and deterministic fallback`
+
+**Write allowlist**
+
+- `crates/plumb-compiler/src/stage.rs`
+- `crates/plumb-compiler/src/run.rs`
+- `crates/plumb-compiler/src/lib.rs`
+- `crates/plumb-compiler/tests/stage.rs`
+- `crates/plumb-compiler/tests/job.rs`
+- `crates/plumb-api/src/stage/acquire.rs`
+- `crates/plumb-api/src/stage/phases.rs`
+- `crates/plumb-api/src/stage/mod.rs`
+- `crates/plumb-api/src/error.rs`
+- `crates/plumb-api/tests/http_stages.rs`
+- `crates/plumb-cli/tests/cli.rs`
+
+**Required actions**
+
+1. Add a closed absence policy (Required, Fallback) to every planned inference request in the crates/plumb-compiler stage plan contract, set by the planning phase, never by the provider. The policy is not part of request identity, request hashing or provider-mode hashing.
+2. In crates/plumb-api/src/stage/phases.rs declare exactly: requirement_segmentation, scenario_values and data_classification as Fallback; requirement_classification, vocabulary_analysis, ears_normalization, calculation_analysis, domain_extraction, lifecycle_extraction, operation_analysis and process_analysis as Required (architecture §20, provider optionality census).
+3. In crates/plumb-api/src/stage/acquire.rs, under provider mode null only: a phase whose plan contains a Required request fails before any provider call with the new typed 409 error E_INFERENCE_REQUIRED (crates/plumb-api/src/error.rs) naming the recipe, phase and sorted task kinds; a Fallback request is recorded as declared absent with no artifact and no fabricated output, and the phase evaluates its consumer with no inference, exactly as that consumer already defines.
+4. Under provider modes replay and anthropic acquisition is unchanged: every planned request executes, and FixtureNotFound or any other provider error still fails the recipe with E_INFERENCE_FAILED. ProviderDisabled is treated as absence only when the configured mode is null.
+5. Extend CompileRun in crates/plumb-compiler/src/run.rs with the sorted declared-absent request IDs, serialized only when non-empty so every existing CompileRun identity and serialization is byte-identical. ArtifactSet::validate_for_plan in crates/plumb-compiler/src/stage.rs accepts a missing artifact only for a declared-absent Fallback request and rejects an artifact for a declared-absent request.
+6. Session turns keep their existing behavior (E_INFERENCE_FAILED with ProviderDisabled under null).
+
+**Commands**
+
+```bash
+cargo test -p plumb-compiler
+cargo test -p plumb-api --test http_stages
+cargo test -p plumb-cli --test cli
+cargo test --workspace
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**Tests**
+
+- `cargo test -p plumb-compiler --test stage absence_policy_is_not_request_identity`
+- `cargo test -p plumb-compiler --test stage validate_for_plan_accepts_only_declared_absent_fallback`
+- `cargo test -p plumb-compiler --test job compile_run_without_absence_is_byte_identical`
+- `cargo test -p plumb-api --test http_stages null_provider_extract_uses_deterministic_segmentation_fallback`
+- `cargo test -p plumb-api --test http_stages null_provider_required_phase_fails_with_inference_required_before_provider_call`
+- `cargo test -p plumb-api --test http_stages replay_missing_fixture_still_fails_with_inference_failed`
+- `cargo test -p plumb-cli --test cli`
+
+**Acceptance**
+
+- Under the null provider, the extract segmentation phase succeeds through the existing deterministic fallback and records its requests as declared absent; scenarios and tags produce exactly their deterministic proposals.
+- Under the null provider, every Required phase fails before any provider call with E_INFERENCE_REQUIRED, persisting nothing but the failed job records.
+- Under replay a missing fixture or any provider error still fails with E_INFERENCE_FAILED, and every existing replay test, request ID, artifact hash and CompileRun identity is unchanged.
+- No inference output is fabricated, defaulted or inferred from names.
+
+**Supporting references**
+
+- `SRCREF-25544DD485` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§3,4.3-4.4,19-20`
+- `SRCREF-D32DB0990A` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§4.1,5.8,21`
+
+**Task-specific prohibitions**
+
+- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json, ui/, Makefile or .github/workflows/ci.yml.
+- Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
+- Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
+- Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
+- Do not treat FixtureNotFound, a replay miss or any anthropic-mode error as absence.
+- Do not add a fallback to a phase whose contract has none, and do not change any consumer's no-inference behavior.
+
+
+### `R0.3` — Add atomic acceptance of compatible same-baseline proposal sets
+
+**Phase:** `R0`\
+**Scope:** `NOW`\
+**Dependencies:** `R0.2`\
+**Commit:** `R0.3: Add atomic same-base proposal set acceptance`
+
+**Write allowlist**
+
+- `crates/plumb-api/src/application.rs`
+- `crates/plumb-api/src/state.rs`
+- `crates/plumb-api/src/error.rs`
+- `crates/plumb-api/src/stage/acceptance.rs`
+- `crates/plumb-compiler/src/job.rs`
+- `crates/plumb-functional/src/resolution.rs`
+- `crates/plumb-functional/src/lib.rs`
+- `crates/plumb-cli/src/main.rs`
+- `crates/plumb-cli/src/commands.rs`
+- `crates/plumb-api/tests/http_workflow.rs`
+- `crates/plumb-api/tests/http_stages.rs`
+- `crates/plumb-compiler/tests/job.rs`
+- `crates/plumb-functional/tests/resolution.rs`
+- `crates/plumb-cli/tests/cli.rs`
+
+**Required actions**
+
+1. Add the shared application service accept_proposal_set in crates/plumb-api/src/application.rs (state wiring in state.rs) taking an ordered list of (proposal ID, explicit action) pairs, one optional reason applied to every member, and the expected head. It implements architecture §4.7 exactly.
+2. Validate before any write: members are distinct, pending, workflow proposals; each base_revision_id equals the current head; each stated action equals the member's own classification (require_kind); each member passes X1.3 intake on the head and has a reason when its intake requires one; each stage-linked member is a fresh output of a Ready child StageJob on that base.
+3. Compatibility: each original PatchSet applies alone to the base; the element effects (touched, added, modified and removed node and edge IDs) of each member applied alone are pairwise disjoint; the composed PatchSet applies. Any failure is the new typed 409 E_PROPOSAL_SET_CONFLICT (crates/plumb-api/src/error.rs) naming the members and conflicting element IDs, with no revision, workflow transition or stage transition.
+4. Commit one Compound PatchSet: the original member patches in ascending proposal-ID order, unchanged, then one proposal-acceptance companion per member in the same order, each built by the existing build_acceptance_companion exactly as the single path builds it (crates/plumb-functional/src/resolution.rs may expose a set helper; crates/plumb-functional/src/lib.rs must not gain the text Proposal), each with patch_ref = the hash of that member's original PatchSet persisted as a Patch artifact. One CAS creates one revision whose decision_refs are the union of companions and introduced decisions.
+5. Extend crates/plumb-compiler/src/job.rs with a batch recorder so a stage child records every accepted output of the set, and extend crates/plumb-api/src/stage/acceptance.rs reconciliation to recover each member from its companion after a crash between commit and transitions.
+6. Add the CLI command accept-set <PROPOSAL_ID>=<ACTION>... [--reason <TEXT>] in crates/plumb-cli/src/main.rs and commands.rs calling the same service; the command registry pin and exact help list in crates/plumb-cli/tests/cli.rs grow by one.
+7. The single-proposal acceptance path, its 409 E_PROPOSAL_BASELINE_CHANGED behavior and its tests are unchanged; no HTTP operation is added and OpenAPI stays at 74 operations.
+
+**Commands**
+
+```bash
+cargo test -p plumb-api --test http_workflow
+cargo test -p plumb-api --test http_stages
+cargo test -p plumb-compiler --test job
+cargo test -p plumb-functional --test resolution
+cargo test -p plumb-cli --test cli
+cargo test --workspace
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**Tests**
+
+- `cargo test -p plumb-api --test http_workflow accept_proposal_set_commits_one_revision_with_original_patches_and_companions`
+- `cargo test -p plumb-api --test http_workflow accept_proposal_set_conflict_is_atomic`
+- `cargo test -p plumb-api --test http_workflow accept_proposal_set_rejects_stale_or_misclassified_member`
+- `cargo test -p plumb-api --test http_workflow single_proposal_sibling_still_baseline_changed`
+- `cargo test -p plumb-api --test http_stages accept_proposal_set_records_every_stage_child_output`
+- `cargo test -p plumb-compiler --test job`
+- `cargo test -p plumb-functional --test resolution`
+- `cargo test -p plumb-cli --test cli`
+
+**Acceptance**
+
+- Compatible same-base proposals (for example the outputs of one stage run) are accepted atomically in one revision; each member's original PatchSet artifact and ID are unchanged and each has its own metamodel §6.3 companion.
+- Any stale, non-pending, misclassified, reason-missing, stage-stale or conflicting member rejects the whole set with no revision and no transition.
+- The single-proposal path still rejects a stale sibling with E_PROPOSAL_BASELINE_CHANGED and never rebases.
+
+**Supporting references**
+
+- `SRCREF-B696289B78` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§1-4`
+- `SRCREF-D32DB0990A` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§4.1,5.8,21`
+- `SRCREF-AE75140DD6` — `docs/architecture/PLUMB-METAMODEL-v3.md §6.3`
+
+**Task-specific prohibitions**
+
+- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json, ui/, Makefile or .github/workflows/ci.yml.
+- Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
+- Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
+- Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
+- Do not add an HTTP operation or a UI change; session-card siblings in the UI remain single-accept.
+- Do not merge, rewrite or re-derive member patches, and do not accept a partial set.
+
+
+### `R0.4` — Assemble current gate inputs from PSG plus genuinely external inputs
+
+**Phase:** `R0`\
+**Scope:** `NOW`\
+**Dependencies:** `R0.3`\
+**Commit:** `R0.4: Assemble gate inputs from the current graph`
+
+**Write allowlist**
+
+- `crates/plumb-api/src/stage/gates.rs`
+- `crates/plumb-api/src/stage/recipe.rs`
+- `crates/plumb-api/src/stage/mod.rs`
+- `crates/plumb-api/src/stage/phases.rs`
+- `crates/plumb-api/src/runtime.rs`
+- `crates/plumb-api/src/application.rs`
+- `crates/plumb-api/src/state.rs`
+- `crates/plumb-api/src/lib.rs`
+- `crates/plumb-cli/src/config.rs`
+- `crates/plumb-api/tests/http_stages.rs`
+- `crates/plumb-api/tests/http_workflow.rs`
+- `crates/plumb-cli/tests/cli.rs`
+
+**Required actions**
+
+1. Replace the startup-configured complete F1ValidationInputs and F2ValidationInputs in crates/plumb-api/src/stage/gates.rs with per-evaluation assembly from the exact loaded revision, exactly as the architecture §21 gate input assembly matrix defines; install the result through the unchanged with_f1_inputs, with_f2_inputs and with_f4_inputs.
+2. Graph class: F1 requirements and lint_input (requirement_ref, statement, sorted evidence_refs, term_context None, source_anchor None); NO_DUPLICATE_ACCEPTED findings from analyze_requirement_duplicates with the configured duplicate_policy; F2 decision_tables by decode_decision_table of each Accepted DecisionTable (an undecodable table fails the gate with E_STAGE_EVALUATION_FAILED naming it); F4 scenario_type_checks and scenario_runs unchanged.
+3. Durable class: F1 vocabulary_dependencies and TERMS_RESOLVED findings by re-running analyze_vocabulary over the current graph with the validated vocabulary artifact of the latest completed consolidate run on the branch lineage; F2 analysis_findings by re-running analyze_domain and analyze_lifecycle with the latest analyse artifacts. When the request the current graph would produce differs from the stored request, fail with the new typed 409 E_GATE_INPUTS_STALE naming the recipe to re-run.
+4. External class: F1 lint_policy; F2 calculation_scope_overrides from the existing runtime calculation_scope_overrides, used only for Accepted Calculations without an S2.6 origin; F2 invariant bindings from the existing runtime expression_scopes whose owner is an Accepted Invariant; F4 in_scope_scenario_refs, required_scenario_kinds and visible_assumption_refs. Entries for elements no longer in scope are ignored; a missing required entry is E_GATE_INPUTS_MISSING naming the element IDs; an entry naming an element in a forbidden state is E_GATE_INPUTS_STALE.
+5. F4 applicability sources, executable sources, blocking scenarios and coverage sources are computed from the S4.5 verification_applicability input and the graph exactly as S4.5 computes its snapshot.
+6. Reduce the gates configuration in crates/plumb-cli/src/config.rs and crates/plumb-api/src/runtime.rs to the external fields only; configuration that restates graph-derived material is rejected as an unknown field, with no default and no silent ignore.
+7. NO_CONTRADICTION keeps reading Accepted Open Finding nodes; nothing is inferred from names, text, kinds, priorities or severities.
+
+**Commands**
+
+```bash
+cargo test -p plumb-api --test http_stages
+cargo test -p plumb-api --test http_workflow
+cargo test -p plumb-cli --test cli
+cargo test --workspace
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**Tests**
+
+- `cargo test -p plumb-api --test http_stages gate_inputs_follow_new_accepted_requirement_without_restart`
+- `cargo test -p plumb-api --test http_stages gate_inputs_stale_until_consolidate_rerun`
+- `cargo test -p plumb-api --test http_stages gate_inputs_missing_names_external_element`
+- `cargo test -p plumb-api --test http_stages gate_config_rejects_graph_derived_restatement`
+- `cargo test -p plumb-api --test http_workflow`
+- `cargo test -p plumb-cli --test cli`
+
+**Acceptance**
+
+- Accepting a new Requirement and re-running consolidate lets F1 evaluate in the same process with no restart and no configuration edit; the former E_STAGE_EVALUATION_FAILED coverage mismatch cannot occur.
+- Every F1, F2 and F4 input field is classified graph, durable or external exactly as the architecture matrix states, and only external fields are configured.
+- Validation rules, evaluator.rs and with_f1_inputs/with_f2_inputs/with_f4_inputs are unchanged; the F1 QUALITY_FINDINGS_CLEAR warning policy is unchanged.
+
+**Supporting references**
+
+- `SRCREF-D32DB0990A` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§4.1,5.8,21`
+- `SRCREF-273CB17B27` — `docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §F1`
+- `SRCREF-0E7CBD4996` — `docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §F2`
+- `SRCREF-441E1C9F5A` — `docs/standards/PLUMB-VALIDATION-RULEBOOK-2026.1.md §F4`
+
+**Task-specific prohibitions**
+
+- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json, ui/, Makefile or .github/workflows/ci.yml.
+- Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
+- Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
+- Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
+- Do not modify crates/plumb-validation or any validation rule, and do not change the F1 high-severity or warning policy.
+- Do not default, guess or reconstruct an external input from names, prose or kinds.
+
+
+### `R0.5` — Make governed semantic identity replay-stable
+
+**Phase:** `R0`\
+**Scope:** `NOW`\
+**Dependencies:** `R0.4`\
+**Commit:** `R0.5: Make governed semantic identity replay-stable`
+
+**Write allowlist**
+
+- `crates/plumb-psg/src/hash.rs`
+- `crates/plumb-psg/src/lib.rs`
+- `crates/plumb-psg/tests/graph.rs`
+- `crates/plumb-functional/src/resolution.rs`
+- `crates/plumb-validation/src/waiver.rs`
+- `crates/plumb-functional/tests/resolution.rs`
+- `crates/plumb-functional/tests/projections.rs`
+- `crates/plumb-functional/tests/domain.rs`
+- `crates/plumb-functional/tests/state.rs`
+- `crates/plumb-validation/tests/waiver.rs`
+- `crates/plumb-api/tests/http_workflow.rs`
+
+**Required actions**
+
+1. In crates/plumb-psg/src/hash.rs project a baseline-participating ResolutionDecision with decided_at and patch_ref omitted (absent, not null) and exclude proposal-acceptance companions (question_ref None and answer.kind proposal_acceptance), and every edge with such an endpoint, from semantic_hash, exactly as plan §6.2 and architecture §4.8 state. Add a node-level participation helper; the type-level participation helpers are unchanged.
+2. In crates/plumb-functional/src/resolution.rs change the S3.3 decision ID to dec:<first 16 hex of SHA-256(RFC 8785 {project_id, question_ref, answer, decided_by, supersedes})>; the acceptance companion ID stays the metamodel §6.3 formula. In crates/plumb-validation/src/waiver.rs change the governed waiver decision ID to dec:<first 16 hex of SHA-256(RFC 8785 {project_id, waiver_subject_ref, answer, decided_by})>.
+3. The complete decision record (decided_at, patch_ref, audit) is still persisted, audited and used by the element hash, F3 artifact binding, waiver evaluation, supersession and revision decision_refs.
+4. Update the golden expectations in the listed tests that pin decision IDs or semantic hashes, each change justified by this contract only.
+5. Add a two-run test in crates/plumb-api/tests/http_workflow.rs: the same source, answers, policy and acceptances under two FixedClock instants produce identical final semantic_hash. If any other volatility source keeps the hashes apart, stop with BLOCKED-IMPLEMENTATION-CONTRACT naming it.
+
+**Commands**
+
+```bash
+cargo test -p plumb-psg
+cargo test -p plumb-functional
+cargo test -p plumb-validation
+cargo test -p plumb-api --test http_workflow
+cargo test --workspace
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**Tests**
+
+- `cargo test -p plumb-psg --test graph resolution_decision_projection_omits_operational_provenance`
+- `cargo test -p plumb-psg --test graph acceptance_companion_excluded_from_semantic_hash`
+- `cargo test -p plumb-functional --test resolution decision_id_is_time_and_patch_independent`
+- `cargo test -p plumb-validation --test waiver waiver_decision_id_is_time_independent`
+- `cargo test -p plumb-api --test http_workflow two_clock_runs_have_identical_final_semantic_hash`
+- `cargo test -p plumb-functional`
+
+**Acceptance**
+
+- Two executions differing only in clock instants, audit and artifact bytes end with identical semantic_hash.
+- Changing a decision's answer, decided_by, rationale, supersedes or status still changes semantic_hash.
+- The full decision record remains persisted and audited, and the acceptance companion ID is unchanged.
+
+**Supporting references**
+
+- `SRCREF-B696289B78` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§1-4`
+- `SRCREF-2A709879EB` — `docs/architecture/PLUMB-METAMODEL-v3.md §§2-4,16`
+- `SRCREF-AE75140DD6` — `docs/architecture/PLUMB-METAMODEL-v3.md §6.3`
+- `SRCREF-C85B1E19E9` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§4.1,30`
+
+**Task-specific prohibitions**
+
+- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json, ui/, Makefile or .github/workflows/ci.yml.
+- Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
+- Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
+- Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
+- Do not exclude ResolutionDecision answers, decided_by, rationale, supersession or status from semantic_hash.
+- Do not change evidence_hash, the element hash, the acceptance companion ID formula or any F3 rule.
+
+
+### `R0.6` — Close pilot-critical semantic producer gaps
+
+**Phase:** `R0`\
+**Scope:** `NOW`\
+**Dependencies:** `R0.5`\
+**Commit:** `R0.6: Close pilot-critical semantic producer gaps`
+
+**Write allowlist**
+
+- `crates/plumb-functional/src/directory.rs`
+- `crates/plumb-functional/src/lib.rs`
+- `crates/plumb-functional/tests/directory.rs`
+- `crates/plumb-api/src/application.rs`
+- `crates/plumb-api/src/runtime.rs`
+- `crates/plumb-api/src/state.rs`
+- `crates/plumb-api/src/routes/questions.rs`
+- `crates/plumb-cli/src/config.rs`
+- `crates/plumb-cli/src/main.rs`
+- `crates/plumb-cli/src/commands.rs`
+- `crates/plumb-cli/tests/cli.rs`
+- `crates/plumb-api/tests/http_workflow.rs`
+
+**Required actions**
+
+1. Add crates/plumb-functional/src/directory.rs (exported from lib.rs, which must not gain the text Proposal): a deterministic producer from a typed directory draft (stakeholders, actors, business_roles, calendars, rules, decision_tables, each with an explicit ID and optional grounding Requirement IDs) to one Proposed node per element in its own Semantic / HUMAN_CONFIRM proposal, exactly as architecture §2 'Configured semantic directory' states. Evidence is the sorted union of the evidence of the named Accepted Requirements. Calendar week_pattern is exactly {"weekend": configured weekend names in configured order} of the named runtime calendar_ref; DecisionTable content is encoded only through encode_decision_table. Unknown fields, missing required fields, duplicate IDs and non-Accepted grounding are errors.
+2. Add a generic governed confirmation service in crates/plumb-api/src/application.rs: one HUMAN_CONFIRM proposal of sequential SetStatus Proposed -> Accepted leaves with element preconditions for an explicitly listed set of existing elements, accepted through the ordinary proposal acceptance path. It refuses governance, provenance and proof types, types with a dedicated confirmation contract (Requirement, Term, Calculation, Scenario), non-Proposed elements and edges whose endpoints would not be baseline-participating.
+3. Move the S3.3 answer logic from crates/plumb-api/src/routes/questions.rs into an application service that the route calls unchanged in behavior; HTTP responses are byte-identical.
+4. Add CLI commands in crates/plumb-cli/src/main.rs and commands.rs: directory (persist the configured directory proposals), confirm <ELEMENT_ID>... (generic confirmation), ask (materialize_questions from the current persisted F2 report findings with the configured question_routing) and answer <QUESTION_ID> --answer <JSON> (the answer service). crates/plumb-cli/src/config.rs adds exactly the directory and question_routing fields, both optional and never defaulted when present but incomplete; crates/plumb-api/src/runtime.rs and state.rs carry them.
+5. Update crates/plumb-cli/tests/cli.rs for the four new commands (registry pin, exact help list, --config-is-required loop).
+
+**Commands**
+
+```bash
+cargo test -p plumb-functional --test directory
+cargo test -p plumb-api --test http_workflow
+cargo test -p plumb-cli --test cli
+cargo test --workspace
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**Tests**
+
+- `cargo test -p plumb-functional --test directory`
+- `cargo test -p plumb-api --test http_workflow generic_confirmation_promotes_listed_proposed_elements`
+- `cargo test -p plumb-api --test http_workflow generic_confirmation_refuses_dedicated_and_governance_types`
+- `cargo test -p plumb-api --test http_workflow answer_route_uses_answer_service_unchanged`
+- `cargo test -p plumb-cli --test cli directory_confirm_ask_answer_round_trip`
+- `cargo test -p plumb-cli --test cli`
+
+**Acceptance**
+
+- Every pilot-critical family without a producer in the architecture §2 census (Stakeholder, Actor, BusinessRole, Calendar, Rule, DecisionTable) reaches Accepted only through configuration -> proposal -> acceptance -> governed confirmation; Agent is covered by R0.1.
+- Compiler outputs committed as Proposed reach Accepted only through the generic or a dedicated governed confirmation.
+- Questions are materialized and answered from the CLI through the same application services HTTP uses.
+
+**Supporting references**
+
+- `SRCREF-B696289B78` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§1-4`
+- `SRCREF-34CA4A60BC` — `fixtures/hr-leave/fixture-contract.yaml`
+- `SRCREF-F6F023A36E` — `docs/architecture/PLUMB-METAMODEL-v3.md §7`
+- `SRCREF-C0AC034159` — `docs/architecture/PLUMB-METAMODEL-v3.md §8`
+- `SRCREF-7EC2A38F66` — `docs/architecture/PLUMB-METAMODEL-v3.md §§5-16,19,24`
+- `SRCREF-9175A495B9` — `docs/architecture/PLUMB-METAMODEL-v3.md §§9.7-9.9`
+
+**Task-specific prohibitions**
+
+- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json, ui/, Makefile or .github/workflows/ci.yml.
+- Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
+- Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
+- Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
+- Do not add a generic create-arbitrary-node operation or infer any directory element from names or prose.
+- Do not wire Assumption or AcceptanceCriterion producers; they are not pilot-critical in plan v3.1.
+
+
+### `R0.7` — Add a customer-zero horizontal regression flow
+
+**Phase:** `R0`\
+**Scope:** `NOW`\
+**Dependencies:** `R0.6`\
+**Commit:** `R0.7: Add customer-zero horizontal regression flow`
+
+**Write allowlist**
+
+- `fixtures/customer-zero/README.md`
+- `fixtures/customer-zero/source.md`
+- `fixtures/customer-zero/config.json`
+- `fixtures/customer-zero/inference-outputs.json`
+- `fixtures/customer-zero/replay-fixtures.json`
+- `crates/plumb-cli/tests/customer_zero.rs`
+- `crates/plumb-api/src/application.rs`
+- `crates/plumb-cli/src/main.rs`
+- `crates/plumb-cli/src/commands.rs`
+- `crates/plumb-cli/tests/cli.rs`
+
+**Required actions**
+
+1. Add a read-only lint diagnostics application service in crates/plumb-api/src/application.rs and make the CLI lint output list every diagnostic with its severity (errors and warnings), so F1 QUALITY_FINDINGS_CLEAR warnings stay non-blocking but observable; F1 evidence and the rule are unchanged.
+2. Author fixtures/customer-zero/README.md (purpose and provenance), source.md (a small, deliberately messy Markdown requirements source independent of fixtures/hr-leave), config.json (a complete CLI configuration with provider mode replay, the R0.4 external gate inputs and the R0.6 directory and question_routing) and inference-outputs.json (independently authored structured provider outputs per task kind that introduce no fact absent from source.md or config.json).
+3. Generate fixtures/customer-zero/replay-fixtures.json only through the ignored exact test regenerate_customer_zero_replay in crates/plumb-cli/tests/customer_zero.rs, which computes the real InferenceRequest hashes and attaches the authored outputs; normal tests compare and never write.
+4. The test customer_zero_horizontal_flow drives only the CLI product surface on a temporary directory: init -> import source.md -> extract, consolidate, calc, analyse, flows, scenarios under replay -> accept-set per stage output -> directory and confirm -> ask and answer -> gates I0, F1, F2, F3 and F4 with no configuration restatement and no restart -> export. It asserts every semantic revision has a patch artifact, every LLM-origin proposal has its inference artifact, no proposal was rebased, lint warnings are listed, and a second full run under a different clock yields an identical final semantic_hash.
+5. Update crates/plumb-cli/tests/cli.rs for the lint output change only.
+
+**Commands**
+
+```bash
+cargo test -p plumb-cli --test customer_zero regenerate_customer_zero_replay -- --ignored --exact
+cargo test -p plumb-cli --test customer_zero
+cargo test -p plumb-cli --test cli
+cargo test --workspace
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**Tests**
+
+- `cargo test -p plumb-cli --test customer_zero`
+- `cargo test -p plumb-cli --test cli lint_lists_warnings_and_errors`
+- `cargo test -p plumb-cli --test cli`
+
+**Acceptance**
+
+- A first customer workflow runs end to end through product operations only, from an empty directory to an exported model, with no test helper, direct graph construction or startup gate-input restatement.
+- Replay is exact and network-free, and two runs differing only in time produce identical final semantic_hash.
+- Lint warnings are visible in the CLI and remain non-blocking.
+
+**Supporting references**
+
+- `SRCREF-509798A4E2` — `docs/plan/merged-implementation-plan-v2.md §§11,14`
+- `SRCREF-C1A6FDDD20` — `docs/plan/merged-implementation-plan-v2.md §§1 Quality bar,10`
+- `SRCREF-B696289B78` — `docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §§1-4`
+
+**Task-specific prohibitions**
+
+- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json, ui/, Makefile or .github/workflows/ci.yml.
+- Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
+- Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
+- Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
+- Do not copy, read as input or modify any fixtures/hr-leave file for the customer-zero corpus.
+- Do not hand-edit replay-fixtures.json; it is generated only by regenerate_customer_zero_replay.
+
+
 ### `E0.1` — Generate derived HR reference artifacts from the authoritative fixture contract
 
 **Phase:** `E2E`  
 **Scope:** `NOW`  
-**Dependencies:** `A0.4`, `U2.7`  
+**Dependencies:** `A0.4`, `U2.7`, `R0.7`\
 **Commit:** `E0.1: Create HR leave pilot fixtures on PSG and compatibility formats`
 
 **Write allowlist**
@@ -5890,6 +6413,7 @@ git diff --check
 8. Reference generator (Hotfix 083). The E0.1 target contains the ignored exact generator test regenerate_hr_reference_artifacts, which writes fixtures/hr-leave/reference-psg.yaml, reference-functional.yaml and inference-fixtures.jsonl from the same fixture builder (cargo test -p plumb-api --test hr_fixture regenerate_hr_reference_artifacts -- --ignored --exact); normal tests (cargo test -p plumb-api --test hr_fixture) compare generated bytes/content with the committed reference artifacts and never mutate repository files.
 9. HR gap findings (Hotfix 083). The helper derives exactly three deterministic current GeneratedFindings, as explicit upstream analysis material for S3.1 (not new registered validation rules; rule count stays 133): half day = code PLUMB.F2.CALC.TYPECHECK, semantic_condition_key CALCULATION_FRACTION_CONDITION_PREFIX + exact Calculation ID, affected refs including the target Calculation and the exact fractional Attribute (and optionally relevant Requirement source refs); inclusive end = PLUMB.F2.CALC.TYPECHECK with CALCULATION_INCLUSIVE_END_CONDITION_PREFIX + Calculation ID; holiday = PLUMB.F2.TIME.CALENDAR_DEFINED with CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX + Calculation ID. The prefixes are the public plumb-functional constants, not duplicated strings.
 10. Governed HR semantics (Hotfix 083). The three answers reach the generic S3.3 calculation families unchanged: half_day {decimal '0.5', unit working_day} adds the canonical CalculationExampleV1 keyed by calculation_fraction_semantic_key(calculation, attribute) (reused for the CalculationSemantic scenario boundary); inclusive_end {inclusive_end: true} sets the third working_days argument to the boolean literal by AST transformation; holiday_inside_period {holiday_consumes_working_day: false, calendar_ref: cal:PL-Office} confirms the fixed non-working-holiday policy and binds the Accepted Calendar. E0.1 never creates Question or ResolutionDecision nodes directly, never hand-builds a SemanticPatch for these semantics, never mutates the post-answer graph directly and never drops or rewrites any part of expert-answers.yaml.
+11. Repaired contracts (plan v3.1). E0.1 runs only after the R0 tranche: the reference revisions it records use the R0.5 replay-stable ResolutionDecision identity and semantic projection, every Proposed compiler or directory element it relies on reaches Accepted through R0.6 governed confirmation or a dedicated confirmation, and the derived reference artifacts are regenerated under those contracts. E0.1 never relies on a restated startup gate input.
 
 **Commands**
 
@@ -5939,6 +6463,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 5. Verify replay with stored artifacts reproduces identical final semantic_hash without live LLM calls.
 6. E2E test host (Hotfix 083). The test is crates/plumb-api/tests/e2e_hr.rs in the existing plumb-api package (no root tests/ path, no new package, no dependency change), run with cargo test -p plumb-api --test e2e_hr. It may read and reuse crates/plumb-api/tests/support/hr_fixture.rs but must not modify it.
 7. Pre-/post-answer proof (Hotfix 083). Using the support module's pre-answer and post-answer graph/revision semantics, E0.2 proves the half-day, holiday and inclusive-end semantics are unresolved/Undecidable before the governed answers and resolved only afterwards, by exercising the actual answer path (materialize_questions, rounds, Question answers, proposal acceptance); it never imports a post-answer reference graph to hide the answer path.
+8. Repaired v3.1 contracts (plan v3.1). The backend run starts from a database created by the R0.1 bootstrap service (no direct initializer or SQL); compatible same-base stage outputs are accepted through the R0.3 proposal set acceptance service and never rebased; every I0, F1, F2, F3 and F4 evaluation uses the R0.4 assembled gate inputs with no startup restatement and no restart after the graph changes; and the replay proof runs the complete flow twice under two different FixedClock instants and asserts the identical final semantic_hash required by R0.5.
 
 **Commands**
 
@@ -5956,6 +6481,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - The complete backend pilot reaches F4 and deterministic replay final semantic_hash matches original.
 - The three HR ambiguities are resolved only through the production question answer path, reusing the unmodified E0.1 support module.
+- The run uses R0.1 bootstrap, R0.3 set acceptance and R0.4 gate assembly, and two runs under different clocks produce the identical final semantic_hash.
 
 **Supporting references**
 
@@ -5979,11 +6505,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Required actions**
 
-1. Start seeded real backend with MockProvider fixture artifacts.
+1. Start the real backend on a database created by the R0.1 init command and populated only by product operations (import, stage runs under the Replay provider with the committed MockProvider fixture artifacts, R0.3 accept-set, R0.6 confirm) (plan v3.1); no seeding by direct graph construction or SQL, and no startup gate-input restatement.
 2. Drive UI import -> requirements -> sentences/proposals -> questions -> conflicting chat proposal rejection -> process semantic move -> scenarios -> gates -> export.
 3. Assert visible state only; do not inspect application internals from Playwright.
 4. Run axe on every navigated route and keyboard-only path through the core workflow.
-5. make e2e (Hotfix 071). E0.3 updates the existing Makefile e2e target so `make e2e` executes the complete pilot Playwright workflow by invoking scripts/run-pilot-e2e.sh (it may also run the existing backend E2E test in the same target); it is no longer a file-existence check, and E0.4 may extend make all and quality thresholds but must not undo this real E2E execution. The runner starts the seeded real backend, the local Vite UI through the locally installed binary (ui/node_modules/.bin/vite or another invocation provably resolved from the frozen local dependency graph; never npm install, remote npx execution or a CDN) and Playwright Test, and tears down its child processes.
+5. make e2e (Hotfix 071). E0.3 updates the existing Makefile e2e target so `make e2e` executes the complete pilot Playwright workflow by invoking scripts/run-pilot-e2e.sh (it may also run the existing backend E2E test in the same target); it is no longer a file-existence check, and E0.4 may extend make all and quality thresholds but must not undo this real E2E execution. The runner starts the R0.1-bootstrapped real backend populated by product operations, the local Vite UI through the locally installed binary (ui/node_modules/.bin/vite or another invocation provably resolved from the frozen local dependency graph; never npm install, remote npx execution or a CDN) and Playwright Test, and tears down its child processes.
 
 **Commands**
 
@@ -6026,6 +6552,7 @@ cd ui && npm run lint
 3. UI Vitest >=80% for src/features and src/components.
 4. check-placeholders.sh fails on TODO, FIXME, unimplemented!, todo!, panic!("TODO") and placeholder text in production source; allowlist only generated files and docs.
 5. CI runs make all.
+6. Repaired v3.1 contracts (plan v3.1). make all runs the R0.7 customer-zero flow (cargo test -p plumb-cli --test customer_zero) and the E0.2 backend pilot, so bootstrap, absence policy, set acceptance, gate assembly and replay-stable identity stay covered by CI; coverage thresholds apply to the R0 code in its crates unchanged.
 
 **Commands**
 
@@ -6066,6 +6593,7 @@ make all
 3. For NOW scope, Interchange Valid may report only formats actually validated; it must not claim BPMN/DMN/OpenAPI semantic completeness beyond implemented validators.
 4. List every waiver separately.
 5. BUILD-REPORT states 'lint corpus qualification: qualified' only when a valid externally supplied human-labelled corpus and baseline were actually run, and otherwise 'lint corpus qualification: not run — external human-labelled corpus not supplied'; it makes no lint-precision claim without that run (Hotfix 029).
+6. Repaired v3.1 contracts (plan v3.1). BUILD-REPORT records the R0.7 customer-zero result and the final semantic_hash of both replay runs, lists lint warnings observed as non-blocking, and states the producer coverage of every pilot-critical semantic family (architecture §2 census) without claiming coverage for Assumption or AcceptanceCriterion producers.
 
 **Commands**
 

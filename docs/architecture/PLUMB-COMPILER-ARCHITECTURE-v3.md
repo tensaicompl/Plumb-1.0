@@ -53,6 +53,38 @@ Gates are proof obligations over accepted PSG state. A stage can be executed bef
 
 ---
 
+### Pilot semantic producer completeness (R0.6, plan v3.1)
+
+Every semantic node family the pilot gates I0-F4 and the HR pilot depend on must have a genuine production path: user input, configuration or validated inference becomes a proposal, a governed acceptance and a compare-and-swap revision, and the material reaches `Accepted` status through a governed product operation. Test fixture constructors, golden builders and direct `Graph` construction are never production paths, and a generic "create arbitrary node" operation is not one either.
+
+**Producer census at plan v3.1 (inspected before R0).**
+
+| Family | Production producer | v3.1 status |
+|---|---|---|
+| Requirement, Goal, Need, Concern, Constraint | S1.1 `compile_requirement_candidates` (extract) and requirement split; confirmation through sentence accept | exists |
+| Term, Concept | S1.5 `analyze_vocabulary` (consolidate); glossary confirm, edit, merge | exists |
+| Entity, Attribute, DomainRelationship | S2.1 `analyze_domain` (analyse); Attribute type, unit and class edits | exists, emitted `Proposed` only |
+| State, Transition, Invariant | S2.2 `analyze_lifecycle` (analyse); invariant formula answers | exists, emitted `Proposed` only |
+| Operation, Outcome, Event | S2.7 `analyze_operations` (flows) | exists, emitted `Proposed` only |
+| Process, ProcessNode | S2.9 `analyze_processes` (flows); process import and step edits | exists, emitted `Proposed` only |
+| Calculation | S2.6 `analyze_calculations` (calc); calculation confirm; S3.3 answers | exists |
+| Scenario | S4.1 `derive_scenarios` (scenarios); scenario confirm and correction | exists |
+| SecurityRole, Principal, Permission, ResourceScope, PolicyCondition, SeparationConstraint | S2.8 `analyze_authorization` over the configured `authorization_draft` (flows) | exists, emitted `Proposed` only |
+| ResolutionDecision (S3.3 answers) | `resolve_question` through the HTTP answer route; S3.1 materialization only as the Hotfix 083 application service | incomplete at the CLI product boundary |
+| Agent | none (the empty initializer creates no Agent; the configured actor IDs are never materialized) | repaired by R0.1 |
+| Stakeholder | none | repaired by R0.6 |
+| Actor, BusinessRole | none (operation, process and authorization scopes require them `Accepted`) | repaired by R0.6 |
+| Calendar | none (`CalendarConfig` feeds only the expression calendar provider) | repaired by R0.6 |
+| Rule, DecisionTable | none (rule-cell fill edits an existing table only; the `rules` recipe is a projection) | repaired by R0.6 |
+| Assumption | pure builder `create_assumption` without a product caller | not pilot-critical: the F3 assumption rules are not applicable without assumptions; unchanged in v3.1 |
+| AcceptanceCriterion | none | not pilot-critical: F1 `CRITERIA_FOR_BEHAVIOR` is satisfied by `specified_by` links, which S2.7 produces |
+
+**Configured semantic directory (R0.6).** Stakeholder, Actor, BusinessRole, Calendar, Rule and DecisionTable material that no compiler can extract is authored explicitly in configuration as a typed directory draft with explicit IDs. A deterministic producer turns each draft element into one `Proposed` node in its own `Semantic` / `HUMAN_CONFIRM` proposal (persisted pending, never committed by the producer). Node evidence is the sorted union of the evidence of the `Accepted` Requirements a draft element names as grounding, and is empty when it names none. A Calendar draft names a configured runtime `calendar_ref` and supplies `time_zone`, `region` and `holiday_source`; its `week_pattern` is exactly `{"weekend": <the configured weekend weekday names in configured order>}`, so the PSG Calendar and the runtime calendar provider cannot disagree. A DecisionTable draft is a typed `DecisionTableSpec` encoded only through the S2.6 `encode_decision_table`. Nothing is inferred from names or prose, and no field is defaulted.
+
+**Governed confirmation (R0.6).** Compiler and directory output lands in the graph as `Proposed` elements when its `HUMAN_CONFIRM` proposal is accepted; promotion to `Accepted` is a separate governed confirmation, as the existing Requirement, Term, Calculation and Scenario confirmations already are. A generic confirmation operation builds one `HUMAN_CONFIRM` proposal of sequential `SetStatus Proposed -> Accepted` leaves under element preconditions for an explicitly listed set of existing elements, and it is accepted through the ordinary proposal acceptance path. It never creates or edits content, never confirms governance, provenance or proof types (Agent, Finding, Question, ResolutionDecision, Assumption, DerivationRecord, SourceArtifact, EvidenceFragment, ScenarioRun and the other excluded types), never replaces a dedicated confirmation contract (Requirement, Term, Calculation, Scenario), and confirms a `Proposed` edge only when both endpoints are baseline-participating after the same proposal.
+
+**Governed answers at the product boundary (R0.6).** The CLI reaches the S3.1 materialization service (questions from the current persisted F2 report findings plus any explicitly supplied upstream finding material, routed by an explicit routing configuration) and the S3.3 answer path through the same application services HTTP uses; the answer logic lives in an application service, never in route code.
+
 ## 3. The stage contract
 
 A compiler stage is not "a function that calls an LLM".
@@ -346,6 +378,47 @@ PROFILE_POLICY
 LLM-originated accepted semantics MUST NOT use `AUTO_DERIVATION`.
 
 ---
+
+### 4.7 Same-base proposal set acceptance (R0.3, plan v3.1)
+
+A proposal is never rebased and its original `PatchSet` and identity never change. Accepting one proposal advances the branch, so a sibling pending proposal built on the same base revision is stale for the single-proposal path. The repair is governed set acceptance, not rebasing.
+
+**Contract.** A proposal set is accepted only as a whole and only when:
+
+- every member is a distinct pending workflow proposal whose `base_revision_id` is the current head, and the caller names each member with the explicit action it intends (`accept`, `create`, `link`, `merge` or `supersede`), which must equal the member's own classification;
+- every member passes X1.3 intake on the head, and a member whose intake requires a reason has one;
+- every stage-linked member is a fresh output of a `Ready` child StageJob on that base;
+- the members are mutually compatible: each original patch applies alone to the base, their element effects (the touched, added, modified and removed nodes and edges of each patch applied alone) are pairwise disjoint, and the composition applies.
+
+The committed `PatchSet` is one `Compound` on the shared base: the original member patches in ascending proposal-ID order, each unchanged, followed by one proposal-acceptance companion per member in the same order. Each companion is exactly the single-path companion of that member (metamodel §6.3), its `patch_ref` the hash of that member's original `PatchSet`, persisted as a `Patch` artifact. One compare-and-swap creates one revision whose `decision_refs` hold every companion and every introduced decision. Each workflow proposal then moves to accepted, and each stage child records all of its accepted outputs.
+
+**Atomicity.** All validation happens before anything is committed. A stale, non-pending, misclassified, conflicting, reason-missing or stage-stale member fails the whole set with no revision, no workflow transition and no stage transition; only content-addressed patch artifacts may remain, as on the single path. Recovery after a crash between the commit and the workflow transitions uses the existing acceptance-decision reconciliation per member.
+
+**Surface.** The pilot product path for multi-proposal acceptance is the shared application service and the CLI. No HTTP operation is added: the UI has no stage-proposal review surface, its acceptance surfaces act on single proposals, and the OpenAPI contract stays at 74 operations. The single-proposal path, its staleness behavior and its tests are unchanged.
+
+### 4.8 Replay-stable governed semantic identity (R0.5, plan v3.1)
+
+Two executions with identical source semantics, accepted answers, policy and governed outcomes must end with identical `semantic_hash` values, whatever their wall-clock times, audit, artifact bytes or proposal IDs. The complete decision record is still persisted and audited; only identity and the semantic projection change.
+
+**Material classification.** For a `ResolutionDecision`:
+
+- governed semantic material: `question_ref`, `proposal_ref` when it is a waiver subject, `answer`, `decided_by`, `rationale`, `supersedes`, status, and the `supersedes` relation;
+- operational provenance: `decided_at` (the write instant), `patch_ref` (the address of an artifact whose bytes embed base hashes and audit timestamps) and audit.
+
+**Identity.**
+
+- S3.3 answer decisions: `dec:<first 16 hex of SHA-256(RFC 8785 {project_id, question_ref, answer, decided_by, supersedes})>`. The answer marker already names the governed subject and value; `decided_at` and `patch_ref` are no longer identity.
+- Governed waiver decisions: `dec:<first 16 hex of SHA-256(RFC 8785 {project_id, waiver_subject_ref, answer, decided_by})>`.
+- Proposal-acceptance companions keep their metamodel §6.3 identity unchanged, because they are excluded from the semantic projection.
+
+**Projection (implementation plan §6.2).**
+
+- A baseline-participating `ResolutionDecision` contributes with `decided_at` and `patch_ref` omitted from its payload projection (absent, not `null`).
+- A proposal-acceptance companion (`question_ref = None` and `answer.kind = "proposal_acceptance"`) does not contribute at all, and neither does any edge with such an endpoint.
+
+The companion records who accepted which proposal bytes, when, with which intake reason codes and rationale. The accepted semantic effect is exactly the original patch committed in the same revision, already represented by the elements it changed. The companion never satisfies a domain rule (metamodel §6.3), and F3 already excludes it from current S3 decisions. Excluding it therefore removes only acceptance provenance from the projection.
+
+The element hash, the persisted payload, F3 artifact binding by `patch_ref`, waiver evaluation, supersession, `decisions.jsonl` and revision `decision_refs` keep using the complete record.
 
 ## 5. Cross-cutting services
 
@@ -904,7 +977,7 @@ S2.3 classifies Accepted Attributes only. A versioned deterministic dictionary (
 
 **Dependency direction.** `plumb-functional` depends on `plumb-validation`, never the reverse. The pure analysis kernels that F2 validation reuses therefore live in `plumb-validation`: the S2.9 process analyzer, an expression-scope adapter (explicit PSG-node-to-PlumbExpr symbol bindings and type environment, exactly the S2.6 binding semantics), calculation qualification and dependency/cycle analysis, typed decision-table analysis, and authorization hierarchy and static separation-of-duty analysis. A prerequisite relocation commit moves the S2.6 and S2.8 kernels there before S2.10; `plumb-functional` keeps inference, requests, proposals and compilation and calls the relocated kernels through source-compatible facades. Each algorithm exists exactly once.
 
-**Supplemental inputs.** Some F2 obligations need material the PSG cannot yet express. The validation context carries optional, content-hashed F2 inputs, validated against the graph like the F1 inputs: the current S2.1 unresolved-cardinality and S2.2 unresolved-trigger findings (and nothing else); explicit scope overrides for Accepted Calculations without an S2.6 origin (forbidden for those with one); one typed decision-table specification per Accepted DecisionTable whose hit policy matches the PSG (the generic row encoding is not frozen and is never decoded); and one explicit binding set per Accepted Invariant. Missing or stale inputs are context errors; rules that need inputs report an error without them, so the gate cannot pass by omission.
+**Supplemental inputs.** Some F2 obligations need material the PSG cannot yet express. The validation context carries optional, content-hashed F2 inputs, validated against the graph like the F1 inputs: the current S2.1 unresolved-cardinality and S2.2 unresolved-trigger findings (and nothing else); explicit scope overrides for Accepted Calculations without an S2.6 origin (forbidden for those with one); one typed decision-table specification per Accepted DecisionTable whose hit policy matches the PSG (since plan v3.1, R0.4/R0.6, the specification is decoded from the PSG DecisionTable with the S2.6 `decode_decision_table`, the inverse of the only producer encoding, and an undecodable table fails the gate explicitly); and one explicit binding set per Accepted Invariant. Missing or stale inputs are context errors; rules that need inputs report an error without them, so the gate cannot pass by omission.
 
 **Evaluator semantics.** All 24 F2 rules are registered. Evaluators read Accepted PSG semantics, the supplemental inputs, existing finding state and the shared kernels; they never infer, match by name, mutate or persist. Where the PSG cannot represent what a rule needs, the result is an error with a stable code rather than a pass or an invented convention: state reachability (no initial or terminal markers), event producer and consumer obligations (no internal/external or purpose classification), and processes containing exclusive gateways, error events, subprocesses or conditions. Static separation of duty is the only separation kind evaluated, policy conditions are never claimed as PlumbExpr, and the semantic-blocker rule checks open F2 blocker findings entering the gate rather than results of the same run.
 
@@ -995,7 +1068,7 @@ ResolutionDecision
 
 **Effects.** Cardinality and transition-trigger answers have no direct effect: the Accepted decision is the governed input that the domain and lifecycle compilers already read, and only they build the relationship or the transition with its trigger. The other answers change exactly one kind of semantic fact: an operation performer is added, a calculation calendar or an invariant expression is replaced, and a permission's existing operation and scope relations are repaired in place (retargeted and, if suspect, re-accepted) without ever adding a second relation. Every initial effect first proves the original gap still exists. The three calculation families (Hotfix 083) change only an Accepted Calculation: a fractional input adds one canonical `CalculationExampleV1` to `Calculation.examples` whose key is the shared content-addressed `calculation_fraction_semantic_key(calculation, attribute)`, whose single input is the exact S2.6 `CalculationOrigin` root binding of the one unitless Decimal input Attribute named by the question context with the fraction as a unitless canonical decimal (0 < fraction <= 1, within the input scale), and whose mandatory expected result is the same fraction in the calculation's result unit; an inclusive-end answer replaces, by AST transformation and canonical unparse, only the third argument of the single `working_days` call, from the unresolved identifier `inclusive_end` to the boolean literal; a holiday-policy answer confirms the fixed PlumbExpr policy that a configured holiday is a non-working day (an answer that a holiday consumes a working day is rejected with no proposal) and binds the selected Accepted Calendar, a current identical calendar being a governed confirmation without semantic effect and a different current calendar a stale question unless superseded. No PSG field, node type or relation is added.
 
-**Governance.** The decision records a closed answer marker, the human actor and time, and `patch_ref`, the hash of a separate content-addressed artifact holding only the semantic effect (which avoids a circular hash). Its ID derives from the project, question, marker, actor, time, `patch_ref` and supersession, not the rationale. Resolves edges link it to the question and the finding; the question becomes Answered (round kept) and the finding closes only when no other question of it stays Open. Superseding a decision builds a fresh patch from the current graph, links new to old and marks the old decision Superseded; nothing is inverted or deleted. The three historical HR expert answers (half day, holiday inside the period, inclusive end) are reachable through exactly these three generic calculation families and their governed representation above; they are applied only through the normal question answer and proposal acceptance path, never by a fixture-only adapter.
+**Governance.** The decision records a closed answer marker, the human actor and time, and `patch_ref`, the hash of a separate content-addressed artifact holding only the semantic effect (which avoids a circular hash). Its ID derives from the project, question, marker, actor and supersession, not the rationale (since plan v3.1, R0.5, time and `patch_ref` are operational provenance and are no longer identity; see §4.8). Resolves edges link it to the question and the finding; the question becomes Answered (round kept) and the finding closes only when no other question of it stays Open. Superseding a decision builds a fresh patch from the current graph, links new to old and marks the old decision Superseded; nothing is inverted or deleted. The three historical HR expert answers (half day, holiday inside the period, inclusive end) are reachable through exactly these three generic calculation families and their governed representation above; they are applied only through the normal question answer and proposal acceptance path, never by a fixture-only adapter.
 
 ### Assumptions and governed waivers (S3.4, Hotfix 048)
 
@@ -1627,6 +1700,39 @@ Exactly 11 production request owners build inference requests for compiler stage
 
 ---
 
+### Provider optionality and declared fallback (R0.2, plan v3.1)
+
+Provider behavior must agree with each stage's declared contract. It does not make the compiler work offline.
+
+**Census.**
+
+| Recipe phase | Task kind | Absence policy | Contract evidence |
+|---|---|---|---|
+| extract: segmentation | `requirement_segmentation` | fallback | `evaluate_segmentation` builds deterministic fallback segments and records the fallback mode |
+| scenarios | `scenario_values` | fallback (partial) | `derive_scenarios` proposes slot-free skeletons deterministically; slot skeletons stay unresolved |
+| tags | `data_classification` | fallback (partial) | `analyze_data_classification` always returns its deterministic dictionary proposals |
+| extract: classification | `requirement_classification` | required | no proposals without classification |
+| consolidate: vocabulary | `vocabulary_analysis` | required | "there is no fallback" |
+| consolidate: EARS | `ears_normalization` | required | absent inference yields only unavailability issues |
+| calc | `calculation_analysis` | required | absent inference yields only unavailability issues |
+| analyse: domain | `domain_extraction` | required | "there is no fallback" |
+| analyse: lifecycle | `lifecycle_extraction` | required | inference-only |
+| flows: operation | `operation_analysis` | required | absent inference yields only unavailability issues |
+| flows: process | `process_analysis` | required | absent inference yields only unavailability issues |
+| session turn (HTTP) | `session_turn` | required | the turn fails with `E_INFERENCE_FAILED` (`ProviderDisabled`) |
+
+`consolidate: duplicates`, `flows: authorization`, `lint`, `rules` and `run` plan no inference.
+
+**Contract.**
+
+- Every planned inference request declares its absence policy in the stage plan.
+- Under the `null` provider mode:
+  - A recipe phase whose plan contains a `required` request fails before any provider call with `E_INFERENCE_REQUIRED`, naming the phase and task kinds. Nothing is persisted except the failed job records.
+  - A `fallback` request is recorded as declared absent (no artifact, no fabricated output). The phase then evaluates its consumer with no inference, exactly as the consumer's contract defines.
+- Under `replay` and `anthropic` every planned request is executed exactly as before. A missing replay fixture or any provider error still fails the recipe with `E_INFERENCE_FAILED`, so exact replay is never weakened into absence.
+- A `CompileRun` records the sorted IDs of its declared-absent requests. They are serialized only when non-empty, so every existing run identity is unchanged. Plan validation accepts a missing artifact only for a declared-absent `fallback` request.
+- Request identity, material binding, artifact validation, provider-mode hashing and replay semantics are unchanged.
+
 ## 21. Concurrency and asynchronous jobs
 
 Every asynchronous stage job captures:
@@ -1790,7 +1896,7 @@ A plan or evaluation error of a domain helper fails the recipe (`E_STAGE_PLAN_FA
 
 #### Inference acquisition and provenance
 
-Per inference child, for each `PlannedInferenceRequest` in plan order: call `provider.execute(&planned.request, &planned.material)` outside every store lock and off the async executor; persist with `persist_inference_bundle` (operational `created_at`); give EVALUATE the validated-inference `ArtifactInput` only. Deterministic planned artifacts are stored by content hash. A non-empty `external_validation_requests` list fails the recipe with `E_EXTERNAL_VALIDATOR_UNAVAILABLE` (the pilot has no validator transport; no fabricated validation artifact, no implicit shell or network validator). Provider errors fail the recipe with `E_INFERENCE_FAILED` (details carry the `ProviderError` variant name, never a secret).
+Per inference child, for each `PlannedInferenceRequest` in plan order: call `provider.execute(&planned.request, &planned.material)` outside every store lock and off the async executor; persist with `persist_inference_bundle` (operational `created_at`); give EVALUATE the validated-inference `ArtifactInput` only. Deterministic planned artifacts are stored by content hash. A non-empty `external_validation_requests` list fails the recipe with `E_EXTERNAL_VALIDATOR_UNAVAILABLE` (the pilot has no validator transport; no fabricated validation artifact, no implicit shell or network validator). Provider errors fail the recipe with `E_INFERENCE_FAILED` (details carry the `ProviderError` variant name, never a secret). Since plan v3.1 (R0.2) the `null` provider mode follows the declared absence policy of §20 instead: `required` requests fail with `E_INFERENCE_REQUIRED` before any provider call, and `fallback` requests are recorded as declared absent.
 
 A0.4 adds to `plumb-inference` (identity-preserving):
 
@@ -1851,11 +1957,11 @@ A run that committed its ScenarioRun state ends Committed even when F4 FAILs; a 
 
 #### Gate inputs
 
-- **F1, F2:** the configured complete `F1ValidationInputs` / `F2ValidationInputs`, installed with `with_f1_inputs` / `with_f2_inputs` (which validate coverage, statements, evidence, vocabulary resolutions, findings, lint policy, decision-table specs, invariant bindings and overrides). Nothing is reconstructed or defaulted; absent required inputs are `E_GATE_INPUTS_MISSING`, never an empty-input evaluation.
+- **F1, F2:** the complete `F1ValidationInputs` / `F2ValidationInputs`, installed with `with_f1_inputs` / `with_f2_inputs` (which validate coverage, statements, evidence, vocabulary resolutions, findings, lint policy, decision-table specs, invariant bindings and overrides). Since plan v3.1 (R0.4) they are assembled per evaluation from the loaded revision, the latest durable analysis artifacts and the explicit external inputs, exactly as the gate input assembly matrix in this section defines; nothing is defaulted, and absent or stale required material is `E_GATE_INPUTS_MISSING` or `E_GATE_INPUTS_STALE`, never an empty-input evaluation.
 - **F3 (`ready`):** `decision_artifacts` = for each Accepted ResolutionDecision whose `answer.kind` is in `plumb_validation::S3_RESOLUTION_KINDS` or equals `WAIVER_KIND` (exactly the evaluator's current-S3 selection; `proposal_acceptance` and other governance decisions are excluded), `F3DecisionArtifactInput { decision_ref, hash: decision.patch_ref, bytes }` loaded from the artifact store; `assumption_expiry_findings` = the complete result of `analyze_assumption_expiry(graph, &FixedClock::new(evaluation_at))`, where `evaluation_at` is read once from the injected application Clock when `ready` starts (never the revision's `created_at`), recorded with the persisted report and in the `ready` output. Built with `F3ValidationInputs::new` and installed with `with_f3_inputs`.
-- **F4:** `applicability` = the configured `F4ApplicabilityInput` (source, executable-source, in-scope Scenario and blocking Scenario refs and executable coverage with required Scenario kinds, all explicit); `visible_assumption_refs` = configured; `scenario_type_checks` = one per in-scope Scenario: `specification_hash = scenario_specification_hash(id, scenario)`, `status = Valid` when `plumb_functional::validate_scenario(graph, scenario)` succeeds, else `Invalid { issues: [error text] }` (sorted, unique); `scenario_runs` = each Accepted ScenarioRun node with its linked trace artifact hash and bytes (a broken link fails context validation; nothing is reconstructed). Executable, blocking and required-kind status is never inferred from requirement kind, priority, severity, names or text.
+- **F4:** `applicability` = since plan v3.1 (R0.4) the sources, executable sources, blocking Scenarios and coverage sources computed from the S4.5 verification applicability input and the graph, with the explicitly configured in-scope Scenario refs and required Scenario kinds; `visible_assumption_refs` = configured; `scenario_type_checks` = one per in-scope Scenario: `specification_hash = scenario_specification_hash(id, scenario)`, `status = Valid` when `plumb_functional::validate_scenario(graph, scenario)` succeeds, else `Invalid { issues: [error text] }` (sorted, unique); `scenario_runs` = each Accepted ScenarioRun node with its linked trace artifact hash and bytes (a broken link fails context validation; nothing is reconstructed). Executable, blocking and required-kind status is never inferred from requirement kind, priority, severity, names or text.
 
-`ready` (CLI) evaluates I0, F1, F2, F3, F4 in that order on one loaded head with the inputs above; it requires f1, f2 and f4 configuration before evaluating anything and persists every report. Gate ownership: `intake` -> I0, `lint` -> F1, `analyse` -> F2 (when configured), `run` -> F4, `ready` -> all five; there is no StageName for F3.
+`ready` (CLI) evaluates I0, F1, F2, F3, F4 in that order on one loaded head with the inputs above; it requires f1, f2 and f4 configuration before evaluating anything and persists every report (since plan v3.1, R0.4, the configuration holds only the external inputs of the gate input assembly matrix). Gate ownership: `intake` -> I0, `lint` -> F1, `analyse` -> F2 (when configured), `run` -> F4, `ready` -> all five; there is no StageName for F3.
 
 #### Durable state: store schema v3
 
@@ -1974,7 +2080,7 @@ The parent uses the unchanged `JobStatus` vocabulary: `queued` (captured, nothin
 
 Calendars are converted by the CLI (which has `time`) into `CalendarDefinition`s and one `StaticCalendarProvider`: valid IDs, lowercase English weekday names, `YYYY-MM-DD` dates, no duplicate `calendar_ref`, no duplicate weekday or holiday within a calendar; no locale, time-zone or holiday service. Direct-manager facts build an application-local `PredicateProvider` in `plumb-api`: `direct_manager(actor, employee)` is true exactly when `(actor.value_ref, employee.value_ref)` is a configured pair, false for an unknown pair; construction rejects an exact duplicate pair, a pair with equal refs and an `employee_ref` listed twice; `RefValue` is never configuration.
 
-Providers are built once at startup: `null` -> `NullProvider` (inference phases fail with `E_INFERENCE_FAILED`, `ProviderDisabled`); `replay` -> `MockProvider::with_fixtures` from a strict JSON array of `ProviderExecution` values keyed by `artifact.request_hash` (duplicates rejected, no context-hash lookup); `anthropic` (only with the `llm` feature) -> `AnthropicProvider::new(key)`, the key read once from `--anthropic-api-key-file` (exactly one trailing `\n` or `\r\n` removed; then empty, surrounding whitespace or any control character is rejected; never logged, never in any hash or config).
+Providers are built once at startup: `null` -> `NullProvider` (since plan v3.1, R0.2, `required` inference phases fail with `E_INFERENCE_REQUIRED` before any provider call and `fallback` requests are recorded as declared absent); `replay` -> `MockProvider::with_fixtures` from a strict JSON array of `ProviderExecution` values keyed by `artifact.request_hash` (duplicates rejected, no context-hash lookup); `anthropic` (only with the `llm` feature) -> `AnthropicProvider::new(key)`, the key read once from `--anthropic-api-key-file` (exactly one trailing `\n` or `\r\n` removed; then empty, surrounding whitespace or any control character is rejected; never logged, never in any hash or config).
 
 The CLI calls the same public application services as HTTP (never loopback HTTP, never duplicated route or recipe logic). Global options: `--db <PATH>` (required by every command except `log-effort`), `--branch <NAME>` (default `main`), `--config <PATH>` (required by every command), `--provider null|replay|anthropic` (default `null`), `--replay-fixtures <PATH>` (required with and only with `replay`), `--anthropic-api-key-file <PATH>` (required with and only with `anthropic`; without the `llm` feature `anthropic` is exit 1 `E_PROVIDER_UNAVAILABLE`), `--json`. Commands: `import <FILE> --media-type <TYPE> --name <NAME>` (the `create_source` service); `lint`, `extract`, `consolidate`, `calc`, `rules`, `analyse`, `flows`, `scenarios`, `run`, `tags` (`--scope <ID>`, repeatable; capture and execute the StageRecipeJob in-process and wait); `vocab` (`list_glossary`); `questions` (`list_questions`); `rounds create --stakeholder <ID> --max <N>` / `rounds show <ID>` (`create_round`, `get_round`; Hotfix 069: `--max` is required, 1..=1000, no default); `apply <PROPOSAL_ID> --action accept|create|link|merge|supersede|reject [--reason <TEXT>]` (the proposal action services, including the governed stage path); `ready`; `export --format <FORMAT>` (`export_model`); `report --out <DIR>` (`project_functional_pilot` with the current durable F4 report, writing the six artifacts under their `file_name()`); `serve --listen <ADDR>` (default `127.0.0.1:8080`); `log-effort --file <PATH> --kind stakeholder_hours|analyst_days --amount <DECIMAL> [--note <TEXT>]`. CLI writes use the head they load as the If-Match equivalent and the store CAS as final authority.
 
@@ -1987,6 +2093,47 @@ Exit codes: 0 success (including a passing gate and a ready or committed recipe 
 #### A0.4 prohibitions
 
 A0.4 must not change OpenAPI DTOs or paths, add a StageName, PSG node or relation type or SemanticPatch variant, change StageJob, InferenceRequest, Proposal, PatchSet or CompileRun identity or the one-run binding, change accepted domain algorithms, copy private identity functions, infer explicit stage inputs from prose, invent rules or authorization semantics, infer F4 applicability, hold a store lock while calling inference, auto-rebase or retry against a new head, report a failed gate as operational success, keep jobs only in memory, build a provider from HTTP text, read secrets from the environment, add a dependency, implement UI or start U0.1.
+
+### Project bootstrap (R0.1, plan v3.1)
+
+A user starting without a database creates the project through the CLI command `init --project <ID>` with the ordinary `--db` and `--config` options. It calls one application service, `bootstrap_project_database`, built on the canonical initial-revision write; the existing `initialize_project_database` and its callers stay unchanged.
+
+- **Refusal.** It refuses an existing path, any existing file, with no write. On failure no database file remains at the path.
+- **Initial revision.** It creates the `main` branch only; any other `--branch` is a usage error. It uses the built-in validation profile's ID and hashes and the configured identity as `created_by`. The graph contains the three configured Agents as `Accepted` provenance nodes: `identity.actor_ref` as human, `stage_actor_ref` as compiler stage and `assistant_actor_ref` as LLM model. Agents are excluded from `semantic_hash`, so the initial semantic hash equals that of the empty project graph.
+- **Result.** The database opens immediately for every other CLI command and for `serve`.
+- **No HTTP bootstrap.** A server cannot run without an opened database, so HTTP bootstrap would be circular. The CLI is the pilot product boundary.
+
+### Gate input assembly (R0.4, plan v3.1)
+
+F1, F2 and F4 supplemental inputs are assembled at evaluation time from the exact loaded revision. Configuration supplies only material the graph genuinely cannot know. Validation contracts (`with_f1_inputs`, `with_f2_inputs`, `with_f4_inputs`) and every rule are unchanged; only who constructs the inputs changes.
+
+Each field belongs to one of three classes:
+
+- **graph:** constructed mechanically from the loaded PSG;
+- **durable:** reconstructed by re-running the pure analyzer over the current graph with the validated inference artifact of the latest completed run of the named recipe on the branch lineage. When the request that the current graph would produce differs from that artifact's request (a statement changed or a requirement was added), the gate fails with `E_GATE_INPUTS_STALE`, naming the recipe to re-run. Re-running that recipe is an ordinary product operation, not a restart or a configuration rewrite.
+- **external:** explicit configuration, keyed by element and validated against the current graph. Entries for elements no longer in scope are ignored. A required entry that is missing is `E_GATE_INPUTS_MISSING`, naming the elements. An entry that names an element in a forbidden state is `E_GATE_INPUTS_STALE`.
+
+| Gate input field | Class | Source |
+|---|---|---|
+| F1 `requirements` set, `requirement_ref` | graph | Accepted Requirement IDs |
+| F1 `lint_input.requirement_ref`, `statement`, `evidence_refs` | graph | node ID, `Requirement.statement`, sorted node evidence |
+| F1 `lint_input.term_context` | graph | always `None` (validation requires it) |
+| F1 `lint_input.source_anchor` | graph | always `None` (never reconstructed from text) |
+| F1 `vocabulary_dependencies` | durable | S1.5 `analyze_vocabulary` over the latest `consolidate` vocabulary artifact |
+| F1 `analysis_findings` (`TERMS_RESOLVED`) | durable | the same S1.5 analysis |
+| F1 `analysis_findings` (`NO_DUPLICATE_ACCEPTED`) | graph | `analyze_requirement_duplicates` with the configured `duplicate_policy` |
+| F1 `analysis_findings` (`NO_CONTRADICTION`) | none | no producer exists; the rule keeps reading Accepted Open Finding nodes |
+| F1 `lint_policy` | external | configured organization lint policy |
+| F2 `analysis_findings` | durable | S2.1 `analyze_domain` and S2.2 `analyze_lifecycle` over the latest `analyse` artifacts |
+| F2 `calculation_scope_overrides` | external | the existing runtime `calculation_scope_overrides`, used only for Accepted Calculations without an S2.6 origin |
+| F2 `decision_tables` | graph | `decode_decision_table` of each Accepted DecisionTable; an undecodable table fails the gate explicitly |
+| F2 `invariants` bindings | external | the existing runtime `expression_scopes` whose owner is an Accepted Invariant |
+| F4 `applicability` sources, executable sources, blocking scenarios, coverage sources | graph over external | S4.5 `verification_applicability` input and the graph, exactly as S4.5 computes its snapshot |
+| F4 `in_scope_scenario_refs`, `required_scenario_kinds` | external | explicit F4 configuration; never inferred |
+| F4 `visible_assumption_refs` | external | explicit F4 configuration |
+| F4 `scenario_type_checks`, `scenario_runs` | graph | already derived (unchanged) |
+
+Nothing is inferred from names, text, kinds, priorities or severities. External policy, organization facts and applicability stay explicit.
 
 ### UI test-runner dependency (U0.1, Hotfix 070)
 

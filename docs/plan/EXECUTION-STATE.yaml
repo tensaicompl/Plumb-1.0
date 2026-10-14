@@ -1,4 +1,4 @@
-plan_version: 3.0-draft.1
+plan_version: 3.1-draft.1
 release: pilot-v3-foundation
 tasks:
 - id: P0.1
@@ -135,6 +135,20 @@ tasks:
   status: done
 - id: U2.7
   status: done
+- id: R0.1
+  status: pending
+- id: R0.2
+  status: pending
+- id: R0.3
+  status: pending
+- id: R0.4
+  status: pending
+- id: R0.5
+  status: pending
+- id: R0.6
+  status: pending
+- id: R0.7
+  status: pending
 - id: E0.1
   status: pending
 - id: E0.2
