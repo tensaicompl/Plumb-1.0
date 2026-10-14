@@ -134,7 +134,7 @@ tasks:
 - id: U2.6
   status: done
 - id: U2.7
-  status: pending
+  status: done
 - id: E0.1
   status: pending
 - id: E0.2

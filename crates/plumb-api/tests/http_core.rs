@@ -19,9 +19,13 @@ mod http_core {
     use plumb_api::{router, ApiIdentity, ApiState, ApiStateError};
     use plumb_artifacts::{ArtifactStore, SqliteArtifactStore};
     use plumb_core::{to_canonical_json, Clock, FixedClock, GateId, Hash, Id, Timestamp};
+    use plumb_functional::waiver::create_waiver;
+    use plumb_patch::apply_patch;
     use plumb_patch::{PatchSet, SemanticPatch};
     use plumb_psg::{source_artifact_id, Edge, Graph, Node};
     use plumb_store::{BranchName, RevisionWriteMeta, SqliteRevisionStore};
+    use plumb_validation::model::WaiverPolicy;
+    use plumb_validation::waiver::WaiverRequest;
     use plumb_validation::{
         load_builtin_software_profile, rules, EvaluatorRegistry, F1RequirementValidationInput,
         F1ValidationInputs, F4ApplicabilityInput, F4ValidationInputs, GateReport, RuleClass,
@@ -1122,6 +1126,173 @@ mod http_core {
         assert_eq!(a02_gets, ORDINARY_GETS.len());
     }
 
+    /// The expected public projection of `report` (Hotfix 082), built independently of the
+    /// route: report order, exact wire values, summary copied from the report.
+    fn gate_json(report: &GateReport) -> Value {
+        let ids = |ids: &[Id]| ids.iter().map(Id::to_string).collect::<Vec<_>>();
+        let mut findings: Vec<String> = report.findings.iter().map(|f| f.id.to_string()).collect();
+        findings.sort();
+        let rules: Vec<Value> = report
+            .rules
+            .iter()
+            .map(|r| {
+                let applicability = match &r.applicability {
+                    plumb_validation::Applicability::Applicable => {
+                        json!({"state": "APPLICABLE", "reason": null})
+                    }
+                    plumb_validation::Applicability::NotApplicable { reason } => {
+                        json!({"state": "NOT_APPLICABLE", "reason": reason})
+                    }
+                };
+                json!({
+                    "rule_id": r.rule_id,
+                    "state": r.state.as_str(),
+                    "declared_severity": r.declared_severity.as_str(),
+                    "effective_severity": r.effective_severity.as_str(),
+                    "applicability": applicability,
+                    "targets": ids(&r.targets),
+                    "evidence": r.evidence,
+                    "semantic_condition_key": r.semantic_condition_key,
+                    "finding_ref": r.finding_ref.as_ref().map(Id::to_string),
+                    "waiver_ref": r.waiver_ref.as_ref().map(Id::to_string),
+                    "error": r.error.as_ref().map(|e| json!({
+                        "code": e.code, "message": e.message,
+                        "targets": ids(&e.targets), "evidence": e.evidence
+                    })),
+                })
+            })
+            .collect();
+        let waivers: Vec<Value> = report
+            .waivers
+            .iter()
+            .map(|w| {
+                json!({
+                    "rule_id": w.rule_id, "finding_ref": w.finding_ref.to_string(),
+                    "finding_key": w.finding_key.to_string(), "decision_ref": w.decision_ref.to_string()
+                })
+            })
+            .collect();
+        json!({
+            "gate": report.gate.as_str(),
+            "passed": report.result == plumb_validation::GateResult::Pass,
+            "findings": findings,
+            "rules": rules,
+            "waivers": waivers,
+            "summary": {
+                "blocker_failed": report.summary.blocker_failed,
+                "blocker_waived": report.summary.blocker_waived,
+                "warnings": report.summary.warnings
+            },
+        })
+    }
+
+    /// `graph` plus the Accepted Finding nodes of `report` (findings do not change the semantic
+    /// hash).
+    fn with_findings(graph: &Graph, report: &GateReport) -> Graph {
+        let mut nodes: Vec<Node> = graph.nodes().values().cloned().collect();
+        for f in &report.findings {
+            let mut n = finding(f.id.as_str(), "x", "x", "info", "Open", &[]);
+            n.payload = plumb_psg::NodePayload::Finding(f.payload.clone());
+            nodes.push(n);
+        }
+        graph_of(nodes, graph.edges().values().cloned().collect())
+    }
+
+    #[tokio::test]
+    async fn http_core_gates_project_governed_waivers_and_summary() {
+        // A real F1 failure of a decision-required rule, persisted as an Accepted Finding and
+        // waived by a governed ResolutionDecision of an Accepted human Agent.
+        let (mut nodes, edges) = fixture_parts();
+        nodes.push(node(
+            "agent:reviewer",
+            "Accepted",
+            "Agent",
+            json!({"agent_kind": "human"}),
+        ));
+        let base = graph_of(nodes, edges);
+        let before = gate_report(&base, GateId::F1);
+        let base = with_findings(&base, &before);
+        let shipped = profile();
+        let failed = before
+            .rules
+            .iter()
+            .find(|r| {
+                r.state == plumb_validation::RuleResultState::Fail
+                    && shipped.rules.iter().any(|m| {
+                        m.id == r.rule_id && m.waiver_policy == WaiverPolicy::DecisionRequired
+                    })
+            })
+            .unwrap()
+            .clone();
+        let metadata = shipped
+            .rules
+            .iter()
+            .find(|m| m.id == failed.rule_id)
+            .unwrap();
+        let created = create_waiver(
+            &base,
+            &WaiverRequest {
+                rule: metadata,
+                targets: &failed.targets,
+                semantic_condition_key: failed.semantic_condition_key.as_deref().unwrap(),
+                decided_by: &id("agent:reviewer"),
+                decided_at: ts(T0),
+                rationale: "Accepted for the pilot.",
+            },
+            &ValidationPolicy::default(),
+        )
+        .unwrap();
+        let waived_graph = apply_patch(&base, &created.proposal.patch_set)
+            .unwrap()
+            .graph;
+        let report = gate_report(&waived_graph, GateId::F1);
+        report.validate().unwrap();
+        assert_eq!(report.waivers.len(), 1);
+        assert!(
+            report.summary.blocker_waived + report.summary.warnings + report.summary.blocker_failed
+                > 0
+        );
+
+        let app = app_with(waived_graph, &[GateId::F1], fixed());
+        let gates = get(&app, "/api/gates").await.json();
+        assert_eq!(gates.as_array().unwrap().len(), 1);
+        let f1 = &gates[0];
+        assert_eq!(*f1, gate_json(&report));
+        // The waived rule: WAIVED (never PASS) with its Finding and ResolutionDecision.
+        let rule = f1["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["rule_id"] == json!(failed.rule_id))
+            .unwrap();
+        assert_eq!(rule["state"], "WAIVED");
+        let finding_ref = failed.finding_ref.as_ref().unwrap().to_string();
+        assert_eq!(rule["finding_ref"], json!(finding_ref));
+        assert_eq!(rule["waiver_ref"], json!(created.decision_ref.to_string()));
+        assert_eq!(
+            f1["waivers"],
+            json!([{
+                "rule_id": failed.rule_id,
+                "finding_ref": finding_ref,
+                "finding_key": report.waivers[0].finding_key.to_string(),
+                "decision_ref": created.decision_ref.to_string()
+            }])
+        );
+        // The summary is the report's own.
+        assert_eq!(
+            f1["summary"],
+            json!({
+                "blocker_failed": report.summary.blocker_failed,
+                "blocker_waived": report.summary.blocker_waived,
+                "warnings": report.summary.warnings
+            })
+        );
+        assert_eq!(
+            f1["passed"],
+            report.result == plumb_validation::GateResult::Pass
+        );
+    }
+
     #[tokio::test]
     async fn http_core_meta_and_gates() {
         let app = app();
@@ -1146,14 +1317,59 @@ mod http_core {
             .map(|g| g["gate"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["I0", "F1", "F4"]);
-        let report = gate_report(&head(&app).graph, GateId::I0);
-        let mut findings: Vec<String> = report.findings.iter().map(|f| f.id.to_string()).collect();
-        findings.sort();
-        assert_eq!(
-            gates[0],
-            json!({"gate": "I0", "passed": false, "findings": findings})
-        );
+        // Hotfix 082: each entry is the projection of its current report, including the rule
+        // results, waivers and summary.
+        let graph = head(&app).graph;
+        for (index, gate) in [GateId::I0, GateId::F1, GateId::F4].into_iter().enumerate() {
+            assert_eq!(
+                gates[index],
+                gate_json(&gate_report(&graph, gate)),
+                "{gate:?}"
+            );
+        }
+        assert_eq!(gates[0]["passed"], false);
         assert_eq!(gates[2]["passed"], true);
+        // Real PASS and FAIL rule results with their exact material.
+        let rules: Vec<&Value> = gates
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rules"].as_array().unwrap())
+            .collect();
+        let pass = rules.iter().find(|r| r["state"] == "PASS").unwrap();
+        assert_eq!(
+            pass["applicability"],
+            json!({"state": "APPLICABLE", "reason": null})
+        );
+        assert_eq!(
+            (&pass["finding_ref"], &pass["waiver_ref"], &pass["error"]),
+            (&Value::Null, &Value::Null, &Value::Null)
+        );
+        let fail = gates[0]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["state"] == "FAIL")
+            .unwrap();
+        assert!(fail["finding_ref"].is_string());
+        assert!(gates[0]["findings"]
+            .as_array()
+            .unwrap()
+            .contains(&fail["finding_ref"]));
+        assert_eq!(fail["waiver_ref"], Value::Null);
+        assert_eq!(fail["error"], Value::Null);
+        assert!(gates[0]["summary"]["blocker_failed"].as_u64().unwrap() >= 1);
+        // A real NOT_APPLICABLE result carries its exact deterministic reason.
+        let not_applicable = rules
+            .iter()
+            .find(|r| r["state"] == "NOT_APPLICABLE")
+            .unwrap();
+        assert_eq!(not_applicable["applicability"]["state"], "NOT_APPLICABLE");
+        assert!(!not_applicable["applicability"]["reason"]
+            .as_str()
+            .unwrap()
+            .is_empty());
+        assert_eq!(not_applicable["finding_ref"], Value::Null);
         // Identity validation.
         assert_eq!(
             ApiIdentity::new(" ".into(), id(ACTOR), vec![], "m".into()),

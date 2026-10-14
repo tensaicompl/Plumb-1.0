@@ -859,6 +859,101 @@ pub struct GateStatus {
     pub passed: bool,
     /// Finding IDs.
     pub findings: Vec<String>,
+    /// The report's rule results, in report order (Hotfix 082).
+    pub rules: Vec<GateRuleResult>,
+    /// The report's applied governed waivers, in report order (Hotfix 082).
+    pub waivers: Vec<GateWaiver>,
+    /// The report's own summary counts (Hotfix 082).
+    pub summary: GateSummaryView,
+}
+
+/// The exact result state of one rule in a gate report (Hotfix 082).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum GateRuleState {
+    #[serde(rename = "PASS")]
+    Pass,
+    #[serde(rename = "FAIL")]
+    Fail,
+    #[serde(rename = "WARN")]
+    Warn,
+    #[serde(rename = "NOT_APPLICABLE")]
+    NotApplicable,
+    #[serde(rename = "WAIVED")]
+    Waived,
+    #[serde(rename = "ERROR")]
+    Error,
+}
+
+/// Whether a rule applied to the gate's scope (Hotfix 082).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum GateRuleApplicabilityState {
+    #[serde(rename = "APPLICABLE")]
+    Applicable,
+    #[serde(rename = "NOT_APPLICABLE")]
+    NotApplicable,
+}
+
+/// A rule's applicability; `reason` is the exact server reason when not applicable, else null.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GateRuleApplicability {
+    pub state: GateRuleApplicabilityState,
+    #[schema(required = true)]
+    pub reason: Option<String>,
+}
+
+/// The evaluator failure of an ERROR rule result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GateRuleError {
+    pub code: String,
+    pub message: String,
+    pub targets: Vec<String>,
+    pub evidence: Vec<String>,
+}
+
+/// One rule result of a current gate report (Hotfix 082); severities are the exact validation
+/// severity strings (`blocker`, `error`, `warn`, `info`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GateRuleResult {
+    pub rule_id: String,
+    pub state: GateRuleState,
+    pub declared_severity: String,
+    pub effective_severity: String,
+    pub applicability: GateRuleApplicability,
+    pub targets: Vec<String>,
+    pub evidence: Vec<String>,
+    #[schema(required = true)]
+    pub semantic_condition_key: Option<String>,
+    #[schema(required = true)]
+    pub finding_ref: Option<String>,
+    #[schema(required = true)]
+    pub waiver_ref: Option<String>,
+    #[schema(required = true)]
+    pub error: Option<GateRuleError>,
+}
+
+/// One governed waiver applied by a gate report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GateWaiver {
+    pub rule_id: String,
+    pub finding_ref: String,
+    pub finding_key: String,
+    pub decision_ref: String,
+}
+
+/// The summary counts of a gate report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GateSummaryView {
+    #[schema(minimum = 0)]
+    pub blocker_failed: u32,
+    #[schema(minimum = 0)]
+    pub blocker_waived: u32,
+    #[schema(minimum = 0)]
+    pub warnings: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]

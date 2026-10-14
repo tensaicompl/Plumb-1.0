@@ -1965,8 +1965,9 @@ mod openapi {
         let schemas = doc["components"]["schemas"].as_object().unwrap();
         // Hotfix 073 adds SemanticElementDiff and SemanticChangePreviewResponse; Hotfix 079 adds
         // ProcessNodeView, ProcessNodeViewKind and ProcessFlowView; Hotfix 080 adds
-        // FindingRuleClass.
-        assert_eq!(schemas.len(), 121);
+        // FindingRuleClass; Hotfix 082 adds GateRuleState, GateRuleApplicabilityState,
+        // GateRuleApplicability, GateRuleError, GateRuleResult, GateWaiver and GateSummaryView.
+        assert_eq!(schemas.len(), 128);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -2043,6 +2044,86 @@ mod openapi {
                 "organization_policy"
             ])
         );
+
+        // GateStatus (Hotfix 082): the additive projection of current GateReport material.
+        let keys = |name: &str| {
+            schema(&doc, name)["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            keys("GateStatus"),
+            set(&["gate", "passed", "findings", "rules", "waivers", "summary"])
+        );
+        assert_eq!(
+            required(&doc, "GateStatus"),
+            set(&["gate", "passed", "findings", "rules", "waivers", "summary"])
+        );
+        assert_eq!(
+            enum_of(&doc, "GateRuleState"),
+            json!(["PASS", "FAIL", "WARN", "NOT_APPLICABLE", "WAIVED", "ERROR"])
+        );
+        assert_eq!(
+            enum_of(&doc, "GateRuleApplicabilityState"),
+            json!(["APPLICABLE", "NOT_APPLICABLE"])
+        );
+        assert_eq!(keys("GateRuleApplicability"), set(&["state", "reason"]));
+        assert_eq!(
+            required(&doc, "GateRuleApplicability"),
+            set(&["state", "reason"])
+        );
+        assert_eq!(
+            schema(&doc, "GateRuleApplicability")["properties"]["reason"]["type"],
+            json!(["string", "null"])
+        );
+        let rule_fields = [
+            "rule_id",
+            "state",
+            "declared_severity",
+            "effective_severity",
+            "applicability",
+            "targets",
+            "evidence",
+            "semantic_condition_key",
+            "finding_ref",
+            "waiver_ref",
+            "error",
+        ];
+        assert_eq!(keys("GateRuleResult"), set(&rule_fields));
+        assert_eq!(required(&doc, "GateRuleResult"), set(&rule_fields));
+        let rule = schema(&doc, "GateRuleResult");
+        for nullable in ["semantic_condition_key", "finding_ref", "waiver_ref"] {
+            assert_eq!(
+                rule["properties"][nullable]["type"],
+                json!(["string", "null"]),
+                "{nullable}"
+            );
+        }
+        let error = rule["properties"]["error"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(error.len(), 2);
+        assert!(error.contains(&json!({"type": "null"})));
+        assert_eq!(
+            error
+                .iter()
+                .filter_map(|branch| branch.get("$ref"))
+                .collect::<Vec<_>>(),
+            vec!["#/components/schemas/GateRuleError"]
+        );
+        let error_fields = ["code", "message", "targets", "evidence"];
+        assert_eq!(keys("GateRuleError"), set(&error_fields));
+        assert_eq!(required(&doc, "GateRuleError"), set(&error_fields));
+        let waiver_fields = ["rule_id", "finding_ref", "finding_key", "decision_ref"];
+        assert_eq!(keys("GateWaiver"), set(&waiver_fields));
+        assert_eq!(required(&doc, "GateWaiver"), set(&waiver_fields));
+        let summary_fields = ["blocker_failed", "blocker_waived", "warnings"];
+        assert_eq!(keys("GateSummaryView"), set(&summary_fields));
+        assert_eq!(required(&doc, "GateSummaryView"), set(&summary_fields));
 
         // Search.
         let hit = schema(&doc, "SearchHit");

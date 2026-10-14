@@ -1471,11 +1471,72 @@ export interface components {
          * @enum {string}
          */
         GateName: "I0" | "F1" | "F2" | "F3" | "F4";
+        /** @description A rule's applicability; `reason` is the exact server reason when not applicable, else null. */
+        GateRuleApplicability: {
+            reason: string | null;
+            state: components["schemas"]["GateRuleApplicabilityState"];
+        };
+        /**
+         * @description Whether a rule applied to the gate's scope (Hotfix 082).
+         * @enum {string}
+         */
+        GateRuleApplicabilityState: "APPLICABLE" | "NOT_APPLICABLE";
+        /** @description The evaluator failure of an ERROR rule result. */
+        GateRuleError: {
+            code: string;
+            evidence: string[];
+            message: string;
+            targets: string[];
+        };
+        /**
+         * @description One rule result of a current gate report (Hotfix 082); severities are the exact validation
+         *     severity strings (`blocker`, `error`, `warn`, `info`).
+         */
+        GateRuleResult: {
+            applicability: components["schemas"]["GateRuleApplicability"];
+            declared_severity: string;
+            effective_severity: string;
+            error: null | components["schemas"]["GateRuleError"];
+            evidence: string[];
+            finding_ref: string | null;
+            rule_id: string;
+            semantic_condition_key: string | null;
+            state: components["schemas"]["GateRuleState"];
+            targets: string[];
+            waiver_ref: string | null;
+        };
+        /**
+         * @description The exact result state of one rule in a gate report (Hotfix 082).
+         * @enum {string}
+         */
+        GateRuleState: "PASS" | "FAIL" | "WARN" | "NOT_APPLICABLE" | "WAIVED" | "ERROR";
         GateStatus: {
             /** @description Finding IDs. */
             findings: string[];
             gate: components["schemas"]["GateName"];
             passed: boolean;
+            /** @description The report's rule results, in report order (Hotfix 082). */
+            rules: components["schemas"]["GateRuleResult"][];
+            /** @description The report's own summary counts (Hotfix 082). */
+            summary: components["schemas"]["GateSummaryView"];
+            /** @description The report's applied governed waivers, in report order (Hotfix 082). */
+            waivers: components["schemas"]["GateWaiver"][];
+        };
+        /** @description The summary counts of a gate report. */
+        GateSummaryView: {
+            /** Format: int32 */
+            blocker_failed: number;
+            /** Format: int32 */
+            blocker_waived: number;
+            /** Format: int32 */
+            warnings: number;
+        };
+        /** @description One governed waiver applied by a gate report. */
+        GateWaiver: {
+            decision_ref: string;
+            finding_key: string;
+            finding_ref: string;
+            rule_id: string;
         };
         GlossaryEditRequest: {
             aliases?: string[] | null;
@@ -2525,7 +2586,51 @@ export interface operations {
                      *           "example"
                      *         ],
                      *         "gate": "F1",
-                     *         "passed": true
+                     *         "passed": true,
+                     *         "rules": [
+                     *           {
+                     *             "applicability": {
+                     *               "reason": "example",
+                     *               "state": "APPLICABLE"
+                     *             },
+                     *             "declared_severity": "example",
+                     *             "effective_severity": "example",
+                     *             "error": {
+                     *               "code": "example",
+                     *               "evidence": [
+                     *                 "example"
+                     *               ],
+                     *               "message": "example",
+                     *               "targets": [
+                     *                 "example"
+                     *               ]
+                     *             },
+                     *             "evidence": [
+                     *               "example"
+                     *             ],
+                     *             "finding_ref": "example",
+                     *             "rule_id": "example",
+                     *             "semantic_condition_key": "example",
+                     *             "state": "ERROR",
+                     *             "targets": [
+                     *               "example"
+                     *             ],
+                     *             "waiver_ref": "example"
+                     *           }
+                     *         ],
+                     *         "summary": {
+                     *           "blocker_failed": 0,
+                     *           "blocker_waived": 0,
+                     *           "warnings": 0
+                     *         },
+                     *         "waivers": [
+                     *           {
+                     *             "decision_ref": "example",
+                     *             "finding_key": "example",
+                     *             "finding_ref": "example",
+                     *             "rule_id": "example"
+                     *           }
+                     *         ]
                      *       }
                      *     ]
                      */

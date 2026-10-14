@@ -115,8 +115,29 @@ const VERSION: ModelVersion = {
 };
 
 const GATES: GateStatus[] = [
-  { gate: "I0", passed: true, findings: [] },
-  { gate: "F1", passed: false, findings: ["fnd:0123456789abcdef"] },
+  { gate: "I0", passed: true, findings: [], rules: [], waivers: [], summary: { blocker_failed: 0, blocker_waived: 0, warnings: 0 } },
+  {
+    gate: "F1",
+    passed: false,
+    findings: ["fnd:0123456789abcdef"],
+    rules: [
+      {
+        rule_id: "PLUMB.F1.REQ.NO_CONTRADICTION",
+        state: "FAIL",
+        declared_severity: "blocker",
+        effective_severity: "blocker",
+        applicability: { state: "APPLICABLE", reason: null },
+        targets: ["req:hr-001"],
+        evidence: [],
+        semantic_condition_key: "contradiction",
+        finding_ref: "fnd:0123456789abcdef",
+        waiver_ref: null,
+        error: null,
+      },
+    ],
+    waivers: [],
+    summary: { blocker_failed: 1, blocker_waived: 0, warnings: 0 },
+  },
 ];
 
 function shellHandlers(counts?: { version: number }) {
@@ -242,6 +263,8 @@ describe("HomePage shell", () => {
     expect(Object.keys(router.routesByPath).sort()).toEqual(
       [
         "/",
+        "/decisions",
+        "/gates",
         "/model/calculations",
         "/model/entities",
         "/model/findings",

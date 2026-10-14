@@ -1,8 +1,10 @@
 import { createRootRoute, createRoute, createRouter, type RouterHistory } from "@tanstack/react-router";
 
 import { CalculationsPage } from "../features/calculations/CalculationsPage";
+import { DecisionsPage } from "../features/decisions/DecisionsPage";
 import { EntitiesPage } from "../features/entities/EntitiesPage";
 import { FindingsPage } from "../features/findings/FindingsPage";
+import { GatesPage } from "../features/gates/GatesPage";
 import { GlossaryPage } from "../features/glossary/GlossaryPage";
 import { HomePage } from "../features/home/HomePage";
 import { ProcessesPage } from "../features/processes/ProcessesPage";
@@ -110,6 +112,19 @@ const calculationsRoute = createRoute({
   component: CalculationsPage,
 });
 
+// U2.7: the I0-F4 gates with their rule results and the read-only decision log.
+const gatesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/gates",
+  component: GatesPage,
+});
+
+const decisionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/decisions",
+  component: DecisionsPage,
+});
+
 export const routeTree = rootRoute.addChildren([
   indexRoute,
   requirementsRoute,
@@ -124,6 +139,8 @@ export const routeTree = rootRoute.addChildren([
   findingsRoute,
   rulesRoute,
   calculationsRoute,
+  gatesRoute,
+  decisionsRoute,
 ]);
 
 /** A router over the route tree (browser history unless `history` is given). */
