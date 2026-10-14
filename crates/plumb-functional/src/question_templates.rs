@@ -1,4 +1,5 @@
-//! The closed deterministic Question template registry (plan S3.1, Hotfix 045).
+//! The closed deterministic Question template registry (plan S3.1, Hotfix 045; Hotfix 083 adds
+//! the three generic calculation answer families).
 //!
 //! Each template maps exactly one finding code and semantic-condition contract to a typed
 //! [`QuestionKind`], a routing key, canonical slots, a fixed prompt and a closed JSON answer
@@ -61,9 +62,49 @@ pub const PERFORMER_TEMPLATE: &str = "f2.operation.performer.v1";
 pub const CALENDAR_TEMPLATE: &str = "f2.time.calendar.v1";
 pub const PERMISSION_TEMPLATE: &str = "f2.permission.concrete.v1";
 pub const INVARIANT_TEMPLATE: &str = "f2.invariant.formula.v1";
+pub const CALCULATION_FRACTION_TEMPLATE: &str = "f2.calculation.fraction.v1";
+pub const CALCULATION_INCLUSIVE_END_TEMPLATE: &str = "f2.calculation.inclusive-end.v1";
+pub const CALCULATION_HOLIDAY_POLICY_TEMPLATE: &str = "f2.calculation.holiday-policy.v1";
 
-/// The six templates, in template ID order.
-pub const QUESTION_TEMPLATES: [QuestionTemplate; 6] = [
+/// The condition prefix of an unresolved fractional calculation input (Hotfix 083); the suffix
+/// is the exact Calculation ID. The finding is explicit upstream analysis material.
+pub const CALCULATION_FRACTION_CONDITION_PREFIX: &str = "calculation_fraction_unresolved:";
+/// The condition prefix of an unresolved `working_days` inclusive-end argument (Hotfix 083).
+pub const CALCULATION_INCLUSIVE_END_CONDITION_PREFIX: &str =
+    "calculation_inclusive_end_unresolved:";
+/// The condition prefix of an unresolved calculation holiday policy (Hotfix 083).
+pub const CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX: &str =
+    "calculation_holiday_policy_unresolved:";
+
+/// The nine templates, in template ID order.
+pub const QUESTION_TEMPLATES: [QuestionTemplate; 9] = [
+    QuestionTemplate {
+        template_id: CALCULATION_FRACTION_TEMPLATE,
+        code: "PLUMB.F2.CALC.TYPECHECK",
+        condition: ConditionMatch::Prefix(CALCULATION_FRACTION_CONDITION_PREFIX),
+        kind: QuestionKind::Number,
+        routing_key: "formula",
+        expansion: Expansion::Candidate,
+        choices: ChoiceSpec::None,
+    },
+    QuestionTemplate {
+        template_id: CALCULATION_HOLIDAY_POLICY_TEMPLATE,
+        code: "PLUMB.F2.TIME.CALENDAR_DEFINED",
+        condition: ConditionMatch::Prefix(CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX),
+        kind: QuestionKind::YesNo,
+        routing_key: "calendar",
+        expansion: Expansion::Candidate,
+        choices: ChoiceSpec::Single(&[NodeType::Calendar]),
+    },
+    QuestionTemplate {
+        template_id: CALCULATION_INCLUSIVE_END_TEMPLATE,
+        code: "PLUMB.F2.CALC.TYPECHECK",
+        condition: ConditionMatch::Prefix(CALCULATION_INCLUSIVE_END_CONDITION_PREFIX),
+        kind: QuestionKind::YesNo,
+        routing_key: "formula",
+        expansion: Expansion::Candidate,
+        choices: ChoiceSpec::None,
+    },
     QuestionTemplate {
         template_id: CARDINALITY_TEMPLATE,
         code: "PLUMB.F2.DOMAIN.RELATION_TYPED",
@@ -260,6 +301,15 @@ impl QuestionTemplate {
             INVARIANT_TEMPLATE => {
                 format!("What boolean PlumbExpr predicate should invariant {subject} use?")
             }
+            CALCULATION_FRACTION_TEMPLATE => format!(
+                "Which fraction of the result unit does the fractional input of calculation {subject} represent?"
+            ),
+            CALCULATION_INCLUSIVE_END_TEMPLATE => format!(
+                "Does the working-day period of calculation {subject} include its end date?"
+            ),
+            CALCULATION_HOLIDAY_POLICY_TEMPLATE => format!(
+                "Does a configured holiday inside the period of calculation {subject} consume a working day, and which accepted calendar applies?"
+            ),
             other => unreachable!("closed template registry has no {other}"),
         }
     }
@@ -299,6 +349,21 @@ impl QuestionTemplate {
                 "expression",
                 json!({"type": "string", "minLength": 1}),
             )]),
+            // Canonical decimal text, never a binary number.
+            CALCULATION_FRACTION_TEMPLATE => object_schema(vec![
+                ("decimal", json!({"type": "string", "minLength": 1})),
+                ("unit", json!({"type": "string", "minLength": 1})),
+            ]),
+            CALCULATION_INCLUSIVE_END_TEMPLATE => {
+                object_schema(vec![("inclusive_end", json!({"type": "boolean"}))])
+            }
+            CALCULATION_HOLIDAY_POLICY_TEMPLATE => match choices {
+                Choices::Single(ids) => object_schema(vec![
+                    ("calendar_ref", enum_property(ids)),
+                    ("holiday_consumes_working_day", json!({"type": "boolean"})),
+                ]),
+                _ => unreachable!("the holiday policy has a calendar choice list"),
+            },
             other => unreachable!("closed template registry has no {other}"),
         }
     }

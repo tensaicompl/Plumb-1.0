@@ -93,12 +93,14 @@ pub use authorization::{
 };
 pub use calculation::{
     analyze_calculation_cycles, analyze_calculations, build_calculation_request,
-    calculation_example, default_field_binding, default_root_binding, evaluate_calculation,
-    exact_to_expr, expr_to_exact, qualify_accepted_calculation, CalculationBindingExposure,
+    calculation_example, calculation_fraction_semantic_key, default_field_binding,
+    default_root_binding, evaluate_calculation, exact_to_expr, expr_to_exact,
+    qualify_accepted_calculation, rewrite_working_days_inclusive_end, CalculationBindingExposure,
     CalculationError, CalculationExample, CalculationExampleError, CalculationIssue,
-    CalculationScope, CalculationScopeBinding, ExactValue, CALCULATION_CALENDAR_SYMBOL,
-    CALCULATION_CONTEXT_VERSION, CALCULATION_ORIGIN_EXTENSION, CALCULATION_OUTPUT_VERSION,
-    CALCULATION_TASK_KIND,
+    CalculationScope, CalculationScopeBinding, ExactValue, InclusiveEndRewriteError,
+    CALCULATION_CALENDAR_SYMBOL, CALCULATION_CONTEXT_VERSION, CALCULATION_FRACTION_KEY_PREFIX,
+    CALCULATION_ORIGIN_EXTENSION, CALCULATION_OUTPUT_VERSION, CALCULATION_TASK_KIND,
+    UNRESOLVED_INCLUSIVE_END,
 };
 pub use data_class::{
     analyze_data_classification, build_data_class_request, dictionary_classification,
@@ -173,7 +175,11 @@ pub use question::{
     QuestionGenerationResult, QuestionIssue, QuestionMaterialization, RouteDisposition,
     RoutingStakeholder, StakeholderRoutingConfig, UnmappedFinding,
 };
-pub use question_templates::{QuestionTemplate, UnmappedReason, QUESTION_TEMPLATES};
+pub use question_templates::{
+    QuestionTemplate, UnmappedReason, CALCULATION_FRACTION_CONDITION_PREFIX,
+    CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX, CALCULATION_INCLUSIVE_END_CONDITION_PREFIX,
+    QUESTION_TEMPLATES,
+};
 pub use requirements::{
     build_requirement_classification_request, compile_requirement_candidates,
     RequirementClassificationContext, RequirementClassificationContextCandidate,

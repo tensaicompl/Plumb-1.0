@@ -4,15 +4,17 @@
 //! One human answer to an S3.1 Question becomes one human-decision proposal: an optional
 //! explicit semantic answer effect, an Accepted ResolutionDecision with its governance edges and
 //! the Question/Finding lifecycle updates. The mapper is identified only by (Finding code,
-//! QuestionKind) for the six current templates and the subject only by `context_refs[0]`. The
+//! QuestionKind) for the nine current templates and the subject only by `context_refs[0]`; the
+//! three calculation families (Hotfix 083) also prove their exact condition key. The
 //! effect is recorded in a separate content-addressed artifact whose hash is the decision's
 //! `patch_ref`. Nothing here applies the proposal, reads files, observes time or infers.
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, CoreError, Hash, Id, StageId, Timestamp};
-use plumb_expr::{parse, typecheck, Ty};
+use plumb_expr::{parse, typecheck, Ty, Unit};
 use plumb_patch::{
     apply_patch, AcceptancePolicy, ElementPrecondition, PatchSet, Proposal, ProposalMateriality,
     SemanticPatch,
@@ -22,10 +24,26 @@ use plumb_psg::{
     Finding, Graph, Node, NodePayload, NodeType, Question, QuestionKind, RelationKind,
     RelationProperties, ResolutionDecision,
 };
-use plumb_validation::expression_scope::{validate_expression_bindings, ExpressionScopeBinding};
+use plumb_validation::calculation_analysis::{
+    calculation_origin_of, validate_calculation_bindings, CalculationBindingExposure,
+};
+use plumb_validation::expression_scope::{
+    attribute_expression_type, validate_expression_bindings, ExpressionScopeBinding,
+};
+use plumb_validation::{finding_id, finding_key};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use thiserror::Error;
+
+use crate::calculation::{
+    calculation_fraction_semantic_key, rewrite_working_days_inclusive_end, InclusiveEndRewriteError,
+};
+use crate::question_templates::{
+    CALCULATION_FRACTION_CONDITION_PREFIX, CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX,
+    CALCULATION_INCLUSIVE_END_CONDITION_PREFIX,
+};
+use crate::scenario::{CalculationExampleInput, CalculationExampleV1, ScenarioLiteral};
 
 const RESOLUTION_STAGE: StageId = StageId::S3;
 
@@ -38,7 +56,7 @@ const CLOSED: &str = "Closed";
 
 // ============================================================================ templates
 
-/// The six resolvable S3.1 template families.
+/// The nine resolvable S3.1 template families (Hotfix 083 adds the last three).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionTemplate {
@@ -48,6 +66,9 @@ pub enum ResolutionTemplate {
     CalculationCalendar,
     PermissionBinding,
     InvariantFormula,
+    CalculationFraction,
+    CalculationInclusiveEnd,
+    CalculationHolidayPolicy,
 }
 
 impl ResolutionTemplate {
@@ -69,6 +90,11 @@ impl ResolutionTemplate {
             ("PLUMB.F2.INVARIANT.EXPRESSIBLE", QuestionKind::FormulaConfirm) => {
                 Some(InvariantFormula)
             }
+            ("PLUMB.F2.CALC.TYPECHECK", QuestionKind::Number) => Some(CalculationFraction),
+            ("PLUMB.F2.CALC.TYPECHECK", QuestionKind::YesNo) => Some(CalculationInclusiveEnd),
+            ("PLUMB.F2.TIME.CALENDAR_DEFINED", QuestionKind::YesNo) => {
+                Some(CalculationHolidayPolicy)
+            }
             _ => None,
         }
     }
@@ -82,6 +108,24 @@ impl ResolutionTemplate {
             ResolutionTemplate::CalculationCalendar => "calculation_calendar",
             ResolutionTemplate::PermissionBinding => "permission_binding",
             ResolutionTemplate::InvariantFormula => "invariant_formula",
+            ResolutionTemplate::CalculationFraction => "calculation_fraction",
+            ResolutionTemplate::CalculationInclusiveEnd => "calculation_inclusive_end",
+            ResolutionTemplate::CalculationHolidayPolicy => "calculation_holiday_policy",
+        }
+    }
+
+    /// The frozen condition prefix whose exact `prefix + subject` key the linked Finding must
+    /// carry (Hotfix 083); the original six families are identified by (code, kind) alone.
+    fn condition_prefix(self) -> Option<&'static str> {
+        match self {
+            ResolutionTemplate::CalculationFraction => Some(CALCULATION_FRACTION_CONDITION_PREFIX),
+            ResolutionTemplate::CalculationInclusiveEnd => {
+                Some(CALCULATION_INCLUSIVE_END_CONDITION_PREFIX)
+            }
+            ResolutionTemplate::CalculationHolidayPolicy => {
+                Some(CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX)
+            }
+            _ => None,
         }
     }
 
@@ -223,6 +267,10 @@ pub enum ResolutionError {
     ResolutionDecisionIdCollision(Id),
     #[error("resolution proposal is invalid: {reason}")]
     InvalidResolutionProposal { reason: String },
+    #[error("calculation {calculation_ref} cannot take this governed answer: {reason}")]
+    InvalidCalculationAnswer { calculation_ref: Id, reason: String },
+    #[error("a configured holiday never consumes a working day; holiday_consumes_working_day = true is unsupported")]
+    UnsupportedHolidayPolicy,
 }
 
 // ============================================================================ identities
@@ -487,12 +535,95 @@ fn old_ref(old: &ResolutionDecision, old_id: &Id, field: &str) -> Result<Id, Res
         })
 }
 
+/// A canonical fraction: decimal text equal to its normalized form (no sign prefix, no trailing
+/// zeros), never a binary number.
+fn canonical_decimal(text: &str) -> Option<Decimal> {
+    Decimal::from_str(text)
+        .ok()
+        .filter(|d| d.normalize().to_string() == text)
+}
+
+fn answer_str<'a>(answer: &'a JsonValue, field: &str) -> Result<&'a str, ResolutionError> {
+    answer
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| ResolutionError::AnswerSchemaInvalid {
+            reason: format!("{field} is not a string"),
+        })
+}
+
+fn answer_bool(answer: &JsonValue, field: &str) -> Result<bool, ResolutionError> {
+    answer
+        .get(field)
+        .and_then(JsonValue::as_bool)
+        .ok_or_else(|| ResolutionError::AnswerSchemaInvalid {
+            reason: format!("{field} is not a boolean"),
+        })
+}
+
+/// The marker field `field` of a superseded decision as text.
+fn old_str<'d>(
+    old: &'d ResolutionDecision,
+    old_id: &Id,
+    field: &str,
+) -> Result<&'d str, ResolutionError> {
+    old.answer
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| ResolutionError::InvalidSupersededDecision {
+            decision_ref: old_id.clone(),
+            reason: format!("marker has no {field}"),
+        })
+}
+
+/// The governed fraction example of `key` (Hotfix 083): one input, the exact root symbol, the
+/// fraction without a unit, and the same fraction in the calculation's result unit.
+fn fraction_example(
+    key: &str,
+    symbol: &str,
+    decimal: &str,
+    unit: &str,
+) -> Result<JsonValue, CoreError> {
+    serde_json::to_value(CalculationExampleV1 {
+        version: 1,
+        key: key.to_owned(),
+        inputs: vec![CalculationExampleInput {
+            symbol: symbol.to_owned(),
+            value: ScenarioLiteral::Decimal {
+                value: decimal.to_owned(),
+                unit: None,
+            },
+        }],
+        expected_result: Some(ScenarioLiteral::Decimal {
+            value: decimal.to_owned(),
+            unit: Some(unit.to_owned()),
+        }),
+    })
+    .map_err(|e| CoreError::Canonicalization(e.to_string()))
+}
+
+/// `ReplacePayload` of an Accepted Calculation, or no effect when the payload is unchanged.
+fn calculation_effect(
+    node: &Node,
+    current: &plumb_psg::Calculation,
+    payload: plumb_psg::Calculation,
+) -> Result<Option<SemanticPatch>, ResolutionError> {
+    if &payload == current {
+        return Ok(None);
+    }
+    Ok(Some(SemanticPatch::ReplacePayload {
+        target: precondition_node(node)?,
+        payload: NodePayload::Calculation(payload),
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn map_answer(
     graph: &Graph,
     template: ResolutionTemplate,
     question_ref: &Id,
     subject: &Id,
+    context_refs: &[Id],
     answer: &JsonValue,
     context: &ResolutionContext,
     superseded: Option<(&Id, &ResolutionDecision)>,
@@ -715,6 +846,226 @@ fn map_answer(
                 }),
             })
         }
+        ResolutionTemplate::CalculationFraction => {
+            let node = accepted_subject(graph, question_ref, subject, NodeType::Calculation)?;
+            let NodePayload::Calculation(calculation) = &node.payload else {
+                unreachable!("subject is a Calculation")
+            };
+            let invalid = |reason: String| ResolutionError::InvalidCalculationAnswer {
+                calculation_ref: subject.clone(),
+                reason,
+            };
+            // The fractional input: exactly one other Accepted Attribute of the Question context.
+            let attributes: Vec<&Node> = context_refs
+                .iter()
+                .filter(|r| *r != subject)
+                .filter_map(|r| graph.node(r))
+                .filter(|n| accepted(n) && n.payload.node_type() == NodeType::Attribute)
+                .collect();
+            let [attribute_node] = attributes.as_slice() else {
+                return Err(invalid(format!(
+                    "the question context names {} Accepted Attributes, not exactly one",
+                    attributes.len()
+                )));
+            };
+            // A unitless Decimal input (a unit or another value type maps to another Ty).
+            let scale = match attribute_expression_type(attribute_node) {
+                Ok((Ty::Decimal(scale), None)) => scale,
+                _ => {
+                    return Err(invalid(format!(
+                        "{} is not a unitless Decimal Attribute",
+                        attribute_node.id
+                    )))
+                }
+            };
+            // The S2.6 origin is the only binding authority.
+            let origin = calculation_origin_of(node)
+                .ok_or_else(|| invalid("the calculation has no valid CalculationOrigin".into()))?;
+            validate_calculation_bindings(graph, &origin.used_bindings).map_err(|issue| {
+                invalid(format!(
+                    "the CalculationOrigin bindings are stale: {issue:?}"
+                ))
+            })?;
+            let roots: Vec<&ExpressionScopeBinding> = origin
+                .used_bindings
+                .iter()
+                .filter(|b| {
+                    b.node_ref == attribute_node.id
+                        && b.exposure == CalculationBindingExposure::Root
+                })
+                .collect();
+            let [binding] = roots.as_slice() else {
+                return Err(invalid(format!(
+                    "{} has {} root bindings, not exactly one",
+                    attribute_node.id,
+                    roots.len()
+                )));
+            };
+            let decimal = answer_str(answer, "decimal")?;
+            let unit = answer_str(answer, "unit")?;
+            let value = canonical_decimal(decimal)
+                .ok_or_else(|| invalid(format!("{decimal:?} is not a canonical decimal")))?;
+            if value <= Decimal::ZERO || value > Decimal::ONE {
+                return Err(invalid(format!(
+                    "{decimal} is not within 0 < fraction <= 1"
+                )));
+            }
+            if value.scale() > u32::from(scale) {
+                return Err(invalid(format!(
+                    "{decimal} exceeds the input scale {scale}"
+                )));
+            }
+            if Unit::new(unit).is_err() {
+                return Err(invalid(format!("{unit:?} is not a unit")));
+            }
+            if calculation.unit.as_deref() != Some(unit) {
+                return Err(invalid(format!(
+                    "{unit} is not the calculation result unit {:?}",
+                    calculation.unit
+                )));
+            }
+            let key = calculation_fraction_semantic_key(subject, &attribute_node.id)?;
+            let mut examples = calculation.examples.clone().unwrap_or_default();
+            let governed: Vec<usize> = examples
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.get("key").and_then(JsonValue::as_str) == Some(key.as_str()))
+                .map(|(i, _)| i)
+                .collect();
+            let new_example = fraction_example(&key, &binding.symbol, decimal, unit)?;
+            match superseded {
+                None => {
+                    if !governed.is_empty() {
+                        return Err(stale(
+                            question_ref,
+                            "the governed fraction example already exists",
+                        ));
+                    }
+                    examples.push(new_example);
+                }
+                Some((old_id, old)) => {
+                    if old_str(old, old_id, "semantic_key")? != key
+                        || old_str(old, old_id, "attribute_ref")? != attribute_node.id.as_str()
+                    {
+                        return Err(mismatch(old_id, "the old decision governs another input"));
+                    }
+                    let previous = fraction_example(
+                        &key,
+                        &binding.symbol,
+                        old_str(old, old_id, "decimal")?,
+                        old_str(old, old_id, "unit")?,
+                    )?;
+                    let [index] = governed.as_slice() else {
+                        return Err(mismatch(old_id, "no unique governed fraction example"));
+                    };
+                    if examples[*index] != previous {
+                        return Err(mismatch(
+                            old_id,
+                            "the governed fraction example is not the old answer",
+                        ));
+                    }
+                    examples[*index] = new_example;
+                }
+            }
+            let mut payload = calculation.clone();
+            payload.examples = Some(examples);
+            Ok(Mapped {
+                marker: json!({"kind": template.marker_kind(), "calculation_ref": s,
+                               "attribute_ref": attribute_node.id.to_string(),
+                               "semantic_key": key, "decimal": decimal, "unit": unit}),
+                effect: calculation_effect(node, calculation, payload)?,
+            })
+        }
+        ResolutionTemplate::CalculationInclusiveEnd => {
+            let node = accepted_subject(graph, question_ref, subject, NodeType::Calculation)?;
+            let NodePayload::Calculation(calculation) = &node.payload else {
+                unreachable!("subject is a Calculation")
+            };
+            let inclusive_end = answer_bool(answer, "inclusive_end")?;
+            let current = match superseded {
+                None => None,
+                Some((old_id, old)) => Some(
+                    old.answer
+                        .get("inclusive_end")
+                        .and_then(JsonValue::as_bool)
+                        .ok_or_else(|| ResolutionError::InvalidSupersededDecision {
+                            decision_ref: old_id.clone(),
+                            reason: "marker has no boolean inclusive_end".into(),
+                        })?,
+                ),
+            };
+            let expression =
+                rewrite_working_days_inclusive_end(&calculation.expression, current, inclusive_end)
+                    .map_err(|error| match (&error, superseded) {
+                        (InclusiveEndRewriteError::UnexpectedInclusiveArgument { found }, None)
+                            if found == "true" || found == "false" =>
+                        {
+                            stale(
+                                question_ref,
+                                "the inclusive-end argument is already decided",
+                            )
+                        }
+                        (
+                            InclusiveEndRewriteError::UnexpectedInclusiveArgument { .. },
+                            Some((old_id, _)),
+                        ) => mismatch(old_id, "the inclusive-end argument is not the old answer"),
+                        _ => ResolutionError::InvalidCalculationAnswer {
+                            calculation_ref: subject.clone(),
+                            reason: error.to_string(),
+                        },
+                    })?;
+            let mut payload = calculation.clone();
+            payload.expression = expression;
+            Ok(Mapped {
+                marker: json!({"kind": template.marker_kind(), "calculation_ref": s,
+                               "inclusive_end": inclusive_end}),
+                effect: calculation_effect(node, calculation, payload)?,
+            })
+        }
+        ResolutionTemplate::CalculationHolidayPolicy => {
+            let node = accepted_subject(graph, question_ref, subject, NodeType::Calculation)?;
+            let NodePayload::Calculation(calculation) = &node.payload else {
+                unreachable!("subject is a Calculation")
+            };
+            // PlumbExpr calendars treat every configured holiday as a non-working day; the answer
+            // can only confirm that fixed policy.
+            if answer_bool(answer, "holiday_consumes_working_day")? {
+                return Err(ResolutionError::UnsupportedHolidayPolicy);
+            }
+            let calendar = answer_id(answer, "calendar_ref")?;
+            accepted_ref(graph, &calendar, &[NodeType::Calendar])?;
+            match superseded {
+                None => {
+                    if calculation
+                        .calendar_ref
+                        .as_ref()
+                        .is_some_and(|current| current != &calendar)
+                    {
+                        return Err(stale(
+                            question_ref,
+                            "the calculation already uses another calendar",
+                        ));
+                    }
+                }
+                Some((old_id, old)) => {
+                    let old_calendar = old_ref(old, old_id, "calendar_ref")?;
+                    if calculation.calendar_ref.as_ref() != Some(&old_calendar) {
+                        return Err(mismatch(
+                            old_id,
+                            "the calculation calendar is not the old answer",
+                        ));
+                    }
+                }
+            }
+            let mut payload = calculation.clone();
+            payload.calendar_ref = Some(calendar.clone());
+            Ok(Mapped {
+                marker: json!({"kind": template.marker_kind(), "calculation_ref": s,
+                               "calendar_ref": calendar.to_string(),
+                               "holiday_consumes_working_day": false}),
+                effect: calculation_effect(node, calculation, payload)?,
+            })
+        }
     }
 }
 
@@ -825,6 +1176,22 @@ pub fn resolve_question(
                 kind: question.question_kind,
             }
         })?;
+    // Hotfix 083: a calculation family also requires the linked Finding to be exactly the
+    // `prefix + subject` condition; the deterministic Finding ID proves its condition key.
+    if let Some(prefix) = template.condition_prefix() {
+        let contract = |reason: String| ResolutionError::InvalidQuestionContract {
+            question_ref: question_ref.clone(),
+            reason,
+        };
+        let condition = format!("{prefix}{subject}");
+        let key = finding_key(&finding.code, &finding.affected_refs, &condition)
+            .map_err(|e| contract(e.to_string()))?;
+        if finding_id(&key).map_err(|e| contract(e.to_string()))? != finding_node.id {
+            return Err(contract(format!(
+                "the linked finding is not the {condition} condition"
+            )));
+        }
+    }
 
     // The persisted closed answer schema decides answer shape.
     let schema = question.answer_schema.as_ref().ok_or_else(|| {
@@ -920,6 +1287,7 @@ pub fn resolve_question(
         template,
         question_ref,
         subject,
+        question.context_refs.as_deref().unwrap_or_default(),
         &input.answer,
         context,
         superseded.as_ref().map(|(id, _, d)| (*id, *d)),
@@ -1188,4 +1556,673 @@ pub fn build_acceptance_companion(
         patch_ref,
         patch_set,
     })
+}
+
+#[cfg(test)]
+mod calculation_answer_tests {
+    //! Hotfix 083: the three generic calculation answer families through `resolve_question`
+    //! over a non-HR graph; every effect is observed by dry-applying the returned proposal.
+
+    use std::collections::BTreeSet;
+
+    use plumb_psg::{
+        Agent, Attribute, Calculation, Calendar, Entity, ExtensionKey, FindingSeverity,
+    };
+    use plumb_validation::calculation_analysis::{
+        CalculationGroundedRange, CalculationOrigin, CALCULATION_ORIGIN_EXTENSION,
+    };
+    use plumb_validation::expression_scope::ExpressionBindingExposure;
+
+    use super::*;
+    use crate::calculation::calculation_fraction_semantic_key;
+    use crate::question_templates::{Choices, QUESTION_TEMPLATES};
+
+    const AT: &str = "2026-01-01T00:00:00.000000000Z";
+    const DECIDED: &str = "2026-03-01T09:30:00.000000000Z";
+    const HUMAN: &str = "agent:human";
+    const CALC: &str = "calc:days";
+    const EXPRESSION: &str = "working_days([begin, finish], calendar, inclusive_end) * part";
+
+    fn rid(s: &str) -> Id {
+        s.parse().unwrap()
+    }
+
+    fn audit() -> AuditMeta {
+        AuditMeta::new(rid("agent:analyst"), AT.parse().unwrap(), None, None).unwrap()
+    }
+
+    fn node(id: &str, payload: NodePayload) -> Node {
+        Node {
+            id: rid(id),
+            revision: 1,
+            status: ElementStatus::Accepted,
+            payload,
+            evidence: Vec::new(),
+            derivations: Vec::new(),
+            standards: Vec::new(),
+            tags: Default::default(),
+            extensions: Default::default(),
+            audit: audit(),
+        }
+    }
+
+    fn attribute(id: &str, value_type: &str, unit: Option<&str>) -> Node {
+        node(
+            id,
+            NodePayload::Attribute(Attribute {
+                name: id.into(),
+                value_type: value_type.into(),
+                nullable: false,
+                unit: unit.map(str::to_owned),
+                precision: None,
+                enum_values: None,
+                data_classification: None,
+            }),
+        )
+    }
+
+    fn calendar(id: &str) -> Node {
+        node(
+            id,
+            NodePayload::Calendar(Calendar {
+                time_zone: "UTC".into(),
+                week_pattern: json!(["monday", "tuesday", "wednesday", "thursday", "friday"]),
+                region: None,
+                holiday_source: None,
+            }),
+        )
+    }
+
+    fn root(symbol: &str, node_ref: &str) -> ExpressionScopeBinding {
+        ExpressionScopeBinding {
+            node_ref: rid(node_ref),
+            symbol: symbol.into(),
+            exposure: ExpressionBindingExposure::Root,
+        }
+    }
+
+    /// The calculation with an S2.6 origin binding `bindings`.
+    fn calculation(
+        expression: &str,
+        calendar_ref: Option<&str>,
+        bindings: Option<Vec<ExpressionScopeBinding>>,
+    ) -> Node {
+        let mut n = node(
+            CALC,
+            NodePayload::Calculation(Calculation {
+                name: "Requested days".into(),
+                expression: expression.into(),
+                result_type: "Decimal(2)".into(),
+                unit: Some("working_day".into()),
+                rounding: None,
+                calendar_ref: calendar_ref.map(rid),
+                examples: Some(vec![
+                    json!({"version": 1, "key": "unrelated", "inputs": [], "expected_result": null}),
+                ]),
+            }),
+        );
+        if let Some(used_bindings) = bindings {
+            let origin = CalculationOrigin {
+                name_range: CalculationGroundedRange {
+                    requirement_ref: rid("req:days"),
+                    start: 0,
+                    end: 4,
+                },
+                expression_evidence: Vec::new(),
+                used_bindings,
+            };
+            n.extensions.insert(
+                CALCULATION_ORIGIN_EXTENSION
+                    .parse::<ExtensionKey>()
+                    .unwrap(),
+                serde_json::to_value(origin).unwrap(),
+            );
+        }
+        n
+    }
+
+    fn bindings() -> Vec<ExpressionScopeBinding> {
+        vec![
+            root("begin", "attr:begin"),
+            root("finish", "attr:finish"),
+            root("inclusive_end", "attr:flag"),
+            root("part", "attr:part"),
+        ]
+    }
+
+    fn graph_with(calc: Node, extra: Vec<Node>) -> Graph {
+        let mut nodes = vec![
+            node(
+                HUMAN,
+                NodePayload::Agent(Agent {
+                    agent_kind: AgentKind::Human,
+                }),
+            ),
+            attribute("attr:begin", "Date", None),
+            attribute("attr:finish", "Date", None),
+            attribute("attr:flag", "Bool", None),
+            attribute("attr:part", "Decimal(2)", None),
+            attribute("attr:hours", "Decimal(2)", Some("hour")),
+            attribute("attr:spare", "Decimal(2)", None),
+            calendar("cal:test"),
+            calendar("cal:other"),
+            calc,
+        ];
+        nodes.push(node(
+            "entity:leave",
+            NodePayload::Entity(Entity {
+                name: "Leave".into(),
+                description: None,
+                aggregate_root: None,
+            }),
+        ));
+        nodes.extend(extra);
+        let edges = [
+            "attr:begin",
+            "attr:finish",
+            "attr:flag",
+            "attr:hours",
+            "attr:part",
+            "attr:spare",
+        ]
+        .iter()
+        .map(|attr| Edge {
+            id: relation_id(
+                &RelationKind::HasAttribute,
+                &rid("entity:leave"),
+                &rid(attr),
+            )
+            .unwrap(),
+            revision: 1,
+            status: ElementStatus::Accepted,
+            kind: RelationKind::HasAttribute,
+            from: rid("entity:leave"),
+            to: rid(attr),
+            properties: RelationProperties::None,
+            evidence: Vec::new(),
+            derivations: Vec::new(),
+            standards: Vec::new(),
+            audit: audit(),
+        })
+        .collect();
+        Graph::new(rid("project:test"), rid("profile:test"), nodes, edges).unwrap()
+    }
+
+    /// `graph` plus the Accepted Open Finding of `code`/`condition` and its Open Question of the
+    /// template `template_id` about `subject`, exactly as S3.1 would persist them.
+    fn asked(
+        graph: &Graph,
+        template_id: &str,
+        code: &str,
+        condition: &str,
+        affected: &[&str],
+    ) -> (Graph, Id) {
+        let template = QUESTION_TEMPLATES
+            .iter()
+            .find(|t| t.template_id == template_id)
+            .unwrap();
+        let mut affected: Vec<Id> = affected.iter().map(|a| rid(a)).collect();
+        affected.sort();
+        let key = finding_key(code, &affected, condition).unwrap();
+        let finding_ref = finding_id(&key).unwrap();
+        let mut nodes: Vec<Node> = graph.nodes().values().cloned().collect();
+        nodes.push(node(
+            finding_ref.as_str(),
+            NodePayload::Finding(Finding {
+                code: code.into(),
+                family: "F2".into(),
+                severity: FindingSeverity::Blocker,
+                message: "unresolved".into(),
+                status: OPEN.into(),
+                affected_refs: affected.clone(),
+                standard_rule_ref: None,
+                suggested_resolution: None,
+                waiver_ref: None,
+            }),
+        ));
+        let subject = rid(CALC);
+        let question_ref = rid("q:asked");
+        nodes.push(node(
+            question_ref.as_str(),
+            NodePayload::Question(Question {
+                finding_ref,
+                question_kind: template.kind,
+                prompt: "What is decided?".into(),
+                status: OPEN.into(),
+                answer_schema: Some(template.answer_schema(&Choices::of(graph, template.choices))),
+                stakeholder_ref: None,
+                priority: Some("4".into()),
+                round_ref: None,
+                context_refs: Some(crate::question::subject_first_context(&subject, &affected)),
+            }),
+        ));
+        let graph = Graph::new(
+            graph.project_id().clone(),
+            rid("profile:test"),
+            nodes,
+            graph.edges().values().cloned().collect(),
+        )
+        .unwrap();
+        (graph, question_ref)
+    }
+
+    fn fraction_asked(graph: &Graph, affected: &[&str]) -> (Graph, Id) {
+        asked(
+            graph,
+            "f2.calculation.fraction.v1",
+            "PLUMB.F2.CALC.TYPECHECK",
+            &format!("{CALCULATION_FRACTION_CONDITION_PREFIX}{CALC}"),
+            affected,
+        )
+    }
+
+    fn inclusive_asked(graph: &Graph) -> (Graph, Id) {
+        asked(
+            graph,
+            "f2.calculation.inclusive-end.v1",
+            "PLUMB.F2.CALC.TYPECHECK",
+            &format!("{CALCULATION_INCLUSIVE_END_CONDITION_PREFIX}{CALC}"),
+            &[CALC],
+        )
+    }
+
+    fn holiday_asked(graph: &Graph) -> (Graph, Id) {
+        asked(
+            graph,
+            "f2.calculation.holiday-policy.v1",
+            "PLUMB.F2.TIME.CALENDAR_DEFINED",
+            &format!("{CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX}{CALC}"),
+            &[CALC],
+        )
+    }
+
+    fn answer(
+        graph: &Graph,
+        question: &Id,
+        answer: JsonValue,
+        supersedes: Option<&Id>,
+    ) -> Result<ResolutionResult, ResolutionError> {
+        resolve_question(
+            graph,
+            &ResolutionInput {
+                question_ref: question.clone(),
+                answer,
+                decided_by: rid(HUMAN),
+                decided_at: DECIDED.parse().unwrap(),
+                rationale: supersedes.map(|_| "Corrected by the owner.".to_owned()),
+                supersedes: supersedes.cloned(),
+            },
+            &ResolutionContext::default(),
+        )
+    }
+
+    fn applied(graph: &Graph, result: &ResolutionResult) -> Graph {
+        apply_patch(graph, &result.proposal.patch_set)
+            .unwrap()
+            .graph
+    }
+
+    fn calc_of(graph: &Graph) -> Calculation {
+        match &graph.node(&rid(CALC)).unwrap().payload {
+            NodePayload::Calculation(c) => c.clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    fn status_of(graph: &Graph, id: &Id) -> String {
+        match &graph.node(id).unwrap().payload {
+            NodePayload::Question(q) => q.status.clone(),
+            NodePayload::Finding(f) => f.status.clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    fn base() -> Graph {
+        graph_with(calculation(EXPRESSION, None, Some(bindings())), Vec::new())
+    }
+
+    // ------------------------------------------------------------------ fraction
+
+    #[test]
+    fn fraction_answer_adds_one_governed_example() {
+        let (g, q) = fraction_asked(&base(), &[CALC, "attr:part"]);
+        assert_eq!(
+            ResolutionTemplate::of("PLUMB.F2.CALC.TYPECHECK", QuestionKind::Number),
+            Some(ResolutionTemplate::CalculationFraction)
+        );
+        let r = answer(
+            &g,
+            &q,
+            json!({"decimal": "0.5", "unit": "working_day"}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(r.template, ResolutionTemplate::CalculationFraction);
+        let key = calculation_fraction_semantic_key(&rid(CALC), &rid("attr:part")).unwrap();
+        assert_eq!(
+            r.decision.answer,
+            json!({"kind": "calculation_fraction", "calculation_ref": CALC,
+                   "attribute_ref": "attr:part", "semantic_key": key,
+                   "decimal": "0.5", "unit": "working_day"})
+        );
+        let after = applied(&g, &r);
+        let examples = calc_of(&after).examples.unwrap();
+        // The unrelated example is kept; exactly one governed example is added.
+        assert_eq!(examples.len(), 2);
+        assert_eq!(examples[0]["key"], "unrelated");
+        assert_eq!(
+            examples[1],
+            json!({"version": 1, "key": key,
+                   "inputs": [{"symbol": "part",
+                               "value": {"kind": "decimal", "value": "0.5", "unit": null}}],
+                   "expected_result": {"kind": "decimal", "value": "0.5", "unit": "working_day"}})
+        );
+        assert_eq!(
+            serde_json::from_value::<CalculationExampleV1>(examples[1].clone())
+                .unwrap()
+                .expected_result,
+            Some(ScenarioLiteral::Decimal {
+                value: "0.5".into(),
+                unit: Some("working_day".into())
+            })
+        );
+        assert_eq!(status_of(&after, &q), ANSWERED);
+        let finding = match &g.node(&q).unwrap().payload {
+            NodePayload::Question(question) => question.finding_ref.clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(status_of(&after, &finding), CLOSED);
+        assert!(after.node(&r.decision_ref).is_some());
+        // The effect artifact carries the ReplacePayload.
+        assert!(matches!(
+            r.patch_artifact.effect_patch,
+            Some(SemanticPatch::ReplacePayload { .. })
+        ));
+    }
+
+    #[test]
+    fn fraction_supersession_replaces_only_the_governed_example() {
+        let (g, q) = fraction_asked(&base(), &[CALC, "attr:part"]);
+        let first = answer(
+            &g,
+            &q,
+            json!({"decimal": "0.5", "unit": "working_day"}),
+            None,
+        )
+        .unwrap();
+        let after = applied(&g, &first);
+        // An initial answer cannot be repeated once the example exists.
+        let second = answer(
+            &after,
+            &q,
+            json!({"decimal": "0.25", "unit": "working_day"}),
+            Some(&first.decision_ref),
+        )
+        .unwrap();
+        let after = applied(&after, &second);
+        let examples = calc_of(&after).examples.unwrap();
+        assert_eq!(examples.len(), 2);
+        assert_eq!(examples[0]["key"], "unrelated");
+        assert_eq!(examples[1]["inputs"][0]["value"]["value"], "0.25");
+        assert_eq!(examples[1]["expected_result"]["value"], "0.25");
+    }
+
+    #[test]
+    fn fraction_answers_outside_the_contract_are_rejected() {
+        let invalid = |r: Result<ResolutionResult, ResolutionError>| {
+            matches!(r, Err(ResolutionError::InvalidCalculationAnswer { .. }))
+        };
+        let (g, q) = fraction_asked(&base(), &[CALC, "attr:part"]);
+        for (decimal, unit) in [
+            ("0.50", "working_day"),
+            ("0", "working_day"),
+            ("-0.5", "working_day"),
+            ("1.5", "working_day"),
+            ("0.125", "working_day"),
+            ("half", "working_day"),
+            ("0.5", "working day"),
+            ("0.5", "day"),
+        ] {
+            assert!(
+                invalid(answer(
+                    &g,
+                    &q,
+                    json!({"decimal": decimal, "unit": unit}),
+                    None
+                )),
+                "{decimal} {unit}"
+            );
+        }
+        let half = json!({"decimal": "0.5", "unit": "working_day"});
+        // The fractional input is not a unitless Decimal Attribute.
+        for attr in ["attr:flag", "attr:hours"] {
+            let mut b = bindings();
+            b.push(root("other", attr));
+            let (g, q) = fraction_asked(
+                &graph_with(calculation(EXPRESSION, None, Some(b)), Vec::new()),
+                &[CALC, attr],
+            );
+            assert!(invalid(answer(&g, &q, half.clone(), None)), "{attr}");
+        }
+        // No CalculationOrigin.
+        let (g, q) = fraction_asked(
+            &graph_with(calculation(EXPRESSION, None, None), Vec::new()),
+            &[CALC, "attr:part"],
+        );
+        assert!(invalid(answer(&g, &q, half.clone(), None)));
+        // No root binding of the input.
+        let (g, q) = fraction_asked(&base(), &[CALC, "attr:spare"]);
+        assert!(invalid(answer(&g, &q, half.clone(), None)));
+        // A stale binding.
+        let mut b = bindings();
+        b.push(root("gone", "attr:missing"));
+        let (g, q) = fraction_asked(
+            &graph_with(calculation(EXPRESSION, None, Some(b)), Vec::new()),
+            &[CALC, "attr:part"],
+        );
+        assert!(invalid(answer(&g, &q, half.clone(), None)));
+        // Two candidate Attributes.
+        let (g, q) = fraction_asked(&base(), &[CALC, "attr:part", "attr:spare"]);
+        assert!(invalid(answer(&g, &q, half.clone(), None)));
+        // The governed key already exists on an initial answer.
+        let (g, q) = fraction_asked(&base(), &[CALC, "attr:part"]);
+        let r = answer(&g, &q, half.clone(), None).unwrap();
+        let mut existing = calc_of(&applied(&g, &r));
+        existing.calendar_ref = None;
+        let (g2, q2) = fraction_asked(
+            &graph_with(
+                {
+                    let mut c = calculation(EXPRESSION, None, Some(bindings()));
+                    c.payload = NodePayload::Calculation(existing);
+                    c
+                },
+                Vec::new(),
+            ),
+            &[CALC, "attr:part"],
+        );
+        assert!(matches!(
+            answer(&g2, &q2, half.clone(), None),
+            Err(ResolutionError::StaleResolutionQuestion { .. })
+        ));
+        // A Question whose Finding has another condition does not gain the fraction mapper.
+        let (g, q) = asked(
+            &base(),
+            "f2.calculation.fraction.v1",
+            "PLUMB.F2.CALC.TYPECHECK",
+            &format!("{CALCULATION_INCLUSIVE_END_CONDITION_PREFIX}{CALC}"),
+            &[CALC, "attr:part"],
+        );
+        assert!(matches!(
+            answer(&g, &q, half.clone(), None),
+            Err(ResolutionError::InvalidQuestionContract { .. })
+        ));
+        let (g, q) = asked(
+            &base(),
+            "f2.calculation.fraction.v1",
+            "PLUMB.F2.CALC.TYPECHECK",
+            "calculation_fraction_unresolved:calc:other",
+            &[CALC, "attr:part"],
+        );
+        assert!(matches!(
+            answer(&g, &q, half, None),
+            Err(ResolutionError::InvalidQuestionContract { .. })
+        ));
+    }
+
+    // ------------------------------------------------------------------ inclusive end
+
+    #[test]
+    fn inclusive_end_answer_sets_only_the_working_days_argument() {
+        let expression =
+            "working_days([begin, finish], calendar, inclusive_end) * part + inclusive_end_bonus";
+        let (g, q) = inclusive_asked(&graph_with(
+            calculation(expression, None, Some(bindings())),
+            Vec::new(),
+        ));
+        let r = answer(&g, &q, json!({"inclusive_end": true}), None).unwrap();
+        assert_eq!(r.template, ResolutionTemplate::CalculationInclusiveEnd);
+        assert_eq!(
+            r.decision.answer,
+            json!({"kind": "calculation_inclusive_end", "calculation_ref": CALC, "inclusive_end": true})
+        );
+        assert!(r.decision.answer["inclusive_end"].is_boolean());
+        let after = calc_of(&applied(&g, &r));
+        assert_eq!(
+            parse(&after.expression).unwrap(),
+            parse("working_days([begin, finish], calendar, true) * part + inclusive_end_bonus")
+                .unwrap()
+        );
+        // Everything except the expression is unchanged.
+        let before = calc_of(&g);
+        assert_eq!(
+            Calculation {
+                expression: before.expression.clone(),
+                ..after
+            },
+            before
+        );
+    }
+
+    #[test]
+    fn inclusive_end_answers_never_guess() {
+        for (expression, stale_expected) in [
+            ("part * 2", false),
+            (
+                "working_days([begin, finish], calendar, inclusive_end) + working_days([begin, finish], calendar, inclusive_end)",
+                false,
+            ),
+            ("working_days([begin, finish], calendar)", false),
+            ("working_days([begin, finish], calendar, true)", true),
+            ("working_days([begin, finish], calendar, not inclusive_end)", false),
+        ] {
+            let (g, q) = inclusive_asked(&graph_with(calculation(expression, None, Some(bindings())), Vec::new()));
+            let result = answer(&g, &q, json!({"inclusive_end": true}), None);
+            if stale_expected {
+                assert!(
+                    matches!(result, Err(ResolutionError::StaleResolutionQuestion { .. })),
+                    "{expression}"
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(ResolutionError::InvalidCalculationAnswer { .. })),
+                    "{expression}"
+                );
+            }
+        }
+        let (g, q) = asked(
+            &base(),
+            "f2.calculation.inclusive-end.v1",
+            "PLUMB.F2.CALC.TYPECHECK",
+            &format!("{CALCULATION_FRACTION_CONDITION_PREFIX}{CALC}"),
+            &[CALC],
+        );
+        assert!(matches!(
+            answer(&g, &q, json!({"inclusive_end": true}), None),
+            Err(ResolutionError::InvalidQuestionContract { .. })
+        ));
+    }
+
+    // ------------------------------------------------------------------ holiday policy
+
+    #[test]
+    fn holiday_policy_answer_binds_the_calendar() {
+        assert_eq!(
+            ResolutionTemplate::of("PLUMB.F2.TIME.CALENDAR_DEFINED", QuestionKind::YesNo),
+            Some(ResolutionTemplate::CalculationHolidayPolicy)
+        );
+        assert_eq!(
+            ResolutionTemplate::of("PLUMB.F2.TIME.CALENDAR_DEFINED", QuestionKind::Calendar),
+            Some(ResolutionTemplate::CalculationCalendar)
+        );
+        let (g, q) = holiday_asked(&base());
+        let ans = json!({"holiday_consumes_working_day": false, "calendar_ref": "cal:test"});
+        let r = answer(&g, &q, ans.clone(), None).unwrap();
+        assert_eq!(
+            r.decision.answer,
+            json!({"kind": "calculation_holiday_policy", "calculation_ref": CALC,
+                   "calendar_ref": "cal:test", "holiday_consumes_working_day": false})
+        );
+        assert_eq!(
+            r.decision.answer["holiday_consumes_working_day"],
+            json!(false)
+        );
+        assert_eq!(
+            calc_of(&applied(&g, &r)).calendar_ref,
+            Some(rid("cal:test"))
+        );
+        // The same current calendar: a governed confirmation without a semantic effect.
+        let (g, q) = holiday_asked(&graph_with(
+            calculation(EXPRESSION, Some("cal:test"), Some(bindings())),
+            Vec::new(),
+        ));
+        let r = answer(&g, &q, ans.clone(), None).unwrap();
+        assert_eq!(r.patch_artifact.effect_patch, None);
+        let after = applied(&g, &r);
+        assert_eq!(calc_of(&after), calc_of(&g));
+        assert_eq!(status_of(&after, &q), ANSWERED);
+        // Another current calendar is never switched silently.
+        let (g, q) = holiday_asked(&graph_with(
+            calculation(EXPRESSION, Some("cal:other"), Some(bindings())),
+            Vec::new(),
+        ));
+        assert!(matches!(
+            answer(&g, &q, ans, None),
+            Err(ResolutionError::StaleResolutionQuestion { .. })
+        ));
+    }
+
+    #[test]
+    fn holiday_consuming_a_working_day_is_unsupported() {
+        let (g, q) = holiday_asked(&base());
+        let result = answer(
+            &g,
+            &q,
+            json!({"holiday_consumes_working_day": true, "calendar_ref": "cal:test"}),
+            None,
+        );
+        assert_eq!(
+            result.err(),
+            Some(ResolutionError::UnsupportedHolidayPolicy)
+        );
+        // Nothing changed: the Question is still Open and the calculation has no calendar.
+        assert_eq!(status_of(&g, &q), OPEN);
+        assert_eq!(calc_of(&g).calendar_ref, None);
+        let names: BTreeSet<&str> = [
+            "calculation_fraction",
+            "calculation_inclusive_end",
+            "calculation_holiday_policy",
+        ]
+        .into();
+        assert_eq!(
+            [
+                ResolutionTemplate::CalculationFraction,
+                ResolutionTemplate::CalculationInclusiveEnd,
+                ResolutionTemplate::CalculationHolidayPolicy
+            ]
+            .map(ResolutionTemplate::marker_kind)
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+            names
+        );
+    }
 }

@@ -709,10 +709,13 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `crates/plumb-api/src/stage/scenario_execution.rs`
 - `crates/plumb-api/src/state.rs`
 - `crates/plumb-api/src/workflow.rs`
+- `crates/plumb-api/tests/e2e_hr.rs`
+- `crates/plumb-api/tests/hr_fixture.rs`
 - `crates/plumb-api/tests/http_core.rs`
 - `crates/plumb-api/tests/http_stages.rs`
 - `crates/plumb-api/tests/http_workflow.rs`
 - `crates/plumb-api/tests/openapi.rs`
+- `crates/plumb-api/tests/support/hr_fixture.rs`
 - `crates/plumb-artifacts/Cargo.toml`
 - `crates/plumb-artifacts/src/lib.rs`
 - `crates/plumb-artifacts/src/model.rs`
@@ -975,8 +978,6 @@ The plan intentionally names source files instead of allowing the agent to inven
 - `scripts/check-placeholders.sh`
 - `scripts/manual-llm-smoke.sh`
 - `scripts/run-pilot-e2e.sh`
-- `tests/e2e_hr.rs`
-- `tests/support/hr_fixture.rs`
 - `ui/e2e/pilot.spec.ts`
 - `ui/eslint.config.js`
 - `ui/index.html`
@@ -5871,7 +5872,8 @@ git diff --check
 
 **Write allowlist**
 
-- `tests/support/hr_fixture.rs`
+- `crates/plumb-api/tests/support/hr_fixture.rs`
+- `crates/plumb-api/tests/hr_fixture.rs`
 - `fixtures/hr-leave/reference-psg.yaml`
 - `fixtures/hr-leave/reference-functional.yaml`
 - `fixtures/hr-leave/inference-fixtures.jsonl`
@@ -5879,28 +5881,35 @@ git diff --check
 **Required actions**
 
 1. Treat fixtures/hr-leave/README.md, requirements.md, requirements.docx, fixture-contract.yaml, scenarios.yaml, expert-answers.yaml, stakeholders.yaml and profile.yaml as immutable authoritative fixture inputs.
-2. Implement tests/support/hr_fixture.rs to construct the reference accepted PSG deterministically from fixture-contract.yaml and the metamodel; use sorted IDs and exact values from the contract.
-3. The builder must leave the three ambiguity answers unresolved in the pre-answer graph and apply them only by passing each expert answer to the S3.3 answer application service, producing a ResolutionDecision and SemanticPatch that commit through the F0.8 CAS revision path.
+2. Implement crates/plumb-api/tests/support/hr_fixture.rs (Hotfix 083: the repository root is a virtual Cargo workspace, so no root tests/ path exists) to construct the reference accepted PSG deterministically from fixture-contract.yaml and the metamodel; use sorted IDs and exact values from the contract.
+3. The builder must leave the three ambiguity answers unresolved in the pre-answer graph and apply them only by passing each expert answer to the S3.3 answer application service, producing a ResolutionDecision and SemanticPatch that commit through the F0.8 CAS revision path. Hotfix 083 freezes that path: (1) construct the deterministic accepted pre-answer PSG; (2) prove all three semantic answers are absent; (3) construct exactly three deterministic current GeneratedFindings from immutable fixture material and real graph IDs; (4) parse the authoritative stakeholders.yaml; (5) call the production ApiState::materialize_questions application service; (6) obtain exactly three governed Questions (issues = [], no HR gap finding unmapped); (7) compose real S3.2 round(s); (8) submit the exact immutable expert answer objects through the normal Question answer path; (9) persist pending proposals; (10) accept them through the normal application/HTTP workflow; (11) observe real F0.8 revisions; (12) obtain exactly three Accepted ResolutionDecisions; (13) prove the post-answer semantic effects; (14) generate the reference PSG from that accepted post-answer head. No direct patch shortcut.
 4. Generate reference-psg.yaml from the post-answer accepted graph and reference-functional.yaml through the functional projection implementation.
 5. Generate MockProvider inference-fixtures.jsonl by computing actual InferenceRequest hashes and attaching proposal outputs derived only from fixture-contract.yaml. Mock outputs must not introduce facts absent from the contract.
 6. Assert the expected_counts block exactly: 32 requirements, 9 entities, 13 operations, 6 processes, 5 invariants, 2 calculations, 3 rules, 6 events, 44 scenarios.
+7. E2E test host (Hotfix 083). crates/plumb-api/tests/support/hr_fixture.rs is the reusable HR fixture support module and crates/plumb-api/tests/hr_fixture.rs is the executable E0.1 integration-test/generator target, hosted by the existing plumb-api package (its current dependencies cover the E2E surfaces; no Cargo or dependency change and no new package). E0.2 later reuses the support module without editing it. The support module exposes both the pre-answer graph/revision and the post-answer graph/revision.
+8. Reference generator (Hotfix 083). The E0.1 target contains the ignored exact generator test regenerate_hr_reference_artifacts, which writes fixtures/hr-leave/reference-psg.yaml, reference-functional.yaml and inference-fixtures.jsonl from the same fixture builder (cargo test -p plumb-api --test hr_fixture regenerate_hr_reference_artifacts -- --ignored --exact); normal tests (cargo test -p plumb-api --test hr_fixture) compare generated bytes/content with the committed reference artifacts and never mutate repository files.
+9. HR gap findings (Hotfix 083). The helper derives exactly three deterministic current GeneratedFindings, as explicit upstream analysis material for S3.1 (not new registered validation rules; rule count stays 133): half day = code PLUMB.F2.CALC.TYPECHECK, semantic_condition_key CALCULATION_FRACTION_CONDITION_PREFIX + exact Calculation ID, affected refs including the target Calculation and the exact fractional Attribute (and optionally relevant Requirement source refs); inclusive end = PLUMB.F2.CALC.TYPECHECK with CALCULATION_INCLUSIVE_END_CONDITION_PREFIX + Calculation ID; holiday = PLUMB.F2.TIME.CALENDAR_DEFINED with CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX + Calculation ID. The prefixes are the public plumb-functional constants, not duplicated strings.
+10. Governed HR semantics (Hotfix 083). The three answers reach the generic S3.3 calculation families unchanged: half_day {decimal '0.5', unit working_day} adds the canonical CalculationExampleV1 keyed by calculation_fraction_semantic_key(calculation, attribute) (reused for the CalculationSemantic scenario boundary); inclusive_end {inclusive_end: true} sets the third working_days argument to the boolean literal by AST transformation; holiday_inside_period {holiday_consumes_working_day: false, calendar_ref: cal:PL-Office} confirms the fixed non-working-holiday policy and binds the Accepted Calendar. E0.1 never creates Question or ResolutionDecision nodes directly, never hand-builds a SemanticPatch for these semantics, never mutates the post-answer graph directly and never drops or rewrites any part of expert-answers.yaml.
 
 **Commands**
 
 ```bash
-cargo test --workspace hr_leave_fixture
+cargo test -p plumb-api --test hr_fixture regenerate_hr_reference_artifacts -- --ignored --exact
+cargo test -p plumb-api --test hr_fixture
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 **Tests**
 
-- `cargo test --workspace hr_leave_fixture`
+- `cargo test -p plumb-api --test hr_fixture`
 
 **Acceptance**
 
 - Derived reference artifacts reproduce the fixture contract exactly and do not mutate authoritative fixture inputs.
 - The three ambiguity values appear only after expert answers are applied through ResolutionDecision patches.
+- The committed reference artifacts equal the bytes regenerated by regenerate_hr_reference_artifacts.
+- All three HR expert answers travel through materialize_questions, the Question answer path and normal proposal acceptance, producing exactly three Accepted ResolutionDecisions and real F0.8 revisions.
 
 **Supporting references**
 
@@ -5919,31 +5928,34 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Write allowlist**
 
-- `tests/e2e_hr.rs`
+- `crates/plumb-api/tests/e2e_hr.rs`
 
 **Required actions**
 
-1. Execute import -> I0 -> F1 -> vocabulary/domain -> F2 -> question rounds -> expert answers -> F3 -> scenario derivation/run -> F4 -> export using application services/CLI only.
+1. Execute import -> I0 -> F1 -> vocabulary/domain -> F2 -> question materialisation -> question rounds -> expert answers -> F3 -> scenario derivation/run -> F4 -> export using application services/CLI only (Hotfix 083: question materialisation is the shared ApiState::materialize_questions application service).
 2. Verify half-day, holiday and inclusive-end ambiguities are Undecidable before answers and resolved only through question answer patches.
 3. Verify one conflicting session proposal is rejected through intake.
 4. Verify every semantic revision has a serialized patch artifact and every LLM-origin proposal has persisted inference artifact.
 5. Verify replay with stored artifacts reproduces identical final semantic_hash without live LLM calls.
+6. E2E test host (Hotfix 083). The test is crates/plumb-api/tests/e2e_hr.rs in the existing plumb-api package (no root tests/ path, no new package, no dependency change), run with cargo test -p plumb-api --test e2e_hr. It may read and reuse crates/plumb-api/tests/support/hr_fixture.rs but must not modify it.
+7. Pre-/post-answer proof (Hotfix 083). Using the support module's pre-answer and post-answer graph/revision semantics, E0.2 proves the half-day, holiday and inclusive-end semantics are unresolved/Undecidable before the governed answers and resolved only afterwards, by exercising the actual answer path (materialize_questions, rounds, Question answers, proposal acceptance); it never imports a post-answer reference graph to hide the answer path.
 
 **Commands**
 
 ```bash
-cargo test --test e2e_hr
+cargo test -p plumb-api --test e2e_hr
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 **Tests**
 
-- `cargo test --test e2e_hr`
+- `cargo test -p plumb-api --test e2e_hr`
 
 **Acceptance**
 
 - The complete backend pilot reaches F4 and deterministic replay final semantic_hash matches original.
+- The three HR ambiguities are resolved only through the production question answer path, reusing the unmodified E0.1 support module.
 
 **Supporting references**
 

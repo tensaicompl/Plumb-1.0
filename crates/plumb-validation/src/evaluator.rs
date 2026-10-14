@@ -1987,14 +1987,18 @@ fn validate_f2_analysis_finding(graph: &Graph, finding: &GeneratedFinding) -> Re
 /// The S3 governance finding code of an expired assumption (S3.4 material, not a rule).
 pub const S3_ASSUMPTION_EXPIRED_CODE: &str = "PLUMB.S3.ASSUMPTION.EXPIRED";
 
-/// The ResolutionDecision answer kinds of the current S3.3 decision families.
-pub const S3_RESOLUTION_KINDS: [&str; 6] = [
+/// The ResolutionDecision answer kinds of the current S3.3 decision families (Hotfix 083 adds
+/// the three generic calculation answer families).
+pub const S3_RESOLUTION_KINDS: [&str; 9] = [
     "domain_relationship_cardinality",
     "state_transition_trigger",
     "operation_performer",
     "calculation_calendar",
     "permission_binding",
     "invariant_formula",
+    "calculation_fraction",
+    "calculation_inclusive_end",
+    "calculation_holiday_policy",
 ];
 
 /// One already-acquired content-addressed decision artifact (Hotfix 049): the exact bytes whose

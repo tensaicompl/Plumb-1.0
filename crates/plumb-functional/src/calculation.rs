@@ -1107,3 +1107,238 @@ pub fn calculation_example(
         value,
     })
 }
+
+// ============================================================================ governed answers (Hotfix 083)
+
+/// The prefix of the governed fractional-input semantic key.
+pub const CALCULATION_FRACTION_KEY_PREFIX: &str = "calculation_fraction:";
+
+/// The unresolved identifier a `working_days` inclusive-end argument carries before its governed
+/// answer (Hotfix 083).
+pub const UNRESOLVED_INCLUSIVE_END: &str = "inclusive_end";
+
+const WORKING_DAYS_FUNCTION: &str = "working_days";
+
+/// `calculation_fraction:<64 hex of SHA-256(RFC 8785 {attribute_ref, calculation_ref})>`: the
+/// governed `Calculation.examples` key of one fractional input, a function of the two exact IDs
+/// only (Hotfix 083). Scenario boundaries reuse it as their `CalculationSemantic` key.
+pub fn calculation_fraction_semantic_key(
+    calculation_ref: &Id,
+    attribute_ref: &Id,
+) -> Result<String, CoreError> {
+    let body = json!({
+        "attribute_ref": attribute_ref.to_string(),
+        "calculation_ref": calculation_ref.to_string(),
+    });
+    let digest = Hash::content_sha256(&to_canonical_json(&body)?);
+    let hex = &digest.as_str()["sha256:".len()..];
+    Ok(format!("{CALCULATION_FRACTION_KEY_PREFIX}{hex}"))
+}
+
+/// Why the inclusive-end argument of a calculation expression cannot be rewritten.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum InclusiveEndRewriteError {
+    #[error("the expression does not parse: {0}")]
+    Parse(String),
+    #[error("expected exactly one working_days call, found {0}")]
+    WorkingDaysCalls(usize),
+    #[error("the working_days call has no inclusive-end argument")]
+    MissingInclusiveArgument,
+    /// The argument is not the expected current material (unresolved identifier or the
+    /// previously governed literal); `found` is its canonical text.
+    #[error("the inclusive-end argument is {found}, not the expected current value")]
+    UnexpectedInclusiveArgument { found: String },
+}
+
+fn working_days_call_count(ast: &plumb_expr::Ast) -> usize {
+    use plumb_expr::Ast;
+    match ast {
+        Ast::Call { function, args } => {
+            usize::from(function.as_str() == WORKING_DAYS_FUNCTION)
+                + args.iter().map(working_days_call_count).sum::<usize>()
+        }
+        Ast::List(items) => items.iter().map(working_days_call_count).sum(),
+        Ast::Unary { expr, .. } => working_days_call_count(expr),
+        Ast::Binary { left, right, .. } => {
+            working_days_call_count(left) + working_days_call_count(right)
+        }
+        Ast::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            working_days_call_count(condition)
+                + working_days_call_count(then_expr)
+                + working_days_call_count(else_expr)
+        }
+        Ast::Literal(_) | Ast::Identifier(_) => 0,
+    }
+}
+
+/// The arguments of the (single) `working_days` call, mutably.
+fn working_days_args_mut(ast: &mut plumb_expr::Ast) -> Option<&mut Vec<plumb_expr::Ast>> {
+    use plumb_expr::Ast;
+    match ast {
+        Ast::Call { function, args } => {
+            if function.as_str() == WORKING_DAYS_FUNCTION {
+                return Some(args);
+            }
+            args.iter_mut().find_map(working_days_args_mut)
+        }
+        Ast::List(items) => items.iter_mut().find_map(working_days_args_mut),
+        Ast::Unary { expr, .. } => working_days_args_mut(expr),
+        Ast::Binary { left, right, .. } => {
+            working_days_args_mut(left).or_else(|| working_days_args_mut(right))
+        }
+        Ast::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => working_days_args_mut(condition)
+            .or_else(|| working_days_args_mut(then_expr))
+            .or_else(|| working_days_args_mut(else_expr)),
+        Ast::Literal(_) | Ast::Identifier(_) => None,
+    }
+}
+
+/// Replaces only the third argument of the single `working_days` call of `expression` with the
+/// boolean literal `value` and returns the canonical unparse (Hotfix 083). The current argument
+/// must be exactly `current`: `None` for the unresolved identifier [`UNRESOLVED_INCLUSIVE_END`]
+/// (an initial answer), `Some(b)` for the previously governed literal `b` (a supersession).
+/// Nothing else in the expression changes; there is no textual replacement.
+pub fn rewrite_working_days_inclusive_end(
+    expression: &str,
+    current: Option<bool>,
+    value: bool,
+) -> Result<String, InclusiveEndRewriteError> {
+    use plumb_expr::{Ast, Identifier, Literal};
+    let mut ast = plumb_expr::parse(expression)
+        .map_err(|e| InclusiveEndRewriteError::Parse(e.to_string()))?;
+    let calls = working_days_call_count(&ast);
+    if calls != 1 {
+        return Err(InclusiveEndRewriteError::WorkingDaysCalls(calls));
+    }
+    let args =
+        working_days_args_mut(&mut ast).ok_or(InclusiveEndRewriteError::WorkingDaysCalls(0))?;
+    let argument = args
+        .get_mut(2)
+        .ok_or(InclusiveEndRewriteError::MissingInclusiveArgument)?;
+    let expected = match current {
+        None => Ast::Identifier(
+            UNRESOLVED_INCLUSIVE_END
+                .parse::<Identifier>()
+                .map_err(|e| InclusiveEndRewriteError::Parse(e.to_string()))?,
+        ),
+        Some(old) => Ast::Literal(Literal::Bool(old)),
+    };
+    if *argument != expected {
+        return Err(InclusiveEndRewriteError::UnexpectedInclusiveArgument {
+            found: plumb_expr::unparse(argument),
+        });
+    }
+    *argument = Ast::Literal(Literal::Bool(value));
+    Ok(plumb_expr::unparse(&ast))
+}
+
+#[cfg(test)]
+mod governed_answer_tests {
+    use super::*;
+
+    fn rid(s: &str) -> Id {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn fraction_semantic_key_depends_only_on_the_two_ids() {
+        let key = calculation_fraction_semantic_key(&rid("calc:days"), &rid("attr:part")).unwrap();
+        // Independently: RFC 8785 of the two sorted fields, full SHA-256 hex.
+        let canonical = br#"{"attribute_ref":"attr:part","calculation_ref":"calc:days"}"#;
+        let hex = &Hash::content_sha256(canonical).as_str()["sha256:".len()..].to_owned();
+        assert_eq!(key, format!("calculation_fraction:{hex}"));
+        assert_eq!(hex.len(), 64);
+        assert_eq!(
+            calculation_fraction_semantic_key(&rid("calc:days"), &rid("attr:part")).unwrap(),
+            key
+        );
+        assert_ne!(
+            calculation_fraction_semantic_key(&rid("attr:part"), &rid("calc:days")).unwrap(),
+            key
+        );
+        assert_ne!(
+            calculation_fraction_semantic_key(&rid("calc:days"), &rid("attr:other")).unwrap(),
+            key
+        );
+    }
+
+    #[test]
+    fn inclusive_end_rewrite_is_ast_local() {
+        // Similar identifiers elsewhere must survive: only the third working_days argument moves.
+        let expression = "if inclusive_end_note then working_days([begin, finish], calendar, inclusive_end) + inclusive_endx else working_days_total";
+        let result = rewrite_working_days_inclusive_end(expression, None, true);
+        // That expression has one working_days call (working_days_total is an identifier).
+        let rewritten = result.unwrap();
+        assert_eq!(
+            plumb_expr::parse(&rewritten).unwrap(),
+            plumb_expr::parse(
+                "if inclusive_end_note then working_days([begin, finish], calendar, true) + inclusive_endx else working_days_total"
+            )
+            .unwrap()
+        );
+        assert!(rewritten.contains("inclusive_end_note") && rewritten.contains("inclusive_endx"));
+        // A supersession from the governed literal.
+        let back = rewrite_working_days_inclusive_end(&rewritten, Some(true), false).unwrap();
+        assert_eq!(
+            plumb_expr::parse(&back).unwrap(),
+            plumb_expr::parse(
+                "if inclusive_end_note then working_days([begin, finish], calendar, false) + inclusive_endx else working_days_total"
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn inclusive_end_rewrite_rejects_anything_else() {
+        let rewrite =
+            |e: &str, current: Option<bool>| rewrite_working_days_inclusive_end(e, current, true);
+        assert_eq!(
+            rewrite("1 + 1", None),
+            Err(InclusiveEndRewriteError::WorkingDaysCalls(0))
+        );
+        assert_eq!(
+            rewrite(
+                "working_days([a, b], calendar, inclusive_end) + working_days([c, d], calendar, inclusive_end)",
+                None
+            ),
+            Err(InclusiveEndRewriteError::WorkingDaysCalls(2))
+        );
+        assert_eq!(
+            rewrite("working_days([a, b], calendar)", None),
+            Err(InclusiveEndRewriteError::MissingInclusiveArgument)
+        );
+        assert!(matches!(
+            rewrite("working_days([a, b], calendar, true)", None),
+            Err(InclusiveEndRewriteError::UnexpectedInclusiveArgument { .. })
+        ));
+        assert!(matches!(
+            rewrite("working_days([a, b], calendar, flag)", None),
+            Err(InclusiveEndRewriteError::UnexpectedInclusiveArgument { .. })
+        ));
+        assert!(matches!(
+            rewrite("working_days([a, b], calendar, not inclusive_end)", None),
+            Err(InclusiveEndRewriteError::UnexpectedInclusiveArgument { .. })
+        ));
+        // A supersession needs the exact previously governed literal.
+        assert!(matches!(
+            rewrite("working_days([a, b], calendar, inclusive_end)", Some(false)),
+            Err(InclusiveEndRewriteError::UnexpectedInclusiveArgument { .. })
+        ));
+        assert!(matches!(
+            rewrite("working_days([a, b], calendar, true)", Some(false)),
+            Err(InclusiveEndRewriteError::UnexpectedInclusiveArgument { .. })
+        ));
+        assert!(matches!(
+            rewrite("working_days(", None),
+            Err(InclusiveEndRewriteError::Parse(_))
+        ));
+    }
+}

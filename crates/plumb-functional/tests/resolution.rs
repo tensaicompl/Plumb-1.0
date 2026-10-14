@@ -524,6 +524,11 @@ mod resolution_contract {
                 None,
             ),
             InvariantFormula => ("inv:positive", json!({"expression": "amount >= 0"}), None),
+            // Hotfix 083: the calculation families have their own coverage; this helper serves
+            // only the historical six-family fixture.
+            CalculationFraction | CalculationInclusiveEnd | CalculationHolidayPolicy => {
+                unreachable!("outside the six-template fixture")
+            }
         };
         input(question_about(graph, subject), answer, rationale)
     }

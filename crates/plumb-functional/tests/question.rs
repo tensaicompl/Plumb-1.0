@@ -464,9 +464,28 @@ mod question_contract {
             .iter()
             .map(|t| (t.template_id, t.code, t.kind, t.routing_key))
             .collect();
+        // Hotfix 083: nine templates, still in template ID order.
         assert_eq!(
             registry,
             [
+                (
+                    "f2.calculation.fraction.v1",
+                    "PLUMB.F2.CALC.TYPECHECK",
+                    QuestionKind::Number,
+                    "formula"
+                ),
+                (
+                    "f2.calculation.holiday-policy.v1",
+                    CALENDAR_DEFINED,
+                    QuestionKind::YesNo,
+                    "calendar"
+                ),
+                (
+                    "f2.calculation.inclusive-end.v1",
+                    "PLUMB.F2.CALC.TYPECHECK",
+                    QuestionKind::YesNo,
+                    "formula"
+                ),
                 (
                     "f2.domain.relationship.cardinality.v1",
                     RELATION_TYPED,
@@ -554,8 +573,74 @@ mod question_contract {
             matched(INVARIANT_EXPRESSIBLE, "invariant_not_expressible"),
             Ok(INVARIANT_TEMPLATE)
         );
+        // Hotfix 083: the three generic calculation families match only their exact prefixes.
+        assert_eq!(
+            matched(
+                "PLUMB.F2.CALC.TYPECHECK",
+                &format!("{CALCULATION_FRACTION_CONDITION_PREFIX}calculation:days")
+            ),
+            Ok(CALCULATION_FRACTION_TEMPLATE)
+        );
+        assert_eq!(
+            matched(
+                "PLUMB.F2.CALC.TYPECHECK",
+                &format!("{CALCULATION_INCLUSIVE_END_CONDITION_PREFIX}calculation:days")
+            ),
+            Ok(CALCULATION_INCLUSIVE_END_TEMPLATE)
+        );
+        assert_eq!(
+            matched(
+                CALENDAR_DEFINED,
+                &format!("{CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX}calculation:days")
+            ),
+            Ok(CALCULATION_HOLIDAY_POLICY_TEMPLATE)
+        );
+        assert_eq!(
+            [
+                CALCULATION_FRACTION_CONDITION_PREFIX,
+                CALCULATION_INCLUSIVE_END_CONDITION_PREFIX,
+                CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX
+            ],
+            [
+                "calculation_fraction_unresolved:",
+                "calculation_inclusive_end_unresolved:",
+                "calculation_holiday_policy_unresolved:"
+            ]
+        );
+        // A known question-bearing code with an unresolvable condition is not a Question;
+        // generic calculation qualification findings stay unmapped.
+        for (code, condition) in [
+            ("PLUMB.F2.CALC.TYPECHECK", "anything"),
+            ("PLUMB.F2.CALC.TYPECHECK", "calculation_not_qualified"),
+            (
+                "PLUMB.F2.CALC.TYPECHECK",
+                "xcalculation_fraction_unresolved:calculation:days",
+            ),
+            (
+                "PLUMB.F2.CALC.TYPECHECK",
+                "xcalculation_inclusive_end_unresolved:calculation:days",
+            ),
+            (
+                "PLUMB.F2.CALC.TYPECHECK",
+                "calculation_holiday_policy_unresolved:calculation:days",
+            ),
+            (
+                CALENDAR_DEFINED,
+                "xcalculation_holiday_policy_unresolved:calculation:days",
+            ),
+            (
+                CALENDAR_DEFINED,
+                "calculation_fraction_unresolved:calculation:days",
+            ),
+            (CALENDAR_DEFINED, "calculation_holiday_policy_unresolved"),
+        ] {
+            assert_eq!(
+                matched(code, condition),
+                Err(UnmappedReason::ConditionNotQuestionResolvable),
+                "{code} {condition}"
+            );
+        }
         for code in [
-            "PLUMB.F2.CALC.TYPECHECK",
             "DMN.F2.TABLE.NO_OVERLAP",
             "DMN.F2.TABLE.COVERAGE",
             "PLUMB.F2.DOMAIN.ATTRIBUTE_OWNER",
@@ -612,11 +697,13 @@ mod question_contract {
         assert!(result.questions.is_empty());
         assert!(result.proposal.is_none());
         let mut expected = vec![
+            // Hotfix 083: CALC.TYPECHECK is a known question-bearing code, but this generic
+            // qualification condition is deliberately not resolvable by a Question.
             UnmappedFinding {
                 finding_ref: typecheck.id.clone(),
                 code: "PLUMB.F2.CALC.TYPECHECK".into(),
                 semantic_condition_key: "calculation_not_qualified".into(),
-                reason: UnmappedReason::NoQuestionTemplate,
+                reason: UnmappedReason::ConditionNotQuestionResolvable,
             },
             UnmappedFinding {
                 finding_ref: table.id.clone(),
@@ -729,6 +816,117 @@ mod question_contract {
             q.answer_schema.unwrap(),
             json!({"type": "object", "additionalProperties": false, "required": ["expression"],
                    "properties": {"expression": {"type": "string", "minLength": 1}}})
+        );
+    }
+
+    #[test]
+    fn calculation_answer_schemas_are_exact() {
+        // Hotfix 083: the three generic calculation families, through the real S3.1 engine.
+        let fx = Fx::new();
+        let candidate = |prefix: &str| format!("{prefix}calculation:days");
+        let fraction = gf(
+            "PLUMB.F2.CALC.TYPECHECK",
+            &candidate(CALCULATION_FRACTION_CONDITION_PREFIX),
+            &["calculation:days"],
+            FindingSeverity::Blocker,
+        );
+        let inclusive = gf(
+            "PLUMB.F2.CALC.TYPECHECK",
+            &candidate(CALCULATION_INCLUSIVE_END_CONDITION_PREFIX),
+            &["calculation:days"],
+            FindingSeverity::Blocker,
+        );
+        let holiday = gf(
+            CALENDAR_DEFINED,
+            &candidate(CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX),
+            &["calculation:days"],
+            FindingSeverity::Blocker,
+        );
+        let expected = [
+            (
+                fraction,
+                CALCULATION_FRACTION_TEMPLATE,
+                QuestionKind::Number,
+                RouteDisposition::Configured {
+                    routing_key: "formula".into(),
+                },
+                json!({"type": "object", "additionalProperties": false,
+                       "required": ["decimal", "unit"],
+                       "properties": {"decimal": {"type": "string", "minLength": 1},
+                                      "unit": {"type": "string", "minLength": 1}}}),
+            ),
+            (
+                inclusive,
+                CALCULATION_INCLUSIVE_END_TEMPLATE,
+                QuestionKind::YesNo,
+                RouteDisposition::Configured {
+                    routing_key: "formula".into(),
+                },
+                json!({"type": "object", "additionalProperties": false,
+                       "required": ["inclusive_end"],
+                       "properties": {"inclusive_end": {"type": "boolean"}}}),
+            ),
+            (
+                holiday,
+                CALCULATION_HOLIDAY_POLICY_TEMPLATE,
+                QuestionKind::YesNo,
+                RouteDisposition::Configured {
+                    routing_key: "calendar".into(),
+                },
+                json!({"type": "object", "additionalProperties": false,
+                       "required": ["calendar_ref", "holiday_consumes_working_day"],
+                       "properties": {
+                           "calendar_ref": {"type": "string", "enum": ["calendar:nl"]},
+                           "holiday_consumes_working_day": {"type": "boolean"}}}),
+            ),
+        ];
+        for (finding, template_id, kind, route, schema) in expected {
+            let result = run(&fx, vec![finding.clone()]);
+            assert!(result.issues.is_empty(), "{:?}", result.issues);
+            assert!(result.unmapped.is_empty());
+            let q = only(&result);
+            assert_eq!(q.template_id, template_id);
+            assert_eq!(q.finding_ref, finding.id);
+            assert_eq!(q.route, route);
+            assert_eq!(q.payload.question_kind, kind);
+            assert_eq!(q.payload.answer_schema.clone().unwrap(), schema);
+            // Candidate expansion: the exact Calculation named by the condition suffix.
+            assert_eq!(q.slots["candidate_ref"], json!("calculation:days"));
+            assert_eq!(
+                q.payload.context_refs.clone().unwrap(),
+                vec![id("calculation:days")]
+            );
+        }
+        let template = |template_id: &str| {
+            QUESTION_TEMPLATES
+                .iter()
+                .find(|t| t.template_id == template_id)
+                .unwrap()
+        };
+        for template_id in [
+            CALCULATION_FRACTION_TEMPLATE,
+            CALCULATION_INCLUSIVE_END_TEMPLATE,
+        ] {
+            assert_eq!(template(template_id).expansion, Expansion::Candidate);
+            assert_eq!(template(template_id).choices, ChoiceSpec::None);
+        }
+        let holiday = template(CALCULATION_HOLIDAY_POLICY_TEMPLATE);
+        assert_eq!(holiday.expansion, Expansion::Candidate);
+        assert_eq!(
+            holiday.choices,
+            ChoiceSpec::Single(&[plumb_psg::NodeType::Calendar])
+        );
+        assert_eq!(
+            holiday.condition,
+            ConditionMatch::Prefix(CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX)
+        );
+        assert_eq!(
+            template(CALCULATION_FRACTION_TEMPLATE).condition,
+            ConditionMatch::Prefix(CALCULATION_FRACTION_CONDITION_PREFIX)
+        );
+        assert_eq!(
+            template(CALCULATION_INCLUSIVE_END_TEMPLATE).condition,
+            ConditionMatch::Prefix(CALCULATION_INCLUSIVE_END_CONDITION_PREFIX)
         );
     }
 

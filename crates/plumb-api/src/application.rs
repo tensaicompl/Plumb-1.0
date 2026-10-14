@@ -173,9 +173,10 @@ mod services {
     use plumb_artifacts::ArtifactStore;
     use plumb_core::{GateId, Id, StageId};
     use plumb_functional::{
-        compose_question_round_for_stakeholder, parse_priority, project_functional_pilot, round_id,
-        FunctionalPilotOutputs, ProjectionArtifact, QuestionRoundConfig, QuestionRoundDisposition,
-        RoundError, MAX_QUESTION_ROUND_SIZE,
+        compose_question_round_for_stakeholder, generate_questions, parse_priority,
+        project_functional_pilot, round_id, FunctionalPilotOutputs, ProjectionArtifact,
+        QuestionAudit, QuestionGenerationInput, QuestionGenerationResult, QuestionRoundConfig,
+        QuestionRoundDisposition, RoundError, MAX_QUESTION_ROUND_SIZE,
     };
     use plumb_import::{
         import_docx, import_markdown, import_plain_text, ImportAudit, ImportedSource,
@@ -276,6 +277,15 @@ mod services {
                 ProposalAction::Reject => None,
             }
         }
+    }
+
+    /// What one question materialisation produced (Hotfix 083): the exact S3.1 generation
+    /// result and, when its non-semantic proposal was committed, the write.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct MaterializedQuestions {
+        pub generation: QuestionGenerationResult,
+        /// `None` when nothing was missing: no revision, no event, no write.
+        pub write: Option<WriteResult>,
     }
 
     /// Maps a workflow-store failure: a corrupt record is 500 `E_WORKFLOW_CORRUPT`, a state
@@ -654,6 +664,61 @@ mod services {
             })
         }
 
+        /// `materialize_questions` (Hotfix 083): runs the pure S3.1 kernel over `loaded` for the
+        /// supplied current findings and routing, with the configured stage actor and the
+        /// injected clock as audit, and commits its exact non-semantic proposal through the
+        /// ordinary CAS write. A structural kernel issue fails before anything is committed;
+        /// unmapped findings are reported, not an error. When every Finding and Question
+        /// already exists identically there is no proposal, and nothing is written.
+        pub fn materialize_questions(
+            &self,
+            loaded: &LoadedRevision,
+            input: &QuestionGenerationInput,
+        ) -> Result<MaterializedQuestions, ApiError> {
+            let created_by = self
+                .stage_runtime("materialize_questions")?
+                .stage_actor_ref
+                .clone();
+            let created_at = self.now();
+            let generation = generate_questions(
+                &loaded.graph,
+                input,
+                &QuestionAudit {
+                    created_by,
+                    created_at,
+                },
+            )
+            .map_err(|error| {
+                ApiError::unprocessable(
+                    "E_QUESTION_GENERATION_INVALID",
+                    "the question generation input is invalid",
+                )
+                .with_details(json!({ "reason": error.to_string() }))
+            })?;
+            if !generation.issues.is_empty() {
+                return Err(ApiError::conflict(
+                    "E_QUESTION_GENERATION_ISSUES",
+                    "the questions cannot be materialized from the current graph",
+                )
+                .with_details(json!({
+                    "issues": serde_json::to_value(&generation.issues)
+                        .map_err(|_| ApiError::internal("question_issues"))?
+                })));
+            }
+            let write = match &generation.proposal {
+                None => None,
+                Some(proposal) => Some(self.write(
+                    loaded,
+                    proposal,
+                    false,
+                    None,
+                    created_at,
+                    "materialize_questions",
+                )?),
+            };
+            Ok(MaterializedQuestions { generation, write })
+        }
+
         /// One proposal action on `loaded`: accept, create, link, merge and supersede commit the
         /// stored proposal unchanged through the governed A0.3 path (with the X1.5 governed
         /// recorder for stage-linked proposals) when its class matches; reject moves it
@@ -756,4 +821,6 @@ mod services {
 }
 
 pub(crate) use services::{baseline_changed, not_pending, workflow_error};
-pub use services::{export_artifact, require_importable, round_size, ProposalAction};
+pub use services::{
+    export_artifact, require_importable, round_size, MaterializedQuestions, ProposalAction,
+};

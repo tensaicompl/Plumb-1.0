@@ -2926,6 +2926,494 @@ mod http_workflow {
         .await
     }
 
+    // ------------------------------------------------------------------ Hotfix 083
+
+    const STAGE_ACTOR: &str = "agent:stage";
+    const FRACTION_CALC: &str = "calc:requested";
+
+    /// A generic pre-answer graph: one Calculation over a working-day period with an unresolved
+    /// inclusive end, no calendar and a fractional Decimal input bound by its S2.6 origin.
+    fn calculation_answer_graph() -> Graph {
+        let attribute = |id: &str, value_type: &str| {
+            node(
+                id,
+                "Accepted",
+                "Attribute",
+                json!({"name": id, "value_type": value_type, "nullable": false, "unit": null,
+                       "precision": null, "enum_values": null, "data_classification": null}),
+            )
+        };
+        let mut calc = node(
+            FRACTION_CALC,
+            "Accepted",
+            "Calculation",
+            json!({
+                "name": "requested_working_days",
+                "expression": "working_days([begin, finish], calendar, inclusive_end) * part",
+                "result_type": "Decimal(2)", "unit": "working_day", "rounding": null,
+                "calendar_ref": null, "examples": null
+            }),
+        );
+        let range = json!({"requirement_ref": "req:requested", "start": 0, "end": 4});
+        calc.extensions.insert(
+            plumb_psg::ExtensionKey::from_str(CALCULATION_ORIGIN_EXTENSION).unwrap(),
+            json!({
+                "name_range": range, "expression_evidence": [],
+                "used_bindings": [
+                    {"node_ref": "attr:begin", "symbol": "begin", "exposure": {"kind": "root"}},
+                    {"node_ref": "attr:finish", "symbol": "finish", "exposure": {"kind": "root"}},
+                    {"node_ref": "attr:flag", "symbol": "inclusive_end", "exposure": {"kind": "root"}},
+                    {"node_ref": "attr:part", "symbol": "part", "exposure": {"kind": "root"}}
+                ]
+            }),
+        );
+        let nodes = vec![
+            agent(ACTOR, "human"),
+            agent(ASSISTANT, "llm_model"),
+            agent(STAGE_ACTOR, "compiler_stage"),
+            stakeholder("stakeholder:owner"),
+            node(
+                "entity:period",
+                "Accepted",
+                "Entity",
+                json!({"name": "Period", "description": null, "aggregate_root": null}),
+            ),
+            attribute("attr:begin", "Date"),
+            attribute("attr:finish", "Date"),
+            attribute("attr:flag", "Bool"),
+            attribute("attr:part", "Decimal(2)"),
+            node(
+                "cal:test",
+                "Accepted",
+                "Calendar",
+                json!({"time_zone": "UTC", "week_pattern": ["monday", "friday"],
+                       "region": null, "holiday_source": null}),
+            ),
+            calc,
+        ];
+        let edges = ["attr:begin", "attr:finish", "attr:flag", "attr:part"]
+            .iter()
+            .enumerate()
+            .map(|(i, attr)| {
+                edge(
+                    &format!("rel:period{i}"),
+                    "has_attribute",
+                    "entity:period",
+                    attr,
+                )
+            })
+            .collect();
+        Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap_or_else(|v| panic!("{v:?}"))
+    }
+
+    /// The full A0.3 + A0.4 application over a database initialized with `graph`.
+    fn application_app(graph: Graph) -> App {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plumb.sqlite");
+        let profile = profile();
+        SqliteRevisionStore::open(&path)
+            .unwrap()
+            .create_initial_revision(
+                &graph,
+                profile.profile_hash().unwrap(),
+                profile.rule_pack_hash().unwrap(),
+                RevisionWriteMeta {
+                    decision_refs: vec![],
+                    created_by: id("agent:other"),
+                    created_at: ts(T0),
+                },
+            )
+            .unwrap();
+        let provider = Arc::new(TestProvider {
+            mode: Mutex::new(ProviderMode::Reply),
+            base: Mutex::new(None),
+            race: Mutex::new(None),
+            received: Mutex::new(Vec::new()),
+            probe: Mutex::new(None),
+            probed: Mutex::new(None),
+        });
+        let runtime = plumb_api::application::ApplicationRuntime {
+            inference_provider: provider.clone(),
+            provider_mode: plumb_api::ProviderMode::Null,
+            provider_policy: ProviderPolicy {
+                provider: "test".into(),
+                config: CanonicalJson::new(json!({})),
+            },
+            session_turn_config: SessionTurnConfig {
+                retrieval_top_k: 3,
+                max_open_questions: 3,
+                max_context_bytes: 65536,
+            },
+            assistant_actor_ref: id(ASSISTANT),
+            stage_actor_ref: id(STAGE_ACTOR),
+            calendars: Arc::new(
+                ExprStaticCalendarProvider::new([ExprCalendarDefinition::new(
+                    id("cal:test"),
+                    [],
+                    [],
+                )])
+                .unwrap(),
+            ),
+            predicates: Arc::new(NoPredicates),
+            calendar_configs: vec![plumb_api::CalendarConfig {
+                calendar_ref: id("cal:test"),
+                weekend: vec!["saturday".into(), "sunday".into()],
+                holidays: vec![],
+            }],
+            direct_managers: Vec::new(),
+            expression_scopes: Vec::new(),
+            calculation_scope_overrides: Vec::new(),
+            runtime_semantic_values: Vec::new(),
+            validation_policy: plumb_validation::ValidationPolicy::default(),
+            vocabulary_policy: plumb_functional::VocabularyPolicy {
+                language: "en".into(),
+            },
+            duplicate_policy: serde_json::from_value(json!({"jaccard_threshold": "0.8"})).unwrap(),
+            calculation_scope: None,
+            operation_scope: None,
+            process_scope: None,
+            authorization_draft: None,
+            scenario_derivation: None,
+            verification_applicability: Some(Default::default()),
+            gates: plumb_api::GateInputsConfig {
+                f1: None,
+                f2: None,
+                f4: None,
+            },
+        };
+        let state = plumb_api::application::open_application(
+            &path,
+            BranchName::main(),
+            identity(ACTOR),
+            fixed(),
+            profile,
+            runtime,
+        )
+        .unwrap();
+        let router = router(state.clone());
+        App {
+            _dir: dir,
+            path,
+            state,
+            router,
+            provider,
+        }
+    }
+
+    fn calculation_gap(code: &str, condition: &str, affected: &[&str]) -> GeneratedFinding {
+        let mut affected: Vec<Id> = affected.iter().map(|a| id(a)).collect();
+        affected.sort();
+        let key = finding_key(code, &affected, condition).unwrap();
+        GeneratedFinding {
+            id: finding_id(&key).unwrap(),
+            key,
+            semantic_condition_key: condition.into(),
+            payload: Finding {
+                code: code.into(),
+                family: "F2".into(),
+                severity: FindingSeverity::Blocker,
+                message: "The calculation semantic is unresolved.".into(),
+                status: "Open".into(),
+                affected_refs: affected,
+                standard_rule_ref: None,
+                suggested_resolution: None,
+                waiver_ref: None,
+            },
+        }
+    }
+
+    /// The three explicit upstream calculation findings of the generic graph.
+    fn calculation_gaps() -> Vec<GeneratedFinding> {
+        vec![
+            calculation_gap(
+                "PLUMB.F2.CALC.TYPECHECK",
+                &format!(
+                    "{}{FRACTION_CALC}",
+                    plumb_functional::CALCULATION_FRACTION_CONDITION_PREFIX
+                ),
+                &[FRACTION_CALC, "attr:part"],
+            ),
+            calculation_gap(
+                "PLUMB.F2.CALC.TYPECHECK",
+                &format!(
+                    "{}{FRACTION_CALC}",
+                    plumb_functional::CALCULATION_INCLUSIVE_END_CONDITION_PREFIX
+                ),
+                &[FRACTION_CALC],
+            ),
+            calculation_gap(
+                "PLUMB.F2.TIME.CALENDAR_DEFINED",
+                &format!(
+                    "{}{FRACTION_CALC}",
+                    plumb_functional::CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX
+                ),
+                &[FRACTION_CALC],
+            ),
+        ]
+    }
+
+    fn owner_routing() -> StakeholderRoutingConfig {
+        StakeholderRoutingConfig {
+            stakeholders: vec![plumb_functional::RoutingStakeholder {
+                id: id("stakeholder:owner"),
+                name: "Owner".into(),
+                roles: vec!["analyst".into()],
+            }],
+            routing: [
+                ("calendar".to_owned(), vec![id("stakeholder:owner")]),
+                ("formula".to_owned(), vec![id("stakeholder:owner")]),
+            ]
+            .into(),
+        }
+    }
+
+    fn questions_of(graph: &Graph) -> Vec<(Id, plumb_psg::Question)> {
+        graph
+            .nodes()
+            .values()
+            .filter_map(|n| match &n.payload {
+                NodePayload::Question(q) => Some((n.id.clone(), q.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn finding_count(graph: &Graph) -> usize {
+        graph
+            .nodes()
+            .values()
+            .filter(|n| matches!(n.payload, NodePayload::Finding(_)))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn http_workflow_question_materialization_service_commits_once() {
+        let app = application_app(calculation_answer_graph());
+        let before = head(&app);
+        let input = QuestionGenerationInput {
+            findings: calculation_gaps(),
+            routing: owner_routing(),
+        };
+        let first = app
+            .state
+            .materialize_questions(&app.state.head().unwrap(), &input)
+            .unwrap();
+        assert!(first.generation.issues.is_empty());
+        assert!(first.generation.unmapped.is_empty());
+        assert_eq!(first.generation.questions.len(), 3);
+        let write = first.write.clone().unwrap();
+        let after = head(&app);
+        // One ordinary CAS revision; the governance material leaves the semantic hash alone.
+        assert_ne!(after.revision.id, before.revision.id);
+        assert_eq!(write.revision, after.revision.id.to_string());
+        assert_eq!(after.revision.semantic_hash, before.revision.semantic_hash);
+        assert_eq!(finding_count(&after.graph), 3);
+        let questions = questions_of(&after.graph);
+        assert_eq!(questions.len(), 3);
+        let mut templates: Vec<&str> = first
+            .generation
+            .questions
+            .iter()
+            .map(|q| q.template_id.as_str())
+            .collect();
+        templates.sort();
+        assert_eq!(
+            templates,
+            [
+                "f2.calculation.fraction.v1",
+                "f2.calculation.holiday-policy.v1",
+                "f2.calculation.inclusive-end.v1"
+            ]
+        );
+        // The persisted Questions are exactly the kernel's; the audit is the stage actor.
+        for generated in &first.generation.questions {
+            let persisted = after.graph.node(&generated.question_ref).unwrap();
+            assert_eq!(
+                persisted.payload,
+                NodePayload::Question(generated.payload.clone())
+            );
+            assert_eq!(persisted.audit.created_by, id(STAGE_ACTOR));
+            assert_eq!(
+                generated.payload.stakeholder_ref,
+                Some(id("stakeholder:owner"))
+            );
+        }
+        // An identical second materialization writes nothing.
+        let second = app
+            .state
+            .materialize_questions(&app.state.head().unwrap(), &input)
+            .unwrap();
+        assert_eq!(second.write, None);
+        assert_eq!(second.generation.proposal, None);
+        assert!(second
+            .generation
+            .questions
+            .iter()
+            .all(|q| q.materialization == plumb_functional::QuestionMaterialization::Existing));
+        let again = head(&app);
+        assert_eq!(again.revision.id, after.revision.id);
+        assert_eq!(questions_of(&again.graph).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn http_workflow_question_materialization_fails_whole_on_kernel_issues() {
+        let app = application_app(calculation_answer_graph());
+        let before = head(&app);
+        let mut findings = calculation_gaps();
+        // A candidate suffix that is not an ID is a structural kernel issue.
+        findings.push(calculation_gap(
+            "PLUMB.F2.CALC.TYPECHECK",
+            "calculation_fraction_unresolved:not an id",
+            &[FRACTION_CALC],
+        ));
+        let error = app
+            .state
+            .materialize_questions(
+                &app.state.head().unwrap(),
+                &QuestionGenerationInput {
+                    findings,
+                    routing: owner_routing(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.body().code, "E_QUESTION_GENERATION_ISSUES");
+        let after = head(&app);
+        assert_eq!(after.revision.id, before.revision.id);
+        assert_eq!(finding_count(&after.graph), 0);
+        assert!(questions_of(&after.graph).is_empty());
+    }
+
+    #[tokio::test]
+    async fn http_workflow_calculation_answers_commit_through_the_governed_path() {
+        let app = application_app(calculation_answer_graph());
+        let materialized = app
+            .state
+            .materialize_questions(
+                &app.state.head().unwrap(),
+                &QuestionGenerationInput {
+                    findings: calculation_gaps(),
+                    routing: owner_routing(),
+                },
+            )
+            .unwrap();
+        let question_of = |template_id: &str| {
+            materialized
+                .generation
+                .questions
+                .iter()
+                .find(|q| q.template_id == template_id)
+                .unwrap()
+                .question_ref
+                .clone()
+        };
+        let answers = [
+            (
+                question_of("f2.calculation.fraction.v1"),
+                json!({"decimal": "0.5", "unit": "working_day"}),
+            ),
+            (
+                question_of("f2.calculation.inclusive-end.v1"),
+                json!({"inclusive_end": true}),
+            ),
+            (
+                question_of("f2.calculation.holiday-policy.v1"),
+                json!({"holiday_consumes_working_day": false, "calendar_ref": "cal:test"}),
+            ),
+        ];
+        let mut decisions = Vec::new();
+        for (question, value) in answers {
+            let before = revision(&app).await;
+            let r = answer(&app, &question, value).await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+            let body = r.json();
+            // A pending proposal with intake and preview; nothing committed yet.
+            assert_eq!(body["revision"], before);
+            assert_eq!(body["events"], json!([]));
+            assert_eq!(body["patch_preview"]["op"], "Compound");
+            assert!(body["intake"].is_object());
+            let proposal_id = body["proposal_id"].as_str().unwrap().to_owned();
+            let stored = workflow(&app).proposal(&id(&proposal_id)).unwrap().unwrap();
+            assert_eq!(stored.state, WorkflowProposalState::Pending);
+            assert_eq!(stored.origin_kind, WorkflowOrigin::Question);
+            assert_eq!(revision(&app).await, before);
+            // A calculation payload change (or a pure confirmation) is an accept action.
+            assert_eq!(body["action"], "accept");
+            let r = write(
+                &app,
+                &format!("/api/proposals/{proposal_id}/accept"),
+                Some(json!({"reason": "Confirmed by the owner."})),
+            )
+            .await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+            assert_ne!(revision(&app).await, before);
+            let stored = workflow(&app).proposal(&id(&proposal_id)).unwrap().unwrap();
+            assert_eq!(stored.state, WorkflowProposalState::Accepted);
+            let persisted: Proposal = serde_json::from_str(&stored.proposal_json).unwrap();
+            decisions.push(persisted);
+        }
+        let loaded = head(&app);
+        let NodePayload::Calculation(calc) =
+            &loaded.graph.node(&id(FRACTION_CALC)).unwrap().payload
+        else {
+            unreachable!()
+        };
+        // Fraction: one canonical governed example.
+        let key = plumb_functional::calculation_fraction_semantic_key(
+            &id(FRACTION_CALC),
+            &id("attr:part"),
+        )
+        .unwrap();
+        assert_eq!(
+            calc.examples,
+            Some(vec![json!({"version": 1, "key": key,
+                "inputs": [{"symbol": "part", "value": {"kind": "decimal", "value": "0.5", "unit": null}}],
+                "expected_result": {"kind": "decimal", "value": "0.5", "unit": "working_day"}})])
+        );
+        // Inclusive end: the working_days third argument is the boolean literal (the
+        // canonical PlumbExpr unparse of the rewritten AST).
+        assert_eq!(
+            calc.expression,
+            "working_days([begin, finish], calendar, true) * part"
+        );
+        // Holiday policy: the selected calendar.
+        assert_eq!(calc.calendar_ref, Some(id("cal:test")));
+        // Exactly three Accepted S3 decisions, each with its persisted artifact.
+        let s3: Vec<(&Node, &plumb_psg::ResolutionDecision)> = loaded
+            .graph
+            .nodes()
+            .values()
+            .filter(|n| n.status == ElementStatus::Accepted)
+            .filter_map(|n| match &n.payload {
+                NodePayload::ResolutionDecision(d) if d.question_ref.is_some() => Some((n, d)),
+                _ => None,
+            })
+            .collect();
+        let mut kinds: Vec<&str> = s3
+            .iter()
+            .map(|(_, d)| d.answer["kind"].as_str().unwrap())
+            .collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            [
+                "calculation_fraction",
+                "calculation_holiday_policy",
+                "calculation_inclusive_end"
+            ]
+        );
+        let artifacts = SqliteArtifactStore::open(&app.path).unwrap();
+        for (_, decision) in &s3 {
+            assert_eq!(
+                artifacts.get(&decision.patch_ref).unwrap().hash,
+                decision.patch_ref
+            );
+        }
+        for (_, q) in questions_of(&loaded.graph) {
+            assert_eq!(q.status, "Answered");
+        }
+        assert_eq!(decisions.len(), 3);
+    }
+
     /// Hotfix 081: an actual intake response projects each validation finding through the
     /// shared Finding projection with `rule_class` read from the active profile's metadata for
     /// the exact finding code. Production intake runs with no candidate gate reports
