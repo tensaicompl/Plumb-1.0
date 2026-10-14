@@ -1,19 +1,22 @@
 //! The application construction layer (A0.4, Hotfix 067): opens every store over one pilot
 //! database and builds the full `ApiState`, so the CLI and the server share one persistence
-//! setup and never reproduce it. It also initializes an empty project database.
+//! setup and never reproduce it. It also initializes an empty project database and bootstraps a
+//! new project database for the CLI `init` command (R0.1).
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use plumb_artifacts::SqliteArtifactStore;
-use plumb_core::{Clock, Id, Timestamp};
+use plumb_core::{Clock, Hash, Id, Timestamp};
 use plumb_functional::{
     AuthorizationDraft, CalculationScope, CalendarProvider, DuplicatePolicy, OperationScope,
     PredicateProvider, ProcessScope, ScenarioDerivationInputs, VerificationApplicabilityInputs,
     VocabularyPolicy,
 };
 use plumb_inference::{InferenceProvider, ProviderPolicy};
-use plumb_psg::Graph;
+use plumb_psg::{Agent, AgentKind, AuditMeta, ElementStatus, Graph, Node, NodePayload};
 use plumb_session::SessionTurnConfig;
 use plumb_sim::{
     ExecutionCalculationScopeOverride, ExecutionExpressionScopeInput, RuntimeSemanticValue,
@@ -23,6 +26,7 @@ use plumb_store::{
     SqliteWorkflowStore, StoreError,
 };
 use plumb_validation::{ValidationPolicy, ValidationProfile};
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::runtime::{
@@ -43,6 +47,9 @@ pub enum ApplicationError {
     Profile(String),
     #[error("graph: {0}")]
     Graph(String),
+    /// R0.1: the project cannot be bootstrapped (existing path or invalid configured actors).
+    #[error("bootstrap: {0}")]
+    Bootstrap(String),
 }
 
 /// The typed runtime material of one application instance: the A0.3 runtime inputs and the
@@ -161,6 +168,146 @@ pub fn initialize_project_database(
         },
     )?;
     Ok(revision.id)
+}
+
+/// The result of bootstrapping a new project database (R0.1): exactly what `init` reports.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectBootstrap {
+    pub project_id: Id,
+    pub branch: BranchName,
+    pub revision_id: RevisionId,
+    pub semantic_hash: Hash,
+    pub evidence_hash: Hash,
+}
+
+/// The SQLite sidecar paths of `db` (rollback journal and WAL files).
+fn sqlite_sidecars(db: &Path) -> [PathBuf; 3] {
+    ["-journal", "-wal", "-shm"].map(|suffix| {
+        let mut name = db.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    })
+}
+
+/// The three configured provenance Agents of a new project, all Accepted at revision 1 with
+/// no evidence, derivations, standards, tags or extensions, created by `created_by` at `at`.
+fn bootstrap_agents(
+    identity_actor_ref: &Id,
+    stage_actor_ref: &Id,
+    assistant_actor_ref: &Id,
+    created_by: &Id,
+    at: Timestamp,
+) -> Result<Vec<Node>, ApplicationError> {
+    let actors = [
+        (identity_actor_ref, AgentKind::Human),
+        (stage_actor_ref, AgentKind::CompilerStage),
+        (assistant_actor_ref, AgentKind::LlmModel),
+    ];
+    actors
+        .into_iter()
+        .map(|(id, agent_kind)| {
+            let audit = AuditMeta::new(created_by.clone(), at, None, None)
+                .map_err(|e| ApplicationError::Graph(format!("{e:?}")))?;
+            Ok(Node {
+                id: id.clone(),
+                revision: 1,
+                status: ElementStatus::Accepted,
+                payload: NodePayload::Agent(Agent { agent_kind }),
+                evidence: Vec::new(),
+                derivations: Vec::new(),
+                standards: Vec::new(),
+                tags: BTreeSet::new(),
+                extensions: Default::default(),
+                audit,
+            })
+        })
+        .collect()
+}
+
+/// Bootstraps a new project database at `db` (R0.1, architecture §21 "Project bootstrap").
+///
+/// The three actor IDs must be pairwise distinct; this is checked before anything is created.
+/// The path is reserved with an exclusive create, so an existing path (any file, directory or
+/// SQLite sidecar) is refused without being opened or changed. The genesis revision is written
+/// through `SqliteRevisionStore::create_initial_revision` on branch `main` with the profile's
+/// ID and hashes; its graph holds exactly the three configured Agents. The clock is read once
+/// for the Agent audits and the revision. When any step after the reservation fails, the file
+/// and the sidecars this attempt created are removed. `initialize_project_database` is
+/// unchanged.
+pub fn bootstrap_project_database(
+    db: &Path,
+    project_id: Id,
+    profile: &ValidationProfile,
+    identity: &ApiIdentity,
+    stage_actor_ref: &Id,
+    assistant_actor_ref: &Id,
+    clock: &dyn Clock,
+) -> Result<ProjectBootstrap, ApplicationError> {
+    let identity_actor_ref = identity.actor_ref();
+    let distinct: BTreeSet<&Id> = [identity_actor_ref, stage_actor_ref, assistant_actor_ref]
+        .into_iter()
+        .collect();
+    if distinct.len() != 3 {
+        return Err(ApplicationError::Bootstrap(
+            "identity.actor_ref, stage_actor_ref and assistant_actor_ref must be pairwise distinct"
+                .into(),
+        ));
+    }
+    let sidecars = sqlite_sidecars(db);
+    if let Some(existing) = sidecars.iter().find(|p| p.symlink_metadata().is_ok()) {
+        return Err(ApplicationError::Bootstrap(format!(
+            "{} already exists",
+            existing.display()
+        )));
+    }
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(db)
+        .map_err(|e| ApplicationError::Bootstrap(format!("cannot create {}: {e}", db.display())))?;
+    let at = clock.now();
+    let created_by = identity_actor_ref.clone();
+    let written = (|| {
+        let nodes = bootstrap_agents(
+            identity_actor_ref,
+            stage_actor_ref,
+            assistant_actor_ref,
+            &created_by,
+            at,
+        )?;
+        let graph = Graph::new(project_id, profile.profile_id.clone(), nodes, Vec::new())
+            .map_err(|e| ApplicationError::Graph(format!("{e:?}")))?;
+        let mut store = SqliteRevisionStore::open(db)?;
+        let revision = store.create_initial_revision(
+            &graph,
+            profile
+                .profile_hash()
+                .map_err(|e| ApplicationError::Profile(e.to_string()))?,
+            profile
+                .rule_pack_hash()
+                .map_err(|e| ApplicationError::Profile(e.to_string()))?,
+            RevisionWriteMeta {
+                decision_refs: Vec::new(),
+                created_by,
+                created_at: at,
+            },
+        )?;
+        Ok(ProjectBootstrap {
+            project_id: revision.project_id,
+            branch: BranchName::main(),
+            revision_id: revision.id,
+            semantic_hash: revision.semantic_hash,
+            evidence_hash: revision.evidence_hash,
+        })
+    })();
+    if written.is_err() {
+        // Only this attempt's material: the reserved file and sidecars absent before it.
+        let _ = std::fs::remove_file(db);
+        for sidecar in &sidecars {
+            let _ = std::fs::remove_file(sidecar);
+        }
+    }
+    written
 }
 
 // ============================================================================ shared services

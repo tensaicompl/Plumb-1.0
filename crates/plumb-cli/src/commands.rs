@@ -10,7 +10,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use plumb_api::application::{
-    export_artifact, open_application, round_size, ApplicationError, ProposalAction,
+    bootstrap_project_database, export_artifact, open_application, round_size, ApplicationError,
+    ProposalAction,
 };
 use plumb_api::error::ApiError;
 use plumb_api::openapi::{ExportFormat, JobStatus};
@@ -101,6 +102,46 @@ impl Done {
             gate_failed: false,
         })
     }
+}
+
+/// `init --project <ID>` (R0.1): bootstraps a new project database at `db` on branch `main`
+/// with the configured Agents; it never opens an existing database or builds a provider.
+pub fn init(
+    db: &Path,
+    branch: &str,
+    project: &str,
+    config: &CliConfig,
+    clock: &dyn Clock,
+) -> Result<Done, CliError> {
+    if branch != BranchName::main().as_str() {
+        return Err(CliError::Usage(format!(
+            "init creates only branch main, not {branch:?}"
+        )));
+    }
+    let project: Id = project
+        .parse()
+        .map_err(|_| CliError::Usage(format!("{project:?} is not a project ID")))?;
+    let (identity, stage_actor_ref, assistant_actor_ref) = config.bootstrap_actors()?;
+    let profile = load_builtin_software_profile()
+        .map_err(|e| CliError::Usage(format!("validation profile: {e}")))?;
+    let result = bootstrap_project_database(
+        db,
+        project,
+        &profile,
+        &identity,
+        &stage_actor_ref,
+        &assistant_actor_ref,
+        clock,
+    )?;
+    let text = format!(
+        "project: {}\nbranch: {}\nrevision: {}\nsemantic_hash: {}\nevidence_hash: {}",
+        result.project_id,
+        result.branch,
+        result.revision_id,
+        result.semantic_hash,
+        result.evidence_hash
+    );
+    Done::new(&result, text)
 }
 
 /// Opens the application over an existing, initialized database.

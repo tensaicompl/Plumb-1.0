@@ -175,6 +175,31 @@ impl CliConfig {
         .map_err(|e| ConfigError::Invalid(format!("identity: {e}")))
     }
 
+    /// The validated bootstrap actors of `init` (R0.1): the identity and the stage and
+    /// assistant actor refs, which must be pairwise distinct.
+    pub fn bootstrap_actors(&self) -> Result<(ApiIdentity, Id, Id), ConfigError> {
+        let identity = self.identity()?;
+        let actors: BTreeSet<&Id> = [
+            &self.identity.actor_ref,
+            &self.stage_actor_ref,
+            &self.assistant_actor_ref,
+        ]
+        .into_iter()
+        .collect();
+        if actors.len() != 3 {
+            return Err(ConfigError::Invalid(
+                "identity.actor_ref, stage_actor_ref and assistant_actor_ref must be pairwise \
+                 distinct"
+                    .into(),
+            ));
+        }
+        Ok((
+            identity,
+            self.stage_actor_ref.clone(),
+            self.assistant_actor_ref.clone(),
+        ))
+    }
+
     /// The typed application runtime with the given provider.
     pub fn runtime(&self, provider: Provider) -> Result<ApplicationRuntime, ConfigError> {
         let calendars = calendar_provider(&self.calendars)?;

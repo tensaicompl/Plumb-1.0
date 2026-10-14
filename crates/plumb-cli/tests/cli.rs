@@ -8,7 +8,9 @@ mod cli {
     use std::sync::{Arc, Mutex};
 
     use assert_cmd::Command;
-    use plumb_api::application::{initialize_project_database, open_application};
+    use plumb_api::application::{
+        bootstrap_project_database, initialize_project_database, open_application,
+    };
     use plumb_api::{ApiIdentity, Recipe};
     use plumb_core::{to_canonical_json, CanonicalJson, FixedClock, Hash, Id, Timestamp};
     use plumb_functional::VerificationApplicabilityInputs;
@@ -16,7 +18,10 @@ mod cli {
         validate_binding, InferenceArtifact, InferenceProvider, InferenceRequest,
         InferenceRequestMaterial, ProviderError, ProviderExecution,
     };
-    use plumb_store::{BranchName, SqliteStageStore, SqliteWorkflowStore, WorkflowProposalState};
+    use plumb_store::{
+        BranchName, SqliteRevisionStore, SqliteStageStore, SqliteWorkflowStore,
+        WorkflowProposalState,
+    };
     use plumb_validation::{
         finding_id, finding_key, load_builtin_software_profile, ValidationPolicy,
     };
@@ -30,8 +35,9 @@ mod cli {
     const MARKDOWN: &[u8] =
         b"# Leave\n\nEmployees shall submit leave requests.\n\nManagers shall approve leave requests.\n";
 
-    /// The 20 commands with their minimal required arguments.
-    const COMMANDS: [&[&str]; 20] = [
+    /// The 21 commands with their minimal required arguments.
+    const COMMANDS: [&[&str]; 21] = [
+        &["init", "--project", "project:pilot"],
         &[
             "import",
             "x.md",
@@ -258,6 +264,23 @@ mod cli {
         env_with(config(all_gates()))
     }
 
+    /// A configuration file and a database path that does not exist yet (R0.1 `init`).
+    fn bare_env_with(config: Value) -> Env {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("plumb.sqlite");
+        let config_path = dir.path().join("plumb.json");
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        Env {
+            dir,
+            db,
+            config: config_path,
+        }
+    }
+
+    fn bare_env() -> Env {
+        bare_env_with(config(all_gates()))
+    }
+
     // ------------------------------------------------------------------ recording provider
 
     /// Answers segmentation and classification from the exact request material and records
@@ -440,7 +463,7 @@ mod cli {
     // ------------------------------------------------------------------ parsing
 
     #[test]
-    fn cli_parses_all_twenty_commands() {
+    fn cli_parses_all_twenty_one_commands() {
         // Without --config every parsed command stops at configuration: exit 1, not a clap
         // error, so each argument tree parses.
         for args in COMMANDS {
@@ -461,6 +484,7 @@ mod cli {
         assert_eq!(
             commands,
             [
+                "init",
                 "import",
                 "lint",
                 "vocab",
@@ -545,6 +569,478 @@ mod cli {
         let (code, _, err) = env.run(&["rounds", "show", "round:missing"]);
         assert_eq!(code, 1);
         assert!(err.contains("E_NOT_FOUND"), "{err}");
+    }
+
+    // ------------------------------------------------------------------ bootstrap (R0.1)
+
+    /// The five labelled values of a successful text `init`.
+    fn init_fields(out: &str) -> Vec<(String, String)> {
+        out.lines()
+            .map(|l| {
+                let (k, v) = l.split_once(": ").unwrap_or_else(|| panic!("{out}"));
+                (k.to_owned(), v.to_owned())
+            })
+            .collect()
+    }
+
+    /// The SQLite sidecar paths of `db`.
+    fn sidecars(db: &Path) -> Vec<PathBuf> {
+        ["-journal", "-wal", "-shm"]
+            .iter()
+            .map(|suffix| {
+                let mut name = db.as_os_str().to_owned();
+                name.push(suffix);
+                PathBuf::from(name)
+            })
+            .collect()
+    }
+
+    fn assert_no_database(db: &Path) {
+        assert!(db.symlink_metadata().is_err(), "{} exists", db.display());
+        for sidecar in sidecars(db) {
+            assert!(sidecar.symlink_metadata().is_err(), "{}", sidecar.display());
+        }
+    }
+
+    /// The semantic and evidence hashes of the legacy empty project graph with the same
+    /// project and profile (`initialize_project_database`, unchanged).
+    fn empty_graph_hashes(dir: &Path) -> (String, String) {
+        let db = dir.join("empty.sqlite");
+        let profile = load_builtin_software_profile().unwrap();
+        let revision =
+            initialize_project_database(&db, id(PROJECT), &profile, id(ACTOR), ts(T0)).unwrap();
+        let store = SqliteRevisionStore::open(&db).unwrap();
+        assert_eq!(
+            store.head(&BranchName::main()).unwrap(),
+            Some(revision.clone())
+        );
+        let loaded = store.load_revision(&revision).unwrap();
+        assert!(loaded.graph.nodes().is_empty() && loaded.graph.edges().is_empty());
+        assert_eq!(loaded.revision.created_by, id(ACTOR));
+        assert_eq!(loaded.revision.created_at, ts(T0));
+        (
+            loaded.revision.semantic_hash.to_string(),
+            loaded.revision.evidence_hash.to_string(),
+        )
+    }
+
+    #[test]
+    fn init_creates_project_database_with_configured_agents() {
+        let env = bare_env();
+        let (code, out, err) = env.run(&["init", "--project", PROJECT, "--branch", "main"]);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(err, "");
+        let fields = init_fields(&out);
+        let labels: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "project",
+                "branch",
+                "revision",
+                "semantic_hash",
+                "evidence_hash"
+            ]
+        );
+
+        let store = SqliteRevisionStore::open(&env.db).unwrap();
+        let head = store.head(&BranchName::main()).unwrap().unwrap();
+        let loaded = store.load_revision(&head).unwrap();
+        let revision = &loaded.revision;
+        assert_eq!(revision.version, 1);
+        assert_eq!(revision.parent, None);
+        assert_eq!(revision.project_id, id(PROJECT));
+        assert_eq!(revision.created_by, id(ACTOR));
+        assert!(revision.decision_refs.is_empty());
+        assert_eq!(revision.accepted_patch_ref, None);
+        let profile = load_builtin_software_profile().unwrap();
+        assert_eq!(revision.profile_ref, profile.profile_id);
+        assert_eq!(revision.profile_hash, profile.profile_hash().unwrap());
+        assert_eq!(revision.rule_pack_hash, profile.rule_pack_hash().unwrap());
+        assert_eq!(
+            fields.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>(),
+            [
+                PROJECT.to_owned(),
+                "main".to_owned(),
+                revision.id.to_string(),
+                revision.semantic_hash.to_string(),
+                revision.evidence_hash.to_string(),
+            ]
+        );
+
+        // Exactly the three configured Agents, nothing else.
+        assert!(loaded.graph.edges().is_empty());
+        let nodes = loaded.graph.nodes();
+        assert_eq!(
+            nodes.keys().map(Id::to_string).collect::<Vec<_>>(),
+            [ASSISTANT, STAGE_ACTOR, ACTOR]
+                .map(str::to_owned)
+                .to_vec()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        let created_at = serde_json::to_value(revision.created_at).unwrap();
+        for (actor, kind) in [
+            (ACTOR, "human"),
+            (STAGE_ACTOR, "compiler_stage"),
+            (ASSISTANT, "llm_model"),
+        ] {
+            let node = serde_json::to_value(&nodes[&id(actor)]).unwrap();
+            assert_eq!(node["id"], actor);
+            assert_eq!(node["revision"], 1, "{node}");
+            assert_eq!(node["status"], "Accepted", "{node}");
+            assert_eq!(
+                node["payload"],
+                json!({"type": "Agent", "data": {"agent_kind": kind}}),
+                "{node}"
+            );
+            for empty in ["evidence", "derivations", "standards", "tags"] {
+                assert_eq!(node[empty], json!([]), "{empty}: {node}");
+            }
+            assert_eq!(node["extensions"], json!({}), "{node}");
+            assert_eq!(node["audit"]["created_by"], ACTOR, "{node}");
+            assert_eq!(node["audit"]["created_at"], created_at, "{node}");
+            for none in ["updated_by", "updated_at"] {
+                assert!(node["audit"].get(none).is_none_or(Value::is_null), "{node}");
+            }
+        }
+
+        // Agents are excluded from semantic_hash: the genesis hashes equal the empty graph's.
+        let (semantic, evidence) = empty_graph_hashes(env.dir.path());
+        assert_eq!(revision.semantic_hash.to_string(), semantic);
+        assert_eq!(revision.evidence_hash.to_string(), evidence);
+
+        // --json exposes exactly the same five fields.
+        let other = env.path("json.sqlite");
+        let (code, out, err) = output(
+            bin()
+                .arg("--db")
+                .arg(&other)
+                .arg("--config")
+                .arg(&env.config)
+                .args(["init", "--project", PROJECT, "--json"]),
+        );
+        assert_eq!(code, 0, "{err}");
+        let value: Value = serde_json::from_str(&out).unwrap();
+        let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            [
+                "branch",
+                "evidence_hash",
+                "project_id",
+                "revision_id",
+                "semantic_hash"
+            ]
+        );
+        assert_eq!(value["project_id"], PROJECT);
+        assert_eq!(value["branch"], "main");
+        assert_eq!(value["semantic_hash"], semantic.as_str());
+        assert_eq!(value["evidence_hash"], evidence.as_str());
+    }
+
+    #[test]
+    fn init_bootstrap_service_reads_the_clock_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("service.sqlite");
+        let identity = ApiIdentity::new(
+            "alice".into(),
+            id(ACTOR),
+            vec!["analyst".into()],
+            "pilot".into(),
+        )
+        .unwrap();
+        let result = bootstrap_project_database(
+            &db,
+            id(PROJECT),
+            &load_builtin_software_profile().unwrap(),
+            &identity,
+            &id(STAGE_ACTOR),
+            &id(ASSISTANT),
+            &FixedClock::new(ts(T0)),
+        )
+        .unwrap();
+        let store = SqliteRevisionStore::open(&db).unwrap();
+        let loaded = store.load_revision(&result.revision_id).unwrap();
+        assert_eq!(loaded.revision.created_at, ts(T0));
+        for node in loaded.graph.nodes().values() {
+            assert_eq!(node.audit.created_at, ts(T0));
+            assert_eq!(node.audit.created_by, id(ACTOR));
+        }
+        assert_eq!(
+            result.semantic_hash.to_string(),
+            empty_graph_hashes(dir.path()).0
+        );
+        // The service itself rejects duplicate actors before creating anything.
+        let duplicate = dir.path().join("duplicate.sqlite");
+        let error = bootstrap_project_database(
+            &duplicate,
+            id(PROJECT),
+            &load_builtin_software_profile().unwrap(),
+            &identity,
+            &id(ACTOR),
+            &id(ASSISTANT),
+            &FixedClock::new(ts(T0)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("pairwise distinct"), "{error}");
+        assert_no_database(&duplicate);
+    }
+
+    #[test]
+    fn init_refuses_existing_path_without_writing() {
+        // An initialized SQLite database, an empty file and a non-SQLite file.
+        let env = env();
+        let initialized = std::fs::read(&env.db).unwrap();
+        let empty = env.write("empty.sqlite", b"");
+        let text = env.write("text.sqlite", b"not a database\n");
+        for (path, bytes) in [
+            (env.db.clone(), initialized),
+            (empty, Vec::new()),
+            (text, b"not a database\n".to_vec()),
+        ] {
+            let (code, out, err) = output(
+                bin()
+                    .arg("--db")
+                    .arg(&path)
+                    .arg("--config")
+                    .arg(&env.config)
+                    .args(["init", "--project", PROJECT]),
+            );
+            assert_eq!(code, 1, "{}: {out}", path.display());
+            assert_eq!(out, "");
+            assert!(err.contains("cannot create"), "{err}");
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{}", path.display());
+            for sidecar in sidecars(&path) {
+                assert!(sidecar.symlink_metadata().is_err(), "{}", sidecar.display());
+            }
+        }
+        // The legacy database is still the unchanged initialized project.
+        let (code, value) = env.json(&["vocab"]);
+        assert_eq!((code, value), (0, json!([])));
+
+        // A directory.
+        let directory = env.path("directory.sqlite");
+        std::fs::create_dir(&directory).unwrap();
+        let (code, _, err) = output(
+            bin()
+                .arg("--db")
+                .arg(&directory)
+                .arg("--config")
+                .arg(&env.config)
+                .args(["init", "--project", PROJECT]),
+        );
+        assert_eq!(code, 1, "{err}");
+        assert!(directory.is_dir());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+
+        // A stray SQLite sidecar without its database.
+        let stray = env.path("stray.sqlite");
+        let wal = env.write("stray.sqlite-wal", b"stale wal");
+        let (code, _, err) = output(
+            bin()
+                .arg("--db")
+                .arg(&stray)
+                .arg("--config")
+                .arg(&env.config)
+                .args(["init", "--project", PROJECT]),
+        );
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains("already exists"), "{err}");
+        assert!(stray.symlink_metadata().is_err());
+        assert_eq!(std::fs::read(&wal).unwrap(), b"stale wal");
+    }
+
+    #[test]
+    fn init_failure_leaves_no_database_file() {
+        // Rejections before the path is reserved.
+        let env = bare_env();
+        for (args, message) in [
+            (
+                &["init", "--project", PROJECT, "--branch", "feature"][..],
+                "only branch main",
+            ),
+            (&["init", "--project", "not an id"], "is not a project ID"),
+            (&["init"], "--project"),
+        ] {
+            let (code, out, err) = env.run(args);
+            assert_eq!(code, 1, "{args:?}: {out}");
+            assert!(err.contains(message), "{args:?}: {err}");
+            assert_no_database(&env.db);
+        }
+        let (code, _, err) =
+            output(
+                bin()
+                    .arg("--config")
+                    .arg(&env.config)
+                    .args(["init", "--project", PROJECT]),
+            );
+        assert_eq!(code, 1);
+        assert!(err.contains("--db is required"), "{err}");
+        let (code, _, err) =
+            output(
+                bin()
+                    .arg("--db")
+                    .arg(&env.db)
+                    .args(["init", "--project", PROJECT]),
+            );
+        assert_eq!(code, 1);
+        assert!(err.contains("--config is required"), "{err}");
+        assert_no_database(&env.db);
+
+        // Pairwise-distinct configured actors are checked before anything is created.
+        for (field, value) in [
+            ("stage_actor_ref", ACTOR),
+            ("assistant_actor_ref", ACTOR),
+            ("assistant_actor_ref", STAGE_ACTOR),
+        ] {
+            let mut duplicate = config(all_gates());
+            duplicate[field] = json!(value);
+            let env = bare_env_with(duplicate);
+            let (code, _, err) = env.run(&["init", "--project", PROJECT]);
+            assert_eq!(code, 1, "{field}");
+            assert!(err.contains("pairwise distinct"), "{field}: {err}");
+            assert_no_database(&env.db);
+        }
+
+        // A failure after the path is reserved: the file is created, then SQLite cannot open a
+        // path longer than its pathname limit; the attempt removes what it created.
+        let mut deep = env.dir.path().to_path_buf();
+        for i in 0..4 {
+            deep.push(format!("{i}{}", "d".repeat(150)));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        let long = deep.join("plumb.sqlite");
+        assert!(long.as_os_str().len() > 600);
+        let (code, out, err) = output(
+            bin()
+                .arg("--db")
+                .arg(&long)
+                .arg("--config")
+                .arg(&env.config)
+                .args(["init", "--project", PROJECT]),
+        );
+        assert_eq!(code, 1, "{out}");
+        assert!(!err.contains("cannot create"), "{err}");
+        assert_no_database(&long);
+        assert_eq!(std::fs::read_dir(&deep).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn init_database_opens_for_every_command() {
+        let env = bare_env();
+        // Before init, ordinary commands report the missing database.
+        let (code, _, err) = env.run(&["vocab"]);
+        assert_eq!(code, 1);
+        assert!(err.contains("does not exist"), "{err}");
+        let (code, _, err) = env.run(&["init", "--project", PROJECT]);
+        assert_eq!(code, 0, "{err}");
+        let source = env.write("x.md", MARKDOWN);
+        let out = env.path("out");
+        // Every database command reaches its application logic over the new database.
+        let runs: Vec<(Vec<&str>, i32, &str)> = vec![
+            (vec!["vocab"], 0, ""),
+            (vec!["questions"], 0, ""),
+            (vec!["rounds", "show", "round:missing"], 1, "E_NOT_FOUND"),
+            (
+                vec![
+                    "rounds",
+                    "create",
+                    "--stakeholder",
+                    "stakeholder:a",
+                    "--max",
+                    "5",
+                ],
+                1,
+                "E_NOT_FOUND",
+            ),
+            (
+                vec![
+                    "apply",
+                    "proposal:x",
+                    "--action",
+                    "reject",
+                    "--reason",
+                    "no",
+                ],
+                1,
+                "E_NOT_FOUND",
+            ),
+            // The projection needs the existing F4 gate report (a domain result, not R0.1).
+            (
+                vec!["export", "--format", "functional"],
+                1,
+                "E_GATE_REPORT_UNAVAILABLE",
+            ),
+            (
+                vec!["report", "--out", out.to_str().unwrap()],
+                1,
+                "E_GATE_REPORT_UNAVAILABLE",
+            ),
+            (
+                vec![
+                    "import",
+                    source.to_str().unwrap(),
+                    "--media-type",
+                    "text/markdown",
+                    "--name",
+                    "x.md",
+                ],
+                0,
+                "",
+            ),
+        ];
+        for (args, expected, message) in runs {
+            let (code, _, err) = env.run(&args);
+            assert_eq!(code, expected, "{args:?}: {err}");
+            assert!(err.contains(message), "{args:?}: {err}");
+            assert!(!err.contains("does not exist"), "{args:?}: {err}");
+        }
+        // The recipe commands and ready reach the stage and gate services (their outcomes on a
+        // genesis graph are the existing domain results, not database errors).
+        for recipe in [
+            "lint",
+            "extract",
+            "consolidate",
+            "calc",
+            "rules",
+            "analyse",
+            "flows",
+            "scenarios",
+            "run",
+            "tags",
+        ] {
+            let (code, out, err) = env.run(&[recipe]);
+            assert!(
+                out.starts_with("job ") || err.contains("E_"),
+                "{recipe}: {code} {out} {err}"
+            );
+            assert!(!err.contains("does not exist"), "{recipe}: {err}");
+        }
+        let (code, out, err) = env.run(&["ready"]);
+        assert!(code == 0 || code == 2, "{out} {err}");
+        assert!(out.starts_with("revision rev:"), "{out}");
+        // serve opens the same application state.
+        open_application(
+            &env.db,
+            BranchName::main(),
+            ApiIdentity::new(
+                "alice".into(),
+                id(ACTOR),
+                vec!["analyst".into()],
+                "pilot".into(),
+            )
+            .unwrap(),
+            Arc::new(FixedClock::new(ts(T0))),
+            load_builtin_software_profile().unwrap(),
+            plumb_cli_config(
+                &serde_json::from_slice(&std::fs::read(&env.config).unwrap()).unwrap(),
+                Arc::new(Recorder::default()),
+            ),
+        )
+        .unwrap();
     }
 
     // ------------------------------------------------------------------ configuration

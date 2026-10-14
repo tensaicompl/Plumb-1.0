@@ -25,7 +25,7 @@ use crate::config::{CliConfig, Provider, ProviderChoice};
 #[derive(Debug, Parser)]
 #[command(name = "plumb", version, about = "Plumb pilot CLI")]
 struct Cli {
-    /// The pilot SQLite database (required by every command except log-effort).
+    /// The pilot SQLite database (required by every command except log-effort; init creates it).
     #[arg(long, global = true)]
     db: Option<PathBuf>,
     /// The branch.
@@ -106,6 +106,11 @@ struct Scope {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create a new project database on branch main.
+    Init {
+        #[arg(long)]
+        project: String,
+    },
     /// Import one source file as evidence.
     Import {
         file: PathBuf,
@@ -265,6 +270,11 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
         .db
         .as_deref()
         .ok_or_else(|| CliError::Usage("--db is required".into()))?;
+    // init creates the database, so it is dispatched before `commands::open` and never builds
+    // a provider.
+    if let Command::Init { project } = &cli.command {
+        return commands::init(db, &cli.branch, project, &config, &SystemClock);
+    }
     let provider = Provider::build(choice)?;
     let state = commands::open(db, &cli.branch, &config, provider)?;
     if let Some((recipe, scope)) = cli.command.recipe() {
