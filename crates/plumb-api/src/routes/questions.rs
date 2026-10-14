@@ -1,7 +1,8 @@
 //! Question and round routes (plan A0.3, Hotfix 065). The Question API projects only persisted
 //! Accepted Questions; answering builds the existing S3.3 resolution proposal and persists it as
 //! a pending workflow proposal without committing; a round targets one stakeholder through the
-//! S3.2 kernel and is a projection over `Question.round_ref`.
+//! S3.2 kernel and is a projection over `Question.round_ref`. U2.2 (Hotfix 076) returns the
+//! authoritative workflow class of the answer's pending Proposal.
 
 use std::collections::BTreeMap;
 
@@ -28,7 +29,7 @@ use crate::state::{
     check_if_match, paginate, parse_body, parse_id, parse_wire, read_json, run_intake, ApiState,
     PageRequest, QueryParams,
 };
-use crate::workflow::intake_view;
+use crate::workflow::{classify, intake_view};
 
 use super::proposals::{persist_pending, Origin};
 
@@ -91,7 +92,9 @@ async fn list_questions(
 }
 
 /// `answer_question`: the S3.3 resolution proposal of one answer, persisted as a pending
-/// workflow proposal; nothing is committed.
+/// workflow proposal; nothing is committed. The response carries the authoritative workflow
+/// class of that exact Proposal (Hotfix 076), classified before any artifact, intake or
+/// workflow persistence so a classifier error leaves nothing behind.
 async fn answer_question(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -142,6 +145,7 @@ async fn answer_question(
         }
         other => ApiError::semantic(&error_name(&other), other.to_string()),
     })?;
+    let action = classify(&loaded.graph, &result.proposal)?;
     let stored = state.with_artifact_store(|store| {
         store.put(
             ArtifactKind::Patch,
@@ -173,6 +177,7 @@ async fn answer_question(
         semantic_hash: loaded.revision.semantic_hash.to_string(),
         events: Vec::new(),
         proposal_id: persisted.proposal.id.to_string(),
+        action,
         intake: intake_view(&persisted.intake)?,
         patch_preview: serde_json::to_value(&persisted.proposal.patch_set.patch)
             .map_err(|_| ApiError::internal("patch_preview"))?,

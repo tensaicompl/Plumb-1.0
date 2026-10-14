@@ -2,8 +2,10 @@ import { createRootRoute, createRoute, createRouter, type RouterHistory } from "
 
 import { GlossaryPage } from "../features/glossary/GlossaryPage";
 import { HomePage } from "../features/home/HomePage";
+import { QuestionsPage } from "../features/questions/QuestionsPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
+import { SentencesPage } from "../features/sentences/SentencesPage";
 import { AppShell } from "./AppShell";
 
 // The explicit route tree. Each page is registered by the task that implements it (Hotfix 071);
@@ -40,7 +42,27 @@ const glossaryRoute = createRoute({
   component: GlossaryPage,
 });
 
-export const routeTree = rootRoute.addChildren([indexRoute, requirementsRoute, requirementDetailRoute, glossaryRoute]);
+// U2.2: the sentences and the Question inbox with the round manager.
+const sentencesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/model/sentences",
+  component: SentencesPage,
+});
+
+const questionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/questions",
+  component: QuestionsPage,
+});
+
+export const routeTree = rootRoute.addChildren([
+  indexRoute,
+  requirementsRoute,
+  requirementDetailRoute,
+  glossaryRoute,
+  sentencesRoute,
+  questionsRoute,
+]);
 
 /** A router over the route tree (browser history unless `history` is given). */
 export function createAppRouter(history?: RouterHistory) {

@@ -43,6 +43,10 @@
       "AnswerResponse": {
         "additionalProperties": false,
         "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ProposalKind",
+            "description": "The authoritative workflow class of the exact pending Proposal (Hotfix 076): the one\nexisting proposal action endpoint that can confirm it."
+          },
           "events": {
             "items": {
               "$ref": "#/components/schemas/DesignEvent"
@@ -74,6 +78,7 @@
           "semantic_hash",
           "events",
           "proposal_id",
+          "action",
           "intake",
           "patch_preview"
         ],
@@ -6815,6 +6820,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "action": "accept",
                   "events": [
                     {
                       "ids": [

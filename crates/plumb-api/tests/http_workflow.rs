@@ -2587,8 +2587,20 @@ mod http_workflow {
             .contains(&json!("human_decision")));
         let stored = workflow(&app).proposal(&id(&proposal_id)).unwrap().unwrap();
         assert_eq!(stored.state, WorkflowProposalState::Pending);
+        assert_eq!(stored.origin_kind, WorkflowOrigin::Question);
         assert_eq!(stored.origin_ref, Some(question.clone()));
         assert_eq!(stored.base_revision_id.as_str(), before);
+        // Hotfix 076: the response carries the authoritative class of exactly this stored
+        // Proposal (a performer relation is a create action), and describes no other Proposal.
+        assert_eq!(body["action"], "create");
+        assert_eq!(stored.proposal_kind, WorkflowProposalKind::Create);
+        let persisted: Proposal = serde_json::from_str(&stored.proposal_json).unwrap();
+        assert_eq!(persisted.id.as_str(), proposal_id);
+        assert_eq!(
+            body["patch_preview"],
+            serde_json::to_value(&persisted.patch_set.patch).unwrap()
+        );
+        assert_eq!(persisted.patch_set.base_semantic_hash.to_string(), tag);
         // The proposal adds a performer relation, so it is a create action.
         assert_error(
             &write(

@@ -1603,6 +1603,9 @@ pub struct AnswerResponse {
     pub semantic_hash: String,
     pub events: Vec<DesignEvent>,
     pub proposal_id: String,
+    /// The authoritative workflow class of the exact pending Proposal (Hotfix 076): the one
+    /// existing proposal action endpoint that can confirm it.
+    pub action: ProposalKind,
     pub intake: IntakeReportView,
     #[schema(value_type = Object)]
     pub patch_preview: Value,

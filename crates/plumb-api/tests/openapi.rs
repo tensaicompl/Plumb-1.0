@@ -610,7 +610,27 @@ mod openapi {
         assert_eq!(extra("StageRunResponse"), set(&["job_id"]));
         assert_eq!(
             extra("AnswerResponse"),
-            set(&["proposal_id", "intake", "patch_preview"])
+            set(&["proposal_id", "action", "intake", "patch_preview"])
+        );
+        // Hotfix 076: the answer carries the authoritative ProposalKind of its pending Proposal.
+        let answer = schema(&doc, "AnswerResponse");
+        let fields = set(&[
+            "version",
+            "revision",
+            "semantic_hash",
+            "events",
+            "proposal_id",
+            "action",
+            "intake",
+            "patch_preview",
+        ]);
+        assert_eq!(properties(&doc, "AnswerResponse"), fields);
+        assert_eq!(required(&doc, "AnswerResponse"), fields);
+        assert_eq!(answer["required"].as_array().unwrap().len(), 8);
+        assert_eq!(answer["additionalProperties"], json!(false));
+        assert_eq!(
+            answer["properties"]["action"]["$ref"],
+            component_ref("ProposalKind")["$ref"]
         );
         assert_eq!(extra("CreateSessionResponse"), set(&["id"]));
         assert_eq!(

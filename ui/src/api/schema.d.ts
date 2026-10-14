@@ -1211,6 +1211,11 @@ export interface components {
             supersedes?: string | null;
         };
         AnswerResponse: {
+            /**
+             * @description The authoritative workflow class of the exact pending Proposal (Hotfix 076): the one
+             *     existing proposal action endpoint that can confirm it.
+             */
+            action: components["schemas"]["ProposalKind"];
             events: components["schemas"]["DesignEvent"][];
             intake: components["schemas"]["IntakeReportView"];
             patch_preview: Record<string, never>;
@@ -5160,6 +5165,7 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "action": "accept",
                      *       "events": [
                      *         {
                      *           "ids": [
