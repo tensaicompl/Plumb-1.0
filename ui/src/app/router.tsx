@@ -4,6 +4,7 @@ import { GlossaryPage } from "../features/glossary/GlossaryPage";
 import { HomePage } from "../features/home/HomePage";
 import { ProcessesPage } from "../features/processes/ProcessesPage";
 import { QuestionsPage } from "../features/questions/QuestionsPage";
+import { ScenariosPage } from "../features/scenarios/ScenariosPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
 import { SentencesPage } from "../features/sentences/SentencesPage";
@@ -73,6 +74,13 @@ const processesRoute = createRoute({
   component: ProcessesPage,
 });
 
+// U2.5: the scenarios view; scenario selection and traces stay within the page.
+const scenariosRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/model/scenarios",
+  component: ScenariosPage,
+});
+
 export const routeTree = rootRoute.addChildren([
   indexRoute,
   requirementsRoute,
@@ -82,6 +90,7 @@ export const routeTree = rootRoute.addChildren([
   questionsRoute,
   sessionsRoute,
   processesRoute,
+  scenariosRoute,
 ]);
 
 /** A router over the route tree (browser history unless `history` is given). */
