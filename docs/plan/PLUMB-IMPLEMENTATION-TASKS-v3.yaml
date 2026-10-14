@@ -9975,6 +9975,13 @@ tasks:
   - ui/src/features/home/HomePage.test.tsx
   - ui/src/i18n/en.json
   - ui/src/i18n/pl.json
+  - crates/plumb-api/src/openapi.rs
+  - crates/plumb-api/src/routes/gates.rs
+  - crates/plumb-api/tests/openapi.rs
+  - crates/plumb-api/tests/http_core.rs
+  - api/modeller.openapi.json
+  - docs/api.md
+  - ui/src/api/schema.d.ts
   steps:
   - Gates page displays I0-F4 and individual rule results/waivers from GateReport.
   - Do not display a single 'ISO compliant' badge.
@@ -9993,19 +10000,162 @@ tasks:
     original assertion remains correct for its historical repository state. Before completion U2.7 also runs the full UI suite (cd ui && npm run test) as
     a cross-feature regression check, in addition to its targeted test command, because route-tree changes can invalidate earlier UI regression tests that
     the targeted command does not select.'
+  - 'Contract repair (Hotfix 082). U2.7 needs individual GateReport rule results and waivers, but GET /api/gates projects each current GateReport only to
+    GateStatus {gate, passed, findings}, losing GateReport.rules, GateReport.waivers and GateReport.summary and therefore the exact rule-result states.
+    The existing plumb-validation GateReport stays the only authority: U2.7 adds an additive API projection of already-existing report material (gate result,
+    Finding IDs, RuleResults, AppliedWaivers, GateSummary); no new validation semantics, no second evaluator, no client-side rule-state derivation, no inference
+    from Finding IDs, and crates/plumb-validation/** is not modified. Intake behavior is unchanged: production intake legitimately runs with IntakeValidationInput::empty()
+    (X1.3/X1.4), and U2.7 must not redesign run_intake, SessionIntakeInputs, A0.3 writes, A0.4 stage proposal settlement or candidate-gate orchestration;
+    that limitation stays visible for E0.2 review.'
+  - 'GateStatus projection (Hotfix 082). GateStatus expands additively from {gate, passed, findings} to {gate, passed, findings, rules, waivers, summary},
+    the three old fields unchanged. passed still comes only from GateReport.result == PASS (never recomputed from rules, findings, summary or readiness);
+    findings stays the sorted Finding IDs of GateReport.findings (no embedded Finding DTO). rules: Vec<GateRuleResult> in GateReport.rules order; waivers:
+    Vec<GateWaiver> in GateReport.waivers order (neither re-sorted). GateRuleResult is a direct projection of plumb_validation::RuleResult with exactly
+    rule_id, state, declared_severity, effective_severity, applicability, targets, evidence, semantic_condition_key, finding_ref, waiver_ref, error; semantic_condition_key,
+    finding_ref, waiver_ref and error are required-but-nullable (never omitted by state). state is the closed API enum GateRuleState with exactly the wire
+    values PASS, FAIL, WARN, NOT_APPLICABLE, WAIVED, ERROR (explicit serde spellings, no lowercase transform, no passed/failed/warning/skipped/ignored/not_implemented/unknown).
+    declared_severity and effective_severity are the exact validation severity strings (blocker, error, warn, info), kept separate so a promotion stays
+    visible. applicability is GateRuleApplicability {state, reason} with state the closed enum GateRuleApplicabilityState (APPLICABLE, NOT_APPLICABLE; no
+    third state) and reason required-nullable: null for APPLICABLE, the exact server reason for NOT_APPLICABLE. error is GateRuleError {code, message, targets,
+    evidence} (the existing EvaluatorFailure; no stack trace or Debug dump) for ERROR results and null otherwise. GateWaiver is {rule_id, finding_ref, finding_key,
+    decision_ref} from AppliedWaiver with exact ID/hash strings (decision_ref never dropped; never derived from Finding text). summary is GateSummaryView
+    {blocker_failed, blocker_waived, warnings} (unsigned counts copied from GateReport.summary, never recomputed in the API or React). Field semantics are
+    those of the already-validated report (PASS: no finding/waiver/error; FAIL/WARN: finding_ref, no waiver_ref; WAIVED: finding_ref and waiver_ref; ERROR:
+    error, no finding_ref/waiver_ref; NOT_APPLICABLE: applicability NOT_APPLICABLE with reason); the UI does not re-validate them.'
+  - 'Gates route and freshness (Hotfix 082). crates/plumb-api/src/routes/gates.rs changes only to expand the existing projection: reports still come from
+    state.current_gate_reports(&loaded) over one loaded head; missing/unevaluated gates are omitted, later gates outside the NOW API are filtered, GateId
+    order is preserved and the normal ETag is returned; no gate evaluation occurs in the GET. Stale reports (semantic hash, evidence hash, profile, profile
+    hash, rule-pack hash) remain omitted by current_gate_reports and are never displayed. No new endpoint (/api/gates/{gate}, /api/gates/{gate}/rules, /api/gates/{gate}/waivers
+    or other); U2.7 adds no API operation: operations = 74, x-plumb-contract-version = 3, ownership A0.2 = 30, A0.3 = 40, A0.4 = 2, U2.1 = 2, no U2.7 owner.
+    Generated artifacts api/modeller.openapi.json, docs/api.md (may be byte-identical) and ui/src/api/schema.d.ts are regenerated with the existing generators
+    only, never hand-edited.'
+  - 'Gates page (Hotfix 082). /gates (the frozen navigation destination; no /model/gates or /gates/$gate, no detail route; ui/src/app/nav.ts is not modified
+    but PILOT_GATES may be read) shows exactly I0, F1, F2, F3, F4 in this order on one page. GatesPage reads only GET /api/gates and optionally GET /api/readiness
+    (no gate-detail, per-rule or N+1 request) through the generated apiClient. A gate absent from GET /api/gates is shown as Unevaluated, never Fail, Pass
+    or unknown failure, with no synthetic rule results. A current gate visibly shows its gate ID, Pass/Fail from passed, the server summary, every rule
+    result in report order and its waivers (Finding IDs may also be shown); a failed rule is never hidden behind an aggregate. Rule states are distinct:
+    PASS -> Pass, FAIL -> Fail, WARN -> Warning, NOT_APPLICABLE -> Not applicable (with applicability.reason), WAIVED -> Waived, ERROR -> Error (with error.code
+    and error.message); never WAIVED -> Pass, WARN -> Pass or ERROR -> plain Fail, even when the gate aggregate is Pass. A WAIVED rule shows its finding_ref
+    and waiver_ref/decision_ref. A FAIL rule with effective_severity blocker, or an ERROR rule, stays visibly failed/error regardless of readiness. effective_severity
+    is shown for every rule and declared_severity too when it differs (no invented promotion reason). finding_ref, waiver_ref, semantic_condition_key, targets
+    and evidence are shown as plain server IDs/strings when present, with no manufactured links. No global ISO compliant / Certified / Standards compliant
+    badge or equivalent claim is rendered.'
+  - 'Readiness (Hotfix 082). Readiness is completely separate from gate results. When GatesPage shows GET /api/readiness (no group parameter needed), it
+    is only a visually secondary section labeled both Advisory readiness and Uncalibrated, never Gate score, Conformance score, Compliance or Quality proof.
+    Null values (the pilot currently returns all readiness values null) are shown as Not calculated or omitted, never converted to 0, 0% or 100%. Readiness
+    never overrides gates: with readiness.overall = 0.99 and F1 passed = false, summary.blocker_failed >= 1 and a blocker rule FAIL, F1 still shows Fail
+    and the rule still shows Fail.'
+  - 'Decisions page (Hotfix 082). /decisions (no alternative path, no detail route) reads GET /api/decisions through the generated apiClient with no artificial
+    page limit; no backend change is needed. The current server enumerates only NodeType::ResolutionDecision, so every returned Decision is a Resolution
+    decision; ArchitectureDecision and BusinessDecision are not returned by /api/decisions. The kind query filters ResolutionDecision.answer.kind and is
+    not a decision-type discriminator: answer kinds (e.g. waiver, proposal_acceptance) are never interpreted as architecture/business/resolution, and no
+    type classifier is built from IDs or the answer object. Every row is visibly labeled Resolution decision and shows id, proposal_ref, question_ref, decided_by,
+    decided_at and rationale as server material (no derived type, no fabricated title). The page states, without fabricating rows, that the pilot Decisions
+    API exposes ResolutionDecision records and that architecture and business decisions are distinct concepts not exposed by this view. Optional filters
+    may use only the existing by, kind and since parameters, kind labeled Answer kind (never Decision type). The page is read-only: no decision create/edit/delete,
+    waiver action or proposal action.'
+  - Routes (Hotfix 082). U2.7 registers exactly /gates and /decisions in ui/src/app/router.tsx and no other route. The HomePage route regression then expects
+    exactly ["/", "/decisions", "/gates", "/model/calculations", "/model/entities", "/model/findings", "/model/glossary", "/model/processes", "/model/rules",
+    "/model/scenarios", "/model/sentences", "/questions", "/requirements", "/requirements/$requirementId", "/sessions"] (15 routes). Because GateStatus
+    gains required rules, waivers and summary, U2.7 also updates the existing typed GateStatus[] fixture in ui/src/features/home/HomePage.test.tsx with
+    valid minimal details (rules = [], waivers = [], internally sensible summary counts); ownership of HomePage behavior is not transferred.
+  - Write allowlist and frozen files (Hotfix 082). The U2.7 allowlist is exactly the 15 listed files plus, at successful completion only, docs/plan/EXECUTION-STATE.yaml
+    for U2.7 pending -> done; if another file proves necessary U2.7 stops with BLOCKED-IMPLEMENTATION-CONTRACT. U2.7 must not modify crates/plumb-validation/**,
+    crates/plumb-psg/**, crates/plumb-store/**, crates/plumb-intake/**, crates/plumb-functional/**, crates/plumb-compiler/**, crates/plumb-api/src/state.rs,
+    crates/plumb-api/src/stage/**, crates/plumb-api/src/routes/model.rs, ui/src/app/nav.ts, ui/src/app/AppShell.tsx, ui/src/features/home/HomePage.tsx,
+    ui/src/api/client.ts, ui/src/api/useVersionedMutation.ts, ui/src/api/useEvents.ts, ui/package.json, ui/package-lock.json, Cargo.toml or Cargo.lock;
+    no dependency change, no intake repair, no validation-engine change. U2.7 issues zero semantic writes (Gates and Decisions are GET-only). Catalogue
+    entries are added only under gates.* (readiness labels under gates.readiness.* or an equally local U2.7 namespace) and decisions.*, existing meanings
+    unchanged, English and Polish key sets identical. Production U2.7 UI introduces no fetch(, localStorage, sessionStorage, indexedDB, /api/proposals/,
+    setQueryData( or import.meta.glob; it uses the generated apiClient and query hooks.
+  - Backend tests (Hotfix 082). crates/plumb-api/tests/openapi.rs proves GateStatus properties include exactly gate, passed, findings, rules, waivers, summary;
+    GateRuleState is exactly PASS, FAIL, WARN, NOT_APPLICABLE, WAIVED, ERROR; GateRuleApplicability state is exactly APPLICABLE, NOT_APPLICABLE; applicability.reason,
+    semantic_condition_key, finding_ref, waiver_ref and error are required-nullable as frozen; operations = 74 and contract version = 3. crates/plumb-api/tests/http_core.rs
+    extends the /api/gates regression with actual current GateReport material proving at least PASS, FAIL and WAIVED rule results plus summary and waivers
+    (WARN, NOT_APPLICABLE and ERROR too where current validation test helpers make it practical; every supplied GateReport stays valid, no malformed report
+    is faked, and OpenAPI plus UI fixtures cover any remaining vocabulary). The waiver regression uses a valid current GateReport with a governed waiver
+    and proves rule.state = WAIVED, rule.finding_ref = the expected Finding, rule.waiver_ref = the expected ResolutionDecision, and a matching GateStatus.waivers
+    entry (rule_id, finding_ref, finding_key, decision_ref), not derived from the persisted Finding. The summary regression proves the projected summary
+    equals GateReport.summary exactly (not recomputed in routes/gates.rs).
+  - UI tests (Hotfix 082). ui/src/features/gates/gates.test.tsx uses generated GateStatus types and covers I0-F4 ordering, absent gate -> Unevaluated (API
+    returning only I0, F1, F4 still renders F2 and F3 as Unevaluated with no synthetic rules), PASS, FAIL, WARN, NOT_APPLICABLE, WAIVED, ERROR, applicability
+    reason, effective severity, declared/effective severity difference, finding_ref, waiver_ref, error code/message, waiver decision_ref and summary, with
+    no client-side reconstruction; the failed-blocker/high-readiness fixture (F1 passed = false, a FAIL rule with effective_severity blocker, summary.blocker_failed
+    >= 1, readiness overall = 0.99) still shows F1 Fail, rule Fail, blocker severity and readiness labeled advisory and uncalibrated; the waived fixture
+    (state WAIVED, gate passed = true, summary.blocker_waived = 1) shows the rule as Waived and not Pass while the gate may say Pass; the page contains
+    no ISO compliant, Certified, Standards compliant or equivalent claim; requests are only GET /api/gates and GET /api/readiness. ui/src/features/decisions/decisions.test.tsx
+    proves GET /api/decisions records render as Resolution decision with id, proposal_ref, question_ref, decided_by, decided_at and rationale, the page
+    states the ResolutionDecision-only boundary and that architecture/business decisions are distinct and not exposed, no architecture/business record is
+    fabricated and no type is assigned from IDs or answer.kind, and there is no POST and no generic proposal call.
+  - 'Mutation guards (Hotfix 082). Before completion U2.7 confirms locally (and reverts) that tests catch: (A) mapping WAIVED to PASS; (B) recomputing gate
+    passed from rule states instead of GateReport.result; (C) dropping GateReport.waivers; (D) recomputing the summary in the API with incorrect counts;
+    (E) collapsing the NOT_APPLICABLE reason; (F) rendering WAIVED as Pass in the UI; (G) letting 99% readiness turn failed F1 into Pass; (H) rendering
+    an absent gate as Fail; (I) rendering ERROR as ordinary Fail without error details; (J) classifying a Decision as architecture/business from id or answer-kind
+    text; (K) rendering a global ISO compliant badge.'
   tests:
+  - cargo test -p plumb-api openapi
+  - cargo test -p plumb-api http_core
+  - cargo test -p plumb-api --no-fail-fast
   - cd ui && npm run test -- HomePage gates decisions
   acceptance:
   - A failed blocker remains visually failed even with high readiness; waived rule remains distinct from pass.
+  - /gates renders I0-F4 in order.
+  - Missing reports are Unevaluated, never Fail.
+  - Current GateReports expose exact per-rule states.
+  - PASS, FAIL, WARN, NOT_APPLICABLE, WAIVED and ERROR are visibly distinct.
+  - Waived remains distinct from pass.
+  - Waiver details come from GateReport, not inference.
+  - Gate summary is server projected.
+  - Failed blocker stays failed with high readiness.
+  - Readiness, when present, is visibly advisory and uncalibrated.
+  - No blanket ISO/compliance badge exists.
+  - /decisions renders current ResolutionDecision records read-only.
+  - Resolution decisions are explicitly distinguished from architecture/business decision concepts without fabricating unsupported records.
+  - OpenAPI remains 74 operations.
+  - U2.7 issues no semantic writes.
   source_refs:
   - SRCREF-4800CCFA7A
   - SRCREF-FBD9DC478A
-  forbidden: []
+  forbidden:
+  - Do not modify crates/plumb-validation/** (Hotfix 082).
+  - Do not modify crates/plumb-psg/** (Hotfix 082).
+  - Do not modify crates/plumb-store/** (Hotfix 082).
+  - Do not modify crates/plumb-intake/** (Hotfix 082).
+  - Do not modify crates/plumb-functional/** (Hotfix 082).
+  - Do not modify crates/plumb-compiler/** (Hotfix 082).
+  - Do not modify crates/plumb-api/src/state.rs (Hotfix 082).
+  - Do not modify crates/plumb-api/src/stage/** (Hotfix 082).
+  - Do not modify crates/plumb-api/src/routes/model.rs (Hotfix 082).
+  - Do not modify ui/src/app/nav.ts (Hotfix 082).
+  - Do not modify ui/src/app/AppShell.tsx (Hotfix 082).
+  - Do not modify ui/src/features/home/HomePage.tsx (Hotfix 082).
+  - Do not modify ui/src/api/client.ts (Hotfix 082).
+  - Do not modify ui/src/api/useVersionedMutation.ts (Hotfix 082).
+  - Do not modify ui/src/api/useEvents.ts (Hotfix 082).
+  - Do not modify ui/package.json (Hotfix 082).
+  - Do not modify ui/package-lock.json (Hotfix 082).
+  - Do not modify Cargo.toml (Hotfix 082).
+  - Do not modify Cargo.lock (Hotfix 082).
+  - Do not add an API operation or gate endpoint, a second rule evaluator, client-side rule-state/summary/passed derivation, alternative rule-state wire
+    values, a gate detail route, a global ISO/compliance badge, readiness that overrides or scores gates, a decision-type classifier from IDs or answer.kind,
+    fabricated architecture/business decision records, any semantic write, an intake change or a dependency (Hotfix 082).
   commands:
+  - cargo test -p plumb-api openapi
+  - cargo test -p plumb-api http_core
+  - cargo test -p plumb-api --no-fail-fast
+  - cargo test -p plumb-api --test openapi regenerate_contract_files -- --ignored --exact
+  - cd ui && npm run api:generate
+  - cd ui && npm run api:check
   - cd ui && npm run test -- HomePage gates decisions
   - cd ui && npm run test
   - cd ui && npm run typecheck
   - cd ui && npm run lint
+  - cargo test --workspace --no-fail-fast
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
+  - git diff --check
   commit_message: 'U2.7: Implement Gates and Decisions views'
 - id: E0.1
   title: Generate derived HR reference artifacts from the authoritative fixture contract
