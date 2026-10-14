@@ -9720,6 +9720,12 @@ tasks:
   - api/modeller.openapi.json
   - docs/api.md
   - ui/src/api/schema.d.ts
+  - crates/plumb-api/src/workflow.rs
+  - crates/plumb-api/src/routes/questions.rs
+  - crates/plumb-api/src/routes/proposals.rs
+  - crates/plumb-api/src/routes/sessions.rs
+  - crates/plumb-api/tests/http_workflow.rs
+  - ui/src/components/shared.test.tsx
   steps:
   - 'Implement v2 U9 NOW/P-R behaviors, frozen by Hotfix 080 as: U9.1 Findings & assumptions = FindingsPage renders Findings and Assumptions as analyst
     read views (no waiver or assumption-resolution UI); U9.2 Entities = read-only ER plus CRUD matrix (state-machine UI, tag editor and entity mutation
@@ -9749,7 +9755,7 @@ tasks:
     I0, F1, F2, F3, F4), not a rule class. The UI must never infer a rule class from Finding.code prefixes, Finding.family, standard-looking names or a
     hard-coded rule list. The server already owns the authority: ApiState holds the active ValidationProfile (state.profile()) whose RuleMetadata carries
     rule_class. The repair is Finding.code -> exact lookup in state.profile().rules -> RuleMetadata.rule_class -> API Finding.rule_class; no new service,
-    registry file or UI inference.'
+    registry file or UI inference. Hotfix 080''s assumption that only routes/model.rs builds the API Finding is superseded by Hotfix 081 (shared projection).'
   - 'Finding rule_class contract (Hotfix 080). The API Finding DTO expands from id, code, family, severity, status, message, affected_refs, waiver_ref to
     id, code, family, rule_class, severity, status, message, affected_refs, waiver_ref; every other field is unchanged. rule_class is a required JSON-schema
     property with a nullable value whose non-null type is a closed API enum FindingRuleClass with exactly external_standard, external_interop, plumb_core,
@@ -9763,11 +9769,11 @@ tasks:
     /model/rules/$id, /model/calculations/$id; selection and details stay inside each page. After U2.6 the HomePage route regression expects exactly, in
     the existing sorted convention: ["/", "/model/calculations", "/model/entities", "/model/findings", "/model/glossary", "/model/processes", "/model/rules",
     "/model/scenarios", "/model/sentences", "/questions", "/requirements", "/requirements/$requirementId", "/sessions"]; no U2.7 route.'
-  - Write allowlist and frozen files (Hotfix 080). The U2.6 allowlist is exactly the 16 listed files plus, at successful completion only, docs/plan/EXECUTION-STATE.yaml
-    for U2.6 pending -> done; if another file proves necessary U2.6 stops with BLOCKED-IMPLEMENTATION-CONTRACT. U2.6 must not modify crates/plumb-validation/**,
-    crates/plumb-psg/**, crates/plumb-patch/**, crates/plumb-store/**, crates/plumb-functional/**, crates/plumb-api/src/state.rs, ui/src/api/client.ts,
-    ui/src/api/useVersionedMutation.ts, ui/src/api/useEvents.ts, ui/src/app/AppShell.tsx, ui/src/app/nav.ts, ui/package.json, ui/package-lock.json, Cargo.toml
-    or Cargo.lock. No dependency changes. The validation profile and the RuleClass vocabulary are authoritative and are not modified.
+  - Write allowlist and frozen files (Hotfix 080). The U2.6 allowlist is exactly the listed files (16 per Hotfix 080, enlarged to exactly 22 by Hotfix 081)
+    plus, at successful completion only, docs/plan/EXECUTION-STATE.yaml for U2.6 pending -> done; if another file proves necessary U2.6 stops with BLOCKED-IMPLEMENTATION-CONTRACT.
+    U2.6 must not modify crates/plumb-validation/**, crates/plumb-psg/**, crates/plumb-patch/**, crates/plumb-store/**, crates/plumb-functional/**, crates/plumb-api/src/state.rs,
+    ui/src/api/client.ts, ui/src/api/useVersionedMutation.ts, ui/src/api/useEvents.ts, ui/src/app/AppShell.tsx, ui/src/app/nav.ts, ui/package.json, ui/package-lock.json,
+    Cargo.toml or Cargo.lock. No dependency changes. The validation profile and the RuleClass vocabulary are authoritative and are not modified.
   - 'Findings view (Hotfix 080). FindingsPage.tsx reads GET /api/findings and GET /api/assumptions through the generated apiClient (no raw PSG request,
     no profile YAML in the browser, no TypeScript rule registry). For each Finding it visibly shows id, code, family, rule_class, severity, status, message,
     affected_refs and waiver_ref when present, with family and rule_class as separate concepts (never one badge). Rule-class labels: external_standard ->
@@ -9826,11 +9832,65 @@ tasks:
     input controls = 0, formula editing controls = 0 and calculation POSTs = 0.'
   - Catalogue (Hotfix 080). U2.6 adds only keys needed by findings.*, entities.*, rules.* and calculations.*, keeps every existing key unchanged, keeps
     the English and Polish key sets identical and adds no U2.7 key.
+  - 'Shared Finding projection (Hotfix 081). The API Finding DTO is built in two semantic contexts: persisted PSG Finding nodes in routes/model.rs (list_findings)
+    and GeneratedFinding payloads inside workflow::intake_view, which projects IntakeReportView.validation_findings: Vec<Finding> for routes/questions.rs,
+    routes/proposals.rs, routes/sessions.rs and routes/model.rs. Both carry the same PSG Finding payload. There remains exactly one API Finding concept
+    and exactly one Rust projection from PSG Finding payload + active ValidationProfile to openapi::Finding: crates/plumb-api/src/workflow.rs defines pub(crate)
+    fn finding_view(id: &Id, finding: &plumb_psg::Finding, profile: &ValidationProfile) -> Result<crate::openapi::Finding, ApiError> (exact import spelling
+    may follow existing crate exports; semantics fixed). It is the single construction path for API Finding: no independent Finding { ... } construction
+    remains in routes/model.rs or inside intake_view. finding_view sets rule_class = profile.rules.iter().find(|rule| rule.id == finding.code).map(|rule|
+    map(rule.rule_class)): exact equality only; an unknown/custom code yields rule_class = null in both /api/findings and intake findings, never an error,
+    never guessed, never plumb_core/unknown/custom. The mapping is exhaustive with no wildcard, no free-form string and no serialization/parsing round trip:
+    RuleClass::ExternalStandard -> FindingRuleClass::ExternalStandard, ExternalInterop -> ExternalInterop, PlumbCore -> PlumbCore, ProfilePolicy -> ProfilePolicy,
+    OrganizationPolicy -> OrganizationPolicy, so a future RuleClass forces compile-time consideration of its projection. The Hotfix 080 Finding shape, FindingRuleClass
+    vocabulary and family (gate) semantics are unchanged; family is never used to derive rule_class.'
+  - 'Profile-aware intake_view (Hotfix 081). intake_view changes from intake_view(report: &IntakeReport) -> Result<IntakeReportView, ApiError> to exactly
+    intake_view(report: &IntakeReport, profile: &ValidationProfile) -> Result<IntakeReportView, ApiError> (report first, profile second; no ApiState argument,
+    global profile, YAML reload or registry reconstruction). Inside intake_view only the direct Finding construction is replaced by finding_view(&generated_finding.id,
+    &generated_finding.payload, profile); the same generated finding still feeds is_validation_conflict and conflicts_with, and is_validation_conflict,
+    reason_codes, requires_reason, coverage, duplicates, refines, new_terms and novelty are unchanged. There is one signature: no compatibility overload
+    with an implicit/default profile. Every production caller passes the active profile of its own ApiState: routes/questions.rs (intake_view(&persisted.intake,
+    state.profile())), routes/proposals.rs and routes/model.rs (intake_view(&stored.intake, state.profile())), routes/sessions.rs (intake_view(&card.intake,
+    state.profile())); afterwards grep -Rni ''intake_view('' crates/plumb-api/src shows no one-argument production call. Profile authority is state.profile()
+    only: never load_builtin_software_profile() in projection code, never read config/profiles/*.yaml during request handling, never construct a new ValidationRegistry,
+    never infer from a profile ID. routes/model.rs list_findings uses the same finding_view(&node.id, finding_payload, state.profile()); filtering stays
+    on the persisted payload (status, severity, code, family) with no rule_class query parameter.'
+  - 'Shared projection file boundary (Hotfix 081). Changes in routes/questions.rs, routes/proposals.rs and routes/sessions.rs are strictly limited to passing
+    state.profile() to intake_view plus mechanically required formatting/import edits: no endpoint, proposal, session or question workflow change and no
+    request/response change except the additive rule_class inside shared Finding payloads. routes/model.rs may use the shared finding_view for /api/findings,
+    pass state.profile() to its intake_view call and make the Hotfix 080 U2.6 analyst/rule-cell changes; no unrelated route rewrite. workflow.rs may change
+    only for the FindingRuleClass mapping helper, the shared finding_view, the profile-aware intake_view and tests local to those helpers; the proposal
+    classifier, store_kind, stored_json validation, acceptance decision lookup and proposal action semantics are not altered except import-only edits required
+    for compilation. IntakeReportView keeps exactly covered_by, conflicts_with, refines, new_terms, novelty, duplicate_candidates, validation_findings (still
+    Vec<Finding>), reason_codes, requires_reason: no profile or rule-registry field and no schema fork (no IntakeFinding, IntakeValidationFinding, FindingWithoutRuleClass,
+    LegacyFinding or other renamed/split schema). Regeneration intentionally updates every generated use of Finding; generated types are never patched by
+    hand for /api/findings only. No API operation is added: operations = 74, x-plumb-contract-version = 3, ownership A0.2 = 30, A0.3 = 40, A0.4 = 2, U2.1
+    = 2, no U2.6 owner. Still frozen in addition to the Hotfix 080 list: crates/plumb-intake/**, ui/src/components/ProposalReviewBar.tsx, ui/src/components/TypedAnswerControl.tsx,
+    ui/src/components/ConflictDialog.tsx.'
+  - 'Workflow and shared-fixture tests (Hotfix 081). crates/plumb-api/tests/http_workflow.rs adds a regression that hits an actual HTTP route exercising
+    workflow::intake_view (preferably POST /api/proposals/intake, which returns IntakeReportView directly; an existing deterministic Question or Session
+    intake path with a real validation finding is acceptable) using the existing app_with harness with an injected current Vec<GateReport> whose finding
+    touches the proposal scope (no transport-boundary JSON fabrication, no directly constructed IntakeReportView). It explicitly asserts validation_findings
+    is not empty (no vacuous loop) and, for every returned validation finding, that its code resolves by exact lookup in the test app''s active profile
+    and its rule_class equals that RuleMetadata.rule_class mapped to the FindingRuleClass wire (the expected value comes from profile metadata, not duplicated
+    prefix logic). http_workflow.rs otherwise changes only to adapt expectations affected by rule_class; unrelated workflow tests and fixture semantics
+    are not refactored. The full cargo test -p plumb-api http_workflow run covers every existing question, proposal, session and model-preview caller after
+    the signature change. The Hotfix 080 http_core strategy is unchanged: the shipped profile stays 110 plumb_core, 15 external_standard, 8 external_interop,
+    0 profile_policy, 0 organization_policy (133 rules); profile_policy/organization_policy are exercised only via a test-local cloned ValidationProfile
+    that passes profile.validate() and governs the initial revision profile_hash and rule_pack_hash and the ApiState profile alike. ui/src/components/shared.test.tsx
+    changes only typed fixture material affected by the regenerated contract: its existing validation_findings fixture with code PLUMB.F1.REQ.NO_CONTRADICTION
+    (a shipped rule with rule_class plumb_core) gains rule_class: "plumb_core" (not null); no shared component behavior change.'
+  - 'Mutation guards (Hotfix 081). Before completion U2.6 confirms locally (and reverts) that: (A) /api/findings using finding_view while intake direct
+    construction always sets rule_class = null makes the http_workflow regression fail; (B) intake projection inferring the rule class from a code prefix
+    makes the profile-backed intake regression fail; (C) passing a different/default profile into intake_view makes the HTTP workflow regression or the
+    profile/hash consistency guard fail; (D) reintroducing an independent Finding { ... } construction in routes/model.rs with altered class mapping makes
+    the http_core/shared projection regression fail; (E) removing rule_class from the shared typed fixture makes npm run typecheck fail.'
   tests:
   - cargo test -p plumb-api openapi
   - cargo test -p plumb-api http_core
+  - cargo test -p plumb-api http_workflow
   - cargo test -p plumb-api --no-fail-fast
-  - cd ui && npm run test -- HomePage analyst
+  - cd ui && npm run test -- shared HomePage analyst
   acceptance:
   - All four analyst routes render real server fixture data.
   - Findings also show Assumptions from /api/assumptions.
@@ -9844,6 +9904,14 @@ tasks:
   - Calculations display read-only expression and server worked example where available; no editable inputs/formula editor.
   - No U2.6 generic proposal endpoint is called.
   - OpenAPI remains exactly 74 operations.
+  - There is exactly one shared server Finding projection.
+  - /api/findings and intake validation findings use that same projection.
+  - Every intake_view caller passes state.profile().
+  - A real HTTP workflow intake response proves profile-derived non-null rule_class.
+  - Unknown persisted/custom code remains rule_class = null.
+  - IntakeReportView.validation_findings remains Vec<Finding>; no schema fork.
+  - Existing Questions/Proposals/Sessions/preview behavior is unchanged except for the additive Finding property.
+  - Generated shared UI fixtures compile with the required-nullable field.
   source_refs:
   - SRCREF-A59FD84DEF
   - SRCREF-62FBC0BA0F
@@ -9866,14 +9934,22 @@ tasks:
   - Do not add an API operation, a rule_class query parameter, a new RuleClass wire value, a client-side rule-class inference, a Finding waiver or Assumption
     resolution UI, an entity/attribute write, a state-machine or tag editor, a calculation write/confirm, editable example inputs, a formula editor, a generic
     proposal endpoint call, a client-built SemanticPatch or a dependency (Hotfix 080).
+  - Do not modify crates/plumb-intake/** (Hotfix 081).
+  - Do not modify ui/src/components/ProposalReviewBar.tsx (Hotfix 081).
+  - Do not modify ui/src/components/TypedAnswerControl.tsx (Hotfix 081).
+  - Do not modify ui/src/components/ConflictDialog.tsx (Hotfix 081).
+  - Do not add a second API Finding construction path, a separate or renamed intake Finding schema (IntakeFinding, IntakeValidationFinding, FindingWithoutRuleClass,
+    LegacyFinding or similar), a one-argument or default-profile intake_view overload, a profile load/YAML read/ValidationRegistry construction in projection
+    code, or any question/proposal/session/model-preview behavior change beyond the additive rule_class (Hotfix 081).
   commands:
   - cargo test -p plumb-api openapi
   - cargo test -p plumb-api http_core
+  - cargo test -p plumb-api http_workflow
   - cargo test -p plumb-api --no-fail-fast
   - cargo test -p plumb-api --test openapi regenerate_contract_files -- --ignored --exact
   - cd ui && npm run api:generate
   - cd ui && npm run api:check
-  - cd ui && npm run test -- HomePage analyst
+  - cd ui && npm run test -- shared HomePage analyst
   - cd ui && npm run test
   - cd ui && npm run typecheck
   - cd ui && npm run lint
