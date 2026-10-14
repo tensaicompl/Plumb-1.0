@@ -9064,13 +9064,32 @@ tasks:
   - ui/src/features/home/HomePage.test.tsx
   - ui/src/i18n/en.json
   - ui/src/i18n/pl.json
+  - crates/plumb-api/src/openapi.rs
+  - crates/plumb-api/src/routes/questions.rs
+  - crates/plumb-api/tests/openapi.rs
+  - crates/plumb-api/tests/http_workflow.rs
+  - api/modeller.openapi.json
+  - docs/api.md
+  - ui/src/api/schema.d.ts
   steps:
-  - Implement v2 U4/U5 semantics.
-  - Inline answer creates server proposal and shows patch preview before acceptance.
-  - Bulk accept may call one proposal/action per semantic item but must advance ETag after each successful commit; stop on first 412.
-  - Question round manager never permits more than profile max.
-  - Typed answer controls (Hotfix 065) are driven by the Question's kind and answer_schema of contract v3; generation-time slots are not persisted and are
-    not part of the API.
+  - Implement v2 U4/U5 semantics as refined by Hotfix 076 (where the inherited v2 shorthand and Hotfix 076 differ, Hotfix 076 governs).
+  - 'Inline answer creates server proposal and shows patch preview before acceptance (Hotfix 076): POST /api/questions/{id}/answer through the generated
+    client and useVersionedMutation returns the pending Proposal (revision stays the baseline, events == [], nothing committed), and only an explicit proposal
+    action commits or rejects it.'
+  - 'Bulk accept may call one proposal/action per semantic item but must advance ETag after each successful commit; stop on first 412 (Hotfix 076): bulk
+    acceptance of Proposed Sentences is strictly sequential, never parallel; for each item the current semantic ETag is used for POST /api/model/sentences/{id}/accept
+    and, after the successful WriteResult, the model version/ETag is advanced or refetched before the next item, never reusing the bulk-start ETag; on the
+    first 412 E_PRECONDITION_FAILED it stops immediately, submits no later item, never retries and shows the accepted count, the remaining count and the
+    conflict state.'
+  - 'Question round manager (Hotfix 076): the U2.2 analyst Question round manager accepts an explicit integer max in 1..=15 and sends POST /api/rounds {stakeholder,
+    max} through the generated client and useVersionedMutation; the form never submits while max is absent, non-integer or outside 1..=15. 15 is the U2.2
+    pilot UI cap from inherited v2 U5 (compose <= 15); it is not ValidationProfile.question_round_size, not a new profile property and not MAX_QUESTION_ROUND_SIZE,
+    and S3.2 (Hotfix 046) with its backend general limit 1..=1000 and round_size validation is unchanged. No invisible backend or configuration default
+    is introduced, production UI never reads fixtures/hr-leave/profile.yaml and no profile API is added.'
+  - 'Typed answer controls (Hotfix 065) are driven by the Question''s kind and answer_schema of contract v3; generation-time slots are not persisted and
+    are not part of the API. (Hotfix 076) Sentence.unknowns is authoritative: each inline unknown loads and uses its persisted server Question (question_id)
+    and renders TypedAnswerControl from Question.kind and Question.answer_schema only, never from SentenceUnknown.slot, prompt parsing or Question text
+    parsing (the slot is presentation/context only).'
   - Route and catalogue ownership (Hotfix 071). U2.2 registers only its own newly implemented product route(s) explicitly in ui/src/app/router.tsx (no unrelated
     route rewritten, no dynamic or import-glob routing, no placeholder route to a future component) and adds to ui/src/i18n/en.json and ui/src/i18n/pl.json
     only the catalogue entries its own user-facing UI needs, keeping existing keys stable, never deleting or repurposing unrelated keys and keeping both
@@ -9084,18 +9103,138 @@ tasks:
     original assertion remains correct for its historical repository state. Before completion U2.2 also runs the full UI suite (cd ui && npm run test) as
     a cross-feature regression check, in addition to its targeted test command, because route-tree changes can invalidate earlier UI regression tests that
     the targeted command does not select.'
+  - 'Blocker resolution and write boundary (Hotfix 076). This resolves docs/blockers/U2.2.md (BLOCKED-SPEC-MISSING). The U2.2 write allowlist is exactly
+    the 8 UI files plus crates/plumb-api/src/openapi.rs, crates/plumb-api/src/routes/questions.rs, crates/plumb-api/tests/openapi.rs, crates/plumb-api/tests/http_workflow.rs,
+    api/modeller.openapi.json, docs/api.md and ui/src/api/schema.d.ts. Not authorized: crates/plumb-api/src/workflow.rs, crates/plumb-api/src/application.rs,
+    crates/plumb-api/src/routes/proposals.rs, crates/plumb-api/src/state.rs, crates/plumb-functional/**, crates/plumb-patch/**, crates/plumb-psg/**, crates/plumb-store/**,
+    ui/src/api/client.ts, ui/src/api/useVersionedMutation.ts, ui/src/components/TypedAnswerControl.tsx, ui/src/components/ProposalReviewBar.tsx, ui/src/components/DiffViewer.tsx,
+    ui/src/app/nav.ts, ui/package.json, ui/package-lock.json, Cargo.toml, Cargo.lock. No new dependency. If implementation proves an unauthorized file must
+    change: STOP with BLOCKED-SPEC-MISSING (do not expand the allowlist).'
+  - 'AnswerResponse action (Hotfix 076). POST /api/questions/{id}/answer returns the authoritative workflow class of the exact pending Proposal it created:
+    AnswerResponse becomes exactly version, revision, semantic_hash, events, proposal_id, action, intake, patch_preview (all eight required, additionalProperties
+    false, no other field change), with action: ProposalKind equal to crate::workflow::classify(&loaded.graph, &result.proposal) for the exact Proposal
+    produced by plumb_functional::resolution::resolve_question. The server never infers the class from QuestionKind, answer_schema or UI intent, never hard-codes
+    create or accept, never coerces the classifier output and never rewrites the Proposal; workflow.rs, resolve_question and routes::proposals::persist_pending
+    are not modified (persist_pending may classify the same exact Proposal again for persistence integrity; the returned action and the stored workflow
+    proposal kind describe the same class and no second classifier is introduced). Ordering in answer_question: parse the request; load the head and check
+    If-Match; resolve_question; classify the exact result.proposal; persist the patch artifact; run intake; persist the exact same Proposal pending; return
+    AnswerResponse including action. A classifier error is returned as is, before any pending workflow Proposal, graph commit or DesignEvent, and classification
+    precedes artifact-store persistence so a classifier failure leaves no newly orphaned answer patch artifact.'
+  - Question confirmation (Hotfix 076). U2.2 receives proposal_id, action, intake and patch_preview from the answer response and confirms only through the
+    existing endpoint matching the server-returned action (accept -> POST /api/proposals/{proposal_id}/accept, create -> /create, link -> /link, merge ->
+    /merge, supersede -> /supersede); the mapping is transport only, the UI performs no Proposal classification and there is no fallback action or trial-and-error
+    action selection. A displayed pending Question-answer Proposal may also be explicitly rejected through POST /api/proposals/{proposal_id}/reject (reject
+    is not a ProposalKind and never reinterprets action). The existing ProposalReviewBar is used unmodified with enabled actions exactly [the server-returned
+    action, reject], subject to its existing intake reason behavior, and no unrelated proposal action is exposed. After a successful answer preview the
+    UI shows the Question, the typed answer, proposal_id, the server action, the intake report and patch_preview. AnswerRequest.rationale (the S3.3 ResolutionDecision
+    rationale submitted with the answer) and ProposalActionRequest.reason (the later governed acceptance reason governed by intake.requires_reason and the
+    user's explicit confirmation rationale) are distinct and neither is silently copied into the other.
+  - 'Question patch preview (Hotfix 076). AnswerResponse.patch_preview is the exact serialized SemanticPatch of the persisted Proposal and is the authoritative
+    U2.2 pre-commit preview: U2.2 displays it directly (a readable JSON/tree representation is permitted) and never reconstructs, normalizes, classifies
+    or applies it, calculates a graph candidate or semantic hashes, or invents added/removed/modified IDs. This supersedes the inherited v2 U5 ''apply with
+    DiffViewer'' wording for Question answers: the answer contract returns no ModelDiff, SemanticElementDiff, candidate revision or candidate graph and
+    GET /api/model/diff compares persisted revisions only, so U2.2 does not adapt patch_preview into DiffViewer, invent an uncommitted revision, derive
+    a client-side semantic element diff or add a preview endpoint; DiffViewer.tsx is not modified.'
+  - Stale question preview (Hotfix 076). A Question-answer Proposal is bound to its exact base_revision_id and can become stale even when a later non-semantic
+    write keeps the semantic hash. If confirmation returns 409 E_PROPOSAL_BASELINE_CHANGED (detected through the existing WriteFailedError), the UI clears
+    the pending preview and its proposal_id/action, invalidates or refetches question, model and version data, shows that the model changed and requires
+    a new answer preview; it never rebases, retries automatically, reuses the old action or proposal or commits the old patch_preview. useVersionedMutation.ts
+    is not modified.
+  - 'Round semantics (Hotfix 076). U2.2 uses only the existing POST /api/rounds and GET /api/rounds/{id} contract. The server owns eligibility, stakeholder
+    validation, blocking-first and priority ordering, capacity, round identity and Question.round_ref assignment; the round manager chooses only the stakeholder
+    and the explicit max and displays the server-returned round, and never selects a client-side ''top N'', computes blocking status, priority order, eligibility,
+    staleness, AlreadyAssigned, DeferredByCapacity or a round ID, or forges round.id. The inherited v2 U5 ''rates'' shorthand does not authorize a feature:
+    U2.2 does not invent a Question rating/rate endpoint, a local persisted rating model or a semantic mutation (the v3 NOW scope is the stakeholder Question
+    inbox, typed answering, server proposal preview/confirmation and server round composition/assignment); a future rating capability needs a separately
+    specified contract.'
+  - 'Sentences (Hotfix 076). Accept-without-view warning: a sentence counts as viewed, for this UI behavior only, after the user explicitly opens or expands
+    its review/edit controls in the current page session (view state only, never PSG state); before bulk acceptance, if one or more selected Proposed Sentences
+    are unviewed, an explicit visible warning with the unviewed count requires explicit confirmation before any write starts, and cancelling sends zero
+    writes. The inherited ''(logged)'' parenthetical does not authorize telemetry: U2.2 adds no telemetry endpoint, semantic node, local durable metric
+    store, network logger or API request for it and uses no console.log/console.warn as a fake durable metric; durable ''accepted without view'' pilot telemetry
+    stays outside U2.2 until an explicit API contract owns it. The structured edit form edits only class, level and modality through POST /api/model/sentences/{id}/edit,
+    offering only the closed metamodel vocabularies RequirementKind (functional, quality, interface, data, security, operational, compliance, transition,
+    constraint), RequirementLevel (stakeholder, system, software, subsystem, component, interface) and Modality (shall, should, may, shall_not); it never
+    edits sentence text and the server validates the submitted strings. Sentence accept, reject and edit use the generated apiClient and useVersionedMutation
+    (If-Match), never raw fetch.'
+  - Questions inbox (Hotfix 076). The stakeholder Question inbox displays the server fields text, status, stakeholder_ref, priority, round_ref and context_refs;
+    context_refs are exact IDs, shown as such without fabricated human-readable descriptions, and may link to an implemented route only when the target
+    type/path is unambiguous from existing server/product contracts. The question answer and round creation writes use the generated client and useVersionedMutation.
+  - Routes (Hotfix 076). U2.2 registers exactly the frozen navigation destinations /model/sentences and /questions (ui/src/app/nav.ts is not modified);
+    after U2.2 the HomePage.test.tsx cumulative route assertion is exactly /, /model/glossary, /model/sentences, /questions, /requirements and /requirements/$requirementId
+    in the existing test's deterministic (sorted) convention, with no future route.
+  - 'OpenAPI and generated artifacts (Hotfix 076). U2.2 adds zero operations: the operation count after U2.2 is exactly 74 with ownership unchanged (A0.2
+    30, A0.3 40, A0.4 2, U2.1 2), no new route or operation ID, and x-plumb-contract-version stays 3; only the existing answer_question response schema
+    (AnswerResponse) changes. api/modeller.openapi.json, docs/api.md and ui/src/api/schema.d.ts are regenerated with the existing generators (cargo test
+    -p plumb-api --test openapi regenerate_contract_files -- --ignored --exact, then cd ui && npm run api:generate; cd ui && npm run api:check passes) and
+    never hand-edited; ui/src/api/client.ts is unchanged.'
+  - 'Backend tests (Hotfix 076). OpenAPI tests prove AnswerResponse has exactly the 8 required fields version, revision, semantic_hash, events, proposal_id,
+    action, intake, patch_preview with additionalProperties false and action = ProposalKind, and that the 74-operation frozen inventory is unchanged (none
+    added or removed). The existing answer workflow coverage is extended: for the performer-answer fixture AnswerResponse.action == create, the stored exact
+    Proposal independently classifies as ProposalKind::Create and the stored workflow proposal kind corresponds to Create; the existing regression (/accept
+    -> 409 E_PROPOSAL_ACTION_MISMATCH, /create succeeds) is kept unweakened. Where practical, every Question-answer fixture used by the suite proves response.action
+    == classify(base graph, stored exact Proposal) (the Create-class path is mandatory); no UI or test-only classifier is added. If a practical fixture
+    can produce a classifier error from an otherwise resolved Proposal, a test proves no workflow Proposal was persisted, no graph change and no DesignEvent;
+    if the existing resolution templates make that unreachable without altering domain semantics no fixture is fabricated, and the source ordering remains
+    mandatory.'
+  - 'UI tests (Hotfix 076). sentences.test.tsx and questions.test.tsx prove: the answer write goes through the generated client and If-Match; the UI confirms
+    only through the endpoint matching the server-returned action (and reject), shows the raw server patch_preview before confirmation and computes no Proposal
+    class or semantic diff; typed answers come only from Question.kind and answer_schema (including Sentence unknowns resolved through their question_id);
+    E_PROPOSAL_BASELINE_CHANGED clears the preview with no automatic retry; the round manager accepts only an explicit integer max in 1..=15 and delegates
+    composition and assignment to POST /api/rounds; sequential sentence bulk accept advances the ETag after each successful item and stops on the first
+    412 with accepted/remaining counts; accepting unviewed sentences requires the explicit visible warning and cancelling sends no writes; the structured
+    edit offers only the closed class/level/modality vocabularies.'
   tests:
+  - cargo test -p plumb-api openapi
+  - cargo test -p plumb-api http_workflow
+  - cargo test -p plumb-api --no-fail-fast
   - cd ui && npm run test -- HomePage sentences questions
   acceptance:
-  - Inline answer path produces decision/proposal preview; bulk accept stops on version conflict.
+  - Question answer returns the exact server-derived ProposalKind and the UI confirms only through that corresponding proposal action endpoint.
+  - The raw server patch_preview is shown before confirmation; the UI computes no Proposal class or semantic diff.
+  - Typed answers come only from Question.kind + answer_schema.
+  - The round manager accepts explicit max 1..=15 and delegates composition/assignment to POST /api/rounds.
+  - Sequential sentence bulk accept advances the ETag after each successful item and stops on the first 412.
+  - Accepting unviewed sentences requires an explicit visible warning; cancelling it sends no writes.
   source_refs:
   - SRCREF-50924A0118
-  forbidden: []
+  forbidden:
+  - Do not modify crates/plumb-api/src/workflow.rs (Hotfix 076).
+  - Do not modify crates/plumb-api/src/application.rs (Hotfix 076).
+  - Do not modify crates/plumb-api/src/routes/proposals.rs (Hotfix 076).
+  - Do not modify crates/plumb-api/src/state.rs (Hotfix 076).
+  - Do not modify crates/plumb-functional/** (Hotfix 076).
+  - Do not modify crates/plumb-patch/** (Hotfix 076).
+  - Do not modify crates/plumb-psg/** (Hotfix 076).
+  - Do not modify crates/plumb-store/** (Hotfix 076).
+  - Do not modify ui/src/api/client.ts (Hotfix 076).
+  - Do not modify ui/src/api/useVersionedMutation.ts (Hotfix 076).
+  - Do not modify ui/src/components/TypedAnswerControl.tsx (Hotfix 076).
+  - Do not modify ui/src/components/ProposalReviewBar.tsx (Hotfix 076).
+  - Do not modify ui/src/components/DiffViewer.tsx (Hotfix 076).
+  - Do not modify ui/src/app/nav.ts (Hotfix 076).
+  - Do not modify ui/package.json (Hotfix 076).
+  - Do not modify ui/package-lock.json (Hotfix 076).
+  - Do not modify Cargo.toml (Hotfix 076).
+  - Do not modify Cargo.lock (Hotfix 076).
+  - Do not classify Proposals client-side or select a proposal action other than the server-returned AnswerResponse.action (or reject) (Hotfix 076).
+  - Do not add an operation, a Question rating/rate API, a telemetry endpoint or a dependency (Hotfix 076).
   commands:
+  - cargo test -p plumb-api --test openapi regenerate_contract_files -- --ignored --exact
+  - cd ui && npm run api:generate
+  - cd ui && npm run api:check
+  - cargo test -p plumb-api openapi
+  - cargo test -p plumb-api http_workflow
+  - cargo test -p plumb-api --no-fail-fast
   - cd ui && npm run test -- HomePage sentences questions
   - cd ui && npm run test
   - cd ui && npm run typecheck
   - cd ui && npm run lint
+  - cargo test --workspace --no-fail-fast
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  - sha256sum -c docs/plan/SUPPORTING-DOCS.sha256
+  - python3 scripts/verify-plan-contract.py
   commit_message: 'U2.2: Implement Sentences/semantic proposal review and Questions views'
 - id: U2.3
   title: Implement chat session view

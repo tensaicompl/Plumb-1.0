@@ -124,7 +124,7 @@ tasks:
 - id: U2.1
   status: done
 - id: U2.2
-  status: blocked
+  status: pending
 - id: U2.3
   status: pending
 - id: U2.4
