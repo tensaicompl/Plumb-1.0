@@ -21,6 +21,6 @@ pub use job::{capture_stage_job, StageJob, StageJobError, StageJobStatus};
 pub use run::{persist_compile_run, CompileRun, PersistedCompileRun};
 pub use stage::{
     ArtifactInput, ArtifactSet, CompilerError, CompilerStage, ExternalValidationArtifact,
-    ExternalValidationRequest, PlannedArtifact, PlannedInferenceRequest, StageEvaluation,
-    StagePlan, JSON_MEDIA_TYPE,
+    ExternalValidationRequest, InferenceAbsencePolicy, PlannedArtifact, PlannedInferenceRequest,
+    StageEvaluation, StagePlan, JSON_MEDIA_TYPE,
 };

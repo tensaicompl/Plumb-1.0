@@ -4,8 +4,8 @@
 //! implement no algorithm of their own.
 
 use plumb_compiler::{
-    ArtifactSet, CompileContext, CompilerError, CompilerStage, PlannedInferenceRequest, Scope,
-    StageEvaluation, StagePlan,
+    ArtifactSet, CompileContext, CompilerError, CompilerStage, InferenceAbsencePolicy,
+    PlannedInferenceRequest, Scope, StageEvaluation, StagePlan,
 };
 use plumb_core::{to_canonical_json, Hash, Id, StageId, Timestamp};
 use plumb_functional::calculation::{CalculationAudit, CalculationInference};
@@ -177,13 +177,18 @@ impl<'a> PhaseStage<'a> {
             .ok_or_else(|| ApiError::internal("segmentation_intermediate"))
     }
 
+    /// One planned request with its explicitly declared absence policy (R0.2, architecture
+    /// §20): `requirement_segmentation`, `scenario_values` and `data_classification` are
+    /// `Fallback`; every other planned task kind is `Required`.
     fn planned(
         phase: Phase,
         request: &InferenceRequest,
         material: Result<plumb_inference::InferenceRequestMaterial, String>,
+        absence_policy: InferenceAbsencePolicy,
     ) -> Result<PlannedInferenceRequest, ApiError> {
         let material = material.map_err(|e| plan_failed(phase, e))?;
-        PlannedInferenceRequest::new(request.clone(), material).map_err(|e| plan_failed(phase, e))
+        PlannedInferenceRequest::new(request.clone(), material, absence_policy)
+            .map_err(|e| plan_failed(phase, e))
     }
 
     /// PLAN: the phase's inference requests with their exact material.
@@ -200,6 +205,7 @@ impl<'a> PhaseStage<'a> {
                     phase,
                     &r.request,
                     m(r.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Fallback,
                 )?);
             }
             Phase::Classification => {
@@ -213,6 +219,7 @@ impl<'a> PhaseStage<'a> {
                     phase,
                     &r.request,
                     m(r.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Required,
                 )?);
             }
             Phase::Consolidate => {
@@ -227,6 +234,7 @@ impl<'a> PhaseStage<'a> {
                     phase,
                     &v.request,
                     m(v.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Required,
                 )?);
                 let e = build_ears_request(graph, &self.targets, self.policy())
                     .map_err(|e| fail(&e))?;
@@ -234,6 +242,7 @@ impl<'a> PhaseStage<'a> {
                     phase,
                     &e.request,
                     m(e.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Required,
                 )?);
             }
             Phase::Calc => {
@@ -248,6 +257,7 @@ impl<'a> PhaseStage<'a> {
                     phase,
                     &r.request,
                     m(r.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Required,
                 )?);
             }
             Phase::Analyse => {
@@ -256,12 +266,14 @@ impl<'a> PhaseStage<'a> {
                     phase,
                     &d.request,
                     m(d.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Required,
                 )?);
                 let l = build_lifecycle_request(graph, self.policy()).map_err(|e| fail(&e))?;
                 planned.push(Self::planned(
                     phase,
                     &l.request,
                     m(l.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Required,
                 )?);
             }
             Phase::Flows => {
@@ -281,6 +293,7 @@ impl<'a> PhaseStage<'a> {
                     phase,
                     &o.request,
                     m(o.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Required,
                 )?);
                 let p = build_process_request(graph, &self.targets, pr, self.policy())
                     .map_err(|e| fail(&e))?;
@@ -288,6 +301,7 @@ impl<'a> PhaseStage<'a> {
                     phase,
                     &p.request,
                     m(p.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Required,
                 )?);
             }
             Phase::Scenarios => {
@@ -301,6 +315,7 @@ impl<'a> PhaseStage<'a> {
                         phase,
                         &r.request,
                         m(r.inference_material().map_err(|e| e.to_string())),
+                        InferenceAbsencePolicy::Fallback,
                     )?);
                 }
             }
@@ -310,6 +325,7 @@ impl<'a> PhaseStage<'a> {
                     phase,
                     &r.request,
                     m(r.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Fallback,
                 )?);
             }
             Phase::Execute | Phase::Verification => {}
@@ -344,12 +360,18 @@ impl<'a> PhaseStage<'a> {
                 let fragments = self.fragments(graph);
                 let r: SegmentationRequest =
                     build_segmentation_request(&fragments, self.policy()).map_err(|e| fail(&e))?;
-                let (artifact, _) = inference_of(artifacts, &r.request).map_err(|e| fail(&e))?;
+                // R0.2: only an explicitly declared-absent request takes the existing
+                // no-inference path; a missing acquisition is never an implicit fallback.
+                let artifact = if artifacts.is_declared_absent(&r.request.id) {
+                    None
+                } else {
+                    Some(inference_of(artifacts, &r.request).map_err(|e| fail(&e))?.0)
+                };
                 let audit = SegmentationAudit {
                     created_by: actor,
                     created_at: at,
                 };
-                let result = evaluate_segmentation(&r, &fragments, Some(&artifact), &audit)
+                let result = evaluate_segmentation(&r, &fragments, artifact.as_ref(), &audit)
                     .map_err(|e| fail(&e))?;
                 let value = SegmentationIntermediate {
                     version: 1,
@@ -535,13 +557,16 @@ impl<'a> PhaseStage<'a> {
                     .ok_or_else(|| ApiError::internal("scenario_derivation"))?;
                 let requests =
                     scenario_requests(graph, inputs, &self.policy()).map_err(|e| fail(&e))?;
+                // R0.2: a declared-absent request contributes no inference; its value-slot
+                // skeleton stays unresolved and nothing is fabricated.
                 let mut acquired_all = Vec::with_capacity(requests.len());
                 for r in &requests {
-                    acquired_all.push(acquired(&r.request)?);
+                    if !artifacts.is_declared_absent(&r.request.id) {
+                        acquired_all.push((r, acquired(&r.request)?));
+                    }
                 }
-                let inferences: Vec<ScenarioInference<'_>> = requests
+                let inferences: Vec<ScenarioInference<'_>> = acquired_all
                     .iter()
-                    .zip(&acquired_all)
                     .map(|(request, (artifact, derivation_ref))| ScenarioInference {
                         request,
                         artifact,
@@ -558,12 +583,20 @@ impl<'a> PhaseStage<'a> {
             }
             Phase::Tags => {
                 let r = build_data_class_request(graph, self.policy()).map_err(|e| fail(&e))?;
-                let (artifact, derivation_ref) = acquired(&r.request)?;
-                let inference = DataClassInference {
-                    artifact: &artifact,
-                    derivation_ref,
+                // R0.2: a declared-absent request yields only the dictionary proposals.
+                let acquired_tag = if artifacts.is_declared_absent(&r.request.id) {
+                    None
+                } else {
+                    Some(acquired(&r.request)?)
                 };
-                proposals = analyze_data_classification(graph, &r, Some(inference))
+                let inference =
+                    acquired_tag
+                        .as_ref()
+                        .map(|(artifact, derivation_ref)| DataClassInference {
+                            artifact,
+                            derivation_ref: derivation_ref.clone(),
+                        });
+                proposals = analyze_data_classification(graph, &r, inference)
                     .map_err(|e| fail(&e))?
                     .proposals;
             }

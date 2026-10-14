@@ -138,7 +138,7 @@ tasks:
 - id: R0.1
   status: done
 - id: R0.2
-  status: pending
+  status: done
 - id: R0.3
   status: pending
 - id: R0.4

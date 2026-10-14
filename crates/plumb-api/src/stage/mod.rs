@@ -469,7 +469,10 @@ impl Run<'_> {
         job.start_acquiring().map_err(invalid)?;
         persist_child(state, job, StageStatus::Queued, state.now())?;
         let plan = stage.plan_phase(&base.graph)?;
-        let artifacts = acquire::acquire(state, &plan, state.now())?;
+        let artifacts = acquire::acquire(state, &plan, self.recipe, stage.phase, state.now())?;
+        artifacts
+            .validate_for_plan(&plan)
+            .map_err(|e| ApiError::internal(&format!("artifact_set: {e}")))?;
         job.start_evaluating().map_err(invalid)?;
         persist_child(state, job, StageStatus::Acquiring, state.now())?;
         self.set_status(StageStatus::Evaluating)?;
@@ -509,7 +512,8 @@ fn put_projection(state: &ApiState, bytes: &[u8]) -> Result<Hash, ApiError> {
         .map_err(|_| ApiError::internal("artifact_store"))
 }
 
-/// Rebuilds the exact acquired ArtifactSet of a persisted run (reuse of a stored child).
+/// Rebuilds the exact acquired ArtifactSet of a persisted run (reuse of a stored child),
+/// including its declared-absent inference requests (R0.2).
 fn artifacts_of(state: &ApiState, run: &CompileRun) -> Result<ArtifactSet, ApiError> {
     let load = |hashes: &[Hash]| -> Result<Vec<ArtifactInput>, ApiError> {
         hashes
@@ -527,10 +531,11 @@ fn artifacts_of(state: &ApiState, run: &CompileRun) -> Result<ArtifactSet, ApiEr
             })
             .collect()
     };
-    ArtifactSet::new(
+    ArtifactSet::with_declared_absence(
         load(&run.deterministic_artifacts)?,
         load(&run.inference_artifacts)?,
         load(&run.validation_artifacts)?,
+        run.declared_absent_inference_requests.clone(),
     )
     .map_err(|_| ApiError::workflow_corrupt("stage run artifacts"))
 }
@@ -877,4 +882,224 @@ fn execute(run: &mut Run<'_>) -> Result<(), StepEnd> {
         }
     }
     Ok(())
+}
+
+/// In-crate support for the R0.2 acquisition and reconstruction unit tests: an `ApiState` over
+/// a fresh temporary project database with an explicit provider mode and a recording provider.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::{Arc, Mutex};
+
+    use plumb_core::{CanonicalJson, FixedClock, Hash, Id, StageId, Timestamp};
+    use plumb_functional::{ExprCalendarDefinition, ExprStaticCalendarProvider};
+    use plumb_inference::{
+        InferenceArtifact, InferenceProvider, InferenceRequest, InferenceRequestMaterial,
+        ProviderError, ProviderExecution, ProviderPolicy,
+    };
+    use plumb_session::SessionTurnConfig;
+    use plumb_store::BranchName;
+    use plumb_validation::{load_builtin_software_profile, ValidationPolicy};
+    use serde_json::json;
+
+    use crate::application::{initialize_project_database, open_application, ApplicationRuntime};
+    use crate::runtime::{DirectManagerPredicates, GateInputsConfig, ProviderMode};
+    use crate::state::{ApiIdentity, ApiState};
+
+    pub(crate) const PROMPT: &[u8] = b"prompt";
+    pub(crate) const SCHEMA: &[u8] = b"{}";
+
+    pub(crate) fn id(s: &str) -> Id {
+        s.parse().unwrap()
+    }
+
+    pub(crate) fn at() -> Timestamp {
+        "2026-01-01T00:00:00.000000000Z".parse().unwrap()
+    }
+
+    /// A provider failure to inject.
+    pub(crate) type Failure = fn(&InferenceRequest) -> ProviderError;
+
+    /// Answers every request with `{}`, records each call, or fails with `error`.
+    #[derive(Default)]
+    pub(crate) struct Recording {
+        pub(crate) calls: Mutex<Vec<String>>,
+        pub(crate) error: Mutex<Option<Failure>>,
+    }
+
+    impl InferenceProvider for Recording {
+        fn execute(
+            &self,
+            request: &InferenceRequest,
+            material: &InferenceRequestMaterial,
+        ) -> Result<ProviderExecution, ProviderError> {
+            plumb_inference::validate_binding(request, material)?;
+            self.calls.lock().unwrap().push(request.task_kind.clone());
+            if let Some(error) = *self.error.lock().unwrap() {
+                return Err(error(request));
+            }
+            let raw_response = b"{}".to_vec();
+            let validated_output = CanonicalJson::new(json!({}));
+            Ok(ProviderExecution {
+                artifact: InferenceArtifact {
+                    request_hash: request.id.clone(),
+                    provider: request.provider_policy.provider.clone(),
+                    model: "test-model".to_owned(),
+                    parameters: CanonicalJson::new(json!({})),
+                    raw_response_hash: Hash::content_sha256(&raw_response),
+                    validated_output_hash: validated_output.content_hash().unwrap(),
+                    validated_output,
+                },
+                raw_response_media_type: "application/json".to_owned(),
+                raw_response,
+            })
+        }
+    }
+
+    /// A planned request of `task_kind`, distinguished by `salt`.
+    pub(crate) fn request(
+        task_kind: &str,
+        salt: &str,
+    ) -> (InferenceRequest, InferenceRequestMaterial) {
+        let context = plumb_core::to_canonical_json(&json!({ "salt": salt })).unwrap();
+        let request = InferenceRequest::new(
+            StageId::S1,
+            task_kind.to_owned(),
+            vec![id("req:a")],
+            vec![],
+            Hash::content_sha256(&context),
+            Hash::content_sha256(PROMPT),
+            Hash::content_sha256(SCHEMA),
+            ProviderPolicy {
+                provider: "test".to_owned(),
+                config: CanonicalJson::new(json!({})),
+            },
+        )
+        .unwrap();
+        let material =
+            InferenceRequestMaterial::new(&request, context, PROMPT.to_vec(), SCHEMA.to_vec())
+                .unwrap();
+        (request, material)
+    }
+
+    /// A state over a new project database with `mode` and `provider`.
+    pub(crate) fn state(
+        dir: &tempfile::TempDir,
+        mode: ProviderMode,
+        provider: Arc<dyn InferenceProvider + Send + Sync>,
+    ) -> ApiState {
+        let db = dir.path().join("plumb.sqlite");
+        let profile = load_builtin_software_profile().unwrap();
+        initialize_project_database(&db, id("project:pilot"), &profile, id("agent:api"), at())
+            .unwrap();
+        let runtime = ApplicationRuntime {
+            inference_provider: provider,
+            provider_mode: mode,
+            provider_policy: ProviderPolicy {
+                provider: "test".into(),
+                config: CanonicalJson::new(json!({})),
+            },
+            session_turn_config: SessionTurnConfig {
+                retrieval_top_k: 3,
+                max_open_questions: 3,
+                max_context_bytes: 65536,
+            },
+            assistant_actor_ref: id("agent:assistant"),
+            stage_actor_ref: id("agent:compiler"),
+            calendars: Arc::new(
+                ExprStaticCalendarProvider::new([ExprCalendarDefinition::new(
+                    id("cal:office"),
+                    [],
+                    [],
+                )])
+                .unwrap(),
+            ),
+            predicates: Arc::new(DirectManagerPredicates::new(&[]).unwrap()),
+            calendar_configs: Vec::new(),
+            direct_managers: Vec::new(),
+            expression_scopes: Vec::new(),
+            calculation_scope_overrides: Vec::new(),
+            runtime_semantic_values: Vec::new(),
+            validation_policy: ValidationPolicy::default(),
+            vocabulary_policy: serde_json::from_value(json!({"language": "en"})).unwrap(),
+            duplicate_policy: serde_json::from_value(json!({"jaccard_threshold": "0.8"})).unwrap(),
+            calculation_scope: None,
+            operation_scope: None,
+            process_scope: None,
+            authorization_draft: None,
+            scenario_derivation: None,
+            verification_applicability: None,
+            gates: GateInputsConfig {
+                f1: None,
+                f2: None,
+                f4: None,
+            },
+        };
+        open_application(
+            &db,
+            BranchName::main(),
+            ApiIdentity::new(
+                "alice".into(),
+                id("agent:api"),
+                vec!["analyst".into()],
+                "pilot".into(),
+            )
+            .unwrap(),
+            Arc::new(FixedClock::new(at())),
+            profile,
+            runtime,
+        )
+        .unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use plumb_compiler::CompileRun;
+    use plumb_core::{Hash, StageId};
+
+    use super::test_support::{id, state, Recording};
+    use super::*;
+    use crate::runtime::ProviderMode;
+
+    /// A persisted run with the given declared absence (no artifacts to load).
+    fn run(absent: Vec<Hash>) -> CompileRun {
+        let mut run = CompileRun {
+            id: Hash::content_sha256(b""),
+            stage: StageId::S1,
+            input_revision: "rev:1:0123456789abcdef".parse().unwrap(),
+            input_semantic_hash: Hash::semantic_sha256(b"graph"),
+            profile_ref: id("profile:plumb-software-2026.1"),
+            profile_hash: Hash::content_sha256(b"profile"),
+            rule_pack_hash: Hash::content_sha256(b"rules"),
+            compiler_version: "0.1.0".into(),
+            config_hash: Hash::content_sha256(b"config"),
+            deterministic_artifacts: vec![],
+            inference_artifacts: vec![],
+            validation_artifacts: vec![],
+            output_derivation_patch_ref: None,
+            output_proposal_refs: vec![],
+            output_hash: Hash::content_sha256(b"output"),
+            declared_absent_inference_requests: absent,
+        };
+        run.id = run.recompute_id().unwrap();
+        run.validate().unwrap();
+        run
+    }
+
+    #[test]
+    fn artifacts_of_reconstructs_declared_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir, ProviderMode::Null, Arc::new(Recording::default()));
+        let mut absent = vec![Hash::content_sha256(b"b"), Hash::content_sha256(b"a")];
+        absent.sort();
+        let rebuilt = artifacts_of(&state, &run(absent.clone())).unwrap();
+        assert_eq!(rebuilt.declared_absent_inference_requests, absent);
+        assert!(rebuilt.inference_artifacts.is_empty());
+        // A legacy run without absence reconstructs the ordinary empty-absence set.
+        let legacy = artifacts_of(&state, &run(vec![])).unwrap();
+        assert!(legacy.declared_absent_inference_requests.is_empty());
+        assert_eq!(legacy, ArtifactSet::new(vec![], vec![], vec![]).unwrap());
+    }
 }

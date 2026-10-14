@@ -35,6 +35,12 @@ pub struct CompileRun {
     pub output_proposal_refs: Vec<Hash>,
 
     pub output_hash: Hash,
+
+    /// R0.2: the sorted IDs of the inference requests declared absent under the `null`
+    /// provider mode. Serialized only when non-empty, so every run without declared absence
+    /// keeps its exact pre-R0.2 bytes and ID. These are request IDs, never artifact hashes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_absent_inference_requests: Vec<Hash>,
 }
 
 /// The output artifact refs of `evaluation`: derivation patch ref and sorted proposal refs.
@@ -86,6 +92,9 @@ impl CompileRun {
             output_derivation_patch_ref,
             output_proposal_refs,
             output_hash: evaluation.output_hash()?,
+            declared_absent_inference_requests: artifacts
+                .declared_absent_inference_requests
+                .clone(),
         };
         run.id = run.recompute_id()?;
         run.validate()?;
@@ -135,6 +144,10 @@ impl CompileRun {
             ("inference_artifacts", &self.inference_artifacts),
             ("validation_artifacts", &self.validation_artifacts),
             ("output_proposal_refs", &self.output_proposal_refs),
+            (
+                "declared_absent_inference_requests",
+                &self.declared_absent_inference_requests,
+            ),
         ] {
             for r in refs {
                 require_kind(what, r, HashKind::Generic).map_err(invalid)?;
@@ -172,6 +185,8 @@ struct CompileRunFields {
     output_derivation_patch_ref: Option<Hash>,
     output_proposal_refs: Vec<Hash>,
     output_hash: Hash,
+    #[serde(default)]
+    declared_absent_inference_requests: Vec<Hash>,
 }
 
 impl TryFrom<CompileRunFields> for CompileRun {
@@ -194,6 +209,7 @@ impl TryFrom<CompileRunFields> for CompileRun {
             output_derivation_patch_ref: f.output_derivation_patch_ref,
             output_proposal_refs: f.output_proposal_refs,
             output_hash: f.output_hash,
+            declared_absent_inference_requests: f.declared_absent_inference_requests,
         };
         run.validate()?;
         Ok(run)

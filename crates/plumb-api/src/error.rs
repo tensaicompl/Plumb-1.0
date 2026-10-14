@@ -152,6 +152,19 @@ impl ApiError {
         .with_details(json!({ "error": error }))
     }
 
+    /// 409 `E_INFERENCE_REQUIRED` (R0.2, architecture §20): under the `null` provider mode a
+    /// recipe phase plans `Required` inference requests, so it fails before any provider call
+    /// or artifact write. `task_kinds` are the phase's sorted, unique required task kinds.
+    pub fn inference_required(recipe: &str, phase: &str, task_kinds: &[&str]) -> ApiError {
+        ApiError::conflict(
+            "E_INFERENCE_REQUIRED",
+            format!(
+                "phase {phase} of the {recipe} recipe requires inference, and the null provider is configured"
+            ),
+        )
+        .with_details(json!({ "recipe": recipe, "phase": phase, "task_kinds": task_kinds }))
+    }
+
     /// 503 `E_A03_RUNTIME_UNAVAILABLE`: the injected A0.3 runtime lacks `capability`.
     pub fn runtime_unavailable(capability: &str) -> ApiError {
         ApiError::new(

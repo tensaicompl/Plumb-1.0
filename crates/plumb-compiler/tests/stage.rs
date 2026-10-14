@@ -38,7 +38,7 @@ const GOLDEN_EVR_ID: &str =
 const GOLDEN_EVA_JSON: &str = r#"{"request_hash":"sha256:2dbd3ea3b1c8233a76edf9e42cccc62fa2b46c79eacd47695d2d2a20075e9832","validated_output":{"ok":true},"validated_output_hash":"sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93","validator":"req-lint"}"#;
 const GOLDEN_EVA_HASH: &str =
     "sha256:614f8e1d2c377bf6b4a4eb92d28604de49308a806b7a63890fc8a3bc492f4756";
-const GOLDEN_PLAN_JSON: &str = r#"{"deterministic_artifacts":[{"bytes":[114,101,113,58,72,82,45,48,48,49,10,114,101,113,58,72,82,45,48,48,50],"kind":"projection","media_type":"text/plain"}],"external_validation_requests":[{"config":{},"id":"sha256:a9c573dbd7e8f1e520ffc4495127cee9b11ac1980c881667eb7714738e5504e4","input_artifact_refs":["sha256:5e3f2173ac22d5887e5a98e35497943052ce23aacc841b941c576eaf6108d2dc"],"task_kind":"lint","validator":"req-lint"}],"inference_requests":[{"material":{"context_json":[123,34,109,111,100,101,34,58,34,115,116,114,105,99,116,34,125],"prompt_template":[83,101,108,101,99,116,32,116,104,101,32,114,101,113,117,105,114,101,109,101,110,116,115,32,116,111,32,97,99,99,101,112,116,46,10],"request_hash":"sha256:3ac826289fbc088cb535692a0d1280e9b70ec35e485e9a2a95144c47ad8cf10f","schema_json":[123,34,36,115,99,104,101,109,97,34,58,34,104,116,116,112,115,58,47,47,106,115,111,110,45,115,99,104,101,109,97,46,111,114,103,47,100,114,97,102,116,47,50,48,50,48,45,49,50,47,115,99,104,101,109,97,34,44,34,116,121,112,101,34,58,34,111,98,106,101,99,116,34,125]},"request":{"context_hash":"sha256:5359f0a81f1e876e87ffe35cffc12b819a044a962a9c542f5c975ca9c0e72e19","evidence_refs":[],"id":"sha256:3ac826289fbc088cb535692a0d1280e9b70ec35e485e9a2a95144c47ad8cf10f","input_refs":["req:HR-001","req:HR-002"],"prompt_template_hash":"sha256:cbd21353b5ca849bc8c53df8df6913f64da22934875d11d049c03052f92df3e7","provider_policy":{"config":{},"provider":"anthropic"},"schema_hash":"sha256:ccb5a9d66e068ea8f4e205788589675a48e9e3754a840d8ac10120d14238e914","stage":"S1","task_kind":"extract-requirements"}}],"scope":{"kind":"elements","refs":["req:HR-001","req:HR-002"]}}"#;
+const GOLDEN_PLAN_JSON: &str = r#"{"deterministic_artifacts":[{"bytes":[114,101,113,58,72,82,45,48,48,49,10,114,101,113,58,72,82,45,48,48,50],"kind":"projection","media_type":"text/plain"}],"external_validation_requests":[{"config":{},"id":"sha256:a9c573dbd7e8f1e520ffc4495127cee9b11ac1980c881667eb7714738e5504e4","input_artifact_refs":["sha256:5e3f2173ac22d5887e5a98e35497943052ce23aacc841b941c576eaf6108d2dc"],"task_kind":"lint","validator":"req-lint"}],"inference_requests":[{"absence_policy":"required","material":{"context_json":[123,34,109,111,100,101,34,58,34,115,116,114,105,99,116,34,125],"prompt_template":[83,101,108,101,99,116,32,116,104,101,32,114,101,113,117,105,114,101,109,101,110,116,115,32,116,111,32,97,99,99,101,112,116,46,10],"request_hash":"sha256:3ac826289fbc088cb535692a0d1280e9b70ec35e485e9a2a95144c47ad8cf10f","schema_json":[123,34,36,115,99,104,101,109,97,34,58,34,104,116,116,112,115,58,47,47,106,115,111,110,45,115,99,104,101,109,97,46,111,114,103,47,100,114,97,102,116,47,50,48,50,48,45,49,50,47,115,99,104,101,109,97,34,44,34,116,121,112,101,34,58,34,111,98,106,101,99,116,34,125]},"request":{"context_hash":"sha256:5359f0a81f1e876e87ffe35cffc12b819a044a962a9c542f5c975ca9c0e72e19","evidence_refs":[],"id":"sha256:3ac826289fbc088cb535692a0d1280e9b70ec35e485e9a2a95144c47ad8cf10f","input_refs":["req:HR-001","req:HR-002"],"prompt_template_hash":"sha256:cbd21353b5ca849bc8c53df8df6913f64da22934875d11d049c03052f92df3e7","provider_policy":{"config":{},"provider":"anthropic"},"schema_hash":"sha256:ccb5a9d66e068ea8f4e205788589675a48e9e3754a840d8ac10120d14238e914","stage":"S1","task_kind":"extract-requirements"}}],"scope":{"kind":"elements","refs":["req:HR-001","req:HR-002"]}}"#;
 const GOLDEN_EVALUATION_JSON: &str = r#"{"derivation_patch_set":{"base_semantic_hash":"psg:sha256:f0626043428dce3e421bf2d11665e55153c7aa9fc440b3e9bffc6feff72f5a19","patch":{"node":{"audit":{"created_at":"2026-09-29T12:00:00.000000000Z","created_by":"actor:analyst","updated_at":null,"updated_by":null},"derivations":[],"evidence":[],"extensions":{},"id":"req:derived-1","payload":{"data":{"level":"system","modality":"shall","owner_refs":null,"priority":null,"rationale":null,"requirement_kind":"functional","source_identifier":null,"stakeholder_refs":null,"statement":"The system shall list pending leave requests.","title":null,"verification_method":null},"type":"Requirement"},"revision":1,"standards":[],"status":"Proposed","tags":[]},"op":"AddNode"}},"proposals":[{"acceptance_policy":"HUMAN_CONFIRM","confidence":0.5,"derivation_refs":[],"evidence_refs":[],"id":"prop:0d5d15377e36d268","materiality":"semantic","patch_set":{"base_semantic_hash":"psg:sha256:f0626043428dce3e421bf2d11665e55153c7aa9fc440b3e9bffc6feff72f5a19","patch":{"from":"Proposed","op":"SetStatus","target":{"expected_hash":"sha256:90f45d530c518d64d026bf4403d66a2960cc948dba0cf87236a3f81c9adac9dc","id":"req:HR-002"},"to":"Accepted"}},"stage":"S1"}]}"#;
 const GOLDEN_OUTPUT_HASH: &str =
     "sha256:8bb7f125d05d5f73f07ad68e35776326f66eeb63c7f6f8b2ffcd42fc47057800";
@@ -264,7 +264,8 @@ impl CompilerStage for FixtureStage {
             code: "inference-material".to_owned(),
             message: e.to_string(),
         })?;
-        let inference = PlannedInferenceRequest::new(inference, material)?;
+        let inference =
+            PlannedInferenceRequest::new(inference, material, InferenceAbsencePolicy::Required)?;
         let validation = validation_request(vec![listing.content_hash()]);
         StagePlan::new(
             Scope::elements(requirements)?,
@@ -823,6 +824,7 @@ fn artifact_set_categories_sorting_and_uniqueness() {
         },
         inference_artifacts: vec![],
         validation_artifacts: vec![],
+        declared_absent_inference_requests: vec![],
     };
     assert!(matches!(
         raw.validate(),
@@ -1037,7 +1039,8 @@ fn planned_request(task_kind: &str) -> (PlannedInferenceRequest, InferenceReques
     let material =
         InferenceRequestMaterial::new(&request, context, PROMPT.to_vec(), SCHEMA.to_vec()).unwrap();
     (
-        PlannedInferenceRequest::new(request, material.clone()).unwrap(),
+        PlannedInferenceRequest::new(request, material.clone(), InferenceAbsencePolicy::Required)
+            .unwrap(),
         material,
     )
 }
@@ -1050,13 +1053,21 @@ fn planned_inference_request_binds_its_material() {
     assert_eq!(a.material.request_hash, a.request.id);
     // Another request's material, or corrupted bytes, are rejected.
     assert!(matches!(
-        PlannedInferenceRequest::new(a.request.clone(), b_material),
+        PlannedInferenceRequest::new(
+            a.request.clone(),
+            b_material,
+            InferenceAbsencePolicy::Required
+        ),
         Err(CompilerError::InvalidStagePlan(_))
     ));
     let mut corrupt = a_material.clone();
     corrupt.prompt_template.push(b' ');
     assert!(matches!(
-        PlannedInferenceRequest::new(a.request.clone(), corrupt.clone()),
+        PlannedInferenceRequest::new(
+            a.request.clone(),
+            corrupt.clone(),
+            InferenceAbsencePolicy::Required
+        ),
         Err(CompilerError::InvalidStagePlan(_))
     ));
     // Strict serde: roundtrip, validated decode, no unknown fields.
@@ -1509,4 +1520,175 @@ fn compile_run_persistence_validates_before_writing() {
     assert!(persist_compile_run(&mut store, &tampered, &e, ts(T1)).is_err());
     assert!(!store.exists(&hash(GOLDEN_PATCH_REF)).unwrap());
     assert!(!store.exists(&hash(GOLDEN_RUN_REF)).unwrap());
+}
+
+// ---------------------------------------------------------------------------- R0.2 absence policy
+
+/// A planned request of `task_kind` with the given declared absence policy.
+fn planned_with(task_kind: &str, policy: InferenceAbsencePolicy) -> PlannedInferenceRequest {
+    let (planned, material) = planned_request(task_kind);
+    PlannedInferenceRequest::new(planned.request, material, policy).unwrap()
+}
+
+/// The validated-inference input of `request`.
+fn inference_input(request: &InferenceRequest) -> ArtifactInput {
+    input(
+        ArtifactKind::ValidatedInference,
+        JSON_MEDIA_TYPE,
+        to_canonical_json(&inference_artifact(request)).unwrap(),
+    )
+}
+
+#[test]
+fn absence_policy_is_not_request_identity() {
+    let required = planned_with("segment", InferenceAbsencePolicy::Required);
+    let fallback = planned_with("segment", InferenceAbsencePolicy::Fallback);
+    // Same request, ID and material: the policy is plan semantics only.
+    assert_eq!(required.request, fallback.request);
+    assert_eq!(required.request.id, fallback.request.id);
+    assert_eq!(required.material, fallback.material);
+    assert_eq!(
+        canonical(&required.request),
+        canonical(&fallback.request),
+        "the request bytes are unchanged"
+    );
+    assert_ne!(required, fallback);
+    // The wire values are exactly `required` and `fallback`, and the field is mandatory.
+    let wire = serde_json::to_value(&required).unwrap();
+    assert_eq!(wire["absence_policy"], json!("required"));
+    assert_eq!(
+        serde_json::to_value(&fallback).unwrap()["absence_policy"],
+        json!("fallback")
+    );
+    assert_eq!(
+        serde_json::from_value::<PlannedInferenceRequest>(serde_json::to_value(&fallback).unwrap())
+            .unwrap(),
+        fallback
+    );
+    let mut unknown = wire.clone();
+    unknown["absence_policy"] = json!("optional");
+    assert!(serde_json::from_value::<PlannedInferenceRequest>(unknown).is_err());
+    let mut missing = wire;
+    missing.as_object_mut().unwrap().remove("absence_policy");
+    assert!(serde_json::from_value::<PlannedInferenceRequest>(missing).is_err());
+    // The plan exposes the policy without changing the request identity or ordering.
+    let plan = StagePlan::new(Scope::Project, vec![], vec![fallback.clone()], vec![]).unwrap();
+    assert_eq!(plan.inference_requests[0].request.id, required.request.id);
+    assert_eq!(
+        plan.inference_requests[0].absence_policy,
+        InferenceAbsencePolicy::Fallback
+    );
+}
+
+#[test]
+fn validate_for_plan_accepts_only_declared_absent_fallback() {
+    let f = planned_with("segment", InferenceAbsencePolicy::Fallback);
+    let r = planned_with("classify", InferenceAbsencePolicy::Required);
+    let plan = StagePlan::new(Scope::Project, vec![], vec![f.clone(), r.clone()], vec![]).unwrap();
+    let (fid, rid) = (f.request.id.clone(), r.request.id.clone());
+    let set = |inference: Vec<ArtifactInput>, absent: Vec<Hash>| {
+        ArtifactSet::with_declared_absence(vec![], inference, vec![], absent)
+    };
+    let check = |inference: Vec<ArtifactInput>, absent: Vec<Hash>| {
+        set(inference, absent).unwrap().validate_for_plan(&plan)
+    };
+
+    // The pre-R0.2 constructor declares nothing.
+    let legacy = ArtifactSet::new(vec![], vec![], vec![]).unwrap();
+    assert!(legacy.declared_absent_inference_requests.is_empty());
+    // Both acquired; or the Fallback request declared absent and the Required one acquired.
+    check(
+        vec![inference_input(&f.request), inference_input(&r.request)],
+        vec![],
+    )
+    .unwrap();
+    let absent = set(vec![inference_input(&r.request)], vec![fid.clone()]).unwrap();
+    absent.validate_for_plan(&plan).unwrap();
+    assert!(absent.is_declared_absent(&fid));
+    assert!(!absent.is_declared_absent(&rid));
+    // A Fallback request with a real artifact is not absent.
+    assert!(!set(
+        vec![inference_input(&f.request), inference_input(&r.request)],
+        vec![]
+    )
+    .unwrap()
+    .is_declared_absent(&fid));
+
+    let reject = |result: Result<(), CompilerError>, needle: &str| match result {
+        Err(CompilerError::InvalidArtifactSet(m)) => assert!(m.contains(needle), "{m}"),
+        other => panic!("expected InvalidArtifactSet({needle}), got {other:?}"),
+    };
+    // A Required request can never be declared absent.
+    reject(
+        check(vec![inference_input(&f.request)], vec![rid.clone()]),
+        "required inference request",
+    );
+    reject(
+        check(vec![], vec![fid.clone(), rid.clone()]),
+        "required inference request",
+    );
+    // A missing Required request (neither acquired nor absent).
+    reject(check(vec![], vec![fid.clone()]), "declared absences for 2");
+    reject(check(vec![inference_input(&f.request)], vec![]), "for 2");
+    // Acquired and declared absent at once.
+    reject(
+        check(
+            vec![inference_input(&f.request), inference_input(&r.request)],
+            vec![fid.clone()],
+        ),
+        "both acquired and declared absent",
+    );
+    reject(
+        check(vec![inference_input(&f.request)], vec![fid.clone()]),
+        "both acquired and declared absent",
+    );
+    // Two results for one request.
+    let mut other = inference_artifact(&r.request);
+    other.validated_output = CanonicalJson::new(json!({"accept": []}));
+    other.validated_output_hash = other.validated_output.content_hash().unwrap();
+    reject(
+        check(
+            vec![
+                inference_input(&r.request),
+                input(
+                    ArtifactKind::ValidatedInference,
+                    JSON_MEDIA_TYPE,
+                    to_canonical_json(&other).unwrap(),
+                ),
+            ],
+            vec![],
+        ),
+        // Whichever request is checked first: 2 results for one, 0 for the other.
+        " results",
+    );
+    // An absence that the plan does not contain.
+    reject(
+        check(
+            vec![inference_input(&f.request), inference_input(&r.request)],
+            vec![Hash::content_sha256(b"unplanned")],
+        ),
+        "is not planned",
+    );
+    // Structure: duplicate, unsorted or non-generic absence IDs.
+    assert!(matches!(
+        set(vec![], vec![fid.clone(), fid.clone()]),
+        Err(CompilerError::InvalidArtifactSet(_))
+    ));
+    let mut ids = vec![fid.clone(), rid.clone()];
+    ids.sort();
+    ids.reverse();
+    let raw = ArtifactSet {
+        deterministic_artifacts: vec![],
+        inference_artifacts: vec![],
+        validation_artifacts: vec![],
+        declared_absent_inference_requests: ids,
+    };
+    assert!(matches!(
+        raw.validate(),
+        Err(CompilerError::InvalidArtifactSet(_))
+    ));
+    assert!(matches!(
+        set(vec![], vec![Hash::semantic_sha256(b"x")]),
+        Err(CompilerError::InvalidArtifactSet(_))
+    ));
 }

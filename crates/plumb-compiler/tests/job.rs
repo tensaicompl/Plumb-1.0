@@ -305,6 +305,93 @@ mod job {
         Hash::content_sha256(&to_canonical_json(p).unwrap())
     }
 
+    // ------------------------------------------------------------------ R0.2 absence provenance
+
+    /// The canonical CompileRun of `outputs()` (no declared absence), captured from the
+    /// pre-R0.2 implementation at a0e76555 before any R0.2 change.
+    const LEGACY_RUN_JSON: &str = r#"{"compiler_version":"0.1.0","config_hash":"sha256:5359f0a81f1e876e87ffe35cffc12b819a044a962a9c542f5c975ca9c0e72e19","deterministic_artifacts":[],"id":"sha256:4d6d9ea67a5e230b301312f95894c1f40ca3f66bcdd7c6e280b96ab0d42df278","inference_artifacts":[],"input_revision":"rev:1:92524cd18e6953a2","input_semantic_hash":"psg:sha256:92524cd18e6953a2710d06bde1414f64e5281b46353872ea3286ed484a2f862c","output_derivation_patch_ref":"sha256:bb0e26ba0e970ac2ead1d8c839934becafe419412211b9a365720febad2f4ed8","output_hash":"sha256:195ac50b02a5a834e5f7d208b1cd6e57ab9ac9fcfe8015738323fb46b70baac3","output_proposal_refs":["sha256:00d7ce8189db615175a4408cd1489f312b06df004aa55c1b256732c6a0a2e622","sha256:bbc8081aabdd2a855302472b8de323e3657869e808c6588d85787aa796d35990"],"profile_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","profile_ref":"profile:plumb-software-2026.1","rule_pack_hash":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","stage":"S1","validation_artifacts":[]}"#;
+    const LEGACY_RUN_ID: &str =
+        "sha256:4d6d9ea67a5e230b301312f95894c1f40ca3f66bcdd7c6e280b96ab0d42df278";
+    const LEGACY_RUN_PROJECTION: &str = r#"{"compiler_version":"0.1.0","config_hash":"sha256:5359f0a81f1e876e87ffe35cffc12b819a044a962a9c542f5c975ca9c0e72e19","deterministic_artifacts":[],"inference_artifacts":[],"input_revision":"rev:1:92524cd18e6953a2","input_semantic_hash":"psg:sha256:92524cd18e6953a2710d06bde1414f64e5281b46353872ea3286ed484a2f862c","output_derivation_patch_ref":"sha256:bb0e26ba0e970ac2ead1d8c839934becafe419412211b9a365720febad2f4ed8","output_hash":"sha256:195ac50b02a5a834e5f7d208b1cd6e57ab9ac9fcfe8015738323fb46b70baac3","output_proposal_refs":["sha256:00d7ce8189db615175a4408cd1489f312b06df004aa55c1b256732c6a0a2e622","sha256:bbc8081aabdd2a855302472b8de323e3657869e808c6588d85787aa796d35990"],"profile_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","profile_ref":"profile:plumb-software-2026.1","rule_pack_hash":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","stage":"S1","validation_artifacts":[]}"#;
+
+    #[test]
+    fn compile_run_without_absence_is_byte_identical() {
+        let w = world();
+        let run = w.outputs().run;
+        assert!(run.declared_absent_inference_requests.is_empty());
+        assert_eq!(to_canonical_json(&run).unwrap(), LEGACY_RUN_JSON.as_bytes());
+        assert_eq!(run.id.as_str(), LEGACY_RUN_ID);
+        assert_eq!(
+            to_canonical_json(&run.identity_projection().unwrap()).unwrap(),
+            LEGACY_RUN_PROJECTION.as_bytes()
+        );
+        assert_eq!(
+            Hash::content_sha256(LEGACY_RUN_PROJECTION.as_bytes()).as_str(),
+            LEGACY_RUN_ID
+        );
+        assert!(!LEGACY_RUN_JSON.contains("declared_absent"));
+        // Legacy JSON without the field decodes to an empty list and the same run.
+        let decoded: CompileRun = serde_json::from_str(LEGACY_RUN_JSON).unwrap();
+        assert_eq!(decoded, run);
+        assert!(decoded.declared_absent_inference_requests.is_empty());
+    }
+
+    #[test]
+    fn compile_run_with_absence_round_trips_with_a_stable_id() {
+        let w = world();
+        let o = w.outputs();
+        let evaluation =
+            StageEvaluation::new(Some(o.derivation.clone()), vec![o.p1.clone(), o.p2.clone()])
+                .unwrap();
+        let (a, b) = (
+            Hash::content_sha256(b"request-a"),
+            Hash::content_sha256(b"request-b"),
+        );
+        let artifacts =
+            ArtifactSet::with_declared_absence(vec![], vec![], vec![], vec![b.clone(), a.clone()])
+                .unwrap();
+        let run = CompileRun::new(StageId::S1, &w.ctx, &artifacts, &evaluation).unwrap();
+        let mut sorted = vec![a, b];
+        sorted.sort();
+        assert_eq!(run.declared_absent_inference_requests, sorted);
+        assert!(
+            run.inference_artifacts.is_empty(),
+            "absence is never an artifact"
+        );
+        // Absence participates in this run's body and identity.
+        assert_ne!(run.id.as_str(), LEGACY_RUN_ID);
+        let wire: Value = serde_json::to_value(&run).unwrap();
+        assert_eq!(
+            wire["declared_absent_inference_requests"],
+            json!(sorted.iter().map(Hash::as_str).collect::<Vec<_>>())
+        );
+        assert_eq!(run.recompute_id().unwrap(), run.id);
+        let again = CompileRun::new(StageId::S1, &w.ctx, &artifacts, &evaluation).unwrap();
+        assert_eq!(again.id, run.id);
+        let bytes = to_canonical_json(&run).unwrap();
+        let decoded: CompileRun = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded, run);
+        // Dropping the absence breaks the stored identity.
+        let mut dropped = wire.clone();
+        dropped
+            .as_object_mut()
+            .unwrap()
+            .remove("declared_absent_inference_requests");
+        assert!(serde_json::from_value::<CompileRun>(dropped).is_err());
+        // Unsorted, duplicate or non-generic absence IDs are rejected.
+        for bad in [
+            json!([sorted[1].as_str(), sorted[0].as_str()]),
+            json!([sorted[0].as_str(), sorted[0].as_str()]),
+            json!([Hash::semantic_sha256(b"x").as_str()]),
+        ] {
+            let mut tampered = run.clone();
+            tampered.declared_absent_inference_requests =
+                serde_json::from_value(bad.clone()).unwrap();
+            tampered.id = tampered.recompute_id().unwrap();
+            assert!(tampered.validate().is_err(), "{bad}");
+        }
+    }
+
     // ------------------------------------------------------------------ capture
 
     #[test]

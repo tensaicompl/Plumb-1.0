@@ -209,19 +209,40 @@ impl From<&Artifact> for ArtifactInput {
 }
 
 /// The exact artifacts acquired for one `StagePlan`.
+///
+/// R0.2 (architecture §20): `declared_absent_inference_requests` holds the sorted, unique IDs of
+/// the planned `Fallback` inference requests deliberately not executed under the `null`
+/// provider mode. No artifact exists for them; absence is never an artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactSet {
     pub deterministic_artifacts: Vec<ArtifactInput>,
     pub inference_artifacts: Vec<ArtifactInput>,
     pub validation_artifacts: Vec<ArtifactInput>,
+    pub declared_absent_inference_requests: Vec<Hash>,
 }
 
 impl ArtifactSet {
-    /// Builds a set with each list sorted by hash.
+    /// Builds a set with each list sorted by hash and no declared absence.
     pub fn new(
+        deterministic_artifacts: Vec<ArtifactInput>,
+        inference_artifacts: Vec<ArtifactInput>,
+        validation_artifacts: Vec<ArtifactInput>,
+    ) -> Result<ArtifactSet, CompilerError> {
+        ArtifactSet::with_declared_absence(
+            deterministic_artifacts,
+            inference_artifacts,
+            validation_artifacts,
+            Vec::new(),
+        )
+    }
+
+    /// Builds a set with each list sorted by hash and the given declared-absent inference
+    /// request IDs (sorted; duplicates are rejected).
+    pub fn with_declared_absence(
         mut deterministic_artifacts: Vec<ArtifactInput>,
         mut inference_artifacts: Vec<ArtifactInput>,
         mut validation_artifacts: Vec<ArtifactInput>,
+        mut declared_absent_inference_requests: Vec<Hash>,
     ) -> Result<ArtifactSet, CompilerError> {
         for list in [
             &mut deterministic_artifacts,
@@ -230,10 +251,12 @@ impl ArtifactSet {
         ] {
             list.sort_by(|a, b| a.hash.cmp(&b.hash));
         }
+        declared_absent_inference_requests.sort();
         let set = ArtifactSet {
             deterministic_artifacts,
             inference_artifacts,
             validation_artifacts,
+            declared_absent_inference_requests,
         };
         set.validate()?;
         Ok(set)
@@ -265,6 +288,15 @@ impl ArtifactSet {
         if let Some(dup) = self.hashes().find(|h| !seen.insert(*h)) {
             return Err(invalid(format!("hash {dup} occurs in more than one list")));
         }
+        for id in &self.declared_absent_inference_requests {
+            require_kind("declared absent inference request", id, HashKind::Generic)
+                .map_err(invalid)?;
+        }
+        require_strictly_sorted(
+            "declared absent inference request",
+            &self.declared_absent_inference_requests,
+        )
+        .map_err(invalid)?;
         for (what, list, kind) in [
             (
                 "inference",
@@ -290,7 +322,9 @@ impl ArtifactSet {
         Ok(())
     }
 
-    /// Requires a one-to-one match between the plan and the acquired inputs.
+    /// Requires a one-to-one match between the plan and the acquired inputs. Each planned
+    /// inference request has exactly one matching acquired result and is not declared absent,
+    /// or (R0.2) has no result, is declared absent exactly once and has the `Fallback` policy.
     pub fn validate_for_plan(&self, plan: &StagePlan) -> Result<(), CompilerError> {
         self.validate()?;
         let invalid = CompilerError::InvalidArtifactSet;
@@ -321,11 +355,13 @@ impl ArtifactSet {
             }
         }
 
-        if self.inference_artifacts.len() != plan.inference_requests.len() {
+        if let Some(unknown) = self
+            .declared_absent_inference_requests
+            .iter()
+            .find(|id| !plan.inference_requests.iter().any(|r| &r.request.id == *id))
+        {
             return Err(invalid(format!(
-                "{} inference inputs for {} inference requests",
-                self.inference_artifacts.len(),
-                plan.inference_requests.len()
+                "declared absent inference request {unknown} is not planned"
             )));
         }
         let inference: Vec<InferenceArtifact> = self
@@ -333,12 +369,38 @@ impl ArtifactSet {
             .iter()
             .map(|input| canonical_json_input(input, "InferenceArtifact"))
             .collect::<Result<_, _>>()?;
+        if let Some(both) = inference
+            .iter()
+            .find(|a| self.is_declared_absent(&a.request_hash))
+        {
+            return Err(invalid(format!(
+                "inference request {} is both acquired and declared absent",
+                both.request_hash
+            )));
+        }
+        let absent = self.declared_absent_inference_requests.len();
+        if self.inference_artifacts.len() + absent != plan.inference_requests.len() {
+            return Err(invalid(format!(
+                "{} inference inputs and {absent} declared absences for {} inference requests",
+                self.inference_artifacts.len(),
+                plan.inference_requests.len()
+            )));
+        }
         for planned in &plan.inference_requests {
             let request = &planned.request;
             let found: Vec<&InferenceArtifact> = inference
                 .iter()
                 .filter(|a| a.request_hash == request.id)
                 .collect();
+            if self.is_declared_absent(&request.id) {
+                if planned.absence_policy != InferenceAbsencePolicy::Fallback {
+                    return Err(invalid(format!(
+                        "required inference request {} is declared absent",
+                        request.id
+                    )));
+                }
+                continue;
+            }
             let [artifact] = found.as_slice() else {
                 return Err(invalid(format!(
                     "inference request {} has {} results",
@@ -383,6 +445,15 @@ impl ArtifactSet {
     }
 }
 
+impl ArtifactSet {
+    /// Whether `request` is declared absent (R0.2).
+    pub fn is_declared_absent(&self, request: &Hash) -> bool {
+        self.declared_absent_inference_requests
+            .binary_search(request)
+            .is_ok()
+    }
+}
+
 /// Parses `input` as the canonical JSON of a `T`.
 fn canonical_json_input<T: serde::de::DeserializeOwned + Serialize>(
     input: &ArtifactInput,
@@ -402,24 +473,45 @@ fn canonical_json_input<T: serde::de::DeserializeOwned + Serialize>(
 
 // ============================================================================ PlannedInferenceRequest
 
+/// What a planned inference request means when no provider is configured (R0.2, architecture
+/// §20 "Provider optionality and declared fallback"). PLAN declares it; the provider never
+/// chooses it and it is not part of the request identity or material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InferenceAbsencePolicy {
+    /// The phase cannot run without the inference (`E_INFERENCE_REQUIRED` under `null`).
+    Required,
+    /// The consumer has a declared no-inference behavior; under `null` the request is
+    /// recorded as declared absent and never executed.
+    Fallback,
+}
+
 /// A planned inference request with the exact material it binds (Hotfix 066). PLAN emits both;
 /// ACQUIRE hands both to the provider; EVALUATE still receives only acquired `ArtifactInput`s.
 /// The material is acquisition input, not PSG state and not a second identity: the request ID
-/// remains the only inference identity.
+/// remains the only inference identity. R0.2 adds the declared `absence_policy`, which is plan
+/// semantics only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "PlannedInferenceRequestFields")]
 pub struct PlannedInferenceRequest {
     pub request: InferenceRequest,
     pub material: InferenceRequestMaterial,
+    pub absence_policy: InferenceAbsencePolicy,
 }
 
 impl PlannedInferenceRequest {
-    /// Builds a planned request whose material binds the request.
+    /// Builds a planned request whose material binds the request, with its declared absence
+    /// policy.
     pub fn new(
         request: InferenceRequest,
         material: InferenceRequestMaterial,
+        absence_policy: InferenceAbsencePolicy,
     ) -> Result<PlannedInferenceRequest, CompilerError> {
-        let planned = PlannedInferenceRequest { request, material };
+        let planned = PlannedInferenceRequest {
+            request,
+            material,
+            absence_policy,
+        };
         planned.validate()?;
         Ok(planned)
     }
@@ -441,13 +533,14 @@ impl PlannedInferenceRequest {
 struct PlannedInferenceRequestFields {
     request: InferenceRequest,
     material: InferenceRequestMaterial,
+    absence_policy: InferenceAbsencePolicy,
 }
 
 impl TryFrom<PlannedInferenceRequestFields> for PlannedInferenceRequest {
     type Error = CompilerError;
 
     fn try_from(f: PlannedInferenceRequestFields) -> Result<Self, Self::Error> {
-        PlannedInferenceRequest::new(f.request, f.material)
+        PlannedInferenceRequest::new(f.request, f.material, f.absence_policy)
     }
 }
 

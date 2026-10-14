@@ -409,7 +409,10 @@ mod cli {
             serde_json::from_value(config["direct_managers"].clone()).unwrap();
         plumb_api::application::ApplicationRuntime {
             inference_provider: provider,
-            provider_mode: plumb_api::ProviderMode::Null,
+            // The recorder plays the replay role (R0.2: `null` never calls a provider).
+            provider_mode: plumb_api::ProviderMode::Replay {
+                fixtures_hash: Hash::content_sha256(b"cli recorder"),
+            },
             provider_policy: serde_json::from_value(config["provider_policy"].clone()).unwrap(),
             session_turn_config: serde_json::from_value(config["session_turn"].clone()).unwrap(),
             assistant_actor_ref: id(ASSISTANT),
@@ -1301,15 +1304,19 @@ mod cli {
             err.contains("E_STAGE_SCOPE_INVALID") || err.contains("E_NOT_FOUND"),
             "{err}"
         );
-        // extract with the null provider: the recipe fails (exit 1) with its job printed.
+        // extract with the null provider (R0.2): segmentation takes its deterministic fallback,
+        // and the Required classification phase fails the recipe (exit 1) with its job printed.
         let (code, out, err) = env.run(&["extract", "--json"]);
         assert_eq!(code, 1, "{err}");
         let failed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(failed["status"], "failed");
-        assert!(failed["error"]
-            .as_str()
-            .unwrap()
-            .starts_with("E_INFERENCE_FAILED"));
+        let error = failed["error"].as_str().unwrap();
+        assert!(error.starts_with("E_INFERENCE_REQUIRED"), "{error}");
+        assert!(
+            error.contains(r#""task_kinds":["requirement_classification"]"#),
+            "{error}"
+        );
+        assert!(err.contains("the extract recipe ended failed"), "{err}");
         // calc without its configuration is E_STAGE_CONFIG_MISSING.
         let (code, _, err) = env.run(&["calc"]);
         assert_eq!(code, 1);

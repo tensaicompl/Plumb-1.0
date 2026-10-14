@@ -278,14 +278,28 @@ mod http_stages {
         Arc::new(plumb_core::FixedClock::new(ts(NOW)))
     }
 
-    /// Explicit gate material for the stage runtime.
+    /// Explicit gate material for the stage runtime. `null_provider` selects the `null`
+    /// provider mode (R0.2); otherwise the test provider plays the `replay` role, so every
+    /// planned request executes against it.
     #[derive(Clone, Default)]
     struct Gates {
         f4: Option<F4GateConfig>,
         f1: Option<plumb_validation::F1ValidationInputs>,
+        null_provider: bool,
+        scenario_derivation: Option<plumb_functional::ScenarioDerivationInputs>,
     }
 
-    fn runtime(provider: Arc<TestProvider>, gates: &Gates) -> ApplicationRuntime {
+    /// The replay mode of the test provider (R0.2: only `null` declares absence).
+    fn replay_mode() -> ProviderMode {
+        ProviderMode::Replay {
+            fixtures_hash: Hash::content_sha256(b"http_stages test provider"),
+        }
+    }
+
+    fn runtime(
+        provider: Arc<dyn InferenceProvider + Send + Sync>,
+        gates: &Gates,
+    ) -> ApplicationRuntime {
         let calendars = vec![CalendarConfig {
             calendar_ref: id("cal:office"),
             weekend: vec!["saturday".into(), "sunday".into()],
@@ -297,7 +311,11 @@ mod http_stages {
         }];
         ApplicationRuntime {
             inference_provider: provider,
-            provider_mode: ProviderMode::Null,
+            provider_mode: if gates.null_provider {
+                ProviderMode::Null
+            } else {
+                replay_mode()
+            },
             provider_policy: ProviderPolicy {
                 provider: "test".into(),
                 config: CanonicalJson::new(json!({})),
@@ -335,7 +353,7 @@ mod http_stages {
             operation_scope: None,
             process_scope: None,
             authorization_draft: None,
-            scenario_derivation: None,
+            scenario_derivation: gates.scenario_derivation.clone(),
             verification_applicability: Some(Default::default()),
             gates: GateInputsConfig {
                 f1: gates.f1.clone(),
@@ -345,7 +363,11 @@ mod http_stages {
         }
     }
 
-    fn open(path: &Path, provider: Arc<TestProvider>, gates: &Gates) -> ApiState {
+    fn open(
+        path: &Path,
+        provider: Arc<dyn InferenceProvider + Send + Sync>,
+        gates: &Gates,
+    ) -> ApiState {
         open_application(
             path,
             BranchName::main(),
@@ -358,6 +380,17 @@ mod http_stages {
     }
 
     fn app_with(graph: Graph, artifacts: &[plumb_artifacts::Artifact], gates: Gates) -> App {
+        app_using(graph, artifacts, gates, None)
+    }
+
+    /// The app over `graph` whose runtime uses `inference` instead of the test provider (which
+    /// then stays unused and records nothing).
+    fn app_using(
+        graph: Graph,
+        artifacts: &[plumb_artifacts::Artifact],
+        gates: Gates,
+        inference: Option<Arc<dyn InferenceProvider + Send + Sync>>,
+    ) -> App {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plumb.sqlite");
         let profile = load_builtin_software_profile().unwrap();
@@ -382,7 +415,8 @@ mod http_stages {
         }
         drop(art);
         let provider = TestProvider::new();
-        let state = open(&path, provider.clone(), &gates);
+        let inference = inference.unwrap_or_else(|| provider.clone());
+        let state = open(&path, inference, &gates);
         let router = router(state.clone());
         App {
             _dir: dir,
@@ -583,9 +617,12 @@ mod http_stages {
         assert_ne!(tags, expected);
         let stored = stage_store(&app).recipe_job(&tags).unwrap().unwrap();
         let config: Value = serde_json::from_str(&stored.config_json).unwrap();
-        assert_eq!(config["provider"]["mode"], "null");
+        assert_eq!(config["provider"]["mode"], "replay");
         assert_eq!(config["provider"]["policy"]["provider"], "test");
-        assert_eq!(config["provider"]["replay_fixtures_hash"], Value::Null);
+        assert_eq!(
+            config["provider"]["replay_fixtures_hash"],
+            json!(Hash::content_sha256(b"http_stages test provider"))
+        );
         assert!(!stored.recipe_job_json.contains("2026-05-01"));
     }
 
@@ -1178,6 +1215,8 @@ mod http_stages {
     async fn http_stages_ready_evaluates_the_chain_and_persists_reports() {
         let graph = data_graph(&["Email"]);
         let gates = Gates {
+            null_provider: false,
+                scenario_derivation: None,
             f1: Some(serde_json::from_value(json!({
                 "requirements": [], "analysis_findings": [], "lint_policy": {"severity_overrides": {}}
             })).unwrap()),
@@ -1327,6 +1366,8 @@ mod http_stages {
         }))
         .unwrap();
         let gates = Gates {
+            null_provider: false,
+            scenario_derivation: None,
             f4: Some(F4GateConfig {
                 applicability,
                 visible_assumption_refs: vec![],
@@ -1394,6 +1435,8 @@ mod http_stages {
         }))
         .unwrap();
         let gates = Gates {
+            null_provider: false,
+            scenario_derivation: None,
             f4: Some(F4GateConfig {
                 applicability,
                 visible_assumption_refs: vec![],
@@ -1412,6 +1455,8 @@ mod http_stages {
 
     fn chain_gates() -> Gates {
         Gates {
+            null_provider: false,
+            scenario_derivation: None,
             f1: Some(
                 serde_json::from_value(json!({
                     "requirements": [], "analysis_findings": [],
@@ -1494,6 +1539,8 @@ mod http_stages {
         }))
         .unwrap();
         let gates = Gates {
+            null_provider: false,
+            scenario_derivation: None,
             f4: Some(F4GateConfig {
                 applicability,
                 visible_assumption_refs: vec![],
@@ -1599,5 +1646,505 @@ mod http_stages {
         assert_eq!(job(&app, &job_id)["status"], "ready");
         assert!(stage_store(&app).steps(&job_id).unwrap().is_empty());
         assert_eq!(head(&app).revision.id, before);
+    }
+
+    // ------------------------------------------------------------------ R0.2 provider optionality
+
+    fn null_gates() -> Gates {
+        Gates {
+            null_provider: true,
+            ..Gates::default()
+        }
+    }
+
+    /// The persisted CompileRun of step `ordinal` of `job_id`.
+    fn step_run(app: &App, job_id: &Hash, ordinal: usize) -> plumb_compiler::CompileRun {
+        let run_ref = stage_store(app).steps(job_id).unwrap()[ordinal]
+            .compile_run_ref
+            .clone()
+            .unwrap();
+        let artifact = SqliteArtifactStore::open(&app.path)
+            .unwrap()
+            .get(&run_ref)
+            .unwrap();
+        assert_eq!(artifact.kind, ArtifactKind::CompileRun);
+        serde_json::from_slice(&artifact.bytes).unwrap()
+    }
+
+    fn exists(app: &App, hash: &Hash) -> bool {
+        SqliteArtifactStore::open(&app.path)
+            .unwrap()
+            .exists(hash)
+            .unwrap()
+    }
+
+    fn request_ref(request: &InferenceRequest) -> Hash {
+        Hash::content_sha256(&to_canonical_json(request).unwrap())
+    }
+
+    /// The `{details}` JSON suffix of a stored recipe failure.
+    fn failure_details(view: &Value) -> Value {
+        let error = view["error"].as_str().unwrap();
+        serde_json::from_str(&error[error.find('{').unwrap()..]).unwrap()
+    }
+
+    fn policy() -> ProviderPolicy {
+        ProviderPolicy {
+            provider: "test".into(),
+            config: CanonicalJson::new(json!({})),
+        }
+    }
+
+    #[tokio::test]
+    async fn null_provider_extract_uses_deterministic_segmentation_fallback() {
+        let source = imported();
+        let mut nodes = agents();
+        nodes.push(source.source.clone());
+        nodes.extend(source.fragments.clone());
+        let graph = Graph::new(id(PROJECT), id(PROFILE), nodes, vec![]).unwrap();
+        let app = app_with(
+            graph,
+            &[
+                source.original_artifact.clone(),
+                source.extracted_artifact.clone(),
+            ],
+            null_gates(),
+        );
+        let before = head(&app).revision.id;
+        let job_id = run_inline(&app, Recipe::Extract, None);
+        // The provider is never called under null.
+        assert!(app.provider.calls.lock().unwrap().is_empty());
+
+        // Segmentation: the existing deterministic fallback with MissingInference.
+        let fragments = source.fragments.clone();
+        let request = plumb_import::build_segmentation_request(&fragments, policy()).unwrap();
+        let expected = plumb_import::evaluate_segmentation(
+            &request,
+            &fragments,
+            None,
+            &plumb_import::SegmentationAudit {
+                created_by: id(STAGE_ACTOR),
+                created_at: ts(T0),
+            },
+        )
+        .unwrap();
+        assert_eq!(expected.mode, plumb_import::SegmentationMode::Fallback);
+        assert_eq!(
+            expected.fallback_reason,
+            Some(plumb_import::FallbackReason::MissingInference)
+        );
+        let steps = stage_store(&app).steps(&job_id).unwrap();
+        assert_eq!(steps[0].phase.as_str(), "segmentation");
+        let projection = SqliteArtifactStore::open(&app.path)
+            .unwrap()
+            .get(steps[0].intermediate_artifact_ref.as_ref().unwrap())
+            .unwrap();
+        let stored: plumb_api::stage::SegmentationIntermediate =
+            serde_json::from_slice(&projection.bytes).unwrap();
+        assert_eq!(stored.mode, plumb_import::SegmentationMode::Fallback);
+        assert_eq!(
+            stored.fallback_reason,
+            Some(plumb_import::FallbackReason::MissingInference)
+        );
+        assert_eq!(stored.candidates, expected.candidates);
+        assert_eq!(stored.fallback_derivation, expected.fallback_derivation);
+        assert!(
+            stored.fallback_derivation.is_some(),
+            "the recovery derivation"
+        );
+
+        // The run records the request as declared absent; no inference artifact exists.
+        let run = step_run(&app, &job_id, 0);
+        assert_eq!(
+            run.declared_absent_inference_requests,
+            vec![request.request.id.clone()]
+        );
+        assert!(run.inference_artifacts.is_empty());
+        assert!(!exists(&app, &request_ref(&request.request)));
+
+        // Classification is Required: the recipe fails at its front with E_INFERENCE_REQUIRED.
+        assert!(stored.has_requirement_candidate());
+        let view = job(&app, &job_id);
+        assert_eq!(view["status"], "failed", "{view}");
+        assert!(view["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("E_INFERENCE_REQUIRED: "));
+        assert_eq!(
+            failure_details(&view),
+            json!({"recipe": "extract", "phase": "classification",
+                   "task_kinds": ["requirement_classification"]})
+        );
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[1].phase.as_str(), "classification");
+        assert_eq!(head(&app).revision.id, before);
+    }
+
+    #[tokio::test]
+    async fn null_provider_required_phase_fails_with_inference_required_before_provider_call() {
+        let graph = || {
+            let mut nodes = agents();
+            nodes.push(requirement(
+                "req:a",
+                "Accepted",
+                "Employees shall submit leave requests.",
+            ));
+            Graph::new(id(PROJECT), id(PROFILE), nodes, vec![]).unwrap()
+        };
+        // Consolidate needs segment-origin requirements to plan; its two Required kinds are
+        // covered with every other kind by the acquisition unit tests, classification by the
+        // extract test above.
+        for (recipe, phase, kinds) in [(
+            Recipe::Analyse,
+            "analyse",
+            json!(["domain_extraction", "lifecycle_extraction"]),
+        )] {
+            let app = app_with(graph(), &[], null_gates());
+            let before = head(&app).revision;
+            let job_id = run_inline(&app, recipe, None);
+            let view = job(&app, &job_id);
+            assert_eq!(view["status"], "failed", "{view}");
+            assert!(view["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("E_INFERENCE_REQUIRED: "));
+            assert_eq!(
+                failure_details(&view),
+                json!({"recipe": recipe.as_str(), "phase": phase, "task_kinds": kinds})
+            );
+            // Zero provider calls.
+            assert!(app.provider.calls.lock().unwrap().is_empty());
+            // The child failed at the front of ACQUIRE: failed job and step records only.
+            let steps = stage_store(&app).steps(&job_id).unwrap();
+            assert_eq!(steps.len(), 1);
+            assert_eq!(steps[0].compile_run_ref, None);
+            assert_eq!(steps[0].intermediate_artifact_ref, None);
+            let child = stage_store(&app)
+                .stage_job(steps[0].stage_job_id.as_ref().unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(child.status, StageStatus::Failed);
+            assert_eq!(child.compile_run_ref, None);
+            // No request, raw-response or validated-inference artifact, no proposal, no
+            // revision.
+            let g = head(&app).graph;
+            let requests: Vec<InferenceRequest> = vec![
+                plumb_functional::build_domain_request(&g, policy())
+                    .unwrap()
+                    .request,
+                plumb_functional::build_lifecycle_request(&g, policy())
+                    .unwrap()
+                    .request,
+            ];
+            for r in &requests {
+                assert!(!exists(&app, &request_ref(r)), "{}", r.task_kind);
+            }
+            assert!(stage_store(&app)
+                .pending_proposal_links()
+                .unwrap()
+                .is_empty());
+            assert!(pending(&app, &job_id).is_empty());
+            let after = head(&app).revision;
+            assert_eq!(after.id, before.id);
+            assert_eq!(after.semantic_hash, before.semantic_hash);
+        }
+    }
+
+    #[tokio::test]
+    async fn null_provider_tags_keep_dictionary_proposals_and_leave_inference_targets_unresolved() {
+        let app = app_with(data_graph(&["Email", "Notes"]), &[], null_gates());
+        // An inferred class would be returned if the provider were (wrongly) called.
+        *app.provider.classes.lock().unwrap() = vec![("attr:1".into(), "confidential".into())];
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        assert!(app.provider.calls.lock().unwrap().is_empty());
+        let view = job(&app, &job_id);
+        assert_eq!(view["status"], "committed", "{view}");
+        // The dictionary hit commits; the inference-only attribute stays unresolved.
+        assert_eq!(
+            data_classes(&app),
+            vec![
+                ("attr:0".into(), Some("pii".into())),
+                ("attr:1".into(), None)
+            ]
+        );
+        let request =
+            plumb_functional::build_data_class_request(&data_graph(&["Email", "Notes"]), policy())
+                .unwrap();
+        let run = step_run(&app, &job_id, 0);
+        assert_eq!(
+            run.declared_absent_inference_requests,
+            vec![request.request.id.clone()]
+        );
+        assert!(run.inference_artifacts.is_empty());
+        // The same deterministic result as the analyser without inference.
+        let direct = plumb_functional::analyze_data_classification(
+            &data_graph(&["Email", "Notes"]),
+            &request,
+            None,
+        )
+        .unwrap();
+        assert_eq!(direct.proposals.len(), 1);
+        assert_eq!(run.output_proposal_refs.len(), 1);
+    }
+
+    /// A transition (slot-free skeleton) and a decision table whose row 0 has a value slot.
+    fn scenario_graph() -> Graph {
+        let mut nodes = agents();
+        nodes.extend([
+            node(
+                "entity:request",
+                "Accepted",
+                "Entity",
+                json!({"name": "LeaveRequest", "description": null, "aggregate_root": null}),
+            ),
+            node("state:draft", "Accepted", "State", json!({"name": "Draft"})),
+            node(
+                "state:submitted",
+                "Accepted",
+                "State",
+                json!({"name": "Submitted"}),
+            ),
+            node(
+                "trans:submit",
+                "Accepted",
+                "Transition",
+                json!({
+                    "stateful_ref": "entity:request", "from_state": "state:draft",
+                    "to_state": "state:submitted", "guard_expr": null, "effect_refs": null
+                }),
+            ),
+            node(
+                "op:submit",
+                "Accepted",
+                "Operation",
+                json!({
+                    "name": "op:submit", "operation_kind": "command", "input_schema_ref": null,
+                    "output_schema_ref": null, "preconditions": null, "postconditions": null,
+                    "idempotency": null, "transaction_semantics": null
+                }),
+            ),
+            node(
+                "table:days",
+                "Accepted",
+                "DecisionTable",
+                json!({"name": "Days", "hit_policy": "FIRST", "inputs": [], "outputs": [], "rows": []}),
+            ),
+        ]);
+        let edges = vec![
+            edge("rel:draft", "has_state", "entity:request", "state:draft"),
+            edge(
+                "rel:submitted",
+                "has_state",
+                "entity:request",
+                "state:submitted",
+            ),
+            edge("rel:via", "transitions_via", "trans:submit", "op:submit"),
+        ];
+        Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap()
+    }
+
+    fn scenario_inputs() -> plumb_functional::ScenarioDerivationInputs {
+        serde_json::from_value(json!({
+            "decision_tables": [{
+                "decision_table_ref": "table:days",
+                "spec": {
+                    "hit_policy": "FIRST",
+                    "inputs": [{"name": "days", "ty": {"type": "int"}, "domain": {"lower": "0", "upper": "30"}}],
+                    "outputs": [{"name": "eligible", "ty": {"type": "bool"}, "domain": null}],
+                    "rows": [{
+                        "inputs": [{"cell": "interval", "interval": {
+                            "lower": {"value": "5", "inclusive": false},
+                            "upper": {"value": "10", "inclusive": true}}}],
+                        "outputs": [{"cell": "bool", "value": true}]
+                    }],
+                    "default_output": null
+                }
+            }],
+            "boundaries": []
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn null_provider_scenarios_propose_only_slot_free_skeletons() {
+        let gates = Gates {
+            null_provider: true,
+            scenario_derivation: Some(scenario_inputs()),
+            ..Gates::default()
+        };
+        let app = app_with(scenario_graph(), &[], gates);
+        let graph = head(&app).graph;
+        let inputs = scenario_inputs();
+        let skeletons = plumb_functional::analyze_scenarios(&graph, &inputs).unwrap();
+        let (free, slotted): (Vec<_>, Vec<_>) =
+            skeletons.iter().partition(|s| s.value_slots.is_empty());
+        assert!(!free.is_empty() && !slotted.is_empty(), "{skeletons:?}");
+        let job_id = run_inline(&app, Recipe::Scenarios, None);
+        assert!(app.provider.calls.lock().unwrap().is_empty());
+        let view = job(&app, &job_id);
+        assert!(
+            ["ready", "committed"].contains(&view["status"].as_str().unwrap()),
+            "{view}"
+        );
+        // Exactly the deterministic no-inference derivation: slot skeletons stay unresolved.
+        let direct = plumb_functional::derive_scenarios(
+            &graph,
+            &inputs,
+            &plumb_functional::ScenarioAudit {
+                created_by: id(STAGE_ACTOR),
+                created_at: ts(T0),
+            },
+            &[],
+        )
+        .unwrap();
+        let mut expected: Vec<Hash> = direct
+            .proposals
+            .iter()
+            .map(|p| Hash::content_sha256(&to_canonical_json(p).unwrap()))
+            .collect();
+        expected.sort();
+        let run = step_run(&app, &job_id, 0);
+        assert_eq!(run.output_proposal_refs, expected);
+        assert!(!expected.is_empty());
+        let mut absent: Vec<Hash> = slotted
+            .iter()
+            .map(|s| {
+                plumb_functional::build_scenario_request(&graph, &inputs, &s.scenario_ref, policy())
+                    .unwrap()
+                    .request
+                    .id
+            })
+            .collect();
+        absent.sort();
+        assert_eq!(run.declared_absent_inference_requests, absent);
+        assert!(run.inference_artifacts.is_empty());
+        for p in &direct.proposals {
+            let text = serde_json::to_string(&p.patch_set).unwrap();
+            for s in &slotted {
+                assert!(
+                    !text.contains(s.scenario_ref.as_str()),
+                    "slot scenario proposed"
+                );
+            }
+        }
+    }
+
+    /// Counts the calls of a wrapped provider.
+    struct Counting<P> {
+        inner: P,
+        calls: Mutex<usize>,
+    }
+
+    impl<P: InferenceProvider> InferenceProvider for Counting<P> {
+        fn execute(
+            &self,
+            request: &InferenceRequest,
+            material: &InferenceRequestMaterial,
+        ) -> Result<ProviderExecution, ProviderError> {
+            *self.calls.lock().unwrap() += 1;
+            self.inner.execute(request, material)
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_missing_fixture_still_fails_with_inference_failed() {
+        let graph = || data_graph(&["Email", "Notes"]);
+        // Record the exact execution with the test provider (replay role) ...
+        let recording = app(graph());
+        *recording.provider.classes.lock().unwrap() =
+            vec![("attr:1".into(), "confidential".into())];
+        let recorded = run_inline(&recording, Recipe::Tags, None);
+        assert_eq!(job(&recording, &recorded)["status"], "ready");
+        let executions: Vec<ProviderExecution> = recording
+            .provider
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, _, e)| e.clone())
+            .collect();
+        assert_eq!(executions.len(), 1);
+        // ... a real MockProvider with that fixture executes the Fallback request normally.
+        let mock = |fixtures: Vec<ProviderExecution>| {
+            Arc::new(Counting {
+                inner: plumb_inference::MockProvider::with_fixtures(
+                    fixtures
+                        .into_iter()
+                        .map(|e| (e.artifact.request_hash.clone(), e)),
+                )
+                .unwrap(),
+                calls: Mutex::new(0),
+            })
+        };
+        let hit = mock(executions);
+        let app = app_using(graph(), &[], Gates::default(), Some(hit.clone()));
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        assert_eq!(job(&app, &job_id)["status"], "ready");
+        assert_eq!(*hit.calls.lock().unwrap(), 1);
+        let run = step_run(&app, &job_id, 0);
+        assert!(run.declared_absent_inference_requests.is_empty());
+        assert_eq!(run.inference_artifacts.len(), 1);
+
+        // A replay miss is a failure, never a deterministic fallback.
+        let miss = mock(Vec::new());
+        let app = app_using(graph(), &[], Gates::default(), Some(miss.clone()));
+        let before = head(&app).revision.id;
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        let view = job(&app, &job_id);
+        assert_eq!(view["status"], "failed", "{view}");
+        assert!(view["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("E_INFERENCE_FAILED: "));
+        assert_eq!(failure_details(&view), json!({"error": "FixtureNotFound"}));
+        assert_eq!(*miss.calls.lock().unwrap(), 1, "the provider was called");
+        assert_eq!(
+            stage_store(&app).steps(&job_id).unwrap()[0].compile_run_ref,
+            None
+        );
+        assert_eq!(head(&app).revision.id, before);
+    }
+
+    #[tokio::test]
+    async fn null_provider_session_turn_stays_inference_failed() {
+        let mut nodes = agents();
+        nodes.push(requirement(
+            "req:a",
+            "Accepted",
+            "Employees shall submit leave requests.",
+        ));
+        let graph = Graph::new(id(PROJECT), id(PROFILE), nodes, vec![]).unwrap();
+        let app = app_using(
+            graph,
+            &[],
+            null_gates(),
+            Some(Arc::new(plumb_inference::NullProvider)),
+        );
+        let tag = head_hash(&app).await;
+        let created = post(
+            &app,
+            "/api/sessions",
+            Some(&tag),
+            json!({"scope": ["req:a"]}),
+        )
+        .await;
+        assert_eq!(
+            created.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&created.bytes)
+        );
+        let session = created.json()["id"].as_str().unwrap().to_owned();
+        let tag = head_hash(&app).await;
+        let r = post(
+            &app,
+            &format!("/api/sessions/{session}/turns"),
+            Some(&tag),
+            json!({"text": "Managers shall approve leave requests.", "stage": "S1"}),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(r.code(), "E_INFERENCE_FAILED");
+        assert_eq!(r.json()["details"]["error"], "ProviderDisabled");
     }
 }
