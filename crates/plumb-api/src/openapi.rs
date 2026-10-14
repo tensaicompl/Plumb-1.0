@@ -1501,12 +1501,29 @@ pub struct ScenarioRunRequest {
     pub scope: Vec<String>,
 }
 
+/// Where a finding's rule authority comes from (Hotfix 080): the active validation profile's
+/// `RuleMetadata.rule_class` of the rule whose ID equals `Finding.code`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingRuleClass {
+    ExternalStandard,
+    ExternalInterop,
+    PlumbCore,
+    ProfilePolicy,
+    OrganizationPolicy,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
     pub id: String,
     pub code: String,
+    /// The validation gate/family of the finding (e.g. `I0`, `F1`); not the rule class.
     pub family: String,
+    /// The rule class of the active-profile rule whose ID equals `code`; `null` when the code is
+    /// not a rule of the active profile (Hotfix 080).
+    #[schema(required = true)]
+    pub rule_class: Option<FindingRuleClass>,
     pub severity: String,
     pub status: String,
     pub message: String,

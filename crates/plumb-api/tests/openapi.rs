@@ -1035,6 +1035,7 @@ mod openapi {
                 "id",
                 "code",
                 "family",
+                "rule_class",
                 "severity",
                 "status",
                 "message",
@@ -1963,8 +1964,9 @@ mod openapi {
         );
         let schemas = doc["components"]["schemas"].as_object().unwrap();
         // Hotfix 073 adds SemanticElementDiff and SemanticChangePreviewResponse; Hotfix 079 adds
-        // ProcessNodeView, ProcessNodeViewKind and ProcessFlowView.
-        assert_eq!(schemas.len(), 120);
+        // ProcessNodeView, ProcessNodeViewKind and ProcessFlowView; Hotfix 080 adds
+        // FindingRuleClass.
+        assert_eq!(schemas.len(), 121);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -1993,6 +1995,54 @@ mod openapi {
             let frozen: Value = serde_json::from_str(frozen).unwrap();
             assert_eq!(schema(&doc, name), frozen, "{name}");
         }
+
+        // Finding (Hotfix 080): rule_class is required, nullable and a closed FindingRuleClass;
+        // family stays the gate/family string.
+        let finding = schema(&doc, "Finding");
+        assert_eq!(
+            finding["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            set(&[
+                "id",
+                "code",
+                "family",
+                "rule_class",
+                "severity",
+                "status",
+                "message",
+                "affected_refs",
+                "waiver_ref"
+            ])
+        );
+        assert!(required(&doc, "Finding").contains("rule_class"));
+        assert_eq!(finding["properties"]["family"]["type"], json!("string"));
+        let rule_class = finding["properties"]["rule_class"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(rule_class.len(), 2);
+        assert!(rule_class.contains(&json!({"type": "null"})));
+        assert_eq!(
+            rule_class
+                .iter()
+                .filter_map(|branch| branch.get("$ref"))
+                .collect::<Vec<_>>(),
+            vec!["#/components/schemas/FindingRuleClass"]
+        );
+        assert_eq!(
+            enum_of(&doc, "FindingRuleClass"),
+            json!([
+                "external_standard",
+                "external_interop",
+                "plumb_core",
+                "profile_policy",
+                "organization_policy"
+            ])
+        );
 
         // Search.
         let hit = schema(&doc, "SearchHit");

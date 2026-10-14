@@ -137,7 +137,7 @@ async fn intake_proposal(
         revision,
         semantic_hash: loaded.revision.semantic_hash.to_string(),
         events: Vec::new(),
-        intake: intake_view(&stored.intake)?,
+        intake: intake_view(&stored.intake, state.profile())?,
     })
     .into_response())
 }

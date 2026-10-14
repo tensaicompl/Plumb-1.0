@@ -159,7 +159,7 @@ describe("shared ProposalReviewBar", () => {
           requires_reason: true,
           reason_codes: ["human_decision"],
           validation_findings: [
-            { id: "fnd:1", code: "PLUMB.F1.REQ.NO_CONTRADICTION", family: "F1", severity: "blocker", status: "Open", message: "contradiction", affected_refs: ["req:1"] },
+            { id: "fnd:1", code: "PLUMB.F1.REQ.NO_CONTRADICTION", family: "F1", rule_class: "plumb_core", severity: "blocker", status: "Open", message: "contradiction", affected_refs: ["req:1"] },
           ],
           conflicts_with: [{ target_ref: "req:2", reason: "declared" }],
           duplicate_candidates: [{ subject_ref: "req:new", candidate_ref: "req:3", score: 0.9 }],
@@ -227,9 +227,9 @@ describe("shared ProvenanceDrawer", () => {
 // ------------------------------------------------------------------ FindingsPanel
 
 const FINDINGS: Finding[] = [
-  { id: "fnd:a", code: "PLUMB.F1.REQ.EARS", family: "F1", severity: "blocker", status: "Open", message: "not EARS", affected_refs: ["req:1"] },
-  { id: "fnd:b", code: "PLUMB.F2.DOMAIN.RELATION_TYPED", family: "F2", severity: "major", status: "Open", message: "untyped", affected_refs: ["rel:2", "ent:3"] },
-  { id: "fnd:c", code: "PLUMB.F1.REQ.EARS", family: "F1", severity: "blocker", status: "Resolved", message: "fixed", affected_refs: [], waiver_ref: "dec:9" },
+  { id: "fnd:a", code: "PLUMB.F1.REQ.EARS", family: "F1", rule_class: null, severity: "blocker", status: "Open", message: "not EARS", affected_refs: ["req:1"] },
+  { id: "fnd:b", code: "PLUMB.F2.DOMAIN.RELATION_TYPED", family: "F2", rule_class: "plumb_core", severity: "major", status: "Open", message: "untyped", affected_refs: ["rel:2", "ent:3"] },
+  { id: "fnd:c", code: "PLUMB.F1.REQ.EARS", family: "F1", rule_class: null, severity: "blocker", status: "Resolved", message: "fixed", affected_refs: [], waiver_ref: "dec:9" },
 ];
 
 function shownFindings(): string[] {

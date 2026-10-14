@@ -990,6 +990,7 @@
             "type": "string"
           },
           "family": {
+            "description": "The validation gate/family of the finding (e.g. `I0`, `F1`); not the rule class.",
             "type": "string"
           },
           "id": {
@@ -997,6 +998,17 @@
           },
           "message": {
             "type": "string"
+          },
+          "rule_class": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FindingRuleClass",
+                "description": "The rule class of the active-profile rule whose ID equals `code`; `null` when the code is\nnot a rule of the active profile (Hotfix 080)."
+              }
+            ]
           },
           "severity": {
             "type": "string"
@@ -1015,6 +1027,7 @@
           "id",
           "code",
           "family",
+          "rule_class",
           "severity",
           "status",
           "message",
@@ -1043,6 +1056,17 @@
           "items"
         ],
         "type": "object"
+      },
+      "FindingRuleClass": {
+        "description": "Where a finding's rule authority comes from (Hotfix 080): the active validation profile's\n`RuleMetadata.rule_class` of the rule whose ID equals `Finding.code`.",
+        "enum": [
+          "external_standard",
+          "external_interop",
+          "plumb_core",
+          "profile_policy",
+          "organization_policy"
+        ],
+        "type": "string"
       },
       "GateName": {
         "description": "A NOW-scope gate.",
@@ -3690,6 +3714,7 @@
                       "family": "example",
                       "id": "example",
                       "message": "example",
+                      "rule_class": "external_interop",
                       "severity": "example",
                       "status": "example"
                     }
@@ -4299,6 +4324,7 @@
                         "family": "example",
                         "id": "example",
                         "message": "example",
+                        "rule_class": "external_interop",
                         "severity": "example",
                         "status": "example"
                       }
@@ -6338,6 +6364,7 @@
                         "family": "example",
                         "id": "example",
                         "message": "example",
+                        "rule_class": "external_interop",
                         "severity": "example",
                         "status": "example"
                       }
@@ -7088,6 +7115,7 @@
                         "family": "example",
                         "id": "example",
                         "message": "example",
+                        "rule_class": "external_interop",
                         "severity": "example",
                         "status": "example"
                       }
@@ -7885,6 +7913,7 @@
                         "family": "example",
                         "id": "example",
                         "message": "example",
+                        "rule_class": "external_interop",
                         "severity": "example",
                         "status": "example"
                       }
@@ -8995,6 +9024,7 @@
                             "family": "example",
                             "id": "example",
                             "message": "example",
+                            "rule_class": "external_interop",
                             "severity": "example",
                             "status": "example"
                           }

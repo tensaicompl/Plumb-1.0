@@ -50,17 +50,17 @@ use crate::openapi::{
     Assumption, AssumptionPage, AttributeClassRequest, AttributeTypeRequest, AttributeUnitRequest,
     Calculation, CalculationExample, CalculationPage, CalculationValue, CrudCell, CrudMatrix,
     Decision, DecisionPage, Entity, EntityAttribute, EntityPage, EntityRelationship,
-    EntityTransition, ExportFormat, Finding, FindingPage, GlossaryEditRequest,
-    GlossaryMergeRequest, GlossaryPage, ModelDiff, Process, ProcessFlowView, ProcessFormat,
-    ProcessImportRequest, ProcessNodeView, ProcessNodeViewKind, ProcessPage, ProcessStepRequest,
-    ProposalKind, ReasonRequest, Rule, RuleCellRequest, RulePage, RuleRow, RuleViewKind,
-    ScalarValue, SemanticChangePreviewResponse, SemanticElementDiff, WriteResult,
+    EntityTransition, ExportFormat, FindingPage, GlossaryEditRequest, GlossaryMergeRequest,
+    GlossaryPage, ModelDiff, Process, ProcessFlowView, ProcessFormat, ProcessImportRequest,
+    ProcessNodeView, ProcessNodeViewKind, ProcessPage, ProcessStepRequest, ProposalKind,
+    ReasonRequest, Rule, RuleCellRequest, RulePage, RuleRow, RuleViewKind, ScalarValue,
+    SemanticChangePreviewResponse, SemanticElementDiff, WriteResult,
 };
 use crate::state::{
     check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
     require_clean_reason, run_intake, wire, with_etag, ApiState, PageRequest, QueryParams,
 };
-use crate::workflow::{classify, intake_view};
+use crate::workflow::{classify, finding_view, intake_view};
 
 use super::proposals::{persist_pending, Origin};
 
@@ -775,16 +775,7 @@ async fn list_findings(
         }
         items.push((
             node.id.to_string(),
-            Finding {
-                id: node.id.to_string(),
-                code: f.code.clone(),
-                family: f.family.clone(),
-                severity,
-                status: f.status.clone(),
-                message: f.message.clone(),
-                affected_refs: f.affected_refs.iter().map(Id::to_string).collect(),
-                waiver_ref: f.waiver_ref.as_ref().map(Id::to_string),
-            },
+            finding_view(&node.id, f, state.profile())?,
         ));
     }
     let (items, next_cursor) = simple_page(items, "list_findings", &query, &loaded)?;
@@ -1163,7 +1154,7 @@ pub(super) fn semantic_change_preview(
         events: Vec::new(),
         proposal_id: stored.proposal.id.to_string(),
         action,
-        intake: intake_view(&stored.intake)?,
+        intake: intake_view(&stored.intake, state.profile())?,
         diff,
     })
     .into_response())

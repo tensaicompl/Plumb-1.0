@@ -178,7 +178,7 @@ async fn answer_question(
         events: Vec::new(),
         proposal_id: persisted.proposal.id.to_string(),
         action,
-        intake: intake_view(&persisted.intake)?,
+        intake: intake_view(&persisted.intake, state.profile())?,
         patch_preview: serde_json::to_value(&persisted.proposal.patch_set.patch)
             .map_err(|_| ApiError::internal("patch_preview"))?,
     })

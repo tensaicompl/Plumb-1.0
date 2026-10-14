@@ -16,14 +16,15 @@ use plumb_psg::{
     contributes_to_semantic_hash, ElementStatus, Graph, NodePayload, NodeType, RelationKind,
 };
 use plumb_store::{WorkflowProposal, WorkflowProposalKind};
+use plumb_validation::{RuleClass, ValidationProfile};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::ApiError;
 use crate::openapi::{
-    ConflictView, CoverageView, DuplicateCandidateView, Finding, IntakeReasonCode,
-    IntakeReportView, ProposalKind,
+    ConflictView, CoverageView, DuplicateCandidateView, Finding, FindingRuleClass,
+    IntakeReasonCode, IntakeReportView, ProposalKind,
 };
 use crate::state::{parse_wire, wire};
 
@@ -238,10 +239,54 @@ pub(crate) fn acceptance_decisions(graph: &Graph, proposal_ref: &Id) -> Vec<(Id,
         .collect()
 }
 
+// ============================================================================ finding projection
+
+/// The API projection of a validation rule class; exhaustive, so a new [`RuleClass`] must be
+/// considered here (Hotfix 081).
+fn finding_rule_class(class: RuleClass) -> FindingRuleClass {
+    match class {
+        RuleClass::ExternalStandard => FindingRuleClass::ExternalStandard,
+        RuleClass::ExternalInterop => FindingRuleClass::ExternalInterop,
+        RuleClass::PlumbCore => FindingRuleClass::PlumbCore,
+        RuleClass::ProfilePolicy => FindingRuleClass::ProfilePolicy,
+        RuleClass::OrganizationPolicy => FindingRuleClass::OrganizationPolicy,
+    }
+}
+
+/// The one public projection of a PSG Finding payload (Hotfix 081), shared by `/api/findings`
+/// and intake validation findings. `rule_class` is the class of the `profile` rule whose ID is
+/// exactly `finding.code`, or `None` for a code that is not a rule of `profile`.
+pub(crate) fn finding_view(
+    id: &Id,
+    finding: &plumb_psg::Finding,
+    profile: &ValidationProfile,
+) -> Result<Finding, ApiError> {
+    let rule_class = profile
+        .rules
+        .iter()
+        .find(|rule| rule.id == finding.code)
+        .map(|rule| finding_rule_class(rule.rule_class));
+    Ok(Finding {
+        id: id.to_string(),
+        code: finding.code.clone(),
+        family: finding.family.clone(),
+        rule_class,
+        severity: wire(&finding.severity)?,
+        status: finding.status.clone(),
+        message: finding.message.clone(),
+        affected_refs: finding.affected_refs.iter().map(Id::to_string).collect(),
+        waiver_ref: finding.waiver_ref.as_ref().map(Id::to_string),
+    })
+}
+
 // ============================================================================ intake projection
 
-/// The public projection of an X1.3 intake report (report data only).
-pub(crate) fn intake_view(report: &IntakeReport) -> Result<IntakeReportView, ApiError> {
+/// The public projection of an X1.3 intake report (report data only); validation findings are
+/// projected through [`finding_view`] against the active `profile`.
+pub(crate) fn intake_view(
+    report: &IntakeReport,
+    profile: &ValidationProfile,
+) -> Result<IntakeReportView, ApiError> {
     let mut conflicts_with: Vec<ConflictView> = report
         .declared_conflicts
         .iter()
@@ -258,21 +303,7 @@ pub(crate) fn intake_view(report: &IntakeReport) -> Result<IntakeReportView, Api
                 reason: finding.payload.code.clone(),
             });
         }
-        validation_findings.push(Finding {
-            id: finding.id.to_string(),
-            code: finding.payload.code.clone(),
-            family: finding.payload.family.clone(),
-            severity: wire(&finding.payload.severity)?,
-            status: finding.payload.status.clone(),
-            message: finding.payload.message.clone(),
-            affected_refs: finding
-                .payload
-                .affected_refs
-                .iter()
-                .map(Id::to_string)
-                .collect(),
-            waiver_ref: finding.payload.waiver_ref.as_ref().map(Id::to_string),
-        });
+        validation_findings.push(finding_view(&finding.id, &finding.payload, profile)?);
     }
     let reason_codes = report
         .reason_codes

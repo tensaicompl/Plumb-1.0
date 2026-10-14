@@ -41,11 +41,13 @@ mod http_workflow {
     };
     use plumb_session::SessionTurnConfig;
     use plumb_store::{
-        BranchName, RevisionWriteMeta, SqliteRevisionStore, SqliteWorkflowStore, WorkflowOrigin,
-        WorkflowProposalKind, WorkflowProposalState, WorkflowTurnState,
+        BranchName, NewWorkflowProposal, RevisionWriteMeta, SqliteRevisionStore,
+        SqliteWorkflowStore, WorkflowInsert, WorkflowOrigin, WorkflowProposalKind,
+        WorkflowProposalState, WorkflowTurnState,
     };
     use plumb_validation::{
-        finding_id, finding_key, load_builtin_software_profile, GeneratedFinding, ValidationProfile,
+        finding_id, finding_key, load_builtin_software_profile, GeneratedFinding, RuleClass,
+        ValidationProfile,
     };
     use serde_json::{json, Value};
     use tower::ServiceExt;
@@ -686,6 +688,16 @@ mod http_workflow {
         reports: Vec<plumb_validation::GateReport>,
         actor: &str,
     ) -> ApiState {
+        state_at_profile(path, provider, reports, actor, profile())
+    }
+
+    fn state_at_profile(
+        path: &Path,
+        provider: Arc<TestProvider>,
+        reports: Vec<plumb_validation::GateReport>,
+        actor: &str,
+        profile: ValidationProfile,
+    ) -> ApiState {
         ApiState::new_with_runtime(
             BranchName::main(),
             SqliteRevisionStore::open(path).unwrap(),
@@ -693,7 +705,7 @@ mod http_workflow {
             identity(actor),
             fixed(),
             reports,
-            profile(),
+            profile,
             runtime(path, provider),
         )
         .unwrap()
@@ -703,9 +715,19 @@ mod http_workflow {
         graph: Graph,
         reports: impl FnOnce(&Graph) -> Vec<plumb_validation::GateReport>,
     ) -> App {
+        app_with_profile(graph, reports, profile())
+    }
+
+    /// [`app_with`] governed by one explicit validated `profile` (Hotfix 081): it supplies the
+    /// initial revision's profile and rule-pack hashes and the `ApiState` profile alike.
+    fn app_with_profile(
+        graph: Graph,
+        reports: impl FnOnce(&Graph) -> Vec<plumb_validation::GateReport>,
+        profile: ValidationProfile,
+    ) -> App {
+        profile.validate().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plumb.sqlite");
-        let profile = profile();
         let mut store = SqliteRevisionStore::open(&path).unwrap();
         let rev = store
             .create_initial_revision(
@@ -729,7 +751,13 @@ mod http_workflow {
             probe: Mutex::new(None),
             probed: Mutex::new(None),
         });
-        let state = state_at(&path, provider.clone(), reports(&head.graph), ACTOR);
+        let state = state_at_profile(
+            &path,
+            provider.clone(),
+            reports(&head.graph),
+            ACTOR,
+            profile,
+        );
         let router = router(state.clone());
         App {
             _dir: dir,
@@ -2896,6 +2924,117 @@ mod http_workflow {
             Some(json!({"kind": kind, "payload": proposal, "evidence": []})),
         )
         .await
+    }
+
+    /// Hotfix 081: an actual intake response projects each validation finding through the
+    /// shared Finding projection with `rule_class` read from the active profile's metadata for
+    /// the exact finding code. Production intake runs with no candidate gate reports
+    /// (`IntakeValidationInput::empty()`), so the pending proposal is stored with a real X1.3
+    /// intake report generated from a real F1 report; re-submitting the identical proposal
+    /// returns that stored intake through `intake_view`. The active profile is a validated
+    /// test-local clone that reclassifies one finding's rule, so the projection must use it.
+    #[tokio::test]
+    async fn http_workflow_intake_validation_findings_carry_profile_rule_class() {
+        let graph = fixture_graph();
+        // A finding-touched Accepted requirement whose title the proposal replaces.
+        let target = f1_report(&graph)
+            .findings
+            .iter()
+            .flat_map(|f| &f.payload.affected_refs)
+            .find(|r| {
+                graph
+                    .node(r)
+                    .is_some_and(|n| matches!(n.payload, NodePayload::Requirement(_)))
+            })
+            .unwrap()
+            .clone();
+        let NodePayload::Requirement(mut payload) = graph.node(&target).unwrap().payload.clone()
+        else {
+            unreachable!()
+        };
+        payload.title = Some("Leave totals export".into());
+        let proposal = Proposal::new(
+            plumb_core::StageId::S1,
+            PatchSet {
+                base_semantic_hash: graph.semantic_hash().unwrap(),
+                patch: SemanticPatch::ReplacePayload {
+                    target: pre(&graph, target.as_str()),
+                    payload: NodePayload::Requirement(payload),
+                },
+            },
+            vec![],
+            vec![],
+            ProposalMateriality::Semantic,
+            AcceptancePolicy::HumanConfirm,
+            None,
+        )
+        .unwrap();
+        // Intake candidate reports are evaluated over the proposal's candidate graph.
+        let candidate = apply_patch(&graph, &proposal.patch_set).unwrap().graph;
+        let report = f1_report(&candidate);
+        let generated = plumb_intake::intake(
+            &graph,
+            &proposal,
+            &plumb_intake::IntakeValidationInput::new(vec![report]).unwrap(),
+        )
+        .unwrap();
+        assert!(!generated.validation_findings.is_empty());
+
+        // The test-local active profile: the first finding's rule becomes organization_policy.
+        let mut active = profile();
+        let reclassified = generated.validation_findings[0].payload.code.clone();
+        let rule = active
+            .rules
+            .iter_mut()
+            .find(|rule| rule.id == reclassified)
+            .unwrap();
+        assert_ne!(rule.rule_class, RuleClass::OrganizationPolicy);
+        rule.rule_class = RuleClass::OrganizationPolicy;
+        active.validate().unwrap();
+        let app = app_with_profile(graph, |_| Vec::new(), active.clone());
+        let revision = head(&app).revision;
+        assert_eq!(revision.profile_hash, active.profile_hash().unwrap());
+        assert_eq!(revision.rule_pack_hash, active.rule_pack_hash().unwrap());
+
+        let inserted = workflow(&app)
+            .insert_proposal(
+                &NewWorkflowProposal {
+                    proposal_id: proposal.id.clone(),
+                    base_revision_id: revision.id.clone(),
+                    proposal_json: serde_json::to_value(&proposal).unwrap(),
+                    intake_json: serde_json::to_value(&generated).unwrap(),
+                    proposal_kind: WorkflowProposalKind::Accept,
+                    origin_kind: WorkflowOrigin::Intake,
+                    origin_ref: None,
+                    created_at: ts(T0),
+                },
+                WorkflowProposalState::Pending,
+            )
+            .unwrap();
+        assert!(matches!(inserted, WorkflowInsert::Inserted(_)));
+
+        let r = intake(&app, "accept", &proposal).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let findings = r.json()["intake"]["validation_findings"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(!findings.is_empty());
+        assert_eq!(findings.len(), generated.validation_findings.len());
+        for finding in &findings {
+            let code = finding["code"].as_str().unwrap();
+            let rule = active.rules.iter().find(|rule| rule.id == code).unwrap();
+            assert_eq!(
+                finding["rule_class"],
+                json!(rule.rule_class.as_str()),
+                "{code}"
+            );
+            assert_eq!(finding["family"], json!(rule.gate.as_str()), "{code}");
+        }
+        assert!(findings
+            .iter()
+            .any(|f| f["code"] == json!(reclassified)
+                && f["rule_class"] == json!("organization_policy")));
     }
 
     #[tokio::test]

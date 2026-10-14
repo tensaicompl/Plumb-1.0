@@ -1446,9 +1446,11 @@ export interface components {
         Finding: {
             affected_refs: string[];
             code: string;
+            /** @description The validation gate/family of the finding (e.g. `I0`, `F1`); not the rule class. */
             family: string;
             id: string;
             message: string;
+            rule_class: null | components["schemas"]["FindingRuleClass"];
             severity: string;
             status: string;
             waiver_ref?: string | null;
@@ -1458,6 +1460,12 @@ export interface components {
             items: components["schemas"]["Finding"][];
             next_cursor?: string | null;
         };
+        /**
+         * @description Where a finding's rule authority comes from (Hotfix 080): the active validation profile's
+         *     `RuleMetadata.rule_class` of the rule whose ID equals `Finding.code`.
+         * @enum {string}
+         */
+        FindingRuleClass: "external_standard" | "external_interop" | "plumb_core" | "profile_policy" | "organization_policy";
         /**
          * @description A NOW-scope gate.
          * @enum {string}
@@ -2387,6 +2395,7 @@ export interface operations {
                      *           "family": "example",
                      *           "id": "example",
                      *           "message": "example",
+                     *           "rule_class": "external_interop",
                      *           "severity": "example",
                      *           "status": "example"
                      *         }
@@ -2911,6 +2920,7 @@ export interface operations {
                      *             "family": "example",
                      *             "id": "example",
                      *             "message": "example",
+                     *             "rule_class": "external_interop",
                      *             "severity": "example",
                      *             "status": "example"
                      *           }
@@ -4687,6 +4697,7 @@ export interface operations {
                      *             "family": "example",
                      *             "id": "example",
                      *             "message": "example",
+                     *             "rule_class": "external_interop",
                      *             "severity": "example",
                      *             "status": "example"
                      *           }
@@ -5320,6 +5331,7 @@ export interface operations {
                      *             "family": "example",
                      *             "id": "example",
                      *             "message": "example",
+                     *             "rule_class": "external_interop",
                      *             "severity": "example",
                      *             "status": "example"
                      *           }
@@ -6010,6 +6022,7 @@ export interface operations {
                      *             "family": "example",
                      *             "id": "example",
                      *             "message": "example",
+                     *             "rule_class": "external_interop",
                      *             "severity": "example",
                      *             "status": "example"
                      *           }
@@ -6969,6 +6982,7 @@ export interface operations {
                      *                 "family": "example",
                      *                 "id": "example",
                      *                 "message": "example",
+                     *                 "rule_class": "external_interop",
                      *                 "severity": "example",
                      *                 "status": "example"
                      *               }

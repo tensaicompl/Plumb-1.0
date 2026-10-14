@@ -242,8 +242,12 @@ describe("HomePage shell", () => {
     expect(Object.keys(router.routesByPath).sort()).toEqual(
       [
         "/",
+        "/model/calculations",
+        "/model/entities",
+        "/model/findings",
         "/model/glossary",
         "/model/processes",
+        "/model/rules",
         "/model/scenarios",
         "/model/sentences",
         "/questions",

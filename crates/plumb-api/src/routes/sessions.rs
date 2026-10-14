@@ -400,7 +400,7 @@ async fn create_session_turn(
             kind,
             payload: serde_json::to_value(&card.proposal.patch_set.patch)
                 .map_err(|_| ApiError::internal("proposal_payload"))?,
-            intake: intake_view(&card.intake)?,
+            intake: intake_view(&card.intake, state.profile())?,
         });
     }
     let expected: BTreeSet<Id> = [&result.user_turn, &result.assistant_turn]

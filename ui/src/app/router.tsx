@@ -1,5 +1,8 @@
 import { createRootRoute, createRoute, createRouter, type RouterHistory } from "@tanstack/react-router";
 
+import { CalculationsPage } from "../features/calculations/CalculationsPage";
+import { EntitiesPage } from "../features/entities/EntitiesPage";
+import { FindingsPage } from "../features/findings/FindingsPage";
 import { GlossaryPage } from "../features/glossary/GlossaryPage";
 import { HomePage } from "../features/home/HomePage";
 import { ProcessesPage } from "../features/processes/ProcessesPage";
@@ -7,6 +10,7 @@ import { QuestionsPage } from "../features/questions/QuestionsPage";
 import { ScenariosPage } from "../features/scenarios/ScenariosPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
+import { RulesPage } from "../features/rules/RulesPage";
 import { SentencesPage } from "../features/sentences/SentencesPage";
 import { SessionPanel } from "../features/sessions/SessionPanel";
 import { AppShell } from "./AppShell";
@@ -81,6 +85,31 @@ const scenariosRoute = createRoute({
   component: ScenariosPage,
 });
 
+// U2.6: the analyst views; selection and details stay within each page.
+const entitiesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/model/entities",
+  component: EntitiesPage,
+});
+
+const findingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/model/findings",
+  component: FindingsPage,
+});
+
+const rulesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/model/rules",
+  component: RulesPage,
+});
+
+const calculationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/model/calculations",
+  component: CalculationsPage,
+});
+
 export const routeTree = rootRoute.addChildren([
   indexRoute,
   requirementsRoute,
@@ -91,6 +120,10 @@ export const routeTree = rootRoute.addChildren([
   sessionsRoute,
   processesRoute,
   scenariosRoute,
+  entitiesRoute,
+  findingsRoute,
+  rulesRoute,
+  calculationsRoute,
 ]);
 
 /** A router over the route tree (browser history unless `history` is given). */

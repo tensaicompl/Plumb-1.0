@@ -7,6 +7,7 @@
 //! Gate reports come from the real validation evaluators over the stored head graph.
 
 mod http_core {
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -23,7 +24,7 @@ mod http_core {
     use plumb_store::{BranchName, RevisionWriteMeta, SqliteRevisionStore};
     use plumb_validation::{
         load_builtin_software_profile, rules, EvaluatorRegistry, F1RequirementValidationInput,
-        F1ValidationInputs, F4ApplicabilityInput, F4ValidationInputs, GateReport,
+        F1ValidationInputs, F4ApplicabilityInput, F4ValidationInputs, GateReport, RuleClass,
         ValidationContext, ValidationPolicy, ValidationProfile, ValidationRegistry,
     };
     use serde_json::{json, Value};
@@ -505,9 +506,20 @@ mod http_core {
     /// Initializes a store with `graph` and builds the router; `gates` selects which real
     /// reports over the stored head are registered.
     fn app_with(graph: Graph, gates: &[GateId], clock: Arc<dyn Clock + Send + Sync>) -> App {
+        app_with_profile(graph, gates, clock, profile())
+    }
+
+    /// [`app_with`] governed by one explicit `profile` (Hotfix 080): the same validated profile
+    /// supplies the initial revision's profile and rule-pack hashes and the `ApiState` profile.
+    fn app_with_profile(
+        graph: Graph,
+        gates: &[GateId],
+        clock: Arc<dyn Clock + Send + Sync>,
+        profile: ValidationProfile,
+    ) -> App {
+        profile.validate().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plumb.sqlite");
-        let profile = profile();
         let mut store = open_store(&path);
         let rev = store
             .create_initial_revision(
@@ -520,7 +532,7 @@ mod http_core {
         let head = store.load_revision(&rev.id).unwrap();
         let reports = gates.iter().map(|g| gate_report(&head.graph, *g)).collect();
         let artifacts = SqliteArtifactStore::open(&path).unwrap();
-        let state = state_with(store, artifacts, clock, reports);
+        let state = state_with_profile(store, artifacts, clock, reports, profile);
         let router = router(state.clone());
         App {
             _dir: dir,
@@ -536,6 +548,16 @@ mod http_core {
         clock: Arc<dyn Clock + Send + Sync>,
         reports: Vec<GateReport>,
     ) -> ApiState {
+        state_with_profile(store, artifacts, clock, reports, profile())
+    }
+
+    fn state_with_profile(
+        store: SqliteRevisionStore,
+        artifacts: SqliteArtifactStore,
+        clock: Arc<dyn Clock + Send + Sync>,
+        reports: Vec<GateReport>,
+        profile: ValidationProfile,
+    ) -> ApiState {
         let identity = ApiIdentity::new(
             "alice".into(),
             id(ACTOR),
@@ -550,7 +572,7 @@ mod http_core {
             identity,
             clock,
             reports,
-            profile(),
+            profile,
         )
         .unwrap()
     }
@@ -834,6 +856,125 @@ mod http_core {
     }
 
     // ------------------------------------------------------------------ routing
+
+    /// The fixture plus findings whose codes are exactly the given profile rule IDs (or an
+    /// unknown code), each under a family that does not match its rule class.
+    fn rule_class_graph(codes: &[(&str, &str)]) -> Graph {
+        let (mut nodes, edges) = fixture_parts();
+        for (node_id, code) in codes {
+            nodes.push(finding(node_id, code, "F3", "info", "Open", &["req:a"]));
+        }
+        graph_of(nodes, edges)
+    }
+
+    /// `rule_class` of every listed finding, by ID.
+    fn rule_classes(page: &Value) -> BTreeMap<String, Value> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f["id"].as_str().unwrap().to_owned(),
+                    f["rule_class"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn findings_project_rule_class_from_the_shipped_profile() {
+        let codes = [
+            ("finding:std", "ISO29148.F1.REQ.STATEMENT_PRESENT"),
+            ("finding:interop", "PPMN.I0.PROVENANCE.AGENT_IDENTIFIED"),
+            ("finding:core", "PLUMB.I0.SOURCE.CONTENT_ADDRESSED"),
+        ];
+        let app = app_with(rule_class_graph(&codes), &[], fixed());
+        let page = get(&app, "/api/findings").await;
+        assert_eq!(page.status, StatusCode::OK);
+        let page = page.json();
+        let classes = rule_classes(&page);
+        // Expected classes are read from the shipped profile metadata, not from the codes.
+        let shipped = profile();
+        for (node_id, code) in codes {
+            let rule = shipped.rules.iter().find(|r| r.id == code).unwrap();
+            assert_eq!(classes[node_id], json!(rule.rule_class.as_str()), "{code}");
+        }
+        assert_eq!(classes["finding:std"], json!("external_standard"));
+        assert_eq!(classes["finding:interop"], json!("external_interop"));
+        assert_eq!(classes["finding:core"], json!("plumb_core"));
+        // Unknown/custom codes stay listed with rule_class null; family is the stored family.
+        assert_eq!(classes["finding:open"], Value::Null);
+        assert_eq!(classes["finding:closed"], Value::Null);
+        for f in page["items"].as_array().unwrap() {
+            let family = match f["id"].as_str().unwrap() {
+                "finding:open" => "F2",
+                "finding:closed" => "F1",
+                _ => "F3",
+            };
+            assert_eq!(f["family"], json!(family));
+        }
+        // Existing filters are unchanged; there is no rule_class filter.
+        assert_eq!(
+            ids_of(
+                &get(&app, "/api/findings?code=PLUMB.I0.SOURCE.CONTENT_ADDRESSED")
+                    .await
+                    .json()
+            ),
+            ["finding:core"]
+        );
+        assert_eq!(
+            ids_of(
+                &get(&app, "/api/findings?family=F3&status=Open")
+                    .await
+                    .json()
+            ),
+            ["finding:core", "finding:interop", "finding:std"]
+        );
+        assert_eq!(
+            get(&app, "/api/findings?rule_class=plumb_core")
+                .await
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn findings_project_policy_rule_classes_from_a_test_local_profile() {
+        // The shipped pilot profile has no profile_policy or organization_policy rule; a
+        // test-local clone reclassifies two existing rules and governs revision and state alike.
+        let mut local = profile();
+        for (rule_id, class) in [
+            ("PLUMB.I0.EVIDENCE.LOCATABLE", RuleClass::ProfilePolicy),
+            (
+                "PLUMB.I0.EVIDENCE.HASH_MATCH",
+                RuleClass::OrganizationPolicy,
+            ),
+        ] {
+            let rule = local.rules.iter_mut().find(|r| r.id == rule_id).unwrap();
+            assert_eq!(rule.rule_class, RuleClass::PlumbCore);
+            rule.rule_class = class;
+        }
+        local.validate().unwrap();
+        assert_ne!(
+            local.profile_hash().unwrap(),
+            profile().profile_hash().unwrap()
+        );
+        let codes = [
+            ("finding:profile", "PLUMB.I0.EVIDENCE.LOCATABLE"),
+            ("finding:org", "PLUMB.I0.EVIDENCE.HASH_MATCH"),
+            ("finding:core", "PLUMB.I0.SOURCE.CONTENT_ADDRESSED"),
+        ];
+        let app = app_with_profile(rule_class_graph(&codes), &[], fixed(), local.clone());
+        let revision = head(&app).revision;
+        assert_eq!(revision.profile_hash, local.profile_hash().unwrap());
+        assert_eq!(revision.rule_pack_hash, local.rule_pack_hash().unwrap());
+        let classes = rule_classes(&get(&app, "/api/findings").await.json());
+        assert_eq!(classes["finding:profile"], json!("profile_policy"));
+        assert_eq!(classes["finding:org"], json!("organization_policy"));
+        assert_eq!(classes["finding:core"], json!("plumb_core"));
+        assert_eq!(classes["finding:open"], Value::Null);
+    }
 
     #[tokio::test]
     async fn http_core_routes_all_74_operations() {
