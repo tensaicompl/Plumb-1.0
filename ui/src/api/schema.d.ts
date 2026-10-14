@@ -1584,12 +1584,28 @@ export interface components {
         };
         Process: {
             branches: string[];
+            /**
+             * @description The active `next` topology between the Process's nodes, sorted by `from` then `to`
+             *     (Hotfix 079): the flow authority.
+             */
+            flows: components["schemas"]["ProcessFlowView"][];
             id: string;
+            /** @description Sorted unique performer refs of the Process's nodes (active `performed_by` targets). */
             lanes: string[];
             name: string;
-            /** @description Step operation names in process order. */
+            /** @description The Process's ProcessNodes, sorted by ID (Hotfix 079). */
+            nodes: components["schemas"]["ProcessNodeView"][];
+            /**
+             * @description Sorted ProcessNode IDs belonging to the Process; not semantic execution order (use
+             *     `flows`).
+             */
             steps: string[];
             validation: string[];
+        };
+        /** @description One active canonical `next` relation between two ProcessNodes of the Process (Hotfix 079). */
+        ProcessFlowView: {
+            from: string;
+            to: string;
         };
         /**
          * @description NOW process interchange format (no `svg`).
@@ -1600,14 +1616,40 @@ export interface components {
             format: components["schemas"]["ProcessFormat"];
             text: string;
         };
+        /**
+         * @description One ProcessNode of a Process with its exact semantic material (Hotfix 079): the payload
+         *     fields and the targets of its active `performed_by`, `consumes` and `produces` relations,
+         *     each sorted and unique.
+         */
+        ProcessNodeView: {
+            condition_expr: string | null;
+            /** @description Targets of the active `consumes` relations: trigger/event inputs. */
+            consumes_refs: string[];
+            id: string;
+            kind: components["schemas"]["ProcessNodeViewKind"];
+            message_ref: string | null;
+            operation_ref: string | null;
+            /** @description Targets of the active `performed_by` relations: the swimlane authority. */
+            performer_refs: string[];
+            /** @description Targets of the active `produces` relations: outcomes/events. */
+            produces_refs: string[];
+            timer_expr: string | null;
+        };
+        /**
+         * @description The exact v3 ProcessNode kinds (Hotfix 079).
+         * @enum {string}
+         */
+        ProcessNodeViewKind: "start" | "end" | "human_task" | "service_task" | "exclusive_gateway" | "parallel_split" | "parallel_join" | "message_event" | "timer_event" | "error_event" | "subprocess";
         /** @description A page of results; `next_cursor` is null on the last page. */
         ProcessPage: {
             items: components["schemas"]["Process"][];
             next_cursor?: string | null;
         };
         /**
-         * @description NOW process-step mutations of a strict linear Process, tagged by `op` (no `branch`;
-         *     Hotfix 065). `position` is zero-based among interior steps.
+         * @description NOW process-step mutations, tagged by `op` (no `branch`; Hotfix 065). `add`, `move` and
+         *     `remove` change a strict linear Process and `position` is zero-based among interior steps;
+         *     `move_lane` (Hotfix 079) replaces the performers of one human or service task. `reason` is the
+         *     optional rationale passed to the shared intake/write path.
          */
         ProcessStepRequest: {
             /** @enum {string} */
@@ -1615,16 +1657,25 @@ export interface components {
             operation_ref: string;
             /** Format: int64 */
             position: number;
+            reason?: string | null;
         } | {
             node_ref: string;
             /** @enum {string} */
             op: "move";
             /** Format: int64 */
             position: number;
+            reason?: string | null;
         } | {
             node_ref: string;
             /** @enum {string} */
             op: "remove";
+            reason?: string | null;
+        } | {
+            node_ref: string;
+            /** @enum {string} */
+            op: "move_lane";
+            performer_ref: string;
+            reason?: string | null;
         };
         /** @description A proposal action; `reason` is required at runtime when intake demands one. */
         ProposalActionRequest: {
@@ -4229,11 +4280,36 @@ export interface operations {
                      *           "branches": [
                      *             "example"
                      *           ],
+                     *           "flows": [
+                     *             {
+                     *               "from": "example",
+                     *               "to": "example"
+                     *             }
+                     *           ],
                      *           "id": "CancelApprovedLeave",
                      *           "lanes": [
                      *             "example"
                      *           ],
                      *           "name": "CancelApprovedLeave",
+                     *           "nodes": [
+                     *             {
+                     *               "condition_expr": "example",
+                     *               "consumes_refs": [
+                     *                 "example"
+                     *               ],
+                     *               "id": "example",
+                     *               "kind": "end",
+                     *               "message_ref": "example",
+                     *               "operation_ref": "example",
+                     *               "performer_refs": [
+                     *                 "example"
+                     *               ],
+                     *               "produces_refs": [
+                     *                 "example"
+                     *               ],
+                     *               "timer_expr": "example"
+                     *             }
+                     *           ],
                      *           "steps": [
                      *             "CancelLeaveRequest",
                      *             "RestoreLeaveBalance"
@@ -4367,11 +4443,36 @@ export interface operations {
                      *       "branches": [
                      *         "example"
                      *       ],
+                     *       "flows": [
+                     *         {
+                     *           "from": "example",
+                     *           "to": "example"
+                     *         }
+                     *       ],
                      *       "id": "CancelApprovedLeave",
                      *       "lanes": [
                      *         "example"
                      *       ],
                      *       "name": "CancelApprovedLeave",
+                     *       "nodes": [
+                     *         {
+                     *           "condition_expr": "example",
+                     *           "consumes_refs": [
+                     *             "example"
+                     *           ],
+                     *           "id": "example",
+                     *           "kind": "end",
+                     *           "message_ref": "example",
+                     *           "operation_ref": "example",
+                     *           "performer_refs": [
+                     *             "example"
+                     *           ],
+                     *           "produces_refs": [
+                     *             "example"
+                     *           ],
+                     *           "timer_expr": "example"
+                     *         }
+                     *       ],
                      *       "steps": [
                      *         "CancelLeaveRequest",
                      *         "RestoreLeaveBalance"

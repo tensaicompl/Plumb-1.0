@@ -1288,6 +1288,25 @@ mod http_core {
         assert_eq!(leave["lanes"], json!(["actor:employee"]));
         assert_eq!(leave["steps"], json!(["pn:end", "pn:start", "pn:task"]));
         assert_eq!(leave["branches"], json!([]));
+        // Hotfix 079: steps are only the sorted node IDs; nodes and flows carry the semantics.
+        assert_eq!(
+            leave["nodes"],
+            json!([
+                {"id": "pn:end", "kind": "end", "operation_ref": null, "performer_refs": [],
+                 "consumes_refs": [], "produces_refs": [], "condition_expr": null,
+                 "message_ref": null, "timer_expr": null},
+                {"id": "pn:start", "kind": "start", "operation_ref": null, "performer_refs": [],
+                 "consumes_refs": [], "produces_refs": [], "condition_expr": null,
+                 "message_ref": null, "timer_expr": null},
+                {"id": "pn:task", "kind": "human_task", "operation_ref": "op:submit",
+                 "performer_refs": ["actor:employee"], "consumes_refs": [], "produces_refs": [],
+                 "condition_expr": null, "message_ref": null, "timer_expr": null}
+            ])
+        );
+        assert_eq!(
+            leave["flows"],
+            json!([{"from": "pn:start", "to": "pn:task"}, {"from": "pn:task", "to": "pn:end"}])
+        );
         let graph = head(&app).graph;
         let analysis = plumb_validation::analyze_process(
             &graph,
@@ -1376,6 +1395,172 @@ mod http_core {
             get(&app, "/api/decisions").await.json()["items"][0],
             json!({"id": "decision:d1", "proposal_ref": "prop:0000000000000001", "question_ref": null, "decided_by": "agent:alice", "decided_at": T1, "rationale": "Agreed."})
         );
+    }
+
+    /// The fixture plus a process with a message event, a gateway, inputs, outputs and
+    /// several or no performers (Hotfix 079).
+    fn event_process_app() -> App {
+        let (mut nodes, mut edges) = fixture_parts();
+        let pnode = |node_id: &str,
+                     kind: &str,
+                     operation: Value,
+                     message: Value,
+                     timer: Value,
+                     condition: Value| {
+            node(
+                node_id,
+                "Accepted",
+                "ProcessNode",
+                json!({
+                    "process_ref": "proc:events", "node_kind": kind, "operation_ref": operation,
+                    "condition_expr": condition, "message_ref": message, "timer_expr": timer
+                }),
+            )
+        };
+        nodes.extend([
+            node(
+                "proc:events",
+                "Accepted",
+                "Process",
+                json!({"name": "Events", "description": null, "process_kind": null}),
+            ),
+            node(
+                "actor:manager",
+                "Accepted",
+                "Actor",
+                json!({"name": "Manager", "actor_kind": "human"}),
+            ),
+            node(
+                "event:requested",
+                "Accepted",
+                "Event",
+                json!({"name": "LeaveRequested", "payload_schema_ref": null, "semantic_type": null}),
+            ),
+            node(
+                "outcome:approved",
+                "Accepted",
+                "Outcome",
+                json!({"name": "Approved", "outcome_kind": "success"}),
+            ),
+            pnode("pe:0start", "start", Value::Null, Value::Null, Value::Null, Value::Null),
+            pnode("pe:1wait", "message_event", Value::Null, json!("event:requested"), Value::Null, Value::Null),
+            pnode("pe:2decide", "exclusive_gateway", Value::Null, Value::Null, Value::Null, json!("days > 0")),
+            pnode("pe:3approve", "human_task", json!("op:submit"), Value::Null, Value::Null, Value::Null),
+            pnode("pe:4timer", "timer_event", Value::Null, Value::Null, json!("P1D"), Value::Null),
+            pnode("pe:5end", "end", Value::Null, Value::Null, Value::Null, Value::Null),
+        ]);
+        edges.extend([
+            edge("rel:pe-n1", "next", "pe:0start", "pe:1wait"),
+            edge("rel:pe-n2", "next", "pe:1wait", "pe:2decide"),
+            edge("rel:pe-n3", "next", "pe:2decide", "pe:3approve"),
+            edge("rel:pe-n4", "next", "pe:2decide", "pe:4timer"),
+            edge("rel:pe-n5", "next", "pe:3approve", "pe:5end"),
+            edge("rel:pe-n6", "next", "pe:4timer", "pe:5end"),
+            edge("rel:pe-consumes", "consumes", "pe:1wait", "event:requested"),
+            edge(
+                "rel:pe-produces",
+                "produces",
+                "pe:3approve",
+                "outcome:approved",
+            ),
+            edge(
+                "rel:pe-perf-1",
+                "performed_by",
+                "pe:3approve",
+                "actor:manager",
+            ),
+            edge(
+                "rel:pe-perf-2",
+                "performed_by",
+                "pe:3approve",
+                "actor:employee",
+            ),
+        ]);
+        app_with(graph_of(nodes, edges), &[], fixed())
+    }
+
+    #[tokio::test]
+    async fn http_core_process_structured_projection() {
+        let app = event_process_app();
+        let r = get(&app, "/api/processes/proc:events").await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        let p = r.json();
+        // Lanes are the sorted unique performers; steps only the sorted node IDs.
+        assert_eq!(p["lanes"], json!(["actor:employee", "actor:manager"]));
+        assert_eq!(
+            p["steps"],
+            json!([
+                "pe:0start",
+                "pe:1wait",
+                "pe:2decide",
+                "pe:3approve",
+                "pe:4timer",
+                "pe:5end"
+            ])
+        );
+        let ids: Vec<&str> = p["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "pe:0start",
+                "pe:1wait",
+                "pe:2decide",
+                "pe:3approve",
+                "pe:4timer",
+                "pe:5end"
+            ]
+        );
+        let node = |id: &str| {
+            p["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            node("pe:1wait"),
+            json!({"id": "pe:1wait", "kind": "message_event", "operation_ref": null,
+                   "performer_refs": [], "consumes_refs": ["event:requested"], "produces_refs": [],
+                   "condition_expr": null, "message_ref": "event:requested", "timer_expr": null})
+        );
+        assert_eq!(
+            node("pe:3approve"),
+            json!({"id": "pe:3approve", "kind": "human_task", "operation_ref": "op:submit",
+                   "performer_refs": ["actor:employee", "actor:manager"], "consumes_refs": [],
+                   "produces_refs": ["outcome:approved"], "condition_expr": null,
+                   "message_ref": null, "timer_expr": null})
+        );
+        assert_eq!(node("pe:4timer")["kind"], "timer_event");
+        assert_eq!(node("pe:4timer")["timer_expr"], "P1D");
+        assert_eq!(node("pe:2decide")["kind"], "exclusive_gateway");
+        assert_eq!(node("pe:2decide")["condition_expr"], "days > 0");
+        assert_eq!(p["branches"], json!(["pe:2decide"]));
+        // The active next topology, sorted by from then to.
+        assert_eq!(
+            p["flows"],
+            json!([
+                {"from": "pe:0start", "to": "pe:1wait"},
+                {"from": "pe:1wait", "to": "pe:2decide"},
+                {"from": "pe:2decide", "to": "pe:3approve"},
+                {"from": "pe:2decide", "to": "pe:4timer"},
+                {"from": "pe:3approve", "to": "pe:5end"},
+                {"from": "pe:4timer", "to": "pe:5end"}
+            ])
+        );
+        // Deterministic across reads.
+        assert_eq!(get(&app, "/api/processes/proc:events").await.json(), p);
     }
 
     #[tokio::test]

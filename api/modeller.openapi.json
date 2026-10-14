@@ -1510,10 +1510,18 @@
             },
             "type": "array"
           },
+          "flows": {
+            "description": "The active `next` topology between the Process's nodes, sorted by `from` then `to`\n(Hotfix 079): the flow authority.",
+            "items": {
+              "$ref": "#/components/schemas/ProcessFlowView"
+            },
+            "type": "array"
+          },
           "id": {
             "type": "string"
           },
           "lanes": {
+            "description": "Sorted unique performer refs of the Process's nodes (active `performed_by` targets).",
             "items": {
               "type": "string"
             },
@@ -1522,8 +1530,15 @@
           "name": {
             "type": "string"
           },
+          "nodes": {
+            "description": "The Process's ProcessNodes, sorted by ID (Hotfix 079).",
+            "items": {
+              "$ref": "#/components/schemas/ProcessNodeView"
+            },
+            "type": "array"
+          },
           "steps": {
-            "description": "Step operation names in process order.",
+            "description": "Sorted ProcessNode IDs belonging to the Process; not semantic execution order (use\n`flows`).",
             "items": {
               "type": "string"
             },
@@ -1542,7 +1557,26 @@
           "lanes",
           "steps",
           "branches",
-          "validation"
+          "validation",
+          "nodes",
+          "flows"
+        ],
+        "type": "object"
+      },
+      "ProcessFlowView": {
+        "additionalProperties": false,
+        "description": "One active canonical `next` relation between two ProcessNodes of the Process (Hotfix 079).",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
         ],
         "type": "object"
       },
@@ -1569,6 +1603,92 @@
         ],
         "type": "object"
       },
+      "ProcessNodeView": {
+        "additionalProperties": false,
+        "description": "One ProcessNode of a Process with its exact semantic material (Hotfix 079): the payload\nfields and the targets of its active `performed_by`, `consumes` and `produces` relations,\neach sorted and unique.",
+        "properties": {
+          "condition_expr": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consumes_refs": {
+            "description": "Targets of the active `consumes` relations: trigger/event inputs.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProcessNodeViewKind"
+          },
+          "message_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "performer_refs": {
+            "description": "Targets of the active `performed_by` relations: the swimlane authority.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "produces_refs": {
+            "description": "Targets of the active `produces` relations: outcomes/events.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "timer_expr": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "operation_ref",
+          "performer_refs",
+          "consumes_refs",
+          "produces_refs",
+          "condition_expr",
+          "message_ref",
+          "timer_expr"
+        ],
+        "type": "object"
+      },
+      "ProcessNodeViewKind": {
+        "description": "The exact v3 ProcessNode kinds (Hotfix 079).",
+        "enum": [
+          "start",
+          "end",
+          "human_task",
+          "service_task",
+          "exclusive_gateway",
+          "parallel_split",
+          "parallel_join",
+          "message_event",
+          "timer_event",
+          "error_event",
+          "subprocess"
+        ],
+        "type": "string"
+      },
       "ProcessPage": {
         "additionalProperties": false,
         "description": "A page of results; `next_cursor` is null on the last page.",
@@ -1592,7 +1712,7 @@
         "type": "object"
       },
       "ProcessStepRequest": {
-        "description": "NOW process-step mutations of a strict linear Process, tagged by `op` (no `branch`;\nHotfix 065). `position` is zero-based among interior steps.",
+        "description": "NOW process-step mutations, tagged by `op` (no `branch`; Hotfix 065). `add`, `move` and\n`remove` change a strict linear Process and `position` is zero-based among interior steps;\n`move_lane` (Hotfix 079) replaces the performers of one human or service task. `reason` is the\noptional rationale passed to the shared intake/write path.",
         "oneOf": [
           {
             "additionalProperties": false,
@@ -1610,6 +1730,12 @@
                 "format": "int64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -1635,6 +1761,12 @@
                 "format": "int64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -1655,10 +1787,45 @@
                   "remove"
                 ],
                 "type": "string"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "node_ref",
+              "op"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "node_ref": {
+                "type": "string"
+              },
+              "op": {
+                "enum": [
+                  "move_lane"
+                ],
+                "type": "string"
+              },
+              "performer_ref": {
+                "type": "string"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "node_ref",
+              "performer_ref",
               "op"
             ],
             "type": "object"
@@ -5708,11 +5875,36 @@
                       "branches": [
                         "example"
                       ],
+                      "flows": [
+                        {
+                          "from": "example",
+                          "to": "example"
+                        }
+                      ],
                       "id": "CancelApprovedLeave",
                       "lanes": [
                         "example"
                       ],
                       "name": "CancelApprovedLeave",
+                      "nodes": [
+                        {
+                          "condition_expr": "example",
+                          "consumes_refs": [
+                            "example"
+                          ],
+                          "id": "example",
+                          "kind": "end",
+                          "message_ref": "example",
+                          "operation_ref": "example",
+                          "performer_refs": [
+                            "example"
+                          ],
+                          "produces_refs": [
+                            "example"
+                          ],
+                          "timer_expr": "example"
+                        }
+                      ],
                       "steps": [
                         "CancelLeaveRequest",
                         "RestoreLeaveBalance"
@@ -5860,11 +6052,36 @@
                   "branches": [
                     "example"
                   ],
+                  "flows": [
+                    {
+                      "from": "example",
+                      "to": "example"
+                    }
+                  ],
                   "id": "CancelApprovedLeave",
                   "lanes": [
                     "example"
                   ],
                   "name": "CancelApprovedLeave",
+                  "nodes": [
+                    {
+                      "condition_expr": "example",
+                      "consumes_refs": [
+                        "example"
+                      ],
+                      "id": "example",
+                      "kind": "end",
+                      "message_ref": "example",
+                      "operation_ref": "example",
+                      "performer_refs": [
+                        "example"
+                      ],
+                      "produces_refs": [
+                        "example"
+                      ],
+                      "timer_expr": "example"
+                    }
+                  ],
                   "steps": [
                     "CancelLeaveRequest",
                     "RestoreLeaveBalance"

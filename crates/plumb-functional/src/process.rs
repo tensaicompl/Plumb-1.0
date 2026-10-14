@@ -1634,12 +1634,14 @@ pub fn linear_process(
     })
 }
 
-/// One requested step change; positions are zero-based among interior steps.
+/// One requested step change; positions are zero-based among interior steps. `MoveLane`
+/// (Hotfix 079) replaces the performers of one task and needs no strict linear process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessStepChange {
     Add { operation_ref: Id, position: usize },
     Move { node_ref: Id, position: usize },
     Remove { node_ref: Id },
+    MoveLane { node_ref: Id, performer_ref: Id },
 }
 
 /// Why a step change cannot be proposed.
@@ -1661,8 +1663,9 @@ pub enum ProcessStepError {
     /// The position is outside the allowed range.
     #[error("position {position} is outside 0..={max}")]
     PositionOutOfRange { position: usize, max: usize },
-    /// The step is already at the requested position.
-    #[error("{0} is already at this position")]
+    /// The step is already at the requested position (or, for a lane move, already performed by
+    /// exactly the requested performer).
+    #[error("{0} already has the requested position or performer")]
     NoChange(Id),
     /// The step has active relations other than its flow.
     #[error("{node_ref} has active relations {edges:?}")]
@@ -1706,11 +1709,21 @@ fn precondition_of_edge(edge: &Edge) -> Result<plumb_patch::ElementPrecondition,
 
 /// An Accepted `next` edge with its deterministic ID and the actor's audit.
 fn flow_edge(from: &Id, to: &Id, audit: &AuditMeta) -> Result<Edge, CoreError> {
+    relation_edge(RelationKind::Next, from, to, audit)
+}
+
+/// An Accepted relation of `kind` with its deterministic ID and the actor's audit.
+fn relation_edge(
+    kind: RelationKind,
+    from: &Id,
+    to: &Id,
+    audit: &AuditMeta,
+) -> Result<Edge, CoreError> {
     Ok(Edge {
-        id: edge_id(&RelationKind::Next, from, to)?,
+        id: edge_id(&kind, from, to)?,
         revision: 1,
         status: ElementStatus::Accepted,
-        kind: RelationKind::Next,
+        kind,
         from: from.clone(),
         to: to.clone(),
         properties: RelationProperties::None,
@@ -1755,12 +1768,161 @@ fn around(linear: &LinearProcess, current: usize) -> (&Id, &Id) {
     )
 }
 
-/// Proposes one step change of a strict linear Accepted Process (Hotfix 065): `Add` inserts an
-/// Accepted service task for an Accepted Operation, `Move` reinserts an interior step among the
-/// remaining ones, `Remove` deletes an interior step without other active relations; only the
-/// affected `next` edges are rebuilt. The candidate must pass process analysis. Stage S2,
-/// Semantic, HUMAN_CONFIRM.
+/// The audit of a step change by `actor_ref` at `at`.
+fn step_audit(actor_ref: &Id, at: Timestamp) -> Result<AuditMeta, ProcessStepError> {
+    AuditMeta::new(actor_ref.clone(), at, None, None).map_err(|e| {
+        ProcessStepError::MutationInvalid {
+            reason: e.to_string(),
+        }
+    })
+}
+
+/// The Stage S2, Semantic, HUMAN_CONFIRM proposal of one step change on `base`.
+fn step_proposal(base: Hash, patches: Vec<SemanticPatch>) -> Result<Proposal, ProcessStepError> {
+    Proposal::new(
+        PROCESS_STAGE,
+        PatchSet {
+            base_semantic_hash: base,
+            patch: SemanticPatch::Compound { patches },
+        },
+        Vec::new(),
+        Vec::new(),
+        ProposalMateriality::Semantic,
+        AcceptancePolicy::HumanConfirm,
+        None,
+    )
+    .map_err(|e| ProcessStepError::MutationInvalid {
+        reason: e.to_string(),
+    })
+}
+
+/// Proposes one step change (Hotfix 065, Hotfix 079). `Add`, `Move` and `Remove` change a strict
+/// linear Accepted Process: `Add` inserts an Accepted service task for an Accepted Operation,
+/// `Move` reinserts an interior step among the remaining ones, `Remove` deletes an interior step
+/// without other active relations; only the affected `next` edges are rebuilt and the candidate
+/// must pass process analysis. `MoveLane` replaces the performers of one task and requires no
+/// linear process shape (see [`propose_lane_move`]). Stage S2, Semantic, HUMAN_CONFIRM.
 pub fn propose_process_step_change(
+    graph: &Graph,
+    process_ref: &Id,
+    change: &ProcessStepChange,
+    actor_ref: &Id,
+    at: Timestamp,
+) -> Result<Proposal, ProcessStepError> {
+    match change {
+        ProcessStepChange::MoveLane {
+            node_ref,
+            performer_ref,
+        } => propose_lane_move(graph, process_ref, node_ref, performer_ref, actor_ref, at),
+        _ => propose_linear_step_change(graph, process_ref, change, actor_ref, at),
+    }
+}
+
+/// Lane move (Hotfix 079): the Accepted human or service task `node_ref` of `process_ref` ends
+/// with exactly one active `performed_by`, to the Accepted Actor or BusinessRole
+/// `performer_ref`. Other active `performed_by` relations of the task are removed; an existing
+/// relation to the performer is kept (an inactive one is reactivated under its deterministic ID);
+/// flow and every other relation are untouched. Exactly that performer already is `NoChange`.
+fn propose_lane_move(
+    graph: &Graph,
+    process_ref: &Id,
+    node_ref: &Id,
+    performer_ref: &Id,
+    actor_ref: &Id,
+    at: Timestamp,
+) -> Result<Proposal, ProcessStepError> {
+    let process = graph
+        .node(process_ref)
+        .ok_or_else(|| ProcessStepError::Missing(process_ref.clone()))?;
+    if process.payload.node_type() != NodeType::Process {
+        return Err(ProcessStepError::WrongTarget {
+            node_ref: process_ref.clone(),
+            expected: "a Process",
+        });
+    }
+    let node = graph
+        .node(node_ref)
+        .ok_or_else(|| ProcessStepError::Missing(node_ref.clone()))?;
+    let task = match &node.payload {
+        NodePayload::ProcessNode(p) => {
+            node.status == ElementStatus::Accepted
+                && &p.process_ref == process_ref
+                && matches!(
+                    p.node_kind,
+                    ProcessNodeKind::HumanTask | ProcessNodeKind::ServiceTask
+                )
+        }
+        _ => false,
+    };
+    if !task {
+        return Err(ProcessStepError::WrongTarget {
+            node_ref: node_ref.clone(),
+            expected: "an Accepted human or service task of the process",
+        });
+    }
+    let performer = graph
+        .node(performer_ref)
+        .ok_or_else(|| ProcessStepError::Missing(performer_ref.clone()))?;
+    if performer.status != ElementStatus::Accepted
+        || !matches!(
+            performer.payload.node_type(),
+            NodeType::Actor | NodeType::BusinessRole
+        )
+    {
+        return Err(ProcessStepError::WrongTarget {
+            node_ref: performer_ref.clone(),
+            expected: "an Accepted Actor or BusinessRole",
+        });
+    }
+    let mut active: Vec<&Edge> = graph
+        .outgoing_edge_ids(node_ref)
+        .iter()
+        .filter_map(|e| graph.edge(e))
+        .filter(|e| e.kind == RelationKind::PerformedBy && is_active(e.status))
+        .collect();
+    active.sort_by(|a, b| a.id.cmp(&b.id));
+    if active.len() == 1 && &active[0].to == performer_ref {
+        return Err(ProcessStepError::NoChange(node_ref.clone()));
+    }
+    let base = graph.semantic_hash()?;
+    let audit = step_audit(actor_ref, at)?;
+    let mut patches = Vec::new();
+    for edge in active.iter().filter(|e| &e.to != performer_ref) {
+        patches.push(SemanticPatch::RemoveEdge {
+            target: precondition_of_edge(edge)?,
+        });
+    }
+    if !active.iter().any(|e| &e.to == performer_ref) {
+        let desired = relation_edge(RelationKind::PerformedBy, node_ref, performer_ref, &audit)?;
+        match graph.edge(&desired.id) {
+            // The deterministic relation exists but is inactive: reactivate it in place.
+            Some(existing)
+                if existing.kind == RelationKind::PerformedBy
+                    && &existing.from == node_ref
+                    && &existing.to == performer_ref =>
+            {
+                patches.push(SemanticPatch::SetStatus {
+                    target: precondition_of_edge(existing)?,
+                    from: existing.status,
+                    to: ElementStatus::Accepted,
+                });
+            }
+            Some(_) => return Err(ProcessStepError::IdCollision(desired.id)),
+            None if graph.node(&desired.id).is_some() => {
+                return Err(ProcessStepError::IdCollision(desired.id))
+            }
+            None => patches.push(SemanticPatch::AddEdge { edge: desired }),
+        }
+    }
+    let proposal = step_proposal(base, patches)?;
+    apply_patch(graph, &proposal.patch_set).map_err(|e| ProcessStepError::MutationInvalid {
+        reason: e.to_string(),
+    })?;
+    Ok(proposal)
+}
+
+/// `Add`, `Move` and `Remove` on a strict linear Accepted Process (Hotfix 065).
+fn propose_linear_step_change(
     graph: &Graph,
     process_ref: &Id,
     change: &ProcessStepChange,
@@ -1769,11 +1931,7 @@ pub fn propose_process_step_change(
 ) -> Result<Proposal, ProcessStepError> {
     let linear = linear_process(graph, process_ref)?;
     let base = graph.semantic_hash()?;
-    let audit = AuditMeta::new(actor_ref.clone(), at, None, None).map_err(|e| {
-        ProcessStepError::MutationInvalid {
-            reason: e.to_string(),
-        }
-    })?;
+    let audit = step_audit(actor_ref, at)?;
     let free = |id: &Id| -> Result<(), ProcessStepError> {
         if graph.node(id).is_some() || graph.edge(id).is_some() {
             Err(ProcessStepError::IdCollision(id.clone()))
@@ -1925,21 +2083,15 @@ pub fn propose_process_step_change(
                 },
             ]
         }
+        ProcessStepChange::MoveLane { node_ref, .. } => {
+            return Err(ProcessStepError::WrongTarget {
+                node_ref: node_ref.clone(),
+                expected: "a linear step change",
+            })
+        }
     };
     let invalid = |reason: String| ProcessStepError::MutationInvalid { reason };
-    let proposal = Proposal::new(
-        PROCESS_STAGE,
-        PatchSet {
-            base_semantic_hash: base,
-            patch: SemanticPatch::Compound { patches },
-        },
-        Vec::new(),
-        Vec::new(),
-        ProposalMateriality::Semantic,
-        AcceptancePolicy::HumanConfirm,
-        None,
-    )
-    .map_err(|e| invalid(e.to_string()))?;
+    let proposal = step_proposal(base, patches)?;
     let candidate = apply_patch(graph, &proposal.patch_set).map_err(|e| invalid(e.to_string()))?;
     let analysis = analyze_process(
         &candidate.graph,

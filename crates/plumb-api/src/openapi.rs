@@ -1317,34 +1317,100 @@ pub struct RuleCellRequest {
 
 // ============================================================================ processes
 
+/// The exact v3 ProcessNode kinds (Hotfix 079).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessNodeViewKind {
+    Start,
+    End,
+    HumanTask,
+    ServiceTask,
+    ExclusiveGateway,
+    ParallelSplit,
+    ParallelJoin,
+    MessageEvent,
+    TimerEvent,
+    ErrorEvent,
+    Subprocess,
+}
+
+/// One ProcessNode of a Process with its exact semantic material (Hotfix 079): the payload
+/// fields and the targets of its active `performed_by`, `consumes` and `produces` relations,
+/// each sorted and unique.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessNodeView {
+    pub id: String,
+    pub kind: ProcessNodeViewKind,
+    #[schema(required = true)]
+    pub operation_ref: Option<String>,
+    /// Targets of the active `performed_by` relations: the swimlane authority.
+    pub performer_refs: Vec<String>,
+    /// Targets of the active `consumes` relations: trigger/event inputs.
+    pub consumes_refs: Vec<String>,
+    /// Targets of the active `produces` relations: outcomes/events.
+    pub produces_refs: Vec<String>,
+    #[schema(required = true)]
+    pub condition_expr: Option<String>,
+    #[schema(required = true)]
+    pub message_ref: Option<String>,
+    #[schema(required = true)]
+    pub timer_expr: Option<String>,
+}
+
+/// One active canonical `next` relation between two ProcessNodes of the Process (Hotfix 079).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessFlowView {
+    pub from: String,
+    pub to: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Process {
     pub id: String,
     pub name: String,
+    /// Sorted unique performer refs of the Process's nodes (active `performed_by` targets).
     pub lanes: Vec<String>,
-    /// Step operation names in process order.
+    /// Sorted ProcessNode IDs belonging to the Process; not semantic execution order (use
+    /// `flows`).
     pub steps: Vec<String>,
     pub branches: Vec<String>,
     pub validation: Vec<String>,
+    /// The Process's ProcessNodes, sorted by ID (Hotfix 079).
+    pub nodes: Vec<ProcessNodeView>,
+    /// The active `next` topology between the Process's nodes, sorted by `from` then `to`
+    /// (Hotfix 079): the flow authority.
+    pub flows: Vec<ProcessFlowView>,
 }
 page!(ProcessPage, Process);
 
-/// NOW process-step mutations of a strict linear Process, tagged by `op` (no `branch`;
-/// Hotfix 065). `position` is zero-based among interior steps.
+/// NOW process-step mutations, tagged by `op` (no `branch`; Hotfix 065). `add`, `move` and
+/// `remove` change a strict linear Process and `position` is zero-based among interior steps;
+/// `move_lane` (Hotfix 079) replaces the performers of one human or service task. `reason` is the
+/// optional rationale passed to the shared intake/write path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProcessStepRequest {
     Add {
         operation_ref: String,
         position: u64,
+        reason: Option<String>,
     },
     Move {
         node_ref: String,
         position: u64,
+        reason: Option<String>,
     },
     Remove {
         node_ref: String,
+        reason: Option<String>,
+    },
+    MoveLane {
+        node_ref: String,
+        performer_ref: String,
+        reason: Option<String>,
     },
 }
 

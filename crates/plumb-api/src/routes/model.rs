@@ -51,10 +51,10 @@ use crate::openapi::{
     Calculation, CalculationExample, CalculationPage, CalculationValue, CrudCell, CrudMatrix,
     Decision, DecisionPage, Entity, EntityAttribute, EntityPage, EntityRelationship,
     EntityTransition, ExportFormat, Finding, FindingPage, GlossaryEditRequest,
-    GlossaryMergeRequest, GlossaryPage, ModelDiff, Process, ProcessFormat, ProcessImportRequest,
-    ProcessPage, ProcessStepRequest, ProposalKind, ReasonRequest, Rule, RuleCellRequest, RulePage,
-    RuleRow, RuleViewKind, ScalarValue, SemanticChangePreviewResponse, SemanticElementDiff,
-    WriteResult,
+    GlossaryMergeRequest, GlossaryPage, ModelDiff, Process, ProcessFlowView, ProcessFormat,
+    ProcessImportRequest, ProcessNodeView, ProcessNodeViewKind, ProcessPage, ProcessStepRequest,
+    ProposalKind, ReasonRequest, Rule, RuleCellRequest, RulePage, RuleRow, RuleViewKind,
+    ScalarValue, SemanticChangePreviewResponse, SemanticElementDiff, WriteResult,
 };
 use crate::state::{
     check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
@@ -568,6 +568,23 @@ async fn list_calculations(
     Ok(read_json(&loaded, CalculationPage { items, next_cursor }))
 }
 
+/// The API kind of a PSG ProcessNode kind (exhaustive; Hotfix 079).
+fn process_node_view_kind(kind: ProcessNodeKind) -> ProcessNodeViewKind {
+    match kind {
+        ProcessNodeKind::Start => ProcessNodeViewKind::Start,
+        ProcessNodeKind::End => ProcessNodeViewKind::End,
+        ProcessNodeKind::HumanTask => ProcessNodeViewKind::HumanTask,
+        ProcessNodeKind::ServiceTask => ProcessNodeViewKind::ServiceTask,
+        ProcessNodeKind::ExclusiveGateway => ProcessNodeViewKind::ExclusiveGateway,
+        ProcessNodeKind::ParallelSplit => ProcessNodeViewKind::ParallelSplit,
+        ProcessNodeKind::ParallelJoin => ProcessNodeViewKind::ParallelJoin,
+        ProcessNodeKind::MessageEvent => ProcessNodeViewKind::MessageEvent,
+        ProcessNodeKind::TimerEvent => ProcessNodeViewKind::TimerEvent,
+        ProcessNodeKind::ErrorEvent => ProcessNodeViewKind::ErrorEvent,
+        ProcessNodeKind::Subprocess => ProcessNodeViewKind::Subprocess,
+    }
+}
+
 fn process(graph: &Graph, node: &Node) -> Result<Process, ApiError> {
     let NodePayload::Process(payload) = &node.payload else {
         return Err(ApiError::internal("process"));
@@ -650,6 +667,39 @@ fn process(graph: &Graph, node: &Node) -> Result<Process, ApiError> {
     }
     let mut steps: Vec<String> = analysis.node_refs.iter().map(Id::to_string).collect();
     steps.sort();
+    // Hotfix 079: the structured projection of every member node and the active `next`
+    // topology between members.
+    let members: BTreeSet<&Id> = analysis.node_refs.iter().collect();
+    let refs = |member: &Id, kind: RelationKind| -> Vec<String> {
+        let set: BTreeSet<String> = targets(graph, member, kind)
+            .into_iter()
+            .map(|t| t.to_string())
+            .collect();
+        set.into_iter().collect()
+    };
+    let mut nodes = Vec::new();
+    let mut flows = BTreeSet::new();
+    for member in &members {
+        let Some(NodePayload::ProcessNode(p)) = graph.node(member).map(|n| &n.payload) else {
+            continue;
+        };
+        nodes.push(ProcessNodeView {
+            id: member.to_string(),
+            kind: process_node_view_kind(p.node_kind),
+            operation_ref: p.operation_ref.as_ref().map(Id::to_string),
+            performer_refs: refs(member, RelationKind::PerformedBy),
+            consumes_refs: refs(member, RelationKind::Consumes),
+            produces_refs: refs(member, RelationKind::Produces),
+            condition_expr: p.condition_expr.clone(),
+            message_ref: p.message_ref.as_ref().map(Id::to_string),
+            timer_expr: p.timer_expr.clone(),
+        });
+        for to in targets(graph, member, RelationKind::Next) {
+            if members.contains(&to) {
+                flows.insert((member.to_string(), to.to_string()));
+            }
+        }
+    }
     Ok(Process {
         id: node.id.to_string(),
         name: payload.name.clone(),
@@ -657,6 +707,11 @@ fn process(graph: &Graph, node: &Node) -> Result<Process, ApiError> {
         steps,
         branches,
         validation: validation.into_iter().collect(),
+        nodes,
+        flows: flows
+            .into_iter()
+            .map(|(from, to)| ProcessFlowView { from, to })
+            .collect(),
     })
 }
 
@@ -1532,6 +1587,15 @@ async fn mutate_process_steps(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let request: ProcessStepRequest = parse_body(&body)?;
+    let reason = match &request {
+        ProcessStepRequest::Add { reason, .. }
+        | ProcessStepRequest::Move { reason, .. }
+        | ProcessStepRequest::Remove { reason, .. }
+        | ProcessStepRequest::MoveLane { reason, .. } => reason.clone(),
+    };
+    if let Some(reason) = &reason {
+        require_clean_reason(reason)?;
+    }
     let position =
         |p: u64| usize::try_from(p).map_err(|_| ApiError::invalid("position is too large"));
     let ref_of = |text: &str| {
@@ -1541,6 +1605,7 @@ async fn mutate_process_steps(
         ProcessStepRequest::Add {
             operation_ref,
             position: p,
+            ..
         } => ProcessStepChange::Add {
             operation_ref: ref_of(operation_ref)?,
             position: position(*p)?,
@@ -1548,12 +1613,21 @@ async fn mutate_process_steps(
         ProcessStepRequest::Move {
             node_ref,
             position: p,
+            ..
         } => ProcessStepChange::Move {
             node_ref: ref_of(node_ref)?,
             position: position(*p)?,
         },
-        ProcessStepRequest::Remove { node_ref } => ProcessStepChange::Remove {
+        ProcessStepRequest::Remove { node_ref, .. } => ProcessStepChange::Remove {
             node_ref: ref_of(node_ref)?,
+        },
+        ProcessStepRequest::MoveLane {
+            node_ref,
+            performer_ref,
+            ..
+        } => ProcessStepChange::MoveLane {
+            node_ref: ref_of(node_ref)?,
+            performer_ref: ref_of(performer_ref)?,
         },
     };
     let loaded = state.load_head()?;
@@ -1575,9 +1649,10 @@ async fn mutate_process_steps(
         .with_details(json!({ "reason": e.to_string() })),
         ProcessStepError::Missing(id) => ApiError::not_found(format!("{id} not found")),
         ProcessStepError::PositionOutOfRange { .. } => ApiError::invalid(error.to_string()),
-        ProcessStepError::NoChange(_) => {
-            ApiError::unprocessable("E_NO_CHANGE", "the step is already at this position")
-        }
+        ProcessStepError::NoChange(_) => ApiError::unprocessable(
+            "E_NO_CHANGE",
+            "the requested process step change makes no semantic change",
+        ),
         ProcessStepError::HasRelations { node_ref, edges } => ApiError::conflict(
             "E_PROCESS_STEP_HAS_RELATIONS",
             "the step has relations other than its flow",
@@ -1595,7 +1670,7 @@ async fn mutate_process_steps(
         &loaded,
         &proposal,
         false,
-        None,
+        reason.as_deref(),
         created_at,
         "mutate_process_steps",
     )?;

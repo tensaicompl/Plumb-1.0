@@ -1707,6 +1707,291 @@ mod process_contract {
         ));
     }
 
+    // ------------------------------------------------------------------ lane moves (Hotfix 079)
+
+    fn lane(g: &Graph, node_ref: &str, performer: &str) -> Result<Proposal, ProcessStepError> {
+        change(
+            g,
+            ProcessStepChange::MoveLane {
+                node_ref: id(node_ref),
+                performer_ref: id(performer),
+            },
+        )
+    }
+
+    /// The active performed_by targets of `node_ref`, sorted.
+    fn performers(g: &Graph, node_ref: &str) -> Vec<Id> {
+        let mut out: Vec<Id> = g
+            .outgoing_edge_ids(&id(node_ref))
+            .iter()
+            .filter_map(|e| g.edge(e))
+            .filter(|e| {
+                e.kind == RelationKind::PerformedBy && matches!(e.status, Accepted | Proposed)
+            })
+            .map(|e| e.to.clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Every edge of `kind` in the graph, as (id, edge) pairs.
+    fn edges_of(g: &Graph, kind: RelationKind) -> Vec<(Id, Edge)> {
+        g.edges()
+            .values()
+            .filter(|e| e.kind == kind)
+            .map(|e| (e.id.clone(), e.clone()))
+            .collect()
+    }
+
+    /// The imported leave flow whose first step is performed by `brole:clerk`, consumes the
+    /// received event and produces the done outcome.
+    fn staffed() -> Graph {
+        with_nodes(
+            &imported(&["operation:approve", "operation:ship"]),
+            vec![],
+            vec![
+                edge(RelationKind::PerformedBy, LEAVE_STEP0, "brole:clerk"),
+                edge(RelationKind::Consumes, LEAVE_STEP0, "event:received"),
+                edge(RelationKind::Produces, LEAVE_STEP0, "outcome:done"),
+            ],
+        )
+    }
+
+    #[test]
+    fn lane_move_replaces_the_performer_and_preserves_everything_else() {
+        let g = staffed();
+        let p = lane(&g, LEAVE_STEP0, "actor:bot").unwrap();
+        assert_eq!(p.stage, StageId::S2);
+        assert_eq!(p.materiality, ProposalMateriality::Semantic);
+        assert_eq!(p.acceptance_policy, AcceptancePolicy::HumanConfirm);
+        assert_eq!(p.patch_set.base_semantic_hash, g.semantic_hash().unwrap());
+        let after = apply_patch(&g, &p.patch_set).unwrap().graph;
+        assert_eq!(after.node(&id(LEAVE_STEP0)).unwrap().status, Accepted);
+        assert_eq!(
+            after.node(&id(LEAVE_STEP0)).unwrap().payload,
+            g.node(&id(LEAVE_STEP0)).unwrap().payload
+        );
+        assert_eq!(performers(&g, LEAVE_STEP0), ids(&["brole:clerk"]));
+        assert_eq!(performers(&after, LEAVE_STEP0), ids(&["actor:bot"]));
+        // Flow, inputs, outputs and unrelated performer relations are untouched.
+        for kind in [
+            RelationKind::Next,
+            RelationKind::Consumes,
+            RelationKind::Produces,
+        ] {
+            assert_eq!(edges_of(&after, kind.clone()), edges_of(&g, kind));
+        }
+        assert_eq!(
+            performers(&after, "operation:approve"),
+            ids(&["brole:clerk"])
+        );
+        assert_eq!(steps_of(&after), steps_of(&g));
+        // The other step keeps having no performer.
+        assert!(performers(&after, LEAVE_STEP1).is_empty());
+    }
+
+    #[test]
+    fn lane_move_accepts_actors_and_business_roles_and_detects_no_change() {
+        let g = imported(&["operation:approve", "operation:ship"]);
+        // From no performer to a BusinessRole, then to an Actor.
+        let to_role = changed(
+            &g,
+            ProcessStepChange::MoveLane {
+                node_ref: id(LEAVE_STEP1),
+                performer_ref: id("brole:clerk"),
+            },
+        );
+        assert_eq!(performers(&to_role, LEAVE_STEP1), ids(&["brole:clerk"]));
+        let to_actor = changed(
+            &to_role,
+            ProcessStepChange::MoveLane {
+                node_ref: id(LEAVE_STEP1),
+                performer_ref: id("actor:bot"),
+            },
+        );
+        assert_eq!(performers(&to_actor, LEAVE_STEP1), ids(&["actor:bot"]));
+        // Exactly that single performer already: no change.
+        assert_eq!(
+            lane(&to_actor, LEAVE_STEP1, "actor:bot"),
+            Err(ProcessStepError::NoChange(id(LEAVE_STEP1)))
+        );
+    }
+
+    #[test]
+    fn lane_move_collapses_several_performers_by_removing_only_the_others() {
+        let g = with_nodes(
+            &staffed(),
+            vec![],
+            vec![edge(RelationKind::PerformedBy, LEAVE_STEP0, "actor:bot")],
+        );
+        assert_eq!(
+            performers(&g, LEAVE_STEP0),
+            ids(&["actor:bot", "brole:clerk"])
+        );
+        let p = lane(&g, LEAVE_STEP0, "actor:bot").unwrap();
+        let SemanticPatch::Compound { patches } = &p.patch_set.patch else {
+            panic!("not a Compound")
+        };
+        // Only the clerk relation is removed; the bot relation is kept, not re-added.
+        assert_eq!(patches.len(), 1);
+        assert!(matches!(&patches[0], SemanticPatch::RemoveEdge { target }
+            if target.id == id("rel:fx-process_node-fd642d99e91dd629-brole-clerk")));
+        let after = apply_patch(&g, &p.patch_set).unwrap().graph;
+        assert_eq!(performers(&after, LEAVE_STEP0), ids(&["actor:bot"]));
+        assert!(after
+            .edge(&id("rel:fx-process_node-fd642d99e91dd629-actor-bot"))
+            .is_some());
+    }
+
+    #[test]
+    fn lane_move_reactivates_an_inactive_deterministic_relation() {
+        let g = imported(&["operation:approve", "operation:ship"]);
+        // The deterministic performed_by identity of LEAVE_STEP0 -> actor:bot.
+        let first = lane(&g, LEAVE_STEP0, "actor:bot").unwrap();
+        let SemanticPatch::Compound { patches } = &first.patch_set.patch else {
+            panic!("not a Compound")
+        };
+        let [SemanticPatch::AddEdge { edge: desired }] = patches.as_slice() else {
+            panic!("expected one AddEdge")
+        };
+        let mut inactive = desired.clone();
+        inactive.status = ElementStatus::Deprecated;
+        let g = with_nodes(
+            &g,
+            vec![],
+            vec![
+                inactive,
+                edge(RelationKind::PerformedBy, LEAVE_STEP0, "brole:clerk"),
+            ],
+        );
+        let p = lane(&g, LEAVE_STEP0, "actor:bot").unwrap();
+        let SemanticPatch::Compound { patches } = &p.patch_set.patch else {
+            panic!("not a Compound")
+        };
+        assert!(patches.iter().any(|patch| matches!(patch,
+            SemanticPatch::SetStatus { target, from: ElementStatus::Deprecated, to: Accepted }
+                if target.id == desired.id)));
+        assert!(!patches
+            .iter()
+            .any(|patch| matches!(patch, SemanticPatch::AddEdge { .. })));
+        let after = apply_patch(&g, &p.patch_set).unwrap().graph;
+        assert_eq!(performers(&after, LEAVE_STEP0), ids(&["actor:bot"]));
+        assert_eq!(after.edge(&desired.id).unwrap().status, Accepted);
+    }
+
+    #[test]
+    fn lane_move_rejects_invalid_targets_and_performers() {
+        let g = staffed();
+        // Only Accepted human or service tasks of the selected process.
+        for wrong in [LEAVE_START, LEAVE_END] {
+            assert!(matches!(
+                lane(&g, wrong, "actor:bot"),
+                Err(ProcessStepError::WrongTarget { node_ref, .. }) if node_ref == id(wrong)
+            ));
+        }
+        assert_eq!(
+            lane(&g, "process_node:missing", "actor:bot"),
+            Err(ProcessStepError::Missing(id("process_node:missing")))
+        );
+        // A task of another process is refused for this process.
+        let other_import = propose_linear_process_import(
+            &g,
+            "Other Flow",
+            &ids(&["operation:invoice"]),
+            &id("agent:analyst"),
+            ts(AT),
+        )
+        .unwrap();
+        let both = apply_patch(&g, &other_import.patch_set).unwrap().graph;
+        let other = both
+            .nodes()
+            .values()
+            .find(|n| matches!(&n.payload, NodePayload::Process(p) if p.name == "Other Flow"))
+            .unwrap()
+            .id
+            .clone();
+        assert!(matches!(
+            propose_process_step_change(
+                &both,
+                &other,
+                &ProcessStepChange::MoveLane {
+                    node_ref: id(LEAVE_STEP0),
+                    performer_ref: id("actor:bot"),
+                },
+                &id("agent:analyst"),
+                ts(AT),
+            ),
+            Err(ProcessStepError::WrongTarget { node_ref, .. }) if node_ref == id(LEAVE_STEP0)
+        ));
+        // Performers: missing, not Accepted, or not an Actor/BusinessRole.
+        assert_eq!(
+            lane(&g, LEAVE_STEP0, "actor:ghost"),
+            Err(ProcessStepError::Missing(id("actor:ghost")))
+        );
+        let proposed_actor = with_nodes(
+            &g,
+            vec![node(
+                "actor:temp",
+                Proposed,
+                NodePayload::Actor(Actor {
+                    name: "Temp".into(),
+                    actor_kind: ActorKind::Human,
+                }),
+            )],
+            vec![],
+        );
+        for (graph, performer) in [
+            (&proposed_actor, "actor:temp"),
+            (&g, "secrole:clerk"),
+            (&g, "operation:approve"),
+            (&g, "entity:order"),
+            (&g, LEAVE_FLOW),
+        ] {
+            assert!(
+                matches!(
+                    lane(graph, LEAVE_STEP0, performer),
+                    Err(ProcessStepError::WrongTarget { node_ref, .. }) if node_ref == id(performer)
+                ),
+                "{performer}"
+            );
+        }
+    }
+
+    #[test]
+    fn lane_move_does_not_require_a_linear_process() {
+        let g = staffed();
+        // A branch: an extra flow edge from the start to the last step.
+        let branched = with_nodes(
+            &g,
+            vec![],
+            vec![edge(RelationKind::Next, LEAVE_START, LEAVE_STEP1)],
+        );
+        assert!(matches!(
+            linear_process(&branched, &id(LEAVE_FLOW)),
+            Err(LinearProcessError::NotLinear { .. })
+        ));
+        // Linear step changes still refuse it; a valid lane move does not.
+        assert!(matches!(
+            change(
+                &branched,
+                ProcessStepChange::Move {
+                    node_ref: id(LEAVE_STEP0),
+                    position: 1
+                }
+            ),
+            Err(ProcessStepError::Linear(
+                LinearProcessError::NotLinear { .. }
+            ))
+        ));
+        let p = lane(&branched, LEAVE_STEP0, "actor:bot").unwrap();
+        let after = apply_patch(&branched, &p.patch_set).unwrap().graph;
+        assert_eq!(performers(&after, LEAVE_STEP0), ids(&["actor:bot"]));
+        assert_eq!(
+            edges_of(&after, RelationKind::Next),
+            edges_of(&branched, RelationKind::Next)
+        );
+    }
+
     // ------------------------------------------------------------------ guards
 
     #[test]
@@ -1756,7 +2041,6 @@ mod process_contract {
             "ReplacePayload",
             "MergeNodes",
             "Supersede",
-            "SetStatus",
             "plumb_expr",
         ] {
             assert!(
@@ -1764,6 +2048,17 @@ mod process_contract {
                 "process.rs contains {forbidden}"
             );
         }
+        // U2.4 (Hotfix 079, human-approved narrow exception): the only status change in
+        // process.rs is the lane move reactivating its inactive deterministic performed_by
+        // relation; no other SetStatus may appear.
+        assert_eq!(
+            source.matches("SetStatus").count(),
+            1,
+            "SetStatus occurrences"
+        );
+        let lane_move = &source[source.find("fn propose_lane_move(").unwrap()
+            ..source.find("fn propose_linear_step_change(").unwrap()];
+        assert!(lane_move.contains("SemanticPatch::SetStatus {"));
         let analysis = include_str!("../../plumb-validation/src/process_analysis.rs");
         for forbidden in [
             "RuleEvaluator",

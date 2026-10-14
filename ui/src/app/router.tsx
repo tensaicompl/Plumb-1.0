@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, createRouter, type RouterHistory } from "
 
 import { GlossaryPage } from "../features/glossary/GlossaryPage";
 import { HomePage } from "../features/home/HomePage";
+import { ProcessesPage } from "../features/processes/ProcessesPage";
 import { QuestionsPage } from "../features/questions/QuestionsPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
@@ -65,6 +66,13 @@ const sessionsRoute = createRoute({
   },
 });
 
+// U2.4: the process swimlane view; process selection happens inside the page.
+const processesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/model/processes",
+  component: ProcessesPage,
+});
+
 export const routeTree = rootRoute.addChildren([
   indexRoute,
   requirementsRoute,
@@ -73,6 +81,7 @@ export const routeTree = rootRoute.addChildren([
   sentencesRoute,
   questionsRoute,
   sessionsRoute,
+  processesRoute,
 ]);
 
 /** A router over the route tree (browser history unless `history` is given). */

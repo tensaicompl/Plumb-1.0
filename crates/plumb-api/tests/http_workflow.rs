@@ -2408,6 +2408,209 @@ mod http_workflow {
         );
     }
 
+    /// Active performed_by targets of `node` on the head, sorted.
+    fn performers_of(app: &App, node: &Id) -> Vec<String> {
+        let g = head(app).graph;
+        let mut out: Vec<String> = g
+            .outgoing_edge_ids(node)
+            .iter()
+            .filter_map(|e| g.edge(e))
+            .filter(|e| {
+                e.kind == plumb_psg::RelationKind::PerformedBy
+                    && matches!(e.status, ElementStatus::Accepted | ElementStatus::Proposed)
+            })
+            .map(|e| e.to.to_string())
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[tokio::test]
+    async fn http_workflow_move_lane_changes_only_the_performer() {
+        let app = app();
+        let text = mermaid("Leave Flow", &["op:submit", "op:approve"]);
+        let r = write(
+            &app,
+            "/api/processes/import",
+            Some(json!({"format": "mermaid", "text": text})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let process = plumb_functional::process_id(&id(PROJECT), "Leave Flow").unwrap();
+        let linear = plumb_functional::linear_process(&head(&app).graph, &process).unwrap();
+        let (task, other_task) = (linear.interior[0].clone(), linear.interior[1].clone());
+        // A BusinessRole, an unrelated relation of the task and a branch (non-linear flow).
+        direct_commit(
+            &app,
+            SemanticPatch::Compound {
+                patches: vec![
+                    SemanticPatch::AddNode {
+                        node: node(
+                            "brole:approver",
+                            "Accepted",
+                            "BusinessRole",
+                            json!({"name": "Approver"}),
+                        ),
+                    },
+                    SemanticPatch::AddEdge {
+                        edge: edge(
+                            "rel:lane-perf",
+                            "performed_by",
+                            task.as_str(),
+                            "actor:clerk",
+                        ),
+                    },
+                    SemanticPatch::AddNode {
+                        node: node(
+                            "outcome:approved",
+                            "Accepted",
+                            "Outcome",
+                            json!({"name": "Approved", "outcome_kind": "success"}),
+                        ),
+                    },
+                    SemanticPatch::AddEdge {
+                        edge: edge(
+                            "rel:lane-spec",
+                            "produces",
+                            task.as_str(),
+                            "outcome:approved",
+                        ),
+                    },
+                    SemanticPatch::AddEdge {
+                        edge: edge(
+                            "rel:lane-branch",
+                            "next",
+                            linear.start.as_str(),
+                            other_task.as_str(),
+                        ),
+                    },
+                ],
+            },
+        );
+        assert!(plumb_functional::linear_process(&head(&app).graph, &process).is_err());
+        let steps = format!("/api/processes/{process}/steps");
+        let lane = |performer: &str| json!({"op": "move_lane", "node_ref": task.as_str(), "performer_ref": performer, "reason": null});
+        // If-Match is required.
+        assert_error(
+            &post(&app, &steps, None, Some(lane("brole:approver"))).await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        assert_error(
+            &post(
+                &app,
+                &steps,
+                Some("psg:sha256:stale"),
+                Some(lane("brole:approver")),
+            )
+            .await,
+            StatusCode::PRECONDITION_FAILED,
+            "E_PRECONDITION_FAILED",
+        );
+        // Linear step changes refuse the branched process; a valid lane move does not.
+        assert_error(
+            &write(
+                &app,
+                &steps,
+                Some(json!({"op": "move", "node_ref": task.as_str(), "position": 1})),
+            )
+            .await,
+            StatusCode::CONFLICT,
+            "E_PROCESS_NOT_LINEAR",
+        );
+        let before = head(&app).graph;
+        let flows = |g: &plumb_psg::Graph| -> Vec<(String, String, String)> {
+            let mut v: Vec<(String, String, String)> = g
+                .edges()
+                .values()
+                .filter(|e| e.kind == plumb_psg::RelationKind::Next)
+                .map(|e| (e.id.to_string(), e.from.to_string(), e.to.to_string()))
+                .collect();
+            v.sort();
+            v
+        };
+        let r = write(&app, &steps, Some(lane("brole:approver"))).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let after = head(&app).graph;
+        assert_eq!(
+            performers_of(&app, &task),
+            vec!["brole:approver".to_owned()]
+        );
+        assert_eq!(flows(&after), flows(&before));
+        assert!(after.edge(&id("rel:lane-spec")).is_some());
+        assert_eq!(
+            after.node(&task).unwrap().payload,
+            before.node(&task).unwrap().payload
+        );
+        // The projection reports the new lane; the same performer is no change.
+        let projected = get(&app, &format!("/api/processes/{process}")).await.json();
+        let view = projected["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == task.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(view["performer_refs"], json!(["brole:approver"]));
+        assert_error(
+            &write(&app, &steps, Some(lane("brole:approver"))).await,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "E_NO_CHANGE",
+        );
+        // Invalid targets and performers commit nothing.
+        let revision_before = revision(&app).await;
+        for (body, status, code) in [
+            (
+                json!({"op": "move_lane", "node_ref": linear.start.as_str(), "performer_ref": "actor:clerk"}),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_SEMANTIC_INVARIANT",
+            ),
+            (
+                json!({"op": "move_lane", "node_ref": "process_node:ghost", "performer_ref": "actor:clerk"}),
+                StatusCode::NOT_FOUND,
+                "E_NOT_FOUND",
+            ),
+            (
+                json!({"op": "move_lane", "node_ref": task.as_str(), "performer_ref": "stakeholder:hr"}),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_SEMANTIC_INVARIANT",
+            ),
+            (
+                json!({"op": "move_lane", "node_ref": task.as_str(), "performer_ref": "op:submit"}),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_SEMANTIC_INVARIANT",
+            ),
+            (
+                json!({"op": "move_lane", "node_ref": task.as_str(), "performer_ref": "actor:ghost"}),
+                StatusCode::NOT_FOUND,
+                "E_NOT_FOUND",
+            ),
+            (
+                json!({"op": "movelane", "node_ref": task.as_str(), "performer_ref": "actor:clerk"}),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            // The reason is read and must be clean text when present.
+            (
+                json!({"op": "move_lane", "node_ref": task.as_str(), "performer_ref": "actor:clerk", "reason": " padded"}),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+        ] {
+            assert_error(&write(&app, &steps, Some(body)).await, status, code);
+        }
+        assert_eq!(revision(&app).await, revision_before);
+        // A clean reason goes through the ordinary shared write path.
+        let r = write(
+            &app,
+            &steps,
+            Some(json!({"op": "move_lane", "node_ref": task.as_str(), "performer_ref": "actor:clerk", "reason": "Clerks approve now."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_eq!(performers_of(&app, &task), vec!["actor:clerk".to_owned()]);
+    }
+
     // ------------------------------------------------------------------ assumptions
 
     #[tokio::test]

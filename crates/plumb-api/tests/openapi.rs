@@ -466,9 +466,15 @@ mod openapi {
             .iter()
             .map(|b| b["properties"]["op"]["enum"].clone())
             .collect();
+        // Hotfix 079 adds move_lane (snake_case, never movelane).
         assert_eq!(
             step_ops,
-            [json!(["add"]), json!(["move"]), json!(["remove"])]
+            [
+                json!(["add"]),
+                json!(["move"]),
+                json!(["remove"]),
+                json!(["move_lane"])
+            ]
         );
         assert_eq!(schema(&doc, "ProcessFormat")["enum"], json!(["mermaid"]));
         assert!(!doc.to_string().contains("\"svg\""));
@@ -1956,8 +1962,9 @@ mod openapi {
             (139, 34, 126, 34, 1)
         );
         let schemas = doc["components"]["schemas"].as_object().unwrap();
-        // Hotfix 073 adds SemanticElementDiff and SemanticChangePreviewResponse.
-        assert_eq!(schemas.len(), 117);
+        // Hotfix 073 adds SemanticElementDiff and SemanticChangePreviewResponse; Hotfix 079 adds
+        // ProcessNodeView, ProcessNodeViewKind and ProcessFlowView.
+        assert_eq!(schemas.len(), 120);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -2159,7 +2166,7 @@ mod openapi {
             );
         }
 
-        // Process steps: exactly add, move and remove.
+        // Process steps: exactly add, move, remove and (Hotfix 079) move_lane; reason optional.
         let steps: BTreeMap<String, BTreeSet<String>> = schema(&doc, "ProcessStepRequest")["oneOf"]
             .as_array()
             .unwrap()
@@ -2185,6 +2192,10 @@ mod openapi {
                 ("add".to_owned(), set(&["op", "operation_ref", "position"])),
                 ("move".to_owned(), set(&["op", "node_ref", "position"])),
                 ("remove".to_owned(), set(&["op", "node_ref"])),
+                (
+                    "move_lane".to_owned(),
+                    set(&["op", "node_ref", "performer_ref"])
+                ),
             ])
         );
         assert!(validate_example(
@@ -2521,6 +2532,148 @@ mod openapi {
                 "{path}"
             );
         }
+    }
+
+    // ------------------------------------------------------------------ Hotfix 079
+
+    #[test]
+    fn openapi_hotfix_079_process_projection_and_lane_move() {
+        let doc = doc();
+        assert_eq!(operations(&doc).len(), 74);
+        assert_eq!(doc["x-plumb-contract-version"], json!(3));
+        // Process keeps its summary fields and gains the structured projection.
+        let process_fields = set(&[
+            "id",
+            "name",
+            "lanes",
+            "steps",
+            "branches",
+            "validation",
+            "nodes",
+            "flows",
+        ]);
+        assert_eq!(properties(&doc, "Process"), process_fields);
+        assert_eq!(required(&doc, "Process"), process_fields);
+        let process = schema(&doc, "Process");
+        assert_eq!(
+            process["properties"]["nodes"]["items"],
+            component_ref("ProcessNodeView")
+        );
+        assert_eq!(
+            process["properties"]["flows"]["items"],
+            component_ref("ProcessFlowView")
+        );
+        let steps = process["properties"]["steps"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(steps.contains("Sorted ProcessNode IDs"), "{steps}");
+        assert!(steps.contains("not semantic execution order"), "{steps}");
+        assert!(!steps.contains("operation names"), "{steps}");
+        // ProcessNodeView: nine required properties, four of them nullable.
+        let node = schema(&doc, "ProcessNodeView");
+        let node_fields = set(&[
+            "id",
+            "kind",
+            "operation_ref",
+            "performer_refs",
+            "consumes_refs",
+            "produces_refs",
+            "condition_expr",
+            "message_ref",
+            "timer_expr",
+        ]);
+        assert_eq!(node["additionalProperties"], json!(false));
+        assert_eq!(properties(&doc, "ProcessNodeView"), node_fields);
+        assert_eq!(required(&doc, "ProcessNodeView"), node_fields);
+        for nullable in [
+            "operation_ref",
+            "condition_expr",
+            "message_ref",
+            "timer_expr",
+        ] {
+            assert_eq!(
+                node["properties"][nullable]["type"],
+                json!(["string", "null"]),
+                "{nullable}"
+            );
+        }
+        for list in ["performer_refs", "consumes_refs", "produces_refs"] {
+            assert_eq!(node["properties"][list]["type"], json!("array"), "{list}");
+        }
+        assert_eq!(
+            node["properties"]["kind"]["$ref"],
+            component_ref("ProcessNodeViewKind")["$ref"]
+        );
+        assert_eq!(
+            enum_of(&doc, "ProcessNodeViewKind"),
+            json!([
+                "start",
+                "end",
+                "human_task",
+                "service_task",
+                "exclusive_gateway",
+                "parallel_split",
+                "parallel_join",
+                "message_event",
+                "timer_event",
+                "error_event",
+                "subprocess"
+            ])
+        );
+        // ProcessFlowView: exactly from and to.
+        assert_eq!(
+            schema(&doc, "ProcessFlowView")["additionalProperties"],
+            json!(false)
+        );
+        assert_eq!(properties(&doc, "ProcessFlowView"), set(&["from", "to"]));
+        assert_eq!(required(&doc, "ProcessFlowView"), set(&["from", "to"]));
+        // Every step request variant takes an optional, nullable reason.
+        for branch in schema(&doc, "ProcessStepRequest")["oneOf"]
+            .as_array()
+            .unwrap()
+        {
+            assert_eq!(
+                branch["properties"]["reason"]["type"],
+                json!(["string", "null"]),
+                "{branch}"
+            );
+            assert!(!branch["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("reason")));
+        }
+        assert!(validate_example(
+            &doc,
+            &component_ref("ProcessStepRequest"),
+            &json!({"op": "move_lane", "node_ref": "process_node:1", "performer_ref": "actor:1", "reason": null}),
+            "move_lane"
+        )
+        .is_ok());
+        assert!(validate_example(
+            &doc,
+            &component_ref("ProcessStepRequest"),
+            &json!({"op": "movelane", "node_ref": "process_node:1", "performer_ref": "actor:1"}),
+            "movelane"
+        )
+        .is_err());
+        assert!(!doc.to_string().contains("movelane"));
+        // No new process operation or interchange format.
+        assert_eq!(schema(&doc, "ProcessFormat")["enum"], json!(["mermaid"]));
+        let process_ops: BTreeSet<String> = OPERATIONS
+            .iter()
+            .filter(|s| s.path.starts_with("/api/processes"))
+            .map(|s| s.operation_id.to_owned())
+            .collect();
+        assert_eq!(
+            process_ops,
+            set(&[
+                "list_processes",
+                "get_process",
+                "mutate_process_steps",
+                "import_process",
+                "export_process"
+            ])
+        );
     }
 
     // ------------------------------------------------------------------ source guards

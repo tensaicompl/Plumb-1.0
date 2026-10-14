@@ -240,7 +240,7 @@ describe("HomePage shell", () => {
 
     // Only implemented pages are registered routes: no placeholder for a future page.
     expect(Object.keys(router.routesByPath).sort()).toEqual(
-      ["/", "/model/glossary", "/model/sentences", "/questions", "/requirements", "/requirements/$requirementId", "/sessions"],
+      ["/", "/model/glossary", "/model/processes", "/model/sentences", "/questions", "/requirements", "/requirements/$requirementId", "/sessions"],
     );
   });
 
