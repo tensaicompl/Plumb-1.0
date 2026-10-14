@@ -3172,6 +3172,16 @@ mod http_workflow {
             body["revision"].as_str().unwrap()
         );
         assert_eq!(stored.origin_ref, Some(id(&session)));
+        // Hotfix 077: the card kind is the authoritative ProposalKind of exactly the stored
+        // proposal, so its one positive action endpoint is /create.
+        assert_eq!(stored.proposal_kind, WorkflowProposalKind::Create);
+        assert_eq!(stored.proposal_id.as_str(), proposal_id);
+        let persisted: Proposal = serde_json::from_str(&stored.proposal_json).unwrap();
+        assert_eq!(persisted.id.as_str(), proposal_id);
+        assert_eq!(
+            proposals[0]["payload"],
+            serde_json::to_value(&persisted.patch_set.patch).unwrap()
+        );
         let metrics = get(&app, &format!("/api/sessions/{session}/metrics"))
             .await
             .json();

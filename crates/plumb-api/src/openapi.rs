@@ -1758,7 +1758,9 @@ pub enum SessionStage {
 #[serde(deny_unknown_fields)]
 pub struct SessionProposalView {
     pub id: String,
-    pub kind: String,
+    /// The authoritative workflow class of the proposal (Hotfix 077): the one positive proposal
+    /// action endpoint that can confirm it.
+    pub kind: ProposalKind,
     #[schema(value_type = Object)]
     pub payload: Value,
     pub intake: IntakeReportView,

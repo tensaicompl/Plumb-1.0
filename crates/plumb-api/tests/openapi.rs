@@ -632,6 +632,17 @@ mod openapi {
             answer["properties"]["action"]["$ref"],
             component_ref("ProposalKind")["$ref"]
         );
+        // Hotfix 077: a session proposal card carries its authoritative ProposalKind.
+        let card = schema(&doc, "SessionProposalView");
+        let fields = set(&["id", "kind", "payload", "intake"]);
+        assert_eq!(properties(&doc, "SessionProposalView"), fields);
+        assert_eq!(required(&doc, "SessionProposalView"), fields);
+        assert_eq!(card["required"].as_array().unwrap().len(), 4);
+        assert_eq!(card["additionalProperties"], json!(false));
+        assert_eq!(
+            card["properties"]["kind"]["$ref"],
+            component_ref("ProposalKind")["$ref"]
+        );
         assert_eq!(extra("CreateSessionResponse"), set(&["id"]));
         assert_eq!(
             extra("SessionTurnResponse"),

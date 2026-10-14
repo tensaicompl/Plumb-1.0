@@ -6,6 +6,7 @@ import { QuestionsPage } from "../features/questions/QuestionsPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
 import { SentencesPage } from "../features/sentences/SentencesPage";
+import { SessionPanel } from "../features/sessions/SessionPanel";
 import { AppShell } from "./AppShell";
 
 // The explicit route tree. Each page is registered by the task that implements it (Hotfix 071);
@@ -55,6 +56,15 @@ const questionsRoute = createRoute({
   component: QuestionsPage,
 });
 
+// U2.3: the project room, the real project-mode session panel (scope []).
+const sessionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sessions",
+  component: function ProjectRoomRoute() {
+    return <SessionPanel mode="project" />;
+  },
+});
+
 export const routeTree = rootRoute.addChildren([
   indexRoute,
   requirementsRoute,
@@ -62,6 +72,7 @@ export const routeTree = rootRoute.addChildren([
   glossaryRoute,
   sentencesRoute,
   questionsRoute,
+  sessionsRoute,
 ]);
 
 /** A router over the route tree (browser history unless `history` is given). */

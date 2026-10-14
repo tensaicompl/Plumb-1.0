@@ -1938,7 +1938,11 @@ export interface components {
         SessionProposalView: {
             id: string;
             intake: components["schemas"]["IntakeReportView"];
-            kind: string;
+            /**
+             * @description The authoritative workflow class of the proposal (Hotfix 077): the one positive proposal
+             *     action endpoint that can confirm it.
+             */
+            kind: components["schemas"]["ProposalKind"];
             payload: Record<string, never>;
         };
         /**
@@ -6869,7 +6873,7 @@ export interface operations {
                      *               }
                      *             ]
                      *           },
-                     *           "kind": "example",
+                     *           "kind": "accept",
                      *           "payload": {}
                      *         }
                      *       ],

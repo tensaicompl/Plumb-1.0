@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { Outlet, useRouter, useRouterState } from "@tanstack/react-router";
+import { Outlet, useMatch, useRouter, useRouterState } from "@tanstack/react-router";
 import { useState, type FormEvent, type MouseEvent } from "react";
 
 import { apiClient } from "../api/client";
 import type { components } from "../api/schema";
 import { useEvents } from "../api/useEvents";
 import { ConflictDialog } from "../components/ConflictDialog";
+import { SessionPanel } from "../features/sessions/SessionPanel";
 import { t } from "../i18n";
 import { useMe } from "./auth";
 import { PILOT_NAVIGATION, type NavLink } from "./nav";
@@ -183,8 +184,32 @@ function GlobalSearch() {
  * The application shell: identity header, global search, the pilot navigation, the DesignEvent
  * subscription, the single global ConflictDialog and the current route. It owns no model data.
  */
+/** The shell-level Project room launcher (Hotfix 077): client-side navigation to /sessions. */
+function ProjectRoomLauncher() {
+  const router = useRouter();
+  const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    router.history.push("/sessions");
+  };
+  return (
+    <a href="/sessions" onClick={onClick} data-testid="project-room-launcher" className="rounded border px-2 py-1 text-sm">
+      {t("session.projectRoom")}
+    </a>
+  );
+}
+
 export function AppShell() {
   useEvents();
+  // Hotfix 077: the only resource-scoped session view is the exact requirement-detail match; its
+  // decoded route parameter is the candidate scope.
+  const requirementId = useMatch({
+    from: "/requirements/$requirementId",
+    shouldThrow: false,
+    select: (match) => match.params.requirementId,
+  });
   return (
     <div className="flex min-h-screen flex-col">
       <header className="flex items-center justify-between gap-4 border-b px-4 py-2">
@@ -192,6 +217,7 @@ export function AppShell() {
           {t("app.name")}
         </span>
         <GlobalSearch />
+        <ProjectRoomLauncher />
         <Identity />
       </header>
       <div className="flex flex-1">
@@ -199,6 +225,11 @@ export function AppShell() {
         <main className="flex-1 p-4">
           <Outlet />
         </main>
+        {requirementId !== undefined && (
+          <aside className="w-96 shrink-0 border-l p-3" data-testid="scoped-session-aside">
+            <SessionPanel key={requirementId} mode="requirement" requirementId={requirementId} />
+          </aside>
+        )}
       </div>
       <ConflictDialog />
     </div>

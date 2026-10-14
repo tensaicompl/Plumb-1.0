@@ -2778,7 +2778,8 @@
             "$ref": "#/components/schemas/IntakeReportView"
           },
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/ProposalKind",
+            "description": "The authoritative workflow class of the proposal (Hotfix 077): the one positive proposal\naction endpoint that can confirm it."
           },
           "payload": {
             "type": "object"
@@ -8782,7 +8783,7 @@
                           }
                         ]
                       },
-                      "kind": "example",
+                      "kind": "accept",
                       "payload": {}
                     }
                   ],

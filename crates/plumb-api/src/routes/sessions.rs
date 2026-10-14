@@ -397,7 +397,7 @@ async fn create_session_turn(
         });
         views.push(SessionProposalView {
             id: card.proposal.id.to_string(),
-            kind: wire(&kind)?,
+            kind,
             payload: serde_json::to_value(&card.proposal.patch_set.patch)
                 .map_err(|_| ApiError::internal("proposal_payload"))?,
             intake: intake_view(&card.intake)?,
