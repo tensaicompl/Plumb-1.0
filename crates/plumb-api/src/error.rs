@@ -152,6 +152,16 @@ impl ApiError {
         .with_details(json!({ "error": error }))
     }
 
+    /// 409 `E_PROPOSAL_SET_CONFLICT` (R0.3, architecture §4.7): the members of a proposal set
+    /// are not mutually compatible on their shared base; nothing was committed.
+    pub fn proposal_set_conflict(details: Value) -> ApiError {
+        ApiError::conflict(
+            "E_PROPOSAL_SET_CONFLICT",
+            "the proposals of the set are not compatible on their shared base",
+        )
+        .with_details(details)
+    }
+
     /// 409 `E_INFERENCE_REQUIRED` (R0.2, architecture §20): under the `null` provider mode a
     /// recipe phase plans `Required` inference requests, so it fails before any provider call
     /// or artifact write. `task_kinds` are the phase's sorted, unique required task kinds.

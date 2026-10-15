@@ -321,6 +321,74 @@ pub fn apply(
     Done::new(&result, text)
 }
 
+/// The five positive set actions (R0.3); `reject` is not a set action.
+const SET_ACTIONS: [(&str, ProposalAction); 5] = [
+    ("accept", ProposalAction::Accept),
+    ("create", ProposalAction::Create),
+    ("link", ProposalAction::Link),
+    ("merge", ProposalAction::Merge),
+    ("supersede", ProposalAction::Supersede),
+];
+
+/// Validates `accept-set` members `<PROPOSAL_ID>=<ACTION>`: a valid ID, a positive action and
+/// no duplicate proposal; a malformed member is a usage error.
+pub fn parse_set_members(members: &[String]) -> Result<(), CliError> {
+    set_members(members).map(|_| ())
+}
+
+fn set_members(members: &[String]) -> Result<Vec<(String, ProposalAction)>, CliError> {
+    let usage = |m: String| CliError::Usage(m);
+    if members.is_empty() {
+        return Err(usage(
+            "accept-set needs at least one <PROPOSAL_ID>=<ACTION>".into(),
+        ));
+    }
+    let mut parsed: Vec<(String, ProposalAction)> = Vec::with_capacity(members.len());
+    for member in members {
+        let (id, action) = member
+            .split_once('=')
+            .ok_or_else(|| usage(format!("{member:?} is not <PROPOSAL_ID>=<ACTION>")))?;
+        if id.is_empty() || action.is_empty() {
+            return Err(usage(format!("{member:?} is not <PROPOSAL_ID>=<ACTION>")));
+        }
+        if id.parse::<Id>().is_err() {
+            return Err(usage(format!("{id:?} is not a proposal ID")));
+        }
+        let action = SET_ACTIONS
+            .iter()
+            .find(|(name, _)| *name == action)
+            .map(|(_, a)| *a)
+            .ok_or_else(|| {
+                usage(format!(
+                    "{action:?} is not a set action (accept, create, link, merge, supersede)"
+                ))
+            })?;
+        if parsed.iter().any(|(seen, _)| seen == id) {
+            return Err(usage(format!("proposal {id} occurs twice")));
+        }
+        parsed.push((id.to_owned(), action));
+    }
+    Ok(parsed)
+}
+
+/// `accept-set <PROPOSAL_ID>=<ACTION>... [--reason]`: the shared `accept_proposal_set`
+/// service over one loaded head; nothing is reloaded, retried or rebased.
+pub fn accept_set(
+    state: &ApiState,
+    members: Vec<String>,
+    reason: Option<String>,
+) -> Result<Done, CliError> {
+    let members = set_members(&members)?;
+    let loaded = state.head()?;
+    let result = state.accept_proposal_set(&loaded, &members, reason)?;
+    let text = format!(
+        "accepted {} proposals: revision {}",
+        members.len(),
+        result.revision
+    );
+    Done::new(&result, text)
+}
+
 /// `ready`: I0, F1, F2, F3 and F4 on one head; any failed gate is exit 2.
 pub fn ready(state: &ApiState) -> Result<Done, CliError> {
     let outcome = state.ready()?;

@@ -35,8 +35,8 @@ mod cli {
     const MARKDOWN: &[u8] =
         b"# Leave\n\nEmployees shall submit leave requests.\n\nManagers shall approve leave requests.\n";
 
-    /// The 21 commands with their minimal required arguments.
-    const COMMANDS: [&[&str]; 21] = [
+    /// The 22 commands with their minimal required arguments.
+    const COMMANDS: [&[&str]; 22] = [
         &["init", "--project", "project:pilot"],
         &[
             "import",
@@ -70,6 +70,7 @@ mod cli {
             "--reason",
             "no",
         ],
+        &["accept-set", "proposal:x=accept"],
         &["flows"],
         &["scenarios"],
         &["run"],
@@ -466,7 +467,7 @@ mod cli {
     // ------------------------------------------------------------------ parsing
 
     #[test]
-    fn cli_parses_all_twenty_one_commands() {
+    fn cli_parses_all_twenty_two_commands() {
         // Without --config every parsed command stops at configuration: exit 1, not a clap
         // error, so each argument tree parses.
         for args in COMMANDS {
@@ -499,6 +500,7 @@ mod cli {
                 "questions",
                 "rounds",
                 "apply",
+                "accept-set",
                 "flows",
                 "scenarios",
                 "run",
@@ -1270,6 +1272,94 @@ mod cli {
             env.run(&["apply", &pending[0], "--action", "accept", "--reason", " x"]);
         assert_eq!(code, 1);
         assert!(err.contains("E_INVALID_REQUEST"), "{err}");
+    }
+
+    #[test]
+    fn cli_accept_set_parses_members_before_any_write() {
+        let env = env();
+        let before = std::fs::read(&env.db).unwrap();
+        for (args, message) in [
+            (
+                &["accept-set", "proposal:x"][..],
+                "is not <PROPOSAL_ID>=<ACTION>",
+            ),
+            (&["accept-set", "=create"], "is not <PROPOSAL_ID>=<ACTION>"),
+            (
+                &["accept-set", "proposal:x="],
+                "is not <PROPOSAL_ID>=<ACTION>",
+            ),
+            (&["accept-set", "not an id=create"], "is not a proposal ID"),
+            (&["accept-set", "proposal:x=approve"], "is not a set action"),
+            (&["accept-set", "proposal:x=reject"], "is not a set action"),
+            (
+                &["accept-set", "proposal:x=create", "proposal:x=accept"],
+                "occurs twice",
+            ),
+            (&["accept-set"], "PROPOSAL"),
+        ] {
+            let (code, out, err) = env.run(args);
+            assert_eq!(code, 1, "{args:?}: {out}");
+            assert!(err.contains(message), "{args:?}: {err}");
+        }
+        assert_eq!(
+            std::fs::read(&env.db).unwrap(),
+            before,
+            "nothing was opened or written"
+        );
+    }
+
+    #[test]
+    fn cli_accept_set_commits_sibling_stage_outputs_in_one_revision() {
+        let env = env();
+        env.import();
+        let fixtures = record(&env, "extract");
+        let f = fixtures.to_str().unwrap();
+        let (code, job) = env.json(&["--provider", "replay", "--replay-fixtures", f, "extract"]);
+        assert_eq!(code, 0, "{job}");
+        let pending = pending_proposals(&env.db);
+        assert_eq!(pending.len(), 2);
+        let link = SqliteStageStore::open(&env.db)
+            .unwrap()
+            .proposal_link(&id(&pending[0]))
+            .unwrap()
+            .unwrap();
+        // Caller order reversed; both are create proposals of one classification child.
+        let members: Vec<String> = pending
+            .iter()
+            .rev()
+            .map(|p| format!("{p}=create"))
+            .collect();
+        let mut args = vec!["accept-set"];
+        args.extend(members.iter().map(String::as_str));
+        args.extend(["--reason", "Batch accepted."]);
+        let (code, write) = env.json(&args);
+        assert_eq!(code, 0, "{write}");
+        assert_ne!(write["revision"], job["base_revision"]);
+        assert_eq!(write["events"].as_array().unwrap().len(), 1);
+        assert_eq!(write["events"][0]["kind"], "accept_proposal_set");
+        let store = SqliteWorkflowStore::open(&env.db).unwrap();
+        for p in &pending {
+            let record = store.proposal(&id(p)).unwrap().unwrap();
+            assert_eq!(record.state, WorkflowProposalState::Accepted);
+            assert_eq!(
+                record.resolved_revision_id.as_ref().map(|r| r.to_string()),
+                write["revision"].as_str().map(str::to_owned)
+            );
+        }
+        // The child records both outputs once.
+        let child = SqliteStageStore::open(&env.db)
+            .unwrap()
+            .stage_job(&link.stage_job_id)
+            .unwrap()
+            .unwrap();
+        let child: Value = serde_json::from_str(&child.stage_job_json).unwrap();
+        assert_eq!(child["status"], "committed");
+        assert_eq!(child["committed_output_refs"].as_array().unwrap().len(), 2);
+        assert_eq!(child["committed_output_ref"], Value::Null);
+        // Text output and a second attempt.
+        let (code, _, err) = env.run(&args);
+        assert_eq!(code, 1);
+        assert!(err.contains("E_PROPOSAL_NOT_PENDING"), "{err}");
     }
 
     // ------------------------------------------------------------------ stages and gates

@@ -6,7 +6,8 @@
 use plumb_artifacts::ArtifactStore;
 use plumb_compiler::{CompileRun, StageEvaluation, StageJob, StageJobError, StageJobStatus};
 use plumb_core::{to_canonical_json, Hash, Id, Timestamp};
-use plumb_patch::{apply_patch, AcceptancePolicy, PatchSet, Proposal};
+use plumb_patch::{apply_patch, AcceptancePolicy, PatchSet, Proposal, SemanticPatch};
+use plumb_psg::NodePayload;
 use plumb_store::{
     CommitResult, LoadedRevision, NewWorkflowProposal, RevisionId, StageProposalLink, StageStatus,
     StoreError, WorkflowOrigin, WorkflowProposalState,
@@ -16,6 +17,7 @@ use serde_json::json;
 use crate::error::ApiError;
 use crate::state::{run_intake, ApiState, Committed};
 use crate::workflow::{acceptance_decisions, classify, decode_proposal, store_kind, stored_json};
+use plumb_functional::resolution::ACCEPTANCE_DECISION_KIND;
 
 /// How a recipe step ended.
 pub(crate) enum StepEnd {
@@ -476,6 +478,11 @@ pub(crate) fn reconcile(
         serde_json::from_slice(&artifact.bytes)
             .map_err(|_| ApiError::workflow_corrupt("stage acceptance patch"))?
     };
+    if set_members(&patch_set).is_some_and(|ids| ids.len() > 1) {
+        // R0.3: a proposal-set acceptance records every batch-accepted output of every
+        // affected child at once (never one sibling at a time).
+        return reconcile_set(state, loaded, &revision, &patch_set);
+    }
     let base_graph = state.load_revision(&base)?.graph;
     let delta = apply_patch(&base_graph, &patch_set)
         .map_err(|_| ApiError::workflow_corrupt("stage acceptance patch"))?
@@ -506,18 +513,165 @@ pub(crate) fn reconcile_pending(state: &ApiState) -> Result<(), ApiError> {
     for link in links {
         let decisions = acceptance_decisions(&loaded.graph, &link.proposal_id);
         if let [(_, decided_at)] = decisions.as_slice() {
+            // A set reconciliation of an earlier link may already have resolved this row.
+            if is_pending(state, &link.proposal_id)? {
+                state
+                    .with_workflow_store(|store| {
+                        store.resolve_proposal(
+                            &link.proposal_id,
+                            WorkflowProposalState::Accepted,
+                            &loaded.revision.id,
+                            *decided_at,
+                        )
+                    })?
+                    .map_err(|_| internal("workflow_store"))?;
+            }
+            reconcile(state, &loaded, &link)?;
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================ proposal sets (R0.3)
+
+/// Whether the workflow proposal `id` is still pending.
+fn is_pending(state: &ApiState, id: &Id) -> Result<bool, ApiError> {
+    let record = state
+        .with_workflow_store(|store| store.proposal(id))?
+        .map_err(|_| ApiError::workflow_corrupt("stage proposal"))?
+        .ok_or_else(|| ApiError::workflow_corrupt("stage proposal"))?;
+    Ok(record.state == WorkflowProposalState::Pending)
+}
+
+/// The member proposal IDs of a governed acceptance envelope `Compound [originals...,
+/// companions...]`, in member order: `None` unless the second half is exactly one Accepted
+/// proposal-acceptance decision per original.
+pub(crate) fn set_members(patch_set: &PatchSet) -> Option<Vec<Id>> {
+    let SemanticPatch::Compound { patches } = &patch_set.patch else {
+        return None;
+    };
+    if patches.is_empty() || patches.len() % 2 != 0 {
+        return None;
+    }
+    patches[patches.len() / 2..]
+        .iter()
+        .map(|patch| match patch {
+            SemanticPatch::AddNode { node } => match &node.payload {
+                NodePayload::ResolutionDecision(d)
+                    if d.question_ref.is_none()
+                        && d.answer.get("kind").and_then(serde_json::Value::as_str)
+                            == Some(ACCEPTANCE_DECISION_KIND) =>
+                {
+                    d.proposal_ref.clone()
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// Read-only X1.5 freshness and exact-output validation of a stage-linked set member: the
+/// child is checked on an in-memory copy and nothing is persisted, so a rejected set leaves no
+/// child or parent transition (a stale child is observed later, independently).
+pub(crate) fn validate_set_member(
+    state: &ApiState,
+    loaded: &LoadedRevision,
+    link: &StageProposalLink,
+    proposal: &Proposal,
+) -> Result<(), ApiError> {
+    let mut job = load_child(state, &link.stage_job_id)?;
+    let run = load_run(state, &link.compile_run_ref)?;
+    job.validate_proposal_commit(&loaded.revision.id, &run, proposal)
+        .map(|_| ())
+        .map_err(|_| baseline_changed(&proposal.id))
+}
+
+/// Records one child's share `owned` of a committed proposal set `members` (ascending ID
+/// order) through the X1.5 set recorder and persists the child Committed.
+pub(crate) fn record_set(
+    state: &ApiState,
+    link: &StageProposalLink,
+    members: &[Proposal],
+    owned: &[Id],
+    committed: &Committed,
+) -> Result<(), ApiError> {
+    let mut job = load_child(state, &link.stage_job_id)?;
+    let run = load_run(state, &link.compile_run_ref)?;
+    let before = status_of(&job);
+    job.record_governed_proposal_set_commit(
+        &run,
+        members,
+        owned,
+        &committed.patch_set,
+        &committed.commit,
+    )
+    .map_err(|_| internal("stage_governed_commit"))?;
+    persist_child(state, &job, before, state.now())
+}
+
+/// Reconciles an interrupted proposal-set acceptance from its committed `revision` without
+/// re-committing: every still-pending member becomes accepted, every affected Ready child
+/// records all of its batch-accepted outputs once, and every affected parent finishes.
+/// Idempotent.
+fn reconcile_set(
+    state: &ApiState,
+    loaded: &LoadedRevision,
+    revision: &plumb_store::GraphRevision,
+    patch_set: &PatchSet,
+) -> Result<(), ApiError> {
+    let corrupt = || ApiError::workflow_corrupt("stage acceptance set");
+    let ids = set_members(patch_set).ok_or_else(corrupt)?;
+    let mut members = Vec::with_capacity(ids.len());
+    let mut children: std::collections::BTreeMap<Hash, (StageProposalLink, Vec<Id>)> =
+        std::collections::BTreeMap::new();
+    for id in &ids {
+        let record = state
+            .with_workflow_store(|store| store.proposal(id))?
+            .map_err(|_| corrupt())?
+            .ok_or_else(corrupt)?;
+        if record.state == WorkflowProposalState::Pending {
+            let decisions = acceptance_decisions(&loaded.graph, id);
+            let [(_, decided_at)] = decisions.as_slice() else {
+                return Err(corrupt());
+            };
             state
                 .with_workflow_store(|store| {
                     store.resolve_proposal(
-                        &link.proposal_id,
+                        id,
                         WorkflowProposalState::Accepted,
-                        &loaded.revision.id,
+                        &revision.id,
                         *decided_at,
                     )
                 })?
                 .map_err(|_| internal("workflow_store"))?;
-            reconcile(state, &loaded, &link)?;
         }
+        members.push(decode_proposal(record)?.proposal);
+        if let Some(link) = link_of(state, id)? {
+            children
+                .entry(link.stage_job_id.clone())
+                .or_insert_with(|| (link.clone(), Vec::new()))
+                .1
+                .push(id.clone());
+        }
+    }
+    let base = revision.parent.clone().ok_or_else(corrupt)?;
+    let delta = apply_patch(&state.load_revision(&base)?.graph, patch_set)
+        .map_err(|_| corrupt())?
+        .delta;
+    let committed = Committed {
+        patch_set: patch_set.clone(),
+        commit: CommitResult {
+            revision: revision.clone(),
+            delta,
+        },
+    };
+    for (link, owned) in children.values() {
+        let job = load_child(state, &link.stage_job_id)?;
+        if job.status() == StageJobStatus::Ready {
+            record_set(state, link, &members, owned, &committed)?;
+        }
+        finish_parent(state, &link.recipe_job_id, &revision.id)?;
     }
     Ok(())
 }

@@ -782,19 +782,7 @@ impl ApiState {
                 rationale: reason.map(str::to_owned),
             },
         )
-        .map_err(|error| match error {
-            ResolutionError::ResolutionDecisionIdCollision(id) => ApiError::conflict(
-                "E_ID_COLLISION",
-                "the acceptance decision ID is already used",
-            )
-            .with_details(json!({ "id": id })),
-            ResolutionError::InvalidResolutionProposal { reason } => ApiError::unprocessable(
-                "E_PATCH_REJECTED",
-                "the proposed change cannot be applied to the current graph",
-            )
-            .with_details(json!({ "patch_error": reason })),
-            other => ApiError::semantic("ResolutionError", other.to_string()),
-        })?;
+        .map_err(companion_error)?;
         match validate_required_rationale(proposal, report, Some(&companion.decision_node)) {
             Ok(()) => {}
             Err(IntakeAcceptanceError::ReasonRequired(_))
@@ -939,8 +927,26 @@ pub(crate) fn reason_required(proposal: &Proposal, report: &IntakeReport) -> Api
     }))
 }
 
+/// The API error of a failed proposal-acceptance companion build (shared by the single and the
+/// set acceptance paths).
+pub(crate) fn companion_error(error: ResolutionError) -> ApiError {
+    match error {
+        ResolutionError::ResolutionDecisionIdCollision(id) => ApiError::conflict(
+            "E_ID_COLLISION",
+            "the acceptance decision ID is already used",
+        )
+        .with_details(json!({ "id": id })),
+        ResolutionError::InvalidResolutionProposal { reason } => ApiError::unprocessable(
+            "E_PATCH_REJECTED",
+            "the proposed change cannot be applied to the current graph",
+        )
+        .with_details(json!({ "patch_error": reason })),
+        other => ApiError::semantic("ResolutionError", other.to_string()),
+    }
+}
+
 /// The Accepted ResolutionDecisions a patch introduces (its `AddNode` leaves).
-fn introduced_decisions(patch: &SemanticPatch) -> BTreeSet<Id> {
+pub(crate) fn introduced_decisions(patch: &SemanticPatch) -> BTreeSet<Id> {
     match patch {
         SemanticPatch::Compound { patches } => {
             patches.iter().flat_map(introduced_decisions).collect()

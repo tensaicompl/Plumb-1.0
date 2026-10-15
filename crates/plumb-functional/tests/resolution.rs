@@ -2177,6 +2177,47 @@ mod resolution_contract {
     }
 
     #[test]
+    fn acceptance_companions_of_one_set_instant_are_distinct_and_self_bound() {
+        // R0.3: a proposal set builds one companion per member at one write instant; each
+        // decision ID and patch_ref is that member's own, and no original is rewritten.
+        let graph = asked();
+        let s33 = resolve(
+            &graph,
+            &good(&graph, ResolutionTemplate::DomainRelationshipCardinality),
+        )
+        .unwrap();
+        let first = s33.proposal.clone();
+        let mut second = first.clone();
+        second.confidence = Some(0.25);
+        second.id = plumb_patch::Proposal::new(
+            second.stage,
+            second.patch_set.clone(),
+            second.evidence_refs.clone(),
+            second.derivation_refs.clone(),
+            second.materiality,
+            second.acceptance_policy,
+            second.confidence,
+        )
+        .unwrap()
+        .id;
+        assert_ne!(first.id, second.id);
+        let input = acceptance(&[], Some("Batch."));
+        let a = build_acceptance_companion(&graph, &first, &input).unwrap();
+        let b = build_acceptance_companion(&graph, &second, &input).unwrap();
+        assert_ne!(a.decision_ref, b.decision_ref);
+        for (companion, original) in [(&a, &first), (&b, &second)] {
+            assert_eq!(
+                companion.patch_ref,
+                Hash::content_sha256(&to_canonical_json(&original.patch_set).unwrap())
+            );
+            let SemanticPatch::Compound { patches } = &companion.patch_set.patch else {
+                panic!("not a compound")
+            };
+            assert_eq!(patches[0], original.patch_set.patch);
+        }
+    }
+
+    #[test]
     fn acceptance_companion_input_rules() {
         let graph = asked();
         let s33 = resolve(

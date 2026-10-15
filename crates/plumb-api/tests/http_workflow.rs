@@ -5213,4 +5213,525 @@ mod http_workflow {
             ElementStatus::Rejected
         );
     }
+
+    // ------------------------------------------------------------------ R0.3 proposal sets
+
+    use plumb_api::application::ProposalAction;
+
+    /// Registers `proposal` pending on the head through the intake endpoint.
+    async fn pending_on_head(app: &App, kind: &str, proposal: Proposal) -> Proposal {
+        let r = intake(app, kind, &proposal).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        proposal
+    }
+
+    async fn create(app: &App, node_id: &str, statement: &str) -> Proposal {
+        let p = typed(
+            app,
+            SemanticPatch::AddNode {
+                node: requirement(node_id, "Proposed", statement),
+            },
+            ProposalMateriality::Semantic,
+            AcceptancePolicy::HumanConfirm,
+        )
+        .await;
+        pending_on_head(app, "create", p).await
+    }
+
+    fn accept_set(
+        app: &App,
+        members: &[(&Proposal, ProposalAction)],
+        reason: Option<&str>,
+    ) -> Result<plumb_api::openapi::WriteResult, plumb_api::error::ApiError> {
+        let members: Vec<(String, ProposalAction)> = members
+            .iter()
+            .map(|(p, a)| (p.id.to_string(), *a))
+            .collect();
+        app.state
+            .accept_proposal_set(&head(app), &members, reason.map(str::to_owned))
+    }
+
+    fn state_of(app: &App, p: &Proposal) -> WorkflowProposalState {
+        workflow(app).proposal(&p.id).unwrap().unwrap().state
+    }
+
+    fn set_error(
+        result: Result<plumb_api::openapi::WriteResult, plumb_api::error::ApiError>,
+        code: &str,
+    ) -> Value {
+        match result {
+            Err(error) => {
+                assert_eq!(error.body().code, code, "{:?}", error.body());
+                error.body().details.clone()
+            }
+            Ok(write) => panic!("expected {code}, got {write:?}"),
+        }
+    }
+
+    /// The committed PatchSet of the head revision.
+    fn accepted_patch_set(app: &App) -> PatchSet {
+        let patch_ref = head(app).revision.accepted_patch_ref.unwrap();
+        let artifact = SqliteArtifactStore::open(&app.path)
+            .unwrap()
+            .get(&patch_ref)
+            .unwrap();
+        serde_json::from_slice(&artifact.bytes).unwrap()
+    }
+
+    fn decision_of(patch: &SemanticPatch) -> (Id, plumb_psg::ResolutionDecision) {
+        match patch {
+            SemanticPatch::AddNode { node } => match &node.payload {
+                NodePayload::ResolutionDecision(d) => (node.id.clone(), d.clone()),
+                other => panic!("not a decision: {other:?}"),
+            },
+            other => panic!("not an AddNode: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_proposal_set_commits_one_revision_with_original_patches_and_companions() {
+        let app = app();
+        let graph = head(&app).graph;
+        let a = create(&app, "req:n1", "Payroll shall export leave totals.").await;
+        // A nested member Compound stays one unchanged outer child.
+        let nested = pending_on_head(
+            &app,
+            "create",
+            typed(
+                &app,
+                SemanticPatch::Compound {
+                    patches: vec![
+                        SemanticPatch::AddNode {
+                            node: requirement("req:n2", "Proposed", "HR shall audit leave."),
+                        },
+                        SemanticPatch::AddNode {
+                            node: requirement("req:n3", "Proposed", "HR shall archive leave."),
+                        },
+                    ],
+                },
+                ProposalMateriality::Semantic,
+                AcceptancePolicy::HumanConfirm,
+            )
+            .await,
+        )
+        .await;
+        let accept = pending_on_head(
+            &app,
+            "accept",
+            typed(
+                &app,
+                SemanticPatch::SetStatus {
+                    target: pre(&graph, "req:p"),
+                    from: ElementStatus::Proposed,
+                    to: ElementStatus::Accepted,
+                },
+                ProposalMateriality::Semantic,
+                AcceptancePolicy::HumanConfirm,
+            )
+            .await,
+        )
+        .await;
+        let originals: Vec<String> = [&a, &nested, &accept]
+            .iter()
+            .map(|p| {
+                workflow(&app)
+                    .proposal(&p.id)
+                    .unwrap()
+                    .unwrap()
+                    .proposal_json
+            })
+            .collect();
+        let before = head(&app).revision;
+        // Caller order is deliberately not proposal-ID order.
+        let mut caller = vec![
+            (&accept, ProposalAction::Accept),
+            (&a, ProposalAction::Create),
+            (&nested, ProposalAction::Create),
+        ];
+        caller.sort_by(|x, y| y.0.id.cmp(&x.0.id));
+        let write = accept_set(&app, &caller, Some("Batch review.")).unwrap();
+        let after = head(&app).revision;
+        // Exactly one new revision, a child of the loaded head.
+        assert_eq!(after.version, before.version + 1);
+        assert_eq!(after.parent.as_ref(), Some(&before.id));
+        assert_eq!(write.revision, after.id.to_string());
+        assert_eq!(write.events.len(), 1);
+        assert_eq!(write.events[0].kind, "accept_proposal_set");
+        // Originals first in ascending proposal-ID order, then one companion each.
+        let mut ordered = [&a, &nested, &accept];
+        ordered.sort_by(|x, y| x.id.cmp(&y.id));
+        let set = accepted_patch_set(&app);
+        assert_eq!(set.base_semantic_hash, before.semantic_hash);
+        let SemanticPatch::Compound { patches } = &set.patch else {
+            panic!("not a compound")
+        };
+        assert_eq!(patches.len(), 6);
+        let artifacts = SqliteArtifactStore::open(&app.path).unwrap();
+        for (i, p) in ordered.iter().enumerate() {
+            assert_eq!(patches[i], p.patch_set.patch, "original {i} unchanged");
+            let (decision_id, decision) = decision_of(&patches[3 + i]);
+            assert_eq!(decision.proposal_ref.as_ref(), Some(&p.id));
+            assert_eq!(decision.question_ref, None);
+            assert_eq!(decision.answer["kind"], "proposal_acceptance");
+            assert_eq!(decision.rationale.as_deref(), Some("Batch review."));
+            assert_eq!(decision.decided_by, id(ACTOR));
+            assert_eq!(decision.supersedes, None);
+            // patch_ref is the member's own unchanged original PatchSet, persisted as a Patch.
+            let bytes = to_canonical_json(&p.patch_set).unwrap();
+            assert_eq!(decision.patch_ref, Hash::content_sha256(&bytes));
+            let stored = artifacts.get(&decision.patch_ref).unwrap();
+            assert_eq!(stored.kind, ArtifactKind::Patch);
+            assert_eq!(stored.bytes, bytes);
+            assert!(after.decision_refs.contains(&decision_id));
+            assert!(head(&app).graph.node(&decision_id).is_some());
+        }
+        // One write instant for every companion.
+        let instants: std::collections::BTreeSet<String> = (3..6)
+            .map(|i| decision_of(&patches[i]).1.decided_at.to_string())
+            .collect();
+        assert_eq!(instants.len(), 1);
+        // The nested member Compound is one outer child, unflattened.
+        assert!(patches
+            .iter()
+            .take(3)
+            .any(|p| matches!(p, SemanticPatch::Compound { patches } if patches.len() == 2)));
+        // Every member is accepted on the one revision; stored proposals are unchanged.
+        for (p, original) in [&a, &nested, &accept].iter().zip(&originals) {
+            let record = workflow(&app).proposal(&p.id).unwrap().unwrap();
+            assert_eq!(record.state, WorkflowProposalState::Accepted);
+            assert_eq!(record.resolved_revision_id.as_ref(), Some(&after.id));
+            assert_eq!(&record.proposal_json, original);
+        }
+        assert_eq!(
+            head(&app).graph.node(&id("req:p")).unwrap().status,
+            ElementStatus::Accepted
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_proposal_set_records_decisions_introduced_by_originals() {
+        let app = app();
+        let introduced = node(
+            "dec:00000000000000c1",
+            "Accepted",
+            "ResolutionDecision",
+            json!({
+                "question_ref": null, "proposal_ref": "prop:00000000000000c1",
+                "answer": {"kind": "note"}, "decided_by": ACTOR, "decided_at": T0,
+                "patch_ref": Hash::content_sha256(b"note"), "rationale": null, "supersedes": null
+            }),
+        );
+        let with_decision = pending_on_head(
+            &app,
+            "create",
+            typed(
+                &app,
+                SemanticPatch::Compound {
+                    patches: vec![
+                        SemanticPatch::AddNode {
+                            node: requirement("req:n7", "Proposed", "HR shall note leave."),
+                        },
+                        SemanticPatch::AddNode { node: introduced },
+                    ],
+                },
+                ProposalMateriality::Semantic,
+                AcceptancePolicy::HumanConfirm,
+            )
+            .await,
+        )
+        .await;
+        let other = create(&app, "req:n8", "HR shall export notes.").await;
+        accept_set(
+            &app,
+            &[
+                (&with_decision, ProposalAction::Create),
+                (&other, ProposalAction::Create),
+            ],
+            None,
+        )
+        .unwrap();
+        let refs = head(&app).revision.decision_refs;
+        assert!(refs.contains(&id("dec:00000000000000c1")), "{refs:?}");
+        assert_eq!(refs.len(), 3, "the introduced decision and two companions");
+        assert!(refs.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[tokio::test]
+    async fn accept_proposal_set_conflict_is_atomic() {
+        // Two patches touching the same node.
+        let app = app();
+        let ok = create(&app, "req:n1", "Payroll shall export leave totals.").await;
+        let x = create(&app, "req:dup", "HR shall approve leave.").await;
+        let y = create(&app, "req:dup", "HR shall reject leave.").await;
+        let before = head(&app).revision;
+        let details = set_error(
+            accept_set(
+                &app,
+                &[
+                    (&ok, ProposalAction::Create),
+                    (&x, ProposalAction::Create),
+                    (&y, ProposalAction::Create),
+                ],
+                None,
+            ),
+            "E_PROPOSAL_SET_CONFLICT",
+        );
+        let mut pair = vec![x.id.clone(), y.id.clone()];
+        pair.sort();
+        assert_eq!(
+            details,
+            json!({"reason": "overlapping_effects", "proposals": pair, "elements": ["req:dup"]})
+        );
+        assert_eq!(head(&app).revision.id, before.id);
+        for p in [&ok, &x, &y] {
+            assert_eq!(state_of(&app, p), WorkflowProposalState::Pending);
+        }
+        // Two patches touching the same edge.
+        let edge_patch = |from: &str| SemanticPatch::AddEdge {
+            edge: edge("rel:dup", "refines", from, "req:b"),
+        };
+        let e1 = pending_on_head(
+            &app,
+            "link",
+            typed(
+                &app,
+                edge_patch("req:a"),
+                ProposalMateriality::Semantic,
+                AcceptancePolicy::HumanConfirm,
+            )
+            .await,
+        )
+        .await;
+        let e2 = pending_on_head(
+            &app,
+            "link",
+            typed(
+                &app,
+                edge_patch("req:c"),
+                ProposalMateriality::Semantic,
+                AcceptancePolicy::HumanConfirm,
+            )
+            .await,
+        )
+        .await;
+        let details = set_error(
+            accept_set(
+                &app,
+                &[(&e1, ProposalAction::Link), (&e2, ProposalAction::Link)],
+                Some("Linking."),
+            ),
+            "E_PROPOSAL_SET_CONFLICT",
+        );
+        assert!(details["elements"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("rel:dup")));
+        assert_eq!(head(&app).revision.id, before.id);
+        assert_eq!(state_of(&app, &e1), WorkflowProposalState::Pending);
+        // The compatible member alone still commits afterwards.
+        accept_set(&app, &[(&ok, ProposalAction::Create)], None).unwrap();
+        assert_eq!(state_of(&app, &ok), WorkflowProposalState::Accepted);
+    }
+
+    #[tokio::test]
+    async fn accept_proposal_set_rejects_stale_or_misclassified_member() {
+        let app = app();
+        let stale = create(&app, "req:n1", "Payroll shall export leave totals.").await;
+        direct_commit(
+            &app,
+            SemanticPatch::AddNode {
+                node: requirement("req:other", "Proposed", "Another writer added this."),
+            },
+        );
+        let fresh = create(&app, "req:n2", "HR shall audit leave.").await;
+        let second = create(&app, "req:n3", "HR shall archive leave.").await;
+        let before = head(&app).revision;
+        let unchanged = |app: &App| {
+            assert_eq!(head(app).revision.id, before.id);
+            for p in [&fresh, &second] {
+                assert_eq!(state_of(app, p), WorkflowProposalState::Pending);
+            }
+        };
+        // One stale member rejects the whole set (never rebased).
+        let details = set_error(
+            accept_set(
+                &app,
+                &[
+                    (&fresh, ProposalAction::Create),
+                    (&stale, ProposalAction::Create),
+                ],
+                None,
+            ),
+            "E_PROPOSAL_BASELINE_CHANGED",
+        );
+        assert_eq!(details["proposal_ref"], json!(stale.id));
+        unchanged(&app);
+        assert_eq!(state_of(&app, &stale), WorkflowProposalState::Pending);
+        // One misclassified action.
+        set_error(
+            accept_set(
+                &app,
+                &[
+                    (&fresh, ProposalAction::Create),
+                    (&second, ProposalAction::Accept),
+                ],
+                None,
+            ),
+            "E_PROPOSAL_ACTION_MISMATCH",
+        );
+        unchanged(&app);
+        // Duplicate members, an empty set and reject are rejected before anything is read.
+        set_error(
+            accept_set(
+                &app,
+                &[
+                    (&fresh, ProposalAction::Create),
+                    (&fresh, ProposalAction::Create),
+                ],
+                None,
+            ),
+            "E_INVALID_REQUEST",
+        );
+        set_error(accept_set(&app, &[], None), "E_INVALID_REQUEST");
+        set_error(
+            accept_set(&app, &[(&fresh, ProposalAction::Reject)], None),
+            "E_INVALID_REQUEST",
+        );
+        set_error(
+            accept_set(&app, &[(&fresh, ProposalAction::Create)], Some(" padded ")),
+            "E_INVALID_REQUEST",
+        );
+        unchanged(&app);
+        // One reason-required member without a reason.
+        let material = pending_on_head(
+            &app,
+            "create",
+            typed(
+                &app,
+                SemanticPatch::AddNode {
+                    node: requirement("req:m", "Proposed", "HR shall record material leave."),
+                },
+                ProposalMateriality::MaterialDecision,
+                AcceptancePolicy::HumanDecision,
+            )
+            .await,
+        )
+        .await;
+        set_error(
+            accept_set(
+                &app,
+                &[
+                    (&fresh, ProposalAction::Create),
+                    (&material, ProposalAction::Create),
+                ],
+                None,
+            ),
+            "E_INTAKE_REASON_REQUIRED",
+        );
+        unchanged(&app);
+        // One non-Pending member.
+        app.state
+            .act_on_proposal(
+                &head(&app),
+                second.id.as_str(),
+                ProposalAction::Reject,
+                None,
+            )
+            .unwrap();
+        set_error(
+            accept_set(
+                &app,
+                &[
+                    (&fresh, ProposalAction::Create),
+                    (&second, ProposalAction::Create),
+                ],
+                None,
+            ),
+            "E_PROPOSAL_NOT_PENDING",
+        );
+        assert_eq!(head(&app).revision.id, before.id);
+        assert_eq!(state_of(&app, &fresh), WorkflowProposalState::Pending);
+        // With the common reason both commit; the reason is every companion's rationale.
+        accept_set(
+            &app,
+            &[
+                (&material, ProposalAction::Create),
+                (&fresh, ProposalAction::Create),
+            ],
+            Some("Approved by HR."),
+        )
+        .unwrap();
+        let SemanticPatch::Compound { patches } = accepted_patch_set(&app).patch else {
+            panic!()
+        };
+        for p in &patches[2..] {
+            assert_eq!(
+                decision_of(p).1.rationale.as_deref(),
+                Some("Approved by HR.")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_proposal_set_cas_race_changes_nothing_and_is_not_retried() {
+        let app = app();
+        let a = create(&app, "req:n1", "Payroll shall export leave totals.").await;
+        let b = create(&app, "req:n2", "HR shall audit leave.").await;
+        // Validation runs against the loaded head; another writer moves the branch first.
+        let loaded = head(&app);
+        direct_commit(
+            &app,
+            SemanticPatch::AddNode {
+                node: requirement("req:other", "Proposed", "Another writer added this."),
+            },
+        );
+        let moved = head(&app).revision;
+        let members = vec![
+            (a.id.to_string(), ProposalAction::Create),
+            (b.id.to_string(), ProposalAction::Create),
+        ];
+        let error = app
+            .state
+            .accept_proposal_set(&loaded, &members, None)
+            .unwrap_err();
+        assert_eq!(error.body().code, "E_PRECONDITION_FAILED");
+        assert_eq!(
+            head(&app).revision.id,
+            moved.id,
+            "no retry, no second commit"
+        );
+        for p in [&a, &b] {
+            assert_eq!(state_of(&app, p), WorkflowProposalState::Pending);
+        }
+    }
+
+    #[tokio::test]
+    async fn single_proposal_sibling_still_baseline_changed() {
+        let app = app();
+        let a = create(&app, "req:n1", "Payroll shall export leave totals.").await;
+        let b = create(&app, "req:n2", "HR shall audit leave.").await;
+        let r = write(
+            &app,
+            &format!("/api/proposals/{}/create", a.id),
+            Some(json!({"reason": null})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_error(
+            &write(
+                &app,
+                &format!("/api/proposals/{}/create", b.id),
+                Some(json!({"reason": null})),
+            )
+            .await,
+            StatusCode::CONFLICT,
+            "E_PROPOSAL_BASELINE_CHANGED",
+        );
+        // The set path never rebases either.
+        set_error(
+            accept_set(&app, &[(&b, ProposalAction::Create)], None),
+            "E_PROPOSAL_BASELINE_CHANGED",
+        );
+        assert_eq!(state_of(&app, &b), WorkflowProposalState::Pending);
+    }
 }

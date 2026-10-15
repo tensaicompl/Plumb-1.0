@@ -148,6 +148,14 @@ enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Accept compatible pending proposals of the head atomically in one revision.
+    AcceptSet {
+        /// `<PROPOSAL_ID>=<ACTION>` with ACTION accept, create, link, merge or supersede.
+        #[arg(required = true, value_name = "PROPOSAL_ID=ACTION")]
+        members: Vec<String>,
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Run the flows recipe.
     Flows(Scope),
     /// Run the scenarios recipe.
@@ -275,6 +283,10 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
     if let Command::Init { project } = &cli.command {
         return commands::init(db, &cli.branch, project, &config, &SystemClock);
     }
+    // accept-set members are parsed before anything is opened or written.
+    if let Command::AcceptSet { members, .. } = &cli.command {
+        commands::parse_set_members(members)?;
+    }
     let provider = Provider::build(choice)?;
     let state = commands::open(db, &cli.branch, &config, provider)?;
     if let Some((recipe, scope)) = cli.command.recipe() {
@@ -299,6 +311,7 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
             action,
             reason,
         } => commands::apply(&state, &proposal, action.action(), reason),
+        Command::AcceptSet { members, reason } => commands::accept_set(&state, members, reason),
         Command::Ready => commands::ready(&state),
         Command::Export { format } => commands::export(&state, &format),
         Command::Report { out } => commands::report(&state, &out),

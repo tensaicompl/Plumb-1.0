@@ -2147,4 +2147,354 @@ mod http_stages {
         assert_eq!(r.code(), "E_INFERENCE_FAILED");
         assert_eq!(r.json()["details"]["error"], "ProviderDisabled");
     }
+
+    // ------------------------------------------------------------------ R0.3 proposal sets
+
+    /// Two dictionary attributes (one tags child, two outputs) and a transition (one scenarios
+    /// child, one output) on one base.
+    fn set_graph() -> Graph {
+        let mut nodes: Vec<Node> = scenario_graph().nodes().values().cloned().collect();
+        let mut edges: Vec<Edge> = scenario_graph().edges().values().cloned().collect();
+        nodes.push(node(
+            "entity:employee",
+            "Accepted",
+            "Entity",
+            json!({"name": "Employee", "description": null, "aggregate_root": null}),
+        ));
+        for (i, name) in ["Email", "Salary"].iter().enumerate() {
+            nodes.push(attribute(&format!("attr:{i}"), name));
+            edges.push(edge(
+                &format!("rel:attr{i}"),
+                "has_attribute",
+                "entity:employee",
+                &format!("attr:{i}"),
+            ));
+        }
+        Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap()
+    }
+
+    struct SetFixture {
+        app: App,
+        tags_job: Hash,
+        scenarios_job: Hash,
+        tags: Vec<Proposal>,
+        scenarios: Vec<Proposal>,
+        manual: Proposal,
+    }
+
+    async fn set_fixture() -> SetFixture {
+        let gates = Gates {
+            null_provider: true,
+            scenario_derivation: Some(scenario_inputs()),
+            ..Gates::default()
+        };
+        let app = app_with(set_graph(), &[], gates);
+        let tags_job = run_inline(&app, Recipe::Tags, None);
+        assert_eq!(job(&app, &tags_job)["status"], "ready");
+        let scenarios_job = run_inline(&app, Recipe::Scenarios, None);
+        assert_eq!(job(&app, &scenarios_job)["status"], "ready");
+        let tags = pending(&app, &tags_job);
+        let scenarios = pending(&app, &scenarios_job);
+        assert_eq!((tags.len(), scenarios.len()), (2, 1));
+        // A non-stage proposal through the intake endpoint on the same head.
+        let manual = Proposal::new(
+            plumb_core::StageId::S1,
+            PatchSet {
+                base_semantic_hash: head(&app).revision.semantic_hash,
+                patch: SemanticPatch::AddNode {
+                    node: requirement("req:manual", "Proposed", "HR shall export payroll."),
+                },
+            },
+            vec![],
+            vec![],
+            plumb_patch::ProposalMateriality::Semantic,
+            plumb_patch::AcceptancePolicy::HumanConfirm,
+            None,
+        )
+        .unwrap();
+        let tag = head_hash(&app).await;
+        let r = post(
+            &app,
+            "/api/proposals/intake",
+            Some(&tag),
+            json!({"kind": "create", "payload": manual, "evidence": []}),
+        )
+        .await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        SetFixture {
+            app,
+            tags_job,
+            scenarios_job,
+            tags,
+            scenarios,
+            manual,
+        }
+    }
+
+    impl SetFixture {
+        fn all(&self) -> Vec<&Proposal> {
+            let mut all: Vec<&Proposal> = self
+                .tags
+                .iter()
+                .chain(&self.scenarios)
+                .chain([&self.manual])
+                .collect();
+            all.sort_by(|a, b| a.id.cmp(&b.id));
+            all
+        }
+
+        /// Every member with the action of its stored class.
+        fn members(&self) -> Vec<(String, plumb_api::application::ProposalAction)> {
+            use plumb_api::application::ProposalAction as A;
+            self.all()
+                .iter()
+                .map(|p| {
+                    let record = workflow(&self.app).proposal(&p.id).unwrap().unwrap();
+                    let action = match record.proposal_kind.as_str() {
+                        "accept" => A::Accept,
+                        "create" => A::Create,
+                        "link" => A::Link,
+                        "merge" => A::Merge,
+                        _ => A::Supersede,
+                    };
+                    (p.id.to_string(), action)
+                })
+                .collect()
+        }
+
+        /// The stored child of recipe job `job_id`.
+        fn child(&self, job_id: &Hash) -> plumb_compiler::StageJob {
+            let steps = stage_store(&self.app).steps(job_id).unwrap();
+            let record = stage_store(&self.app)
+                .stage_job(steps[0].stage_job_id.as_ref().unwrap())
+                .unwrap()
+                .unwrap();
+            serde_json::from_str(&record.stage_job_json).unwrap()
+        }
+
+        /// Asserts the complete finalised state of the one batch revision `revision`.
+        fn assert_finalised(&self, revision: &plumb_store::RevisionId) {
+            for p in self.all() {
+                let record = workflow(&self.app).proposal(&p.id).unwrap().unwrap();
+                assert_eq!(record.state, WorkflowProposalState::Accepted, "{}", p.id);
+                assert_eq!(record.resolved_revision_id.as_ref(), Some(revision));
+            }
+            let refs = |ps: &[Proposal]| {
+                let mut r: Vec<Hash> = ps
+                    .iter()
+                    .map(|p| Hash::content_sha256(&to_canonical_json(p).unwrap()))
+                    .collect();
+                r.sort();
+                r
+            };
+            for (job_id, outputs) in [
+                (&self.tags_job, &self.tags),
+                (&self.scenarios_job, &self.scenarios),
+            ] {
+                let child = self.child(job_id);
+                assert_eq!(child.status(), plumb_compiler::StageJobStatus::Committed);
+                assert_eq!(child.committed_revision(), Some(revision));
+                assert_eq!(child.committed_output_ref(), None);
+                assert_eq!(child.committed_output_refs(), refs(outputs).as_slice());
+                let view = job(&self.app, job_id);
+                assert_eq!(view["status"], "committed", "{view}");
+                assert_eq!(view["result_version"], revision.to_string());
+            }
+            assert!(stage_store(&self.app)
+                .proposal_link(&self.manual.id)
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_proposal_set_records_every_stage_child_output() {
+        let f = set_fixture().await;
+        let before = head(&f.app).revision;
+        let write = f
+            .app
+            .state
+            .accept_proposal_set(&head(&f.app), &f.members(), None)
+            .unwrap();
+        let after = head(&f.app).revision;
+        assert_eq!(after.version, before.version + 1);
+        assert_eq!(write.revision, after.id.to_string());
+        // Two outputs of one child, one of another, and a non-stage member: one revision.
+        f.assert_finalised(&after.id);
+        assert_eq!(after.decision_refs.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn accept_proposal_set_failure_leaves_stage_jobs_untouched() {
+        let f = set_fixture().await;
+        // A misclassified non-stage member after the stage members validated read-only.
+        let mut members = f.members();
+        for m in members.iter_mut() {
+            if m.0 == f.manual.id.as_str() {
+                m.1 = plumb_api::application::ProposalAction::Accept;
+            }
+        }
+        let error = f
+            .app
+            .state
+            .accept_proposal_set(&head(&f.app), &members, None)
+            .unwrap_err();
+        assert_eq!(error.body().code, "E_PROPOSAL_ACTION_MISMATCH");
+        for job_id in [&f.tags_job, &f.scenarios_job] {
+            assert_eq!(
+                f.child(job_id).status(),
+                plumb_compiler::StageJobStatus::Ready
+            );
+            assert_eq!(job(&f.app, job_id)["status"], "ready");
+        }
+        // A moved head: the stage members are stale, and the rejected set leaves the stale
+        // children and parents exactly as stored (no Stale transition by the set).
+        let mut store = SqliteRevisionStore::open(&f.app.path).unwrap();
+        let loaded = head(&f.app);
+        store
+            .commit(
+                &BranchName::main(),
+                &loaded.revision.id,
+                &PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch: SemanticPatch::AddNode {
+                        node: requirement("req:other", "Proposed", "Another writer."),
+                    },
+                },
+                RevisionWriteMeta {
+                    decision_refs: vec![],
+                    created_by: id(ACTOR),
+                    created_at: ts(NOW),
+                },
+            )
+            .unwrap();
+        // Stage members only, so the read-only stage freshness check meets the stale child.
+        let stage_only: Vec<_> = f
+            .members()
+            .into_iter()
+            .filter(|m| m.0 != f.manual.id.as_str())
+            .collect();
+        let error = f
+            .app
+            .state
+            .accept_proposal_set(&head(&f.app), &stage_only, None)
+            .unwrap_err();
+        assert_eq!(error.body().code, "E_PROPOSAL_BASELINE_CHANGED");
+        for job_id in [&f.tags_job, &f.scenarios_job] {
+            assert_eq!(
+                f.child(job_id).status(),
+                plumb_compiler::StageJobStatus::Ready
+            );
+            let parent = stage_store(&f.app).recipe_job(job_id).unwrap().unwrap();
+            assert_eq!(parent.status, StageStatus::Ready);
+        }
+        for p in f.all() {
+            let state = workflow(&f.app).proposal(&p.id).unwrap().unwrap().state;
+            assert_eq!(state, WorkflowProposalState::Pending);
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_proposal_set_crash_is_reconciled_without_recommit() {
+        let f = set_fixture().await;
+        let loaded = head(&f.app);
+        // The exact set commit, then a crash before any bookkeeping.
+        let members: Vec<&Proposal> = f.all();
+        let companions: Vec<_> = members
+            .iter()
+            .map(|p| {
+                let report = plumb_intake::intake(
+                    &loaded.graph,
+                    p,
+                    &plumb_intake::IntakeValidationInput::empty(),
+                )
+                .unwrap();
+                let codes: std::collections::BTreeSet<String> =
+                    report.reason_codes.iter().map(|c| c.to_string()).collect();
+                build_acceptance_companion(
+                    &loaded.graph,
+                    p,
+                    &AcceptanceInput {
+                        reason_codes: codes.into_iter().collect(),
+                        decided_by: id(ACTOR),
+                        decided_at: ts(NOW),
+                        rationale: None,
+                    },
+                )
+                .unwrap()
+            })
+            .collect();
+        let mut artifacts = SqliteArtifactStore::open(&f.app.path).unwrap();
+        for c in &companions {
+            artifacts
+                .put(
+                    ArtifactKind::Patch,
+                    "application/json",
+                    &c.original_patch_bytes,
+                    ts(NOW),
+                )
+                .unwrap();
+        }
+        let envelope = PatchSet {
+            base_semantic_hash: loaded.revision.semantic_hash.clone(),
+            patch: SemanticPatch::Compound {
+                patches: members
+                    .iter()
+                    .map(|p| p.patch_set.patch.clone())
+                    .chain(companions.iter().map(|c| SemanticPatch::AddNode {
+                        node: c.decision_node.clone(),
+                    }))
+                    .collect(),
+            },
+        };
+        let mut decision_refs: Vec<Id> =
+            companions.iter().map(|c| c.decision_ref.clone()).collect();
+        decision_refs.sort();
+        let committed = SqliteRevisionStore::open(&f.app.path)
+            .unwrap()
+            .commit(
+                &BranchName::main(),
+                &loaded.revision.id,
+                &envelope,
+                RevisionWriteMeta {
+                    decision_refs,
+                    created_by: id(ACTOR),
+                    created_at: ts(NOW),
+                },
+            )
+            .unwrap();
+        let revision = committed.revision.id.clone();
+        // Partial finalisation: one stage member was already resolved before the crash.
+        workflow(&f.app)
+            .resolve_proposal(
+                &f.tags[1].id,
+                WorkflowProposalState::Accepted,
+                &revision,
+                ts(NOW),
+            )
+            .unwrap();
+        // Restart: startup reconciliation finishes everything from the companions.
+        let restarted = open(
+            &f.app.path,
+            f.app.provider.clone(),
+            &Gates {
+                null_provider: true,
+                scenario_derivation: Some(scenario_inputs()),
+                ..Gates::default()
+            },
+        );
+        drop(restarted);
+        f.assert_finalised(&revision);
+        assert_eq!(head(&f.app).revision.id, revision, "never re-committed");
+        // Idempotent.
+        let again = open(&f.app.path, f.app.provider.clone(), &Gates::default());
+        drop(again);
+        f.assert_finalised(&revision);
+        assert_eq!(head(&f.app).revision.id, revision);
+    }
 }

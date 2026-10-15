@@ -1183,6 +1183,266 @@ mod job {
         ));
     }
 
+    // ------------------------------------------------------------------ R0.3 proposal sets
+
+    /// The members of `o` in ascending proposal-ID order.
+    fn members(o: &Outputs) -> Vec<Proposal> {
+        let mut m = vec![o.p1.clone(), o.p2.clone()];
+        m.sort_by(|a, b| a.id.cmp(&b.id));
+        m
+    }
+
+    /// The set envelope: every original unchanged, then one companion per member, in order.
+    fn set_envelope(members: &[Proposal], interleave: bool) -> PatchSet {
+        let companions: Vec<SemanticPatch> = members
+            .iter()
+            .enumerate()
+            .map(|(i, p)| SemanticPatch::AddNode {
+                node: node(
+                    &format!("dec:00000000000000b{i}"),
+                    Accepted,
+                    NodePayload::ResolutionDecision(decision(p)),
+                ),
+            })
+            .collect();
+        let patches = if interleave {
+            members
+                .iter()
+                .zip(&companions)
+                .flat_map(|(p, c)| [p.patch_set.patch.clone(), c.clone()])
+                .collect()
+        } else {
+            members
+                .iter()
+                .map(|p| p.patch_set.patch.clone())
+                .chain(companions)
+                .collect()
+        };
+        PatchSet {
+            base_semantic_hash: members[0].patch_set.base_semantic_hash.clone(),
+            patch: SemanticPatch::Compound { patches },
+        }
+    }
+
+    #[test]
+    fn governed_set_commit_records_every_owned_output() {
+        let mut w = world();
+        let o = w.outputs();
+        let mut job = ready(&w, &o);
+        let members = members(&o);
+        let envelope = set_envelope(&members, false);
+        let base = job.base_revision().clone();
+        let result = w
+            .store
+            .commit(job.branch(), &base, &envelope, meta())
+            .unwrap();
+        // The single recorder cannot record a set envelope.
+        assert!(job
+            .clone()
+            .record_governed_proposal_commit(&o.run, &o.p1, &envelope, &result)
+            .is_err());
+        let owned = vec![members[1].id.clone(), members[0].id.clone()];
+        job.record_governed_proposal_set_commit(&o.run, &members, &owned, &envelope, &result)
+            .unwrap();
+        assert_eq!(job.status(), Committed);
+        assert_eq!(job.committed_revision(), Some(&result.revision.id));
+        assert_eq!(job.committed_output_ref(), None);
+        let mut expected = vec![proposal_ref(&o.p1), proposal_ref(&o.p2)];
+        expected.sort();
+        assert_eq!(job.committed_output_refs(), expected.as_slice());
+        job.validate().unwrap();
+        assert_eq!(job.id(), &job.recompute_id().unwrap());
+        // The batch wire form round-trips and carries the field.
+        let wire = serde_json::to_value(&job).unwrap();
+        assert_eq!(
+            wire["committed_output_refs"],
+            json!(expected.iter().map(Hash::as_str).collect::<Vec<_>>())
+        );
+        assert_eq!(wire["committed_output_ref"], Value::Null);
+        assert_eq!(serde_json::from_value::<StageJob>(wire).unwrap(), job);
+        assert!(matches!(
+            job.record_governed_proposal_set_commit(&o.run, &members, &owned, &envelope, &result),
+            Err(StageJobError::JobNotReady(Committed))
+        ));
+
+        // One owned output of a larger set: a one-element batch record.
+        let mut w = world();
+        let o = w.outputs();
+        let mut job = ready(&w, &o);
+        let members = self::members(&o);
+        let envelope = set_envelope(&members, false);
+        let base = job.base_revision().clone();
+        let result = w
+            .store
+            .commit(job.branch(), &base, &envelope, meta())
+            .unwrap();
+        job.record_governed_proposal_set_commit(
+            &o.run,
+            &members,
+            std::slice::from_ref(&o.p2.id),
+            &envelope,
+            &result,
+        )
+        .unwrap();
+        assert_eq!(job.committed_output_refs(), &[proposal_ref(&o.p2)]);
+    }
+
+    #[test]
+    fn governed_set_recording_rejects_every_mismatch() {
+        let mut w = world();
+        let o = w.outputs();
+        let job = ready(&w, &o);
+        let members = members(&o);
+        let envelope = set_envelope(&members, false);
+        let base = job.base_revision().clone();
+        let result = w
+            .store
+            .commit(job.branch(), &base, &envelope, meta())
+            .unwrap();
+        let all: Vec<Id> = members.iter().map(|m| m.id.clone()).collect();
+        let try_with = |members: &[Proposal], owned: &[Id], set: &PatchSet, r: &CommitResult| {
+            let mut j = job.clone();
+            let outcome = j.record_governed_proposal_set_commit(&o.run, members, owned, set, r);
+            assert_eq!(j.status(), Ready, "a failed record leaves the job Ready");
+            outcome
+        };
+        // Interleaved originals and companions are not the set envelope.
+        // (The second member's original sits where its companion is expected.)
+        governed_mismatch(
+            try_with(&members, &all, &set_envelope(&members, true), &result),
+            "decision_status",
+        );
+        // Caller order is not member order.
+        let reversed: Vec<Proposal> = members.iter().rev().cloned().collect();
+        governed_mismatch(
+            try_with(&reversed, &all, &envelope, &result),
+            "member_order",
+        );
+        // A companion bound to another PatchSet.
+        let mut wrong = envelope.clone();
+        if let SemanticPatch::Compound { patches } = &mut wrong.patch {
+            if let SemanticPatch::AddNode { node } = &mut patches[2] {
+                if let NodePayload::ResolutionDecision(d) = &mut node.payload {
+                    d.patch_ref = patch_ref(&envelope);
+                }
+            }
+        }
+        governed_mismatch(
+            try_with(&members, &all, &wrong, &result),
+            "decision_patch_ref",
+        );
+        // Missing companion.
+        let mut short = envelope.clone();
+        if let SemanticPatch::Compound { patches } = &mut short.patch {
+            patches.pop();
+        }
+        governed_mismatch(try_with(&members, &all, &short, &result), "compound_shape");
+        // An owned ID outside the set, or an empty share.
+        assert!(matches!(
+            try_with(&members, &[id("prop:ffffffffffffffff")], &envelope, &result),
+            Err(StageJobError::ProposalMismatch(_))
+        ));
+        governed_mismatch(try_with(&members, &[], &envelope, &result), "empty_set");
+        // The revision must have accepted exactly this envelope.
+        let mut other = result.clone();
+        other.revision.accepted_patch_ref = Some(patch_ref(&members[0].patch_set));
+        governed_mismatch(
+            try_with(&members, &all, &envelope, &other),
+            "accepted_patch_ref",
+        );
+        let mut orphan = result.clone();
+        orphan.revision.parent = None;
+        assert!(matches!(
+            try_with(&members, &all, &envelope, &orphan),
+            Err(StageJobError::CommitParentMismatch)
+        ));
+    }
+
+    /// The pre-R0.3 StageJob wire fields (deny_unknown_fields), to prove byte compatibility.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyStageJob {
+        id: Value,
+        branch: Value,
+        base_revision: Value,
+        base_semantic_hash: Value,
+        stage: Value,
+        scope: Value,
+        profile_hash: Value,
+        config_hash: Value,
+        status: Value,
+        compile_run_ref: Value,
+        committed_revision: Value,
+        committed_output_ref: Value,
+    }
+
+    #[test]
+    fn single_and_legacy_stage_job_bytes_are_unchanged() {
+        let mut w = world();
+        let o = w.outputs();
+        let (queued, ready_job) = (w.capture(), ready(&w, &o));
+        let mut job = ready(&w, &o);
+        let governed = companion(&o.p1);
+        let base = job.base_revision().clone();
+        let result = w
+            .store
+            .commit(job.branch(), &base, &governed, meta())
+            .unwrap();
+        job.record_governed_proposal_commit(&o.run, &o.p1, &governed, &result)
+            .unwrap();
+        for job in [queued, ready_job, job] {
+            let bytes = to_canonical_json(&job).unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("committed_output_refs"));
+            // Exactly the legacy fields, byte for byte.
+            let legacy: LegacyStageJob = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(to_canonical_json(&legacy).unwrap(), bytes);
+            // Legacy bytes without the field decode to the same job.
+            assert_eq!(serde_json::from_slice::<StageJob>(&bytes).unwrap(), job);
+            assert!(job.committed_output_refs().is_empty());
+        }
+    }
+
+    #[test]
+    fn stage_job_commit_modes_are_exclusive() {
+        let mut w = world();
+        let o = w.outputs();
+        let ready_wire = serde_json::to_value(ready(&w, &o)).unwrap();
+        let mut job = ready(&w, &o);
+        let members = members(&o);
+        let envelope = set_envelope(&members, false);
+        let base = job.base_revision().clone();
+        let result = w
+            .store
+            .commit(job.branch(), &base, &envelope, meta())
+            .unwrap();
+        let all: Vec<Id> = members.iter().map(|m| m.id.clone()).collect();
+        job.record_governed_proposal_set_commit(&o.run, &members, &all, &envelope, &result)
+            .unwrap();
+        let committed = serde_json::to_value(&job).unwrap();
+        let rejects = |mutate: &dyn Fn(&mut Value)| {
+            let mut v = committed.clone();
+            mutate(&mut v);
+            assert!(serde_json::from_value::<StageJob>(v).is_err());
+        };
+        // Both modes at once, or neither.
+        rejects(&|v| v["committed_output_ref"] = json!(proposal_ref(&o.p1)));
+        rejects(&|v| {
+            v.as_object_mut().unwrap().remove("committed_output_refs");
+        });
+        // Unsorted, duplicate or non-Generic refs.
+        let refs = committed["committed_output_refs"]
+            .as_array()
+            .unwrap()
+            .clone();
+        rejects(&|v| v["committed_output_refs"] = json!([refs[1], refs[0]]));
+        rejects(&|v| v["committed_output_refs"] = json!([refs[0], refs[0]]));
+        rejects(&|v| v["committed_output_refs"] = json!([w.rev1.semantic_hash]));
+        // A Ready job carries no batch refs.
+        let mut bad = ready_wire;
+        bad["committed_output_refs"] = json!([refs[0]]);
+        assert!(serde_json::from_value::<StageJob>(bad).is_err());
+    }
+
     #[test]
     fn governed_recording_rejects_every_envelope_mismatch() {
         let mut w = world();

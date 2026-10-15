@@ -140,7 +140,7 @@ tasks:
 - id: R0.2
   status: done
 - id: R0.3
-  status: pending
+  status: done
 - id: R0.4
   status: pending
 - id: R0.5

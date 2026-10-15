@@ -138,6 +138,11 @@ pub struct StageJob {
     compile_run_ref: Option<Hash>,
     committed_revision: Option<RevisionId>,
     committed_output_ref: Option<Hash>,
+    /// R0.3: the sorted Proposal artifact refs of this job's outputs committed together by one
+    /// governed proposal-set acceptance. Empty (and omitted from the wire) for every other
+    /// status and for the single-output commit, which keeps using `committed_output_ref`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    committed_output_refs: Vec<Hash>,
 }
 
 #[derive(Deserialize)]
@@ -155,6 +160,8 @@ struct StageJobFields {
     compile_run_ref: Option<Hash>,
     committed_revision: Option<RevisionId>,
     committed_output_ref: Option<Hash>,
+    #[serde(default)]
+    committed_output_refs: Vec<Hash>,
 }
 
 impl TryFrom<StageJobFields> for StageJob {
@@ -174,6 +181,7 @@ impl TryFrom<StageJobFields> for StageJob {
             compile_run_ref: f.compile_run_ref,
             committed_revision: f.committed_revision,
             committed_output_ref: f.committed_output_ref,
+            committed_output_refs: f.committed_output_refs,
         };
         job.validate()?;
         Ok(job)
@@ -239,6 +247,7 @@ pub fn capture_stage_job(
         compile_run_ref: None,
         committed_revision: None,
         committed_output_ref: None,
+        committed_output_refs: Vec::new(),
     };
     job.id = job.recompute_id()?;
     job.validate()?;
@@ -294,6 +303,11 @@ impl StageJob {
         self.committed_output_ref.as_ref()
     }
 
+    /// The outputs committed by one governed proposal-set acceptance (R0.3); empty otherwise.
+    pub fn committed_output_refs(&self) -> &[Hash] {
+        &self.committed_output_refs
+    }
+
     /// Exactly the immutable capture fields that determine the job ID.
     pub fn identity_projection(&self) -> Value {
         json!({
@@ -329,22 +343,34 @@ impl StageJob {
         }
         if !self.compile_run_ref.as_ref().is_none_or(generic)
             || !self.committed_output_ref.as_ref().is_none_or(generic)
+            || !self.committed_output_refs.iter().all(generic)
         {
             return Err(invalid("output refs must be Generic hashes"));
         }
+        if self
+            .committed_output_refs
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(invalid("committed output refs are not sorted and unique"));
+        }
         self.scope.validate()?;
-        let (run, revision, output) = (
+        let (run, revision, output, outputs) = (
             self.compile_run_ref.is_some(),
             self.committed_revision.is_some(),
             self.committed_output_ref.is_some(),
+            !self.committed_output_refs.is_empty(),
         );
         let fields_ok = match self.status {
             StageJobStatus::Queued
             | StageJobStatus::Acquiring
             | StageJobStatus::Evaluating
-            | StageJobStatus::Failed => !run && !revision && !output,
-            StageJobStatus::Ready | StageJobStatus::Stale => run && !revision && !output,
-            StageJobStatus::Committed => run && revision && output,
+            | StageJobStatus::Failed => !run && !revision && !output && !outputs,
+            StageJobStatus::Ready | StageJobStatus::Stale => {
+                run && !revision && !output && !outputs
+            }
+            // Exactly one commit mode: one output, or one proposal-set acceptance.
+            StageJobStatus::Committed => run && revision && (output != outputs),
         };
         if !fields_ok {
             return Err(invalid("status does not match its run and commit fields"));
@@ -643,6 +669,97 @@ impl StageJob {
         }
         self.committed_revision = Some(commit.revision.id.clone());
         self.committed_output_ref = Some(output_ref);
+        self.status = StageJobStatus::Committed;
+        Ok(())
+    }
+
+    /// Records that the store committed this job's `owned` outputs inside one governed
+    /// proposal-set acceptance (R0.3, architecture §4.7). `members` is the complete accepted
+    /// set in ascending proposal-ID order (possibly including proposals of other jobs or of no
+    /// job) and `committed_patch_set` must be exactly `Compound [every member's original patch
+    /// unchanged, in member order, then one Accepted proposal-acceptance ResolutionDecision
+    /// AddNode per member in the same order]` on the shared base, each decision bound to its
+    /// member and that member's original PatchSet. Every owned ID must be a member and an
+    /// exact output of this Ready job's run; the revision must be a child of the base that
+    /// accepted exactly `committed_patch_set`. The job records the sorted owned output refs.
+    pub fn record_governed_proposal_set_commit(
+        &mut self,
+        run: &CompileRun,
+        members: &[Proposal],
+        owned: &[plumb_core::Id],
+        committed_patch_set: &PatchSet,
+        commit: &CommitResult,
+    ) -> Result<(), StageJobError> {
+        if self.status != StageJobStatus::Ready {
+            return Err(StageJobError::JobNotReady(self.status));
+        }
+        self.check_run(run)?;
+        let mismatch = StageJobError::GovernedCommitMismatch;
+        if members.is_empty() || owned.is_empty() {
+            return Err(mismatch("empty_set"));
+        }
+        if members.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+            return Err(mismatch("member_order"));
+        }
+        if committed_patch_set.base_semantic_hash != self.base_semantic_hash {
+            return Err(mismatch("base_semantic_hash"));
+        }
+        let SemanticPatch::Compound { patches } = &committed_patch_set.patch else {
+            return Err(mismatch("compound_shape"));
+        };
+        if patches.len() != 2 * members.len() {
+            return Err(mismatch("compound_shape"));
+        }
+        let (originals, companions) = patches.split_at(members.len());
+        for ((member, original), companion) in members.iter().zip(originals).zip(companions) {
+            if member.patch_set.base_semantic_hash != self.base_semantic_hash {
+                return Err(mismatch("member_base_semantic_hash"));
+            }
+            if original != &member.patch_set.patch {
+                return Err(mismatch("original_patch"));
+            }
+            let SemanticPatch::AddNode { node } = companion else {
+                return Err(mismatch("compound_shape"));
+            };
+            if node.validate().is_err() || node.status != ElementStatus::Accepted {
+                return Err(mismatch("decision_status"));
+            }
+            let NodePayload::ResolutionDecision(decision) = &node.payload else {
+                return Err(mismatch("decision_payload"));
+            };
+            if decision.question_ref.is_some() {
+                return Err(mismatch("decision_question_ref"));
+            }
+            if decision.proposal_ref.as_ref() != Some(&member.id) {
+                return Err(mismatch("decision_proposal_ref"));
+            }
+            if decision.patch_ref != canonical_ref(&member.patch_set)? {
+                return Err(mismatch("decision_patch_ref"));
+            }
+            if decision.supersedes.is_some() {
+                return Err(mismatch("decision_supersedes"));
+            }
+        }
+        let mut output_refs = Vec::with_capacity(owned.len());
+        for id in owned {
+            let member = members
+                .iter()
+                .find(|m| &m.id == id)
+                .ok_or(StageJobError::ProposalMismatch("not a member of the set"))?;
+            output_refs.push(self.proposal_output(run, member)?);
+        }
+        output_refs.sort();
+        if output_refs.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(mismatch("duplicate_output"));
+        }
+        if commit.revision.parent.as_ref() != Some(&self.base_revision) {
+            return Err(StageJobError::CommitParentMismatch);
+        }
+        if commit.revision.accepted_patch_ref != Some(canonical_ref(committed_patch_set)?) {
+            return Err(mismatch("accepted_patch_ref"));
+        }
+        self.committed_revision = Some(commit.revision.id.clone());
+        self.committed_output_refs = output_refs;
         self.status = StageJobStatus::Committed;
         Ok(())
     }

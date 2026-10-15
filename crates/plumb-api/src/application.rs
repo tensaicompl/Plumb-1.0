@@ -340,7 +340,10 @@ mod services {
     };
     use crate::stage::acceptance as stage_acceptance;
     use crate::stage::scenario_execution::error_name;
-    use crate::state::{parse_id, parse_wire, require_clean_reason, run_intake, wire, ApiState};
+    use crate::state::{
+        companion_error, introduced_decisions, parse_id, parse_wire, reason_required,
+        require_clean_reason, run_intake, wire, ApiState,
+    };
     use crate::workflow::{
         acceptance_decisions, classify, decode_proposal, require_kind, StoredProposal,
     };
@@ -948,6 +951,241 @@ mod services {
             .map_err(workflow_error)?;
             if let Some(acceptance) = &stage {
                 stage_acceptance::finish_parent(self, &acceptance.link.recipe_job_id, &revision)?;
+            }
+            Ok(write)
+        }
+
+        /// Accepts a set of pending proposals built on the loaded head atomically in one
+        /// revision (R0.3, architecture §4.7). `members` names each proposal with the explicit
+        /// positive action it must match (`reject` is not a set action); `reason` applies to
+        /// every member. Everything is validated against exactly `loaded` before any write:
+        /// distinct, existing, pending members on this base; matching classes; fresh intake,
+        /// reasons and rationale; exact fresh stage outputs (read-only); individually
+        /// applicable patches whose element effects are pairwise disjoint; and an applicable
+        /// composition. The commit is one CAS of `Compound [originals in ascending proposal-ID
+        /// order, then one acceptance companion per member in the same order]`, each original
+        /// unchanged and persisted as its own Patch artifact. A failure before the CAS leaves
+        /// no revision and no workflow or stage transition; a moved head is 412, never retried.
+        pub fn accept_proposal_set(
+            &self,
+            loaded: &LoadedRevision,
+            members: &[(String, ProposalAction)],
+            reason: Option<String>,
+        ) -> Result<WriteResult, ApiError> {
+            if let Some(reason) = &reason {
+                require_clean_reason(reason)?;
+            }
+            self.runtime("workflow_store")?;
+            // One governed acceptance event: one write instant for every member.
+            let created_at = self.now();
+            if members.is_empty() {
+                return Err(ApiError::invalid(
+                    "a proposal set needs at least one member",
+                ));
+            }
+            let mut requested: Vec<(Id, ProposalKind)> = Vec::with_capacity(members.len());
+            for (text, action) in members {
+                let id = parse_id(text)
+                    .ok_or_else(|| ApiError::not_found(format!("proposal {text} not found")))?;
+                let kind = action.kind().ok_or_else(|| {
+                    ApiError::invalid("reject is not a proposal-set acceptance action")
+                })?;
+                if requested.iter().any(|(seen, _)| seen == &id) {
+                    return Err(ApiError::invalid("a proposal occurs twice in the set")
+                        .with_details(json!({ "proposal_ref": id })));
+                }
+                requested.push((id, kind));
+            }
+            // Caller order never defines commit order.
+            requested.sort_by(|a, b| a.0.cmp(&b.0));
+
+            struct Member {
+                proposal: Proposal,
+                companion: plumb_functional::resolution::AcceptanceCompanion,
+                effects: std::collections::BTreeSet<Id>,
+                link: Option<plumb_store::StageProposalLink>,
+            }
+            let mut validated: Vec<Member> = Vec::with_capacity(requested.len());
+            for (id, required) in &requested {
+                let missing = || ApiError::not_found(format!("proposal {id} not found"));
+                let record = self
+                    .with_workflow_store(|store| store.proposal(id))?
+                    .map_err(workflow_error)?
+                    .ok_or_else(missing)?;
+                let stored = decode_proposal(record)?;
+                if stored.record.state != WorkflowProposalState::Pending {
+                    return Err(not_pending(&stored.record));
+                }
+                let proposal = stored.proposal;
+                // A stage output is first proven an exact, fresh output of its Ready child,
+                // read-only: a rejected set never persists a child or parent transition.
+                let link = stage_acceptance::link_of(self, &proposal.id)?;
+                if let Some(link) = &link {
+                    stage_acceptance::validate_set_member(self, loaded, link, &proposal)?;
+                }
+                if stored.record.base_revision_id != loaded.revision.id
+                    || proposal.patch_set.base_semantic_hash != loaded.revision.semantic_hash
+                {
+                    return Err(baseline_changed(&proposal.id));
+                }
+                let kind = classify(&loaded.graph, &proposal)?;
+                require_kind(&proposal, kind, *required)?;
+                let report = run_intake(loaded, &proposal)?;
+                if report.requires_reason && reason.is_none() {
+                    return Err(reason_required(&proposal, &report));
+                }
+                let reason_codes: std::collections::BTreeSet<String> =
+                    report.reason_codes.iter().map(|c| c.to_string()).collect();
+                let companion = plumb_functional::resolution::build_acceptance_companion(
+                    &loaded.graph,
+                    &proposal,
+                    &plumb_functional::resolution::AcceptanceInput {
+                        reason_codes: reason_codes.into_iter().collect(),
+                        decided_by: self.identity().actor_ref().clone(),
+                        decided_at: created_at,
+                        rationale: reason.clone(),
+                    },
+                )
+                .map_err(companion_error)?;
+                match plumb_intake::validate_required_rationale(
+                    &proposal,
+                    &report,
+                    Some(&companion.decision_node),
+                ) {
+                    Ok(()) => {}
+                    Err(plumb_intake::IntakeAcceptanceError::ReasonRequired(_))
+                    | Err(plumb_intake::IntakeAcceptanceError::MissingRationale(_)) => {
+                        return Err(reason_required(&proposal, &report))
+                    }
+                    Err(_) => return Err(ApiError::internal("intake_rationale")),
+                }
+                // The member's own effect on the untouched base.
+                let delta = plumb_patch::apply_patch(&loaded.graph, &proposal.patch_set)
+                    .map_err(|error| {
+                        ApiError::unprocessable(
+                            "E_PATCH_REJECTED",
+                            "the proposed change cannot be applied to the current graph",
+                        )
+                        .with_details(json!({ "patch_error": error.to_string() }))
+                    })?
+                    .delta;
+                let effects = delta
+                    .touched_nodes
+                    .iter()
+                    .chain(&delta.touched_edges)
+                    .chain(&delta.added_nodes)
+                    .chain(&delta.removed_nodes)
+                    .chain(&delta.modified_nodes)
+                    .chain(&delta.added_edges)
+                    .chain(&delta.removed_edges)
+                    .chain(&delta.modified_edges)
+                    .cloned()
+                    .collect();
+                validated.push(Member {
+                    proposal,
+                    companion,
+                    effects,
+                    link,
+                });
+            }
+            // Compatibility: the members' independent element effects are pairwise disjoint.
+            for (i, a) in validated.iter().enumerate() {
+                for b in &validated[i + 1..] {
+                    let shared: Vec<&Id> = a.effects.intersection(&b.effects).collect();
+                    if !shared.is_empty() {
+                        return Err(ApiError::proposal_set_conflict(json!({
+                            "reason": "overlapping_effects",
+                            "proposals": [a.proposal.id, b.proposal.id],
+                            "elements": shared,
+                        })));
+                    }
+                }
+            }
+            let patch_set = PatchSet {
+                base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                patch: SemanticPatch::Compound {
+                    patches: validated
+                        .iter()
+                        .map(|m| m.proposal.patch_set.patch.clone())
+                        .chain(validated.iter().map(|m| SemanticPatch::AddNode {
+                            node: m.companion.decision_node.clone(),
+                        }))
+                        .collect(),
+                },
+            };
+            if plumb_patch::apply_patch(&loaded.graph, &patch_set).is_err() {
+                let elements: std::collections::BTreeSet<&Id> =
+                    validated.iter().flat_map(|m| &m.effects).collect();
+                return Err(ApiError::proposal_set_conflict(json!({
+                    "reason": "composition_not_applicable",
+                    "proposals": validated.iter().map(|m| &m.proposal.id).collect::<Vec<_>>(),
+                    "elements": elements,
+                })));
+            }
+            // Each original effect is persisted unchanged before the CAS; an orphan after a
+            // lost CAS is kept (as on the single path).
+            for member in &validated {
+                let stored = self.with_artifact_store(|store| {
+                    store.put(
+                        plumb_artifacts::ArtifactKind::Patch,
+                        "application/json",
+                        &member.companion.original_patch_bytes,
+                        created_at,
+                    )
+                })?;
+                match stored {
+                    Ok(hash) if hash == member.companion.patch_ref => {}
+                    _ => return Err(ApiError::internal("artifact_store")),
+                }
+            }
+            let mut decision_refs = std::collections::BTreeSet::new();
+            for member in &validated {
+                decision_refs.extend(introduced_decisions(&member.proposal.patch_set.patch));
+                decision_refs.insert(member.companion.decision_ref.clone());
+            }
+            let (write, committed) = self.commit_patch_set_detailed(
+                loaded,
+                &patch_set,
+                decision_refs.into_iter().collect(),
+                created_at,
+                "accept_proposal_set",
+            )?;
+            // Post-commit bookkeeping (recoverable from the companions; never re-committed).
+            let proposals: Vec<Proposal> = validated.iter().map(|m| m.proposal.clone()).collect();
+            let mut children: std::collections::BTreeMap<
+                plumb_core::Hash,
+                (plumb_store::StageProposalLink, Vec<Id>),
+            > = std::collections::BTreeMap::new();
+            for member in &validated {
+                if let Some(link) = &member.link {
+                    children
+                        .entry(link.stage_job_id.clone())
+                        .or_insert_with(|| (link.clone(), Vec::new()))
+                        .1
+                        .push(member.proposal.id.clone());
+                }
+            }
+            for (link, owned) in children.values() {
+                stage_acceptance::record_set(self, link, &proposals, owned, &committed)?;
+            }
+            let revision = committed.commit.revision.id.clone();
+            for member in &validated {
+                self.with_workflow_store(|store| {
+                    store.resolve_proposal(
+                        &member.proposal.id,
+                        WorkflowProposalState::Accepted,
+                        &revision,
+                        created_at,
+                    )
+                })?
+                .map_err(workflow_error)?;
+            }
+            let parents: std::collections::BTreeSet<&plumb_core::Hash> = children
+                .values()
+                .map(|(link, _)| &link.recipe_job_id)
+                .collect();
+            for parent in parents {
+                stage_acceptance::finish_parent(self, parent, &revision)?;
             }
             Ok(write)
         }
