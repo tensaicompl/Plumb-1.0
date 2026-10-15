@@ -85,6 +85,13 @@ Every semantic node family the pilot gates I0-F4 and the HR pilot depend on must
 
 **Governed answers at the product boundary (R0.6).** The CLI reaches the S3.1 materialization service (questions from the current persisted F2 report findings plus any explicitly supplied upstream finding material, routed by an explicit routing configuration) and the S3.3 answer path through the same application services HTTP uses; the answer logic lives in an application service, never in route code.
 
+**Supported confirmation surfaces (R0.6, plan v3.2).** Every pilot-generated Proposed semantic element that requires human confirmation is discoverable and actionable through a supported product surface (CLI or the pilot UI); no essential acceptance operation exists only as a hidden backend route or a test helper. In particular:
+
+- Requirement joins the generic governed confirmation (`SetStatus Proposed -> Accepted`): an S1.x Requirement reaches Accepted through the generic confirmation or the existing sentence acceptance, both over the existing WorkflowProposal and governed acceptance machinery. The confirmation still refuses governance, provenance and proof types; the dedicated Term, Calculation and Scenario contracts stay dedicated.
+- A CLI proposal listing (`proposals`) deterministically lists every pending WorkflowProposal of the branch, sorted by proposal ID, with its ID, its class (the positive action it requires: accept, create, link, merge or supersede), its origin (stage recipe job and stage job IDs, or intake/session origin), its base revision and whether its stored intake requires a reason. `--json` emits the same records.
+- Requirement EARS review is live: Requirement detail surfaces the pending S1.2 EARS WorkflowProposal of that Requirement as `ears_suggestion` (its normalized text) with `ears_proposal_ref` (its proposal ID); the UI accepts it through the existing governed proposal acceptance of that proposal. The `accept-ears` route stays available for an analyst-supplied text edit.
+- No second proposal lifecycle is introduced.
+
 ## 3. The stage contract
 
 A compiler stage is not "a function that calls an LLM".
@@ -419,6 +426,28 @@ Two executions with identical source semantics, accepted answers, policy and gov
 The companion records who accepted which proposal bytes, when, with which intake reason codes and rationale. The accepted semantic effect is exactly the original patch committed in the same revision, already represented by the elements it changed. The companion never satisfies a domain rule (metamodel §6.3), and F3 already excludes it from current S3 decisions. Excluding it therefore removes only acceptance provenance from the projection.
 
 The element hash, the persisted payload, F3 artifact binding by `patch_ref`, waiver evaluation, supersession, `decisions.jsonl` and revision `decision_refs` keep using the complete record.
+
+**Question identity (R0.5, plan v3.2).** A Question ID identifies the semantic unresolved question, never its scheduling or routing. Today `question_id` (`plumb-functional` `question.rs`) hashes `{project_id, template_id, slots}` where `slots` also carries the mutable `priority` (severity weight times blast radius) and `stakeholder_ref` (routing). From R0.5 the identity is exactly:
+
+```text
+q:<first 16 hex of SHA-256(RFC 8785 {
+    "project_id":  <project Id>,
+    "template_id": <QuestionTemplate.template_id>,
+    "finding_ref": <the Finding Id the question resolves>,
+    "subject":     <the template's base slots without finding_ref>
+})>
+```
+
+`subject` is exactly the object `QuestionTemplate::base_slots` produces minus its `finding_ref` key: `affected_refs` (sorted) plus, by the template's `Expansion`, `candidate_ref` or `target_ref`, plus by its `ChoiceSpec` either `choice_refs` or `operation_refs` and `resource_scope_refs` (each sorted). The keys `priority`, `stakeholder_ref`, blast radius, `round_ref`, `prompt`, `status` and `answer_schema` never enter the identity, and duplicate suppression uses the same `(template_id, finding_ref, subject)` key. `priority`, `stakeholder_ref` and `round_ref` remain Question payload fields; a rematerialization that only changes them updates the existing Question through one non-semantic `ReplacePayload` on the same ID (Questions are excluded from `semantic_hash`), never a second Question.
+
+### 4.9 R0.3 ratifications (plan v3.2)
+
+The delivered R0.3 implementation is ratified with these interpretations; none changes its code.
+
+- **Governed versus operational timestamps.** One proposal-set acceptance has one governed acceptance timestamp, read once by `accept_proposal_set`. It is every companion `decided_at`, the `created_at` of every original Patch artifact the service writes, the committed GraphRevision `created_at` and the time of every resulting workflow Accepted resolution. Post-CAS stage-store `updated_at` values and recipe-job transition times are operational lifecycle timestamps; they may be later clock reads and are not part of the governed acceptance identity.
+- **One-member set recovery.** For `N > 1` reconciliation reconstructs the complete batch and every affected child records all of its owned outputs through the set recorder. For `N = 1` the committed envelope is byte-identical to the single governed-acceptance envelope and no durable field records which service produced it, so a recovered child may be in the legacy single form (`committed_output_ref` set, `committed_output_refs` empty) or the set form (`committed_output_ref` empty, one-element `committed_output_refs`). Both denote the same accepted Proposal artifact and committed revision; no marker is added to distinguish them.
+- **Pre-CAS artifacts.** Atomicity means no semantic revision, workflow transition or stage transition before the CAS. Content-addressed original Patch artifacts may be persisted after all set validation and before the CAS, exactly as on the single path, so a lost CAS can leave only idempotent orphan Patch artifacts.
+- **Defensive composition guard.** The deterministic `composition_not_applicable` conflict stays even though no reachable pair of individually applicable, pairwise-disjoint current patches is known to trigger it; no artificial mutation is required to exercise it.
 
 ## 5. Cross-cutting services
 
@@ -2135,6 +2164,12 @@ Each field belongs to one of three classes:
 
 Nothing is inferred from names, text, kinds, priorities or severities. External policy, organization facts and applicability stay explicit.
 
+#### Current gate truth and requirement reads (R0.4, plan v3.2)
+
+- **Factual inputs.** Every factual F1, F2 and F4 input is assembled from the current PSG and the current durable stage artifacts exactly as the matrix above states. Startup configuration supplies only policy, execution/environment material and explicitly external facts; it never stands in for current semantic-model truth.
+- **Requirement reads without a current F1 report.** Requirement list and detail never require a current F1 GateReport. `RequirementSummary` and `RequirementDetail` gain a required boolean `lint_current`: `true` exactly when a current F1 report exists for the loaded head, in which case `smells` and `lint_findings` are projected from it as today; `false` otherwise, in which case `smells` and `lint_findings` are empty and `readiness` is `null`. "No current F1 report" is therefore never indistinguishable from "a current report with zero findings". The change adds two schema properties and no HTTP operation (the inventory stays 74); the UI shows lint as unavailable when `lint_current` is false.
+- **Readiness of an empty project.** The pilot `ready` outcome carries a product-level precondition list. When the loaded head has zero Accepted Requirements it contains `no_accepted_requirements`, `ReadyOutcome::passed()` is false and the CLI exits 2 with `precondition: no_accepted_requirements`. Gate reports, rule applicability and rule results are unchanged; no rule is forced to FAIL.
+
 ### UI test-runner dependency (U0.1, Hotfix 070)
 
 The frozen UI script `"e2e": "playwright test"` is the Playwright Test runner, shipped by `@playwright/test`; `playwright` is only the browser automation library. Hotfix 070 is the human-approved plan revision that adds exactly one direct UI development dependency, `@playwright/test@1.63.0`, next to the unchanged `playwright@1.63.0` (the versions intentionally match). `U0.1` adds it to `ui/package.json` and `ui/package-lock.json` with `npm install --save-dev --save-exact --strict-peer-deps --strict-allow-scripts @playwright/test@1.63.0`, and `playwright test` resolves from that local dependency graph only (never npx remote execution, a global install, `@playwright/cli`, a custom runner or Vitest browser mode); `ui/playwright.config.ts` may import `defineConfig` from `@playwright/test`. The JavaScript installation policy is unchanged: `npm ci --strict-peer-deps --strict-allow-scripts`, `npm ls --depth=0` and `npm audit --audit-level=high` must succeed with zero HIGH and CRITICAL findings, no peer conflict, unsupported engine or unauthorized install script, and without `--force`, `--legacy-peer-deps`, `--ignore-scripts`, overrides or dynamic versions; failing that, U0.1 stops BLOCKED-UI-DEPENDENCY. No other JavaScript dependency changes; `@stoplight/prism-cli` stays forbidden and MSW stays the pilot API mocking dependency. Because U0.1 owns no unit-test file while running `vitest run`, `ui/vite.config.ts` sets Vitest `passWithNoTests: true` so the empty scaffold passes; this never suppresses failing tests once tests exist. The package scripts are unchanged, and Hotfix 070 left the U0.1 allowlist at its 13 files (Hotfix 071 below makes it 15).
@@ -2707,3 +2742,121 @@ Even if architecture/delivery features are not yet exposed:
 - ArchiMate/TOGAF profiles
 
 The purpose of the v3 refactor is to make those later features additive rather than requiring a second foundation rewrite.
+
+## 33. Pilot hardening contracts (plan v3.2)
+
+An independent audit after plan v3.1 was checked against the repository; only the confirmed defects below are contracted. Each subsection is the frozen contract of one H0 task; tasks run in order H0.1 to H0.9 after R0.6 and before R0.7.
+
+### 33.1 Bounded untrusted input (H0.1)
+
+Untrusted input never reaches an unbounded allocation, unbounded recursion or an allocator/stack abort; every limit fails with a typed error. The frozen constants are:
+
+| Constant | Value | Applies to |
+|---|---|---|
+| `DOCX_MAX_INPUT_BYTES` | 134217728 (128 MiB, unchanged) | DOCX bytes |
+| `DOCX_MAX_ENTRIES` | 4096 (unchanged) | ZIP entries |
+| `DOCX_MAX_TOTAL_UNCOMPRESSED_BYTES` | 536870912 (512 MiB, unchanged) | declared uncompressed total |
+| `DOCX_MAX_XML_PART_BYTES` | 33554432 (32 MiB, unchanged) | one XML part |
+| `DOCX_MAX_XML_DEPTH` | 256 | open-element nesting while parsing one XML part |
+| `DOCX_MAX_TABLE_COLUMNS` | 64 | one `w:gridSpan` value and the summed span of one table row |
+| `DOCX_MAX_TABLE_ROWS` | 10000 | rows of one table |
+| `TEXT_MAX_INPUT_BYTES` | 16777216 (16 MiB) | Markdown and plain-text bytes |
+| `SOURCE_MAX_FRAGMENTS` | 20000 | EvidenceFragments produced by one import (every importer) |
+| `EXPR_MAX_SOURCE_BYTES` | 4096 | one PlumbExpr source |
+| `EXPR_MAX_NESTING_DEPTH` | 64 | parenthesis, call-argument and consecutive prefix-operator nesting |
+| `EXPR_MAX_AST_NODES` | 1024 | nodes of one built AST |
+| `MAX_SOURCE_UPLOAD_BODY_BYTES` | 135266304 (129 MiB) | HTTP body of `POST /api/sources` |
+| `MAX_JSON_BODY_BYTES` | 4194304 (4 MiB) | HTTP body of every other route |
+
+- **DOCX.** The workspace `quick-xml` dependency moves from 0.37.5 to a 0.41 release (`>= 0.41.0`). XML parsing counts open elements and fails at depth 257. `w:gridSpan` is parsed as an integer and accepted only in `1..=64`; a row whose summed span exceeds 64 or a table with more than 10000 rows fails; no allocation is ever sized from an unchecked attacker value. Every violation is `ImportError::DocxLimit` (`E_DOCX_LIMIT`) naming the limit.
+- **Every importer.** An import that would produce more than 20000 fragments fails with `E_SOURCE_LIMIT`. Markdown and plain text above 16 MiB fail with `E_SOURCE_LIMIT` before decoding.
+- **CLI.** `import` checks the file length from metadata against the limit of the declared media type before reading and then reads at most limit + 1 bytes; an oversized file fails without being read into memory.
+- **Expressions.** `plumb_expr::parse` rejects sources above 4096 bytes and a lexical pre-scan rejects nesting above 64 before the recursive grammar runs; the built AST is rejected above 1024 nodes. The error is a typed `ExprError::LimitExceeded {limit, actual, max}` with code `E_EXPRESSION_LIMIT`. X1.3 intake checks every expression-bearing payload field of a proposal — `Transition.guard_expr`, `Invariant.expression`, `ProcessNode.condition_expr`, `ProcessNode.timer_expr`, `Rule.condition_expr`, `Rule.action_expr`, `Calculation.expression`, `PolicyCondition.expression` — against the same limits, so an oversized or pathological expression can never be persisted in the PSG.
+- **HTTP.** PLUMB owns its body limits: 129 MiB on `POST /api/sources`, 4 MiB elsewhere. An oversized body is 413 `E_PAYLOAD_TOO_LARGE` in the ordinary typed JSON envelope with `details.limit_bytes`. No OpenAPI operation changes.
+
+### 33.2 Revision-complete optimistic concurrency (H0.2)
+
+Proposed elements do not contribute to `semantic_hash`, so a semantic-hash `If-Match` lets a write based on a stale view of Proposed state pass. The concurrency token becomes the exact branch-head GraphRevision ID.
+
+- Every GET that sets `ETag` sets it to the loaded GraphRevision ID (`rev:<version>:<16 hex>`), the exact string.
+- Every write that requires `If-Match` (and `POST /api/stages/{stage}/run`) requires it to equal the exact current head revision ID; a missing header stays 400; any other value is the existing 412 `E_PRECONDITION_FAILED` whose body still carries the current revision and semantic hash.
+- `semantic_hash` stays available (version endpoint, write results, 412 body) as semantic identity; it is no longer a concurrency token. Cursors keep their existing revision-and-semantic-hash baseline protection unchanged.
+- The UI carries the ETag of the data the user actually reviewed: each query keeps the response `ETag`, and a mutation sends that value. `useVersionedMutation` no longer fetches `/api/model/version` inside the mutation; a 412 keeps the existing conflict dialog and never retries.
+- OpenAPI descriptions of `ETag`/`If-Match` change to the revision ID; the operation inventory stays 74 and the generated client is regenerated.
+
+### 33.3 Retryable and process-owned stage execution (H0.3)
+
+- **Identity versus attempts.** The content-addressed recipe job ID and child StageJob ID stay exactly as captured. Each recipe job row gains `attempt` (starting at 1) and an attempt record table `stage_recipe_job_attempts(recipe_job_id, attempt, owner_id, started_at, ended_at, outcome, error)`; `STORE_SCHEMA_VERSION` increases by exactly 1 with an in-place additive migration.
+- **Retry.** A new application service and CLI command `retry <JOB_ID>` re-queue a Failed recipe job as attempt N+1 under the same ID, and move each of its Failed children to Queued through a new StageJob `retry` transition (Failed -> Queued, nothing else). Retry requires the branch head to still equal the job's captured base revision; otherwise it is 409 `E_STAGE_RETRY_BASE_MOVED` and nothing changes. Stale, Ready and Committed jobs are never retried; Stale semantic work is never silently re-run or rebased. No HTTP operation is added.
+- **Ownership.** Each process that executes stage work has an `owner_id` = `own:<first 16 hex of SHA-256(RFC 8785 {pid, process start time, db path})>`. Claiming a job writes `owner_id` and `lease_expires_at` = now + `STAGE_LEASE_SECONDS` (60); the executing worker renews the lease every `STAGE_HEARTBEAT_SECONDS` (15).
+- **Recovery.** Startup recovery interrupts (`E_JOB_INTERRUPTED`) only in-flight jobs whose lease has expired or that have no owner (pre-H0.3 rows); a second live process never interrupts a job with an unexpired lease owned by another process.
+- **Read-only commands.** The application has an explicit open mode: `Interactive` (worker, recovery, reconciliation) and `ReadOnly` (no worker, no recovery or reconciliation writes). Read-only CLI commands open `ReadOnly`.
+- **Worker errors.** The worker never discards an execution error: any `Err` from executing a claimed job persists the job as Failed with `E_INTERNAL` and the bounded message, and is logged.
+
+### 33.4 Executable business failures and outcomes (H0.4)
+
+The simulator maps every `ExecutionResult::Failed` to Fail today and makes any Operation with more than one produced Outcome Undecidable. The following is frozen.
+
+- **Failure classes.** Business rejections are exactly the `ExecutionFailure` kinds `authorization_denied`, `precondition_rejected`, `transition_guard_rejected`, `invalid_source_state`, `invariant_violation` and `no_decision_row`. `postcondition_violation` and `evaluation_failed` are unexpected model failures. Missing semantics stay Undecidable. A simulator `Err` (infrastructure or internal error) produces no verdict and is never converted into Pass.
+- **Outcome selection material.** An Outcome may carry the node extension `plumb_sim:outcome_selection` = `{"version": 1, "selections": [...]}` whose entries, sorted by `operation_ref`, are either `{"operation_ref": Id, "when": <PlumbExpr Bool source over the post-execution state>}` (only on `success` or `partial` Outcomes) or `{"operation_ref": Id, "on_failures": [sorted unique business failure kind wire names]}` (only on `business_failure` Outcomes). `technical_failure` Outcomes are never selected by the simulator. The extension is written only through a governed `SetNodeExtension` proposal produced from the R0.6 semantic directory (`outcome_selections` drafts) and confirmed like other directory material.
+- **Successful execution.** The candidates are the Operation's Accepted `produces` Outcomes of kind `success` or `partial`. One candidate without a selection entry is selected as today. With several candidates, every candidate needs a `when` entry for that Operation; exactly one true selects it; none or several true, or a missing entry, is Undecidable with `OUTCOME_SELECTION`.
+- **Business rejection.** For a business failure kind the candidates are the Operation's Accepted `business_failure` Outcomes whose entry for that Operation lists the kind. Exactly one candidate becomes the observed outcome, the state stays the pre-state, no event is produced, and `then` is compared normally — so a Scenario whose `then.outcomes` names that Outcome passes. No candidate is Fail with the existing execution-failure diff (unexpected rejection); several candidates are Undecidable with `OUTCOME_SELECTION`.
+- **Model failures.** `postcondition_violation` and `evaluation_failed` remain Fail whatever the Scenario expects.
+- The HR negative scenarios (for example SCN-010 insufficient balance, SCN-013 non-manager approval, SCN-022 withdraw approved) are the regression shapes; E0.1 maps the fixture `then.outcome: business_failure` to the Operation's selected `business_failure` Outcome reference.
+
+### 33.5 Replay-safe semantic stages (H0.5)
+
+A deterministic producer recognizes its own accepted output by its deterministic ID, node type, origin extension value and the payload fields it owns; later enrichment of other fields is legitimate and never overwritten.
+
+| Producer | Node type | Producer-owned payload fields | Enrichable fields |
+|---|---|---|---|
+| S2.1 domain | Entity | `name` | `description`, `aggregate_root` |
+| S2.1 domain | Attribute | `name` | `value_type`, `nullable`, `unit`, `precision`, `enum_values`, `data_classification` |
+| S2.1 domain | DomainRelationship | `from_entity`, `to_entity`, `relationship_kind` | `cardinality_from`, `cardinality_to`, `name`, `snapshot_semantics`, `ownership` |
+| S1.5 vocabulary | Term | `term`, `language` | `definition_ref`, `aliases`, `status` |
+| S1.5 vocabulary | Concept | `name`, `concept_kind` | `definition` |
+
+- A rerun whose existing node matches on ID, type, origin and owned fields is a no-op for that node (no proposal). A mismatch of any owned field or of the origin is a real conflict (`ExistingCandidateConflict` / `ExistingVocabularyCandidateConflict`). Vocabulary no longer accepts any Accepted node without comparing its owned fields.
+- Batch analysis is per-target tolerant: one unsupported, stale or origin-less target yields a deterministic per-target disposition in the analysis result instead of aborting the batch. EARS analysis of a Requirement without the S1.1 segment origin yields the disposition `not_applicable: missing_segment_origin` for that Requirement.
+
+### 33.6 Finding and waiver governance closure (H0.6)
+
+- **Durable findings.** `materialize_gate_findings` turns the findings of the current persisted F1, F2 or F4 GateReport into durable Accepted Finding nodes: every `GeneratedFinding` whose ID is absent from the graph is added in one non-semantic AutoNonSemantic proposal (Findings are excluded from `semantic_hash`); present IDs are no-ops. It is exposed as the CLI `findings materialize` and listed by the read-only `findings list`.
+- **Dispositions.** Each finding has exactly one disposition: `question_resolvable` when a frozen Question template matches its code and condition (it is materialized through S3.1 and resolved through S3.3); `waivable` when its rule's `waiver_policy` is `decision_required`, or `profile_allow` and the active profile allows waivers (it is governed through the existing waiver path); `non_waivable` otherwise (`forbidden`): it can only be fixed in the model.
+- **Aggregate checks.** `PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER` (and any equivalent aggregate) counts a blocker as unresolved only when it is Open and not governed. A finding is governed when an Accepted, non-superseded ResolutionDecision answers a Question whose `finding_ref` is that finding, or when a current applicable waiver decision covers it. The same rule applies to supplemental `analysis_findings`, by finding ID. No finding is excluded from the check; only governed ones stop counting.
+- **Waiver actor.** The existing check is retained: a waiver decision's `decided_by` must be an Accepted Agent of kind `human`; an unknown, non-Accepted or non-human actor never satisfies a waiver.
+
+### 33.7 Blocking rule fidelity and semantic edit guards (H0.7)
+
+- **Permission.** `RBAC.F2.PERMISSION.CONCRETE` follows the profile: at least one `permits` target, every target an Accepted Operation, and exactly one `scoped_to` Accepted ResourceScope.
+- **Process.** Every node-shape violation of the process analyzer is reported by one of the four F2 process rules, attributed by node kind: start and end events to `BPMN.F2.PROCESS.START_END`, gateways to `PLUMB.F2.PROCESS.GATEWAY_BALANCED`, tasks to `PLUMB.F2.PROCESS.TASK_RESOLVES`, every other node kind to `BPMN.F2.PROCESS.REACHABLE`. The attribution is one exhaustive match, and a process is qualified (`is_qualified`) exactly when all four rules pass for it.
+- **Events.** An Event may carry the node extension `plumb_functional:event_disposition` = `{"version": 1, "external_source": bool, "terminal_purpose": null | "terminal" | "audit"}`, written only through a governed `SetNodeExtension` proposal from the R0.6 directory (`event_dispositions` drafts). `PLUMB.F2.EVENT.PRODUCER` passes for a consumed event without a producer exactly when `external_source` is true; `PLUMB.F2.EVENT.CONSUMER` passes for a produced event without a consumer exactly when `terminal_purpose` is set; otherwise the rule reports a violation. Neither rule returns an evaluator error for an unclassified event any more.
+- **Lint.** Numeric tokenization treats as one non-violating token: digit groups with thousands separators (`1,000`, `12,500.50`); ISO dates (`2026-01-01`); a number joined by a hyphen to a word (`5-day`, which counts as having a unit); `HH:MM` times (`09:30`); a parenthesised list numeral (`(3)`); and decimals (`1.5`).
+- **Requirement edits.** `classify_requirement` and `accept_requirement_ears` act only on Proposed or Accepted Requirements; any other status is 422 `E_SEMANTIC_INVARIANT` with error `RequirementNotEditable`.
+
+### 33.8 Inference-provider and pilot network security (H0.8)
+
+- **Anthropic.** The native Messages API is authenticated with `x-api-key: <key>`, never `Authorization: Bearer`. The configured `anthropic-version` is retained, and `anthropic-workspace-id` is sent exactly when configured. Redirects stay disabled and the key stays redacted. Contract tests assert the exact headers. The `anthropic`/`llm` features compile (`cargo build -p plumb-cli --features llm`).
+- **Replay.** `MockProvider::execute` validates the fixture's validated output against the request material's compiled task output schema before returning it, exactly as the live provider does before admission; an invalid fixture is `ProviderError::SchemaInvalidOutput`. A replay fixture is never a schema bypass.
+- **Loopback-only serving.** The product has no user authentication yet. `serve` refuses any non-loopback bind address with a typed configuration error. Every request must carry a `Host` whose host part is `127.0.0.1`, `[::1]` or `localhost`, otherwise 403 `E_FORBIDDEN_HOST`. A request with an `Origin` header must have an `http` origin whose host is one of those loopback hosts (any port), otherwise 403 `E_FORBIDDEN_ORIGIN`. No pretend authentication is added.
+
+### 33.9 Database and runtime-configuration boundaries (H0.9)
+
+- **Opening existing projects.** Every non-init open uses an existing-database mode that never creates the PLUMB schema: a zero-byte file, a foreign SQLite database or a database without PLUMB tables is `E_DATABASE_NOT_INITIALIZED`. Only `init` (R0.1) creates a fresh project.
+- **Read-only commands.** The read-only CLI commands are `vocab`, `questions`, `rounds show`, `export`, `report`, `proposals` and `findings list`. They open the database read-only (SQLite read-only open, no journal-mode change, no worker, no recovery or reconciliation writes) and succeed on a read-only database file.
+- **Typed store errors.** Store failures map to typed errors instead of `E_INTERNAL`: branch not found is 404 `E_BRANCH_NOT_FOUND`; uninitialized database is 409 `E_DATABASE_NOT_INITIALIZED`; SQLite busy/locked is 503 `E_DATABASE_BUSY`; read-only database on a write is 409 `E_DATABASE_READ_ONLY`; detected corruption is 500 `E_STORE_CORRUPT`.
+- **Eager configuration validation.** Building the application runtime validates every policy a later stage or session will use, before any paid inference: `duplicate_policy`, `vocabulary_policy`, `session_turn`, `provider_policy`, calendars, direct managers, expression scopes, `scenario_derivation` and `verification_applicability`. The CLI configuration rejects duplicate JSON object keys at any depth.
+- **Identity.** `identity.actor_ref`, `stage_actor_ref` and `assistant_actor_ref` must be pairwise distinct whenever an application is opened with runtime configuration, not only at `init`.
+
+### 33.10 Deferred performance architecture (POST.0)
+
+The following are post-pilot optimizations, recorded under POST.0. They are not H0 blockers unless benchmark evidence shows customer-zero cannot complete. They never permit unbounded inputs (§33.1 stays in force):
+
+- an immutable revision cache keyed by RevisionId;
+- avoiding full graph deserialization, re-canonicalization and rehashing on every request;
+- content-addressed reuse of node and edge storage instead of full JSON snapshots per revision;
+- touched-element-only revision finalization;
+- removing duplicate head verification under the write lock while preserving the CAS;
+- a cached inverted BM25 index;
+- pagination that limits before building a whole projection;
+- large-document profiling and resource budgets.

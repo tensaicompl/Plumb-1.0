@@ -2422,6 +2422,116 @@
         "kind": "whole_file"
       },
       "display": "fixtures/hr-leave/fixture-contract.yaml"
+    },
+    {
+      "id": "SRCREF-40D156AA1B",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.1"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.1"
+    },
+    {
+      "id": "SRCREF-E827D947DE",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.2"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.2"
+    },
+    {
+      "id": "SRCREF-8BC9D7264E",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.3"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.3"
+    },
+    {
+      "id": "SRCREF-5B008E01C9",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.4"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.4"
+    },
+    {
+      "id": "SRCREF-FF4CBB47BE",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.5"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.5"
+    },
+    {
+      "id": "SRCREF-F73F9B3D7B",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.6"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.6"
+    },
+    {
+      "id": "SRCREF-2514132557",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.7"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.7"
+    },
+    {
+      "id": "SRCREF-AE9FDECED9",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.8"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.8"
+    },
+    {
+      "id": "SRCREF-2D1743EAF9",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.9"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.9"
+    },
+    {
+      "id": "SRCREF-95FD5E6084",
+      "file": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md",
+      "locator": {
+        "kind": "sections",
+        "sections": [
+          "33.10"
+        ]
+      },
+      "display": "docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.10"
     }
   ]
 }

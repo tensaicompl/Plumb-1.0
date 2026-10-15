@@ -1,4 +1,4 @@
-plan_version: 3.1-draft.1
+plan_version: 3.2-draft.1
 release: pilot-v3-foundation
 execution_rule: Execute exactly one ready task at a time in listed order. Only tasks whose scope is allowed by EXECUTION-SCOPE.yaml may execute.
 tasks:
@@ -10382,6 +10382,15 @@ tasks:
   - crates/plumb-api/tests/http_stages.rs
   - crates/plumb-api/tests/http_workflow.rs
   - crates/plumb-cli/tests/cli.rs
+  - crates/plumb-api/src/routes/requirements.rs
+  - crates/plumb-api/src/openapi.rs
+  - api/modeller.openapi.json
+  - crates/plumb-api/tests/openapi.rs
+  - ui/src/api/schema.d.ts
+  - ui/src/features/requirements/RequirementsPage.tsx
+  - ui/src/features/requirements/RequirementDetail.tsx
+  - ui/src/features/requirements/requirements.test.tsx
+  - crates/plumb-cli/src/commands.rs
   steps:
   - Replace the startup-configured complete F1ValidationInputs and F2ValidationInputs in crates/plumb-api/src/stage/gates.rs with per-evaluation assembly
     from the exact loaded revision, exactly as the architecture §21 gate input assembly matrix defines; install the result through the unchanged with_f1_inputs,
@@ -10402,6 +10411,17 @@ tasks:
   - Reduce the gates configuration in crates/plumb-cli/src/config.rs and crates/plumb-api/src/runtime.rs to the external fields only; configuration that
     restates graph-derived material is rejected as an unknown field, with no default and no silent ignore.
   - NO_CONTRADICTION keeps reading Accepted Open Finding nodes; nothing is inferred from names, text, kinds, priorities or severities.
+  - 'Factual gate inputs (plan v3.2): every factual F1, F2 and F4 input comes from the current PSG and current durable stage artifacts; configuration supplies
+    only policy, execution/environment material and explicit external facts (architecture §21 ''Current gate truth and requirement reads'').'
+  - 'Requirement reads (plan v3.2): list_requirements and get_requirement never require a current F1 GateReport; RequirementSummary and RequirementDetail
+    gain the required boolean lint_current (true exactly when a current F1 report exists for the loaded head); when false, smells and lint_findings are
+    empty and readiness is null. Update crates/plumb-api/src/openapi.rs, regenerate api/modeller.openapi.json and ui/src/api/schema.d.ts; the operation
+    inventory stays 74.'
+  - 'UI (plan v3.2): RequirementsPage and RequirementDetail show lint as unavailable when lint_current is false and never render an empty smell list as
+    ''no findings'' in that case.'
+  - 'Readiness (plan v3.2): ReadyOutcome gains a sorted precondition list; zero Accepted Requirements on the loaded head adds no_accepted_requirements,
+    makes passed() false and makes CLI ready exit 2 printing ''precondition: no_accepted_requirements''. Gate reports, rule applicability and rule results
+    are unchanged.'
   tests:
   - cargo test -p plumb-api --test http_stages gate_inputs_follow_new_accepted_requirement_without_restart
   - cargo test -p plumb-api --test http_stages gate_inputs_stale_until_consolidate_rerun
@@ -10409,11 +10429,19 @@ tasks:
   - cargo test -p plumb-api --test http_stages gate_config_rejects_graph_derived_restatement
   - cargo test -p plumb-api --test http_workflow
   - cargo test -p plumb-cli --test cli
+  - cargo test -p plumb-api --test http_workflow requirements_read_without_current_f1_report
+  - cargo test -p plumb-cli --test cli ready_fails_without_accepted_requirements
+  - cargo test -p plumb-api --test openapi
+  - cd ui && npm run test
+  - cd ui && npm run api:check
   acceptance:
   - Accepting a new Requirement and re-running consolidate lets F1 evaluate in the same process with no restart and no configuration edit; the former E_STAGE_EVALUATION_FAILED
     coverage mismatch cannot occur.
   - Every F1, F2 and F4 input field is classified graph, durable or external exactly as the architecture matrix states, and only external fields are configured.
   - Validation rules, evaluator.rs and with_f1_inputs/with_f2_inputs/with_f4_inputs are unchanged; the F1 QUALITY_FINDINGS_CLEAR warning policy is unchanged.
+  - Requirements are readable without a current F1 report and the response states explicitly whether lint is current.
+  - ready never reports success for a project with zero Accepted Requirements, without changing any rule semantics.
+  - OpenAPI still has 74 operations and the generated client matches it.
   source_refs:
   - SRCREF-D32DB0990A
   - SRCREF-273CB17B27
@@ -10434,6 +10462,10 @@ tasks:
   - cargo test --workspace
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - cd ui && npm run typecheck
+  - cd ui && npm run lint
+  - cd ui && npm run test
+  - cd ui && npm run api:check
   commit_message: 'R0.4: Assemble gate inputs from the current graph'
 - id: R0.5
   title: Make governed semantic identity replay-stable
@@ -10453,6 +10485,9 @@ tasks:
   - crates/plumb-functional/tests/state.rs
   - crates/plumb-validation/tests/waiver.rs
   - crates/plumb-api/tests/http_workflow.rs
+  - crates/plumb-functional/src/question.rs
+  - crates/plumb-functional/tests/question.rs
+  - crates/plumb-api/src/application.rs
   steps:
   - In crates/plumb-psg/src/hash.rs project a baseline-participating ResolutionDecision with decided_at and patch_ref omitted (absent, not null) and exclude
     proposal-acceptance companions (question_ref None and answer.kind proposal_acceptance), and every edge with such an endpoint, from semantic_hash, exactly
@@ -10465,6 +10500,11 @@ tasks:
   - Update the golden expectations in the listed tests that pin decision IDs or semantic hashes, each change justified by this contract only.
   - 'Add a two-run test in crates/plumb-api/tests/http_workflow.rs: the same source, answers, policy and acceptances under two FixedClock instants produce
     identical final semantic_hash. If any other volatility source keeps the hashes apart, stop with BLOCKED-IMPLEMENTATION-CONTRACT naming it.'
+  - 'Question identity (plan v3.2): question_id hashes exactly RFC 8785 {project_id, template_id, finding_ref, subject} with subject = QuestionTemplate::base_slots
+    minus finding_ref (architecture §4.8); priority, stakeholder_ref, blast radius, round_ref, prompt, status and answer_schema never enter the identity;
+    duplicate suppression uses the same key; a rematerialization that only changes priority, stakeholder_ref or round_ref updates the existing Question
+    through one non-semantic ReplacePayload on the same ID.'
+  - R0.5 does not change HTTP optimistic concurrency; that is H0.2.
   tests:
   - cargo test -p plumb-psg --test graph resolution_decision_projection_omits_operational_provenance
   - cargo test -p plumb-psg --test graph acceptance_companion_excluded_from_semantic_hash
@@ -10472,10 +10512,13 @@ tasks:
   - cargo test -p plumb-validation --test waiver waiver_decision_id_is_time_independent
   - cargo test -p plumb-api --test http_workflow two_clock_runs_have_identical_final_semantic_hash
   - cargo test -p plumb-functional
+  - cargo test -p plumb-functional --test question question_id_ignores_priority_and_routing
+  - cargo test -p plumb-api --test http_workflow rematerialization_updates_routing_without_new_question
   acceptance:
   - Two executions differing only in clock instants, audit and artifact bytes end with identical semantic_hash.
   - Changing a decision's answer, decided_by, rationale, supersedes or status still changes semantic_hash.
   - The full decision record remains persisted and audited, and the acceptance companion ID is unchanged.
+  - A Question keeps its ID when only its priority, blast radius or stakeholder routing changes.
   source_refs:
   - SRCREF-B696289B78
   - SRCREF-2A709879EB
@@ -10517,6 +10560,13 @@ tasks:
   - crates/plumb-cli/src/commands.rs
   - crates/plumb-cli/tests/cli.rs
   - crates/plumb-api/tests/http_workflow.rs
+  - crates/plumb-api/src/routes/requirements.rs
+  - crates/plumb-api/src/openapi.rs
+  - api/modeller.openapi.json
+  - crates/plumb-api/tests/openapi.rs
+  - ui/src/api/schema.d.ts
+  - ui/src/features/requirements/RequirementDetail.tsx
+  - ui/src/features/requirements/requirements.test.tsx
   steps:
   - 'Add crates/plumb-functional/src/directory.rs (exported from lib.rs, which must not gain the text Proposal): a deterministic producer from a typed directory
     draft (stakeholders, actors, business_roles, calendars, rules, decision_tables, each with an explicit ID and optional grounding Requirement IDs) to
@@ -10535,6 +10585,16 @@ tasks:
     --answer <JSON> (the answer service). crates/plumb-cli/src/config.rs adds exactly the directory and question_routing fields, both optional and never
     defaulted when present but incomplete; crates/plumb-api/src/runtime.rs and state.rs carry them.'
   - Update crates/plumb-cli/tests/cli.rs for the four new commands (registry pin, exact help list, --config-is-required loop).
+  - 'Requirement confirmation (plan v3.2): Requirement joins the generic governed confirmation (SetStatus Proposed -> Accepted) alongside the existing sentence
+    acceptance; an S1.x Requirement always has a supported governed path to Accepted (architecture §2 ''Supported confirmation surfaces'').'
+  - 'Proposal discovery (plan v3.2): add the CLI command proposals (read-only) listing every pending WorkflowProposal sorted by ID with ID, class/positive
+    action, origin (recipe job and stage job IDs, or intake/session), base revision and whether its stored intake requires a reason; --json emits the same
+    records.'
+  - 'EARS review (plan v3.2): RequirementDetail.ears_suggestion carries the normalized text of the pending S1.2 EARS WorkflowProposal of that Requirement
+    and a new ears_proposal_ref its proposal ID (update crates/plumb-api/src/openapi.rs, regenerate api/modeller.openapi.json and ui/src/api/schema.d.ts;
+    operations stay 74); RequirementDetail.tsx accepts it through the existing governed proposal acceptance of ears_proposal_ref.'
+  - 'General rule (plan v3.2): every pilot-generated Proposed semantic element requiring human confirmation is discoverable and actionable through the CLI
+    or the pilot UI; no essential acceptance operation exists only as a hidden route or test helper; no second proposal lifecycle is introduced.'
   tests:
   - cargo test -p plumb-functional --test directory
   - cargo test -p plumb-api --test http_workflow generic_confirmation_promotes_listed_proposed_elements
@@ -10542,11 +10602,19 @@ tasks:
   - cargo test -p plumb-api --test http_workflow answer_route_uses_answer_service_unchanged
   - cargo test -p plumb-cli --test cli directory_confirm_ask_answer_round_trip
   - cargo test -p plumb-cli --test cli
+  - cargo test -p plumb-api --test http_workflow generic_confirmation_promotes_proposed_requirement
+  - cargo test -p plumb-cli --test cli proposals_lists_pending_with_class_origin_and_reason
+  - cargo test -p plumb-api --test http_workflow requirement_detail_surfaces_pending_ears_proposal
+  - cd ui && npm run test
+  - cd ui && npm run api:check
   acceptance:
   - Every pilot-critical family without a producer in the architecture §2 census (Stakeholder, Actor, BusinessRole, Calendar, Rule, DecisionTable) reaches
     Accepted only through configuration -> proposal -> acceptance -> governed confirmation; Agent is covered by R0.1.
   - Compiler outputs committed as Proposed reach Accepted only through the generic or a dedicated governed confirmation.
   - Questions are materialized and answered from the CLI through the same application services HTTP uses.
+  - An S1.x Requirement reaches Accepted through a supported governed product path.
+  - Pending proposals are discoverable from the CLI with the information needed to act on them.
+  - A pending EARS suggestion is visible on Requirement detail and acceptable from the UI.
   source_refs:
   - SRCREF-B696289B78
   - SRCREF-34CA4A60BC
@@ -10569,13 +10637,636 @@ tasks:
   - cargo test --workspace
   - cargo fmt --check
   - cargo clippy --workspace --all-targets -- -D warnings
+  - cd ui && npm run typecheck
+  - cd ui && npm run lint
+  - cd ui && npm run test
+  - cd ui && npm run api:check
   commit_message: 'R0.6: Close pilot-critical semantic producer gaps'
+- id: H0.1
+  title: Bound untrusted parser and import resource use
+  phase: H0
+  scope: NOW
+  depends_on:
+  - R0.6
+  files:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/plumb-import/src/docx.rs
+  - crates/plumb-import/src/source.rs
+  - crates/plumb-import/src/md.rs
+  - crates/plumb-import/src/text.rs
+  - crates/plumb-import/src/lib.rs
+  - crates/plumb-import/tests/docx.rs
+  - crates/plumb-import/tests/md_text.rs
+  - crates/plumb-expr/src/parser.rs
+  - crates/plumb-expr/src/lib.rs
+  - crates/plumb-expr/tests/parser.rs
+  - crates/plumb-intake/Cargo.toml
+  - crates/plumb-intake/src/intake.rs
+  - crates/plumb-intake/tests/intake.rs
+  - crates/plumb-api/src/routes/mod.rs
+  - crates/plumb-api/src/routes/sources.rs
+  - crates/plumb-api/src/error.rs
+  - crates/plumb-api/tests/http_core.rs
+  - crates/plumb-cli/src/commands.rs
+  - crates/plumb-cli/tests/cli.rs
+  steps:
+  - Implement architecture §33.1 exactly with the frozen constants DOCX_MAX_XML_DEPTH = 256, DOCX_MAX_TABLE_COLUMNS = 64, DOCX_MAX_TABLE_ROWS = 10000, TEXT_MAX_INPUT_BYTES
+    = 16777216, SOURCE_MAX_FRAGMENTS = 20000, EXPR_MAX_SOURCE_BYTES = 4096, EXPR_MAX_NESTING_DEPTH = 64, EXPR_MAX_AST_NODES = 1024, MAX_SOURCE_UPLOAD_BODY_BYTES
+    = 135266304 and MAX_JSON_BODY_BYTES = 4194304, exported from their owning crates; the existing DOCX_MAX_INPUT_BYTES, DOCX_MAX_ENTRIES, DOCX_MAX_TOTAL_UNCOMPRESSED_BYTES
+    and DOCX_MAX_XML_PART_BYTES stay unchanged.
+  - Upgrade the workspace quick-xml dependency in Cargo.toml from 0.37 to a 0.41 release (resolved version >= 0.41.0 in Cargo.lock, features unchanged)
+    and adapt crates/plumb-import/src/docx.rs to its API without changing import output for any existing fixture.
+  - In docx.rs count open elements during parse_xml and fail at depth 257; parse w:gridSpan as an integer accepted only in 1..=64, fail when a row's summed
+    span exceeds 64 or a table exceeds 10000 rows, and never size an allocation from an unchecked value. Every violation is ImportError::DocxLimit (E_DOCX_LIMIT)
+    naming the limit.
+  - Every importer fails with a new typed ImportError::SourceLimit (E_SOURCE_LIMIT, crates/plumb-import/src/source.rs) when it would produce more than 20000
+    EvidenceFragments; Markdown and plain text above 16 MiB fail with E_SOURCE_LIMIT before decoding.
+  - In crates/plumb-cli/src/commands.rs import, check std::fs::metadata length against the declared media type's limit before reading and read at most limit
+    + 1 bytes.
+  - In crates/plumb-expr, plumb_expr::parse rejects sources above 4096 bytes, a lexical pre-scan rejects parenthesis, call-argument or consecutive prefix-operator
+    nesting above 64 before the pest grammar runs, and the built AST is rejected above 1024 nodes, all as ExprError::LimitExceeded {limit, actual, max}
+    with code E_EXPRESSION_LIMIT.
+  - X1.3 intake (crates/plumb-intake/src/intake.rs, adding the internal path dependency plumb-expr to crates/plumb-intake/Cargo.toml) rejects any proposal
+    carrying an expression-bearing field (Transition.guard_expr, Invariant.expression, ProcessNode.condition_expr, ProcessNode.timer_expr, Rule.condition_expr,
+    Rule.action_expr, Calculation.expression, PolicyCondition.expression) that exceeds the expression limits, as a typed intake error surfaced by the API
+    as 422 E_EXPRESSION_LIMIT.
+  - In crates/plumb-api/src/routes/mod.rs and routes/sources.rs install PLUMB-owned body limits (129 MiB on POST /api/sources, 4 MiB elsewhere) with axum's
+    built-in DefaultBodyLimit; an oversized body is 413 E_PAYLOAD_TOO_LARGE (crates/plumb-api/src/error.rs) in the typed JSON envelope with details.limit_bytes.
+    No OpenAPI change.
+  - 'Add adversarial regression fixtures built in the tests: deep XML nesting, a w:gridSpan of 18446744073709551615 and of 65, a 10001-row table, a source
+    producing 20001 fragments, a 16 MiB + 1 text, an expression of 4097 bytes, 65 nested parentheses, 65 prefix operators and 1025 AST nodes, and oversized
+    HTTP bodies.'
+  tests:
+  - cargo test -p plumb-import --test docx
+  - cargo test -p plumb-import --test md_text
+  - cargo test -p plumb-expr --test parser
+  - cargo test -p plumb-intake --test intake
+  - cargo test -p plumb-api --test http_core
+  - cargo test -p plumb-cli --test cli
+  acceptance:
+  - Every adversarial fixture fails with its typed error (E_DOCX_LIMIT, E_SOURCE_LIMIT, E_EXPRESSION_LIMIT, E_PAYLOAD_TOO_LARGE) and none aborts, overflows
+    the stack or allocates from an attacker-supplied size.
+  - No expression above the limits can reach the PSG through any proposal.
+  - Every existing import, expression and HTTP test passes unchanged; quick-xml resolves to >= 0.41.0.
+  source_refs:
+  - SRCREF-40D156AA1B
+  - SRCREF-D32DB0990A
+  forbidden:
+  - Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan
+    and fixtures/hr-leave).
+  - Do not add an HTTP operation; the OpenAPI operation inventory stays 74.
+  - Do not add a validation rule or registered rule ID; the validation-rule count stays 133.
+  - Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.
+  - Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.
+  - Do not raise or remove an existing DOCX limit or add a dependency other than the quick-xml upgrade and the internal plumb-expr path dependency of plumb-intake.
+  - If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.1.md naming the exact missing
+    path or contract.
+  commands:
+  - cargo test -p plumb-import
+  - cargo test -p plumb-expr
+  - cargo test -p plumb-intake
+  - cargo test -p plumb-api --test http_core
+  - cargo test -p plumb-cli --test cli
+  - cargo test --workspace
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  commit_message: 'H0.1: Bound untrusted parser and import resource use'
+- id: H0.2
+  title: Make optimistic concurrency revision-complete
+  phase: H0
+  scope: NOW
+  depends_on:
+  - H0.1
+  files:
+  - crates/plumb-api/src/state.rs
+  - crates/plumb-api/src/stage/mod.rs
+  - crates/plumb-api/src/openapi.rs
+  - api/modeller.openapi.json
+  - crates/plumb-api/tests/http_core.rs
+  - crates/plumb-api/tests/http_workflow.rs
+  - crates/plumb-api/tests/http_stages.rs
+  - crates/plumb-api/tests/openapi.rs
+  - ui/src/api/useVersionedMutation.ts
+  - ui/src/api/client.ts
+  - ui/src/api/schema.d.ts
+  - ui/src/components/ConflictDialog.tsx
+  - ui/src/components/shared.test.tsx
+  - ui/src/features/glossary/GlossaryPage.tsx
+  - ui/src/features/glossary/glossary.test.tsx
+  - ui/src/features/home/HomePage.tsx
+  - ui/src/features/home/HomePage.test.tsx
+  - ui/src/features/processes/ProcessesPage.tsx
+  - ui/src/features/processes/processes.test.tsx
+  - ui/src/features/questions/QuestionsPage.tsx
+  - ui/src/features/questions/questions.test.tsx
+  - ui/src/features/requirements/RequirementDetail.tsx
+  - ui/src/features/requirements/requirements.test.tsx
+  - ui/src/features/rules/RulesPage.tsx
+  - ui/src/features/analyst/analyst.test.tsx
+  - ui/src/features/scenarios/ScenariosPage.tsx
+  - ui/src/features/scenarios/scenarios.test.tsx
+  - ui/src/features/sentences/SentencesPage.tsx
+  - ui/src/features/sentences/sentences.test.tsx
+  - ui/src/features/sessions/ProposalCard.tsx
+  - ui/src/features/sessions/SessionPanel.tsx
+  - ui/src/features/sessions/session.test.tsx
+  steps:
+  - 'Implement architecture §33.2: with_etag/read_json set ETag to the exact loaded GraphRevision ID; check_if_match and the run_stage If-Match compare
+    against the exact current head revision ID; the 412 E_PRECONDITION_FAILED body still carries the current revision and semantic hash; a missing If-Match
+    stays 400.'
+  - Keep semantic_hash in the version endpoint, write results and 412 bodies; keep cursor baseline protection exactly as it is.
+  - Update the ETag/If-Match descriptions in crates/plumb-api/src/openapi.rs, regenerate api/modeller.openapi.json and ui/src/api/schema.d.ts (npm run api:generate);
+    the operation count stays 74.
+  - In the UI, every query used to review data keeps its response ETag (client.ts exposes it) and useVersionedMutation sends that reviewed ETag as If-Match;
+    it no longer calls fetchLatestModelVersion or GET /api/model/version inside the mutation. A 412 keeps the existing ConflictDialog and never retries.
+  - 'Migration tests: a write whose If-Match is the head semantic hash (old token) is 412; a change that alters only Proposed or evidence state (equal semantic
+    hash, new revision) makes a reviewed ETag stale and the write 412; a write with the reviewed current revision ID succeeds.'
+  tests:
+  - cargo test -p plumb-api --test http_core
+  - cargo test -p plumb-api --test http_workflow stale_proposed_view_is_precondition_failed
+  - cargo test -p plumb-api --test http_workflow
+  - cargo test -p plumb-api --test http_stages
+  - cargo test -p plumb-api --test openapi
+  - cd ui && npm run test
+  - cd ui && npm run typecheck
+  - cd ui && npm run lint
+  - cd ui && npm run api:check
+  acceptance:
+  - No write succeeds with an If-Match that is not the exact current head revision ID.
+  - A UI mutation submits the version of the data the user reviewed; a stale view produces the conflict dialog, never a silent success.
+  - OpenAPI still has 74 operations and the generated client matches it.
+  source_refs:
+  - SRCREF-E827D947DE
+  - SRCREF-D32DB0990A
+  forbidden:
+  - Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan
+    and fixtures/hr-leave).
+  - Do not add an HTTP operation; the OpenAPI operation inventory stays 74.
+  - Do not add a validation rule or registered rule ID; the validation-rule count stays 133.
+  - Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.
+  - Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.
+  - Do not fetch a new current version immediately before submitting a mutation in any UI code path.
+  - Do not weaken cursor baseline checks.
+  - If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.2.md naming the exact missing
+    path or contract.
+  commands:
+  - cargo test -p plumb-api
+  - cargo test --workspace
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  - cd ui && npm run typecheck
+  - cd ui && npm run lint
+  - cd ui && npm run test
+  - cd ui && npm run api:check
+  commit_message: 'H0.2: Make optimistic concurrency revision-complete'
+- id: H0.3
+  title: Add retryable and process-owned stage execution
+  phase: H0
+  scope: NOW
+  depends_on:
+  - H0.2
+  files:
+  - crates/plumb-store/src/schema.rs
+  - crates/plumb-store/src/stages.rs
+  - crates/plumb-store/src/lib.rs
+  - crates/plumb-store/tests/stages.rs
+  - crates/plumb-compiler/src/job.rs
+  - crates/plumb-compiler/tests/job.rs
+  - crates/plumb-api/src/stage/mod.rs
+  - crates/plumb-api/src/stage/acceptance.rs
+  - crates/plumb-api/src/application.rs
+  - crates/plumb-api/src/state.rs
+  - crates/plumb-api/src/lib.rs
+  - crates/plumb-api/tests/http_stages.rs
+  - crates/plumb-cli/src/main.rs
+  - crates/plumb-cli/src/commands.rs
+  - crates/plumb-cli/tests/cli.rs
+  steps:
+  - 'Implement architecture §33.3: add attempt to recipe jobs and the stage_recipe_job_attempts table through an additive in-place migration that increments
+    STORE_SCHEMA_VERSION by exactly 1; content-addressed recipe job and StageJob IDs are unchanged.'
+  - Add StageJob::retry (Failed -> Queued only) in crates/plumb-compiler/src/job.rs; identity and every other transition are unchanged.
+  - 'Add the retry application service and the CLI command retry <JOB_ID>: only a Failed recipe job is retried, as attempt N+1 under the same ID, with its
+    Failed children re-queued; a moved branch head is 409 E_STAGE_RETRY_BASE_MOVED with nothing changed; Stale, Ready and Committed jobs are refused.'
+  - Claim jobs with owner_id = own:<first 16 hex of SHA-256(RFC 8785 {pid, process start time, db path})> and lease_expires_at = now + 60 s; the worker
+    renews the lease every 15 s; startup recovery interrupts only expired or ownerless in-flight jobs.
+  - Add the application open modes Interactive and ReadOnly; ReadOnly starts no worker and performs no interruption, recovery or reconciliation writes;
+    the read-only CLI commands (architecture §33.9 list) use ReadOnly.
+  - Replace every discarded worker result (let _ = state.execute_recipe_job(...)) with persistence of the job as Failed with E_INTERNAL and its bounded
+    message, plus a tracing error event.
+  tests:
+  - cargo test -p plumb-store --test stages
+  - cargo test -p plumb-compiler --test job
+  - cargo test -p plumb-api --test http_stages retry_reruns_failed_job_as_new_attempt_with_same_id
+  - cargo test -p plumb-api --test http_stages restart_interrupts_only_expired_leases
+  - cargo test -p plumb-api --test http_stages second_process_does_not_interrupt_live_jobs
+  - cargo test -p plumb-api --test http_stages worker_error_is_persisted
+  - cargo test -p plumb-cli --test cli read_only_commands_write_nothing
+  - cargo test -p plumb-cli --test cli
+  acceptance:
+  - An operationally failed recipe can be retried explicitly without changing its captured identity; Stale work is never retried or rebased.
+  - A second live process never interrupts another process's leased jobs; abandoned jobs are recovered after lease expiry.
+  - Read-only commands leave the database unchanged; no worker error is silently discarded.
+  source_refs:
+  - SRCREF-8BC9D7264E
+  - SRCREF-D32DB0990A
+  forbidden:
+  - Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan
+    and fixtures/hr-leave).
+  - Do not add an HTTP operation; the OpenAPI operation inventory stays 74.
+  - Do not add a validation rule or registered rule ID; the validation-rule count stays 133.
+  - Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.
+  - Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.
+  - Do not change the recipe job or StageJob identity projection.
+  - Do not add an HTTP operation for retry.
+  - If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.3.md naming the exact missing
+    path or contract.
+  commands:
+  - cargo test -p plumb-store
+  - cargo test -p plumb-compiler --test job
+  - cargo test -p plumb-api --test http_stages
+  - cargo test -p plumb-cli --test cli
+  - cargo test --workspace
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  commit_message: 'H0.3: Add retryable and process-owned stage execution'
+- id: H0.4
+  title: Make expected business failures and outcomes executable
+  phase: H0
+  scope: NOW
+  depends_on:
+  - H0.3
+  files:
+  - crates/plumb-sim/src/compare.rs
+  - crates/plumb-sim/src/execute.rs
+  - crates/plumb-sim/src/model.rs
+  - crates/plumb-sim/src/lib.rs
+  - crates/plumb-sim/tests/compare.rs
+  - crates/plumb-sim/tests/execute.rs
+  - crates/plumb-functional/src/directory.rs
+  - crates/plumb-functional/tests/directory.rs
+  - crates/plumb-cli/src/config.rs
+  - crates/plumb-cli/tests/cli.rs
+  - crates/plumb-api/tests/http_stages.rs
+  steps:
+  - 'Implement architecture §33.4: classify ExecutionFailure kinds into business rejections (authorization_denied, precondition_rejected, transition_guard_rejected,
+    invalid_source_state, invariant_violation, no_decision_row) and model failures (postcondition_violation, evaluation_failed); a simulator Err never yields
+    a verdict.'
+  - 'Define the Outcome node extension key plumb_sim:outcome_selection with the frozen {version: 1, selections: [...]} shape and its validation (when only
+    on success/partial Outcomes, on_failures only on business_failure Outcomes, entries sorted by operation_ref, failure kinds sorted unique).'
+  - 'Successful execution: one success/partial candidate without selection is selected as today; several candidates require a when entry each; exactly one
+    true selects it; otherwise Undecidable with OUTCOME_SELECTION.'
+  - 'Business rejection: exactly one business_failure candidate listing the failure kind becomes the observed outcome with the pre-state kept and no events,
+    and then is compared normally; none is Fail with the existing execution-failure diff; several are Undecidable with OUTCOME_SELECTION. Model failures
+    stay Fail.'
+  - Extend the R0.6 semantic directory with outcome_selections drafts (outcome_ref, operation_ref, when or on_failures) producing HUMAN_CONFIRM SetNodeExtension
+    proposals on existing Accepted Outcomes; the CLI configuration carries the field inside directory.
+  - Add HR-shaped regression graphs in the plumb-sim tests for insufficient balance (precondition_rejected), non-manager approval or rejection (authorization_denied)
+    and invalid state (invalid_source_state), each expected to PASS, plus a scenario expecting a business failure that executes successfully (Fail) and
+    an internal error that never passes.
+  tests:
+  - cargo test -p plumb-sim --test execute
+  - cargo test -p plumb-sim --test compare expected_business_failure_passes
+  - cargo test -p plumb-sim --test compare internal_error_never_passes
+  - cargo test -p plumb-sim --test execute multiple_outcomes_select_deterministically
+  - cargo test -p plumb-functional --test directory
+  - cargo test -p plumb-api --test http_stages
+  - cargo test -p plumb-cli --test cli
+  acceptance:
+  - A Scenario expecting a modeled business rejection passes when that rejection occurs; unexpected rejections, model failures and internal errors never
+    pass.
+  - Operations with several modeled Outcomes select exactly one deterministically or are Undecidable for a stated reason.
+  - Outcome selection material reaches the PSG only through governed directory proposals.
+  source_refs:
+  - SRCREF-5B008E01C9
+  - SRCREF-441E1C9F5A
+  - SRCREF-7EC2A38F66
+  forbidden:
+  - Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan
+    and fixtures/hr-leave).
+  - Do not add an HTTP operation; the OpenAPI operation inventory stays 74.
+  - Do not add a validation rule or registered rule ID; the validation-rule count stays 133.
+  - Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.
+  - Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.
+  - Do not modify fixtures/hr-leave; E0.1 maps its business_failure expectations.
+  - Do not treat technical_failure Outcomes or simulator errors as expected business failures.
+  - If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.4.md naming the exact missing
+    path or contract.
+  commands:
+  - cargo test -p plumb-sim
+  - cargo test -p plumb-functional --test directory
+  - cargo test -p plumb-api --test http_stages
+  - cargo test -p plumb-cli --test cli
+  - cargo test --workspace
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  commit_message: 'H0.4: Make expected business failures and outcomes executable'
+- id: H0.5
+  title: Make semantic stages safely rerunnable after enrichment
+  phase: H0
+  scope: NOW
+  depends_on:
+  - H0.4
+  files:
+  - crates/plumb-functional/src/domain.rs
+  - crates/plumb-functional/src/ears.rs
+  - crates/plumb-functional/src/vocabulary.rs
+  - crates/plumb-functional/tests/domain.rs
+  - crates/plumb-functional/tests/ears.rs
+  - crates/plumb-functional/tests/vocabulary.rs
+  - crates/plumb-api/src/stage/phases.rs
+  - crates/plumb-api/tests/http_stages.rs
+  steps:
+  - 'Implement architecture §33.5: presence checks in domain.rs and vocabulary.rs compare the deterministic ID, node type, origin extension value and the
+    producer-owned payload fields of the frozen table only; enrichable fields never cause a conflict and are never overwritten.'
+  - A mismatch of an owned field or of the origin stays a real ExistingCandidateConflict / ExistingVocabularyCandidateConflict; vocabulary stops accepting
+    any Accepted node without comparing owned fields.
+  - 'Batch analysis is per-target tolerant: an unsupported, stale or origin-less target yields a deterministic per-target disposition in the analysis result;
+    EARS analysis of a Requirement without the S1.1 segment origin yields not_applicable: missing_segment_origin for that Requirement instead of aborting
+    the batch.'
+  - Surface the per-target dispositions in the phase evaluation without failing the phase (crates/plumb-api/src/stage/phases.rs).
+  - 'Add rerun tests: run the stage, accept and enrich its output (for example Attribute value_type and unit, DomainRelationship cardinality, Term aliases),
+    rerun the stage and prove no proposal, no conflict and no overwrite; then change an owned field and prove a conflict.'
+  tests:
+  - cargo test -p plumb-functional --test domain rerun_after_enrichment_is_idempotent
+  - cargo test -p plumb-functional --test vocabulary rerun_after_enrichment_is_idempotent
+  - cargo test -p plumb-functional --test ears missing_segment_origin_is_a_disposition
+  - cargo test -p plumb-functional
+  - cargo test -p plumb-api --test http_stages stage_rerun_after_enrichment_creates_no_conflict
+  acceptance:
+  - A deterministic stage can be rerun after its accepted output was enriched without conflict, overwrite or duplicate proposals.
+  - Owned-material changes still raise a real conflict.
+  - One unsupported target never aborts the analysis of unrelated valid targets.
+  source_refs:
+  - SRCREF-FF4CBB47BE
+  - SRCREF-B696289B78
+  forbidden:
+  - Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan
+    and fixtures/hr-leave).
+  - Do not add an HTTP operation; the OpenAPI operation inventory stays 74.
+  - Do not add a validation rule or registered rule ID; the validation-rule count stays 133.
+  - Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.
+  - Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.
+  - Do not change deterministic node identity formulas or origin extension keys.
+  - If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.5.md naming the exact missing
+    path or contract.
+  commands:
+  - cargo test -p plumb-functional
+  - cargo test -p plumb-api --test http_stages
+  - cargo test --workspace
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  commit_message: 'H0.5: Make semantic stages safely rerunnable after enrichment'
+- id: H0.6
+  title: Close the finding and waiver governance loop
+  phase: H0
+  scope: NOW
+  depends_on:
+  - H0.5
+  files:
+  - crates/plumb-validation/src/rules/f2.rs
+  - crates/plumb-validation/src/waiver.rs
+  - crates/plumb-validation/tests/f2.rs
+  - crates/plumb-validation/tests/waiver.rs
+  - crates/plumb-api/src/application.rs
+  - crates/plumb-api/src/stage/gates.rs
+  - crates/plumb-api/tests/http_workflow.rs
+  - crates/plumb-cli/src/main.rs
+  - crates/plumb-cli/src/commands.rs
+  - crates/plumb-cli/tests/cli.rs
+  steps:
+  - 'Implement architecture §33.6: add the materialize_gate_findings application service turning the findings of the current persisted F1, F2 or F4 GateReport
+    into durable Accepted Finding nodes through one non-semantic AutoNonSemantic proposal (absent IDs only; present IDs are no-ops).'
+  - Compute each finding's disposition (question_resolvable, waivable, non_waivable) from the frozen Question templates and the rule's waiver_policy plus
+    the active profile.
+  - Change PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER so an Open blocker counts only when it is not governed by an Accepted, non-superseded ResolutionDecision
+    answering a Question with that finding_ref or by a current applicable waiver; apply the same rule to supplemental analysis_findings by ID. Rule metadata
+    and the rule count are unchanged.
+  - Keep the waiver actor check (decided_by must be an Accepted human Agent) and add explicit regression tests for an unknown, non-Accepted and non-human
+    actor.
+  - 'Add the CLI commands findings list (read-only: current gate findings with disposition and governance state) and findings materialize.'
+  - 'Add an end-to-end governance test: evaluate F2 with a blocker, materialize findings, resolve one through its Question and waive another, re-evaluate
+    F2 and see both no longer block while a non_waivable one still blocks.'
+  tests:
+  - cargo test -p plumb-validation --test f2 governed_blocker_is_not_unresolved
+  - cargo test -p plumb-validation --test waiver
+  - cargo test -p plumb-api --test http_workflow finding_governance_round_trip
+  - cargo test -p plumb-cli --test cli
+  acceptance:
+  - Every waivable or question-resolvable deterministic failure has a reachable governance path through product surfaces.
+  - A governed blocker stops blocking only through recorded governance; non-waivable failures keep blocking.
+  - No finding is excluded from the aggregate check by any means other than governance.
+  source_refs:
+  - SRCREF-F73F9B3D7B
+  - SRCREF-0E7CBD4996
+  - SRCREF-AE75140DD6
+  forbidden:
+  - Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan
+    and fixtures/hr-leave).
+  - Do not add an HTTP operation; the OpenAPI operation inventory stays 74.
+  - Do not add a validation rule or registered rule ID; the validation-rule count stays 133.
+  - Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.
+  - Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.
+  - Do not change rule metadata, waiver policies or the validation rule count.
+  - If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.6.md naming the exact missing
+    path or contract.
+  commands:
+  - cargo test -p plumb-validation
+  - cargo test -p plumb-api --test http_workflow
+  - cargo test -p plumb-cli --test cli
+  - cargo test --workspace
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  commit_message: 'H0.6: Close the finding and waiver governance loop'
+- id: H0.7
+  title: Repair blocking rule fidelity and semantic edit guards
+  phase: H0
+  scope: NOW
+  depends_on:
+  - H0.6
+  files:
+  - crates/plumb-validation/src/rules/f2.rs
+  - crates/plumb-validation/src/process_analysis.rs
+  - crates/plumb-validation/tests/f2.rs
+  - crates/plumb-validation/tests/process_analysis.rs
+  - crates/plumb-lint/src/rules.rs
+  - crates/plumb-lint/tests/rules.rs
+  - crates/plumb-functional/src/directory.rs
+  - crates/plumb-functional/tests/directory.rs
+  - crates/plumb-api/src/routes/requirements.rs
+  - crates/plumb-api/tests/http_workflow.rs
+  steps:
+  - 'Implement architecture §33.7 permission fidelity: RBAC.F2.PERMISSION.CONCRETE passes with at least one permits target, every target an Accepted Operation,
+    and exactly one scoped_to Accepted ResourceScope.'
+  - Attribute every process node-shape violation to exactly one of the four F2 process rules by node kind (start/end events, gateways, tasks, all other
+    kinds to BPMN.F2.PROCESS.REACHABLE) through one exhaustive match, and add a cross-check test that is_qualified holds exactly when all four rules pass.
+  - 'Define the Event node extension plumb_functional:event_disposition {version: 1, external_source: bool, terminal_purpose: null|terminal|audit}, produce
+    it only through R0.6 directory event_dispositions drafts (HUMAN_CONFIRM SetNodeExtension), and make PLUMB.F2.EVENT.PRODUCER/CONSUMER pass or report
+    a violation from it instead of returning an evaluator error.'
+  - Fix lint numeric tokenization for thousands separators, ISO dates, number-hyphen-word units, HH:MM times, parenthesised list numerals and decimals,
+    with negative fixtures that produce no blocker for each normal form.
+  - 'Guard classify_requirement and accept_requirement_ears: only Proposed or Accepted Requirements; any other status is 422 E_SEMANTIC_INVARIANT with error
+    RequirementNotEditable.'
+  tests:
+  - cargo test -p plumb-validation --test f2
+  - cargo test -p plumb-validation --test process_analysis qualification_matches_process_rules
+  - cargo test -p plumb-lint --test rules numeric_forms_are_not_unitless_numbers
+  - cargo test -p plumb-functional --test directory
+  - cargo test -p plumb-api --test http_workflow requirement_edits_respect_lifecycle
+  acceptance:
+  - Each repaired rule matches its authoritative profile text.
+  - No ordinary numeric, date or time form produces lint blocker noise.
+  - Historical Requirements cannot be reclassified or EARS-rewritten.
+  source_refs:
+  - SRCREF-2514132557
+  - SRCREF-0E7CBD4996
+  - SRCREF-273CB17B27
+  - SRCREF-5608A0663D
+  forbidden:
+  - Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan
+    and fixtures/hr-leave).
+  - Do not add an HTTP operation; the OpenAPI operation inventory stays 74.
+  - Do not add a validation rule or registered rule ID; the validation-rule count stays 133.
+  - Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.
+  - Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.
+  - Do not amend the rulebook or rule YAML to match the code; the code follows the authoritative profile.
+  - If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.7.md naming the exact missing
+    path or contract.
+  commands:
+  - cargo test -p plumb-validation
+  - cargo test -p plumb-lint
+  - cargo test -p plumb-functional --test directory
+  - cargo test -p plumb-api --test http_workflow
+  - cargo test --workspace
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  commit_message: 'H0.7: Repair blocking rule fidelity and semantic edit guards'
+- id: H0.8
+  title: Harden inference-provider and pilot network security
+  phase: H0
+  scope: NOW
+  depends_on:
+  - H0.7
+  files:
+  - crates/plumb-inference/src/anthropic.rs
+  - crates/plumb-inference/src/mock.rs
+  - crates/plumb-inference/tests/provider_contract.rs
+  - crates/plumb-api/src/server.rs
+  - crates/plumb-api/src/routes/mod.rs
+  - crates/plumb-api/src/error.rs
+  - crates/plumb-api/tests/http_core.rs
+  - crates/plumb-cli/src/commands.rs
+  - crates/plumb-cli/tests/cli.rs
+  steps:
+  - 'Implement architecture §33.8: the Anthropic provider authenticates with x-api-key, keeps anthropic-version and sends anthropic-workspace-id exactly
+    when configured; redirects stay disabled and the key stays redacted; contract tests assert the exact header set without network access.'
+  - MockProvider::execute validates the fixture's validated output against the request material's compiled task output schema and returns ProviderError::SchemaInvalidOutput
+    for an invalid fixture.
+  - serve refuses any non-loopback bind address with a typed configuration error; a request whose Host is not a loopback host is 403 E_FORBIDDEN_HOST; a
+    request whose Origin is present and not an http loopback origin is 403 E_FORBIDDEN_ORIGIN.
+  - 'Prove the feature build: cargo build -p plumb-cli --features llm and cargo test -p plumb-inference --features anthropic pass.'
+  tests:
+  - cargo test -p plumb-inference --features anthropic --test provider_contract
+  - cargo test -p plumb-inference --test provider_contract replay_fixture_must_satisfy_schema
+  - cargo test -p plumb-api --test http_core loopback_host_and_origin_are_enforced
+  - cargo test -p plumb-cli --test cli serve_refuses_non_loopback_bind
+  - cargo build -p plumb-cli --features llm
+  acceptance:
+  - The live provider sends the documented Messages API authentication header.
+  - No replay fixture can bypass the task output schema.
+  - The pilot server cannot be exposed beyond loopback and rejects foreign Host and Origin values.
+  source_refs:
+  - SRCREF-AE9FDECED9
+  - SRCREF-25544DD485
+  forbidden:
+  - Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan
+    and fixtures/hr-leave).
+  - Do not add an HTTP operation; the OpenAPI operation inventory stays 74.
+  - Do not add a validation rule or registered rule ID; the validation-rule count stays 133.
+  - Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.
+  - Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.
+  - Do not add an authentication system or credentials in configuration.
+  - Do not log, hash or persist the API key.
+  - If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.8.md naming the exact missing
+    path or contract.
+  commands:
+  - cargo test -p plumb-inference
+  - cargo test -p plumb-inference --features anthropic
+  - cargo build -p plumb-cli --features llm
+  - cargo test -p plumb-api --test http_core
+  - cargo test -p plumb-cli --test cli
+  - cargo test --workspace
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  commit_message: 'H0.8: Harden inference-provider and pilot network security'
+- id: H0.9
+  title: Harden database and runtime-configuration operational boundaries
+  phase: H0
+  scope: NOW
+  depends_on:
+  - H0.8
+  files:
+  - crates/plumb-store/src/schema.rs
+  - crates/plumb-store/src/sqlite.rs
+  - crates/plumb-store/src/lib.rs
+  - crates/plumb-store/tests/revisions.rs
+  - crates/plumb-api/src/application.rs
+  - crates/plumb-api/src/state.rs
+  - crates/plumb-api/src/error.rs
+  - crates/plumb-api/src/stage/mod.rs
+  - crates/plumb-api/tests/http_core.rs
+  - crates/plumb-cli/src/config.rs
+  - crates/plumb-cli/src/commands.rs
+  - crates/plumb-cli/src/main.rs
+  - crates/plumb-cli/tests/cli.rs
+  steps:
+  - 'Implement architecture §33.9: every non-init open uses an existing-database mode that never creates the schema; a zero-byte, foreign or uninitialized
+    database is E_DATABASE_NOT_INITIALIZED.'
+  - Open the read-only CLI commands (vocab, questions, rounds show, export, report, proposals, findings list) with SQLite read-only access, no journal-mode
+    change and the H0.3 ReadOnly application mode; they succeed on a read-only database file.
+  - 'Map store failures to typed errors: E_BRANCH_NOT_FOUND (404), E_DATABASE_NOT_INITIALIZED (409), E_DATABASE_BUSY (503), E_DATABASE_READ_ONLY (409),
+    E_STORE_CORRUPT (500); everything else keeps its current mapping.'
+  - Validate duplicate_policy, vocabulary_policy, session_turn, provider_policy, calendars, direct managers, expression scopes, scenario_derivation and
+    verification_applicability when the application runtime is built; reject duplicate JSON object keys at any depth in the CLI configuration.
+  - Require identity.actor_ref, stage_actor_ref and assistant_actor_ref to be pairwise distinct on every open with runtime configuration.
+  tests:
+  - cargo test -p plumb-store --test revisions open_existing_never_creates_schema
+  - cargo test -p plumb-cli --test cli read_only_commands_work_on_read_only_database
+  - cargo test -p plumb-cli --test cli invalid_policies_fail_before_any_stage
+  - cargo test -p plumb-cli --test cli duplicate_config_keys_are_rejected
+  - cargo test -p plumb-api --test http_core typed_store_errors
+  - cargo test -p plumb-cli --test cli
+  acceptance:
+  - No command except init can create a PLUMB schema.
+  - Read-only commands need no write access.
+  - Invalid configuration fails at startup with a typed error, before any inference.
+  source_refs:
+  - SRCREF-2D1743EAF9
+  - SRCREF-D32DB0990A
+  forbidden:
+  - Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan
+    and fixtures/hr-leave).
+  - Do not add an HTTP operation; the OpenAPI operation inventory stays 74.
+  - Do not add a validation rule or registered rule ID; the validation-rule count stays 133.
+  - Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.
+  - Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.
+  - Do not change R0.1 init behavior.
+  - If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.9.md naming the exact missing
+    path or contract.
+  commands:
+  - cargo test -p plumb-store
+  - cargo test -p plumb-api --test http_core
+  - cargo test -p plumb-cli --test cli
+  - cargo test --workspace
+  - cargo fmt --check
+  - cargo clippy --workspace --all-targets -- -D warnings
+  commit_message: 'H0.9: Harden database and runtime-configuration operational boundaries'
 - id: R0.7
   title: Add a customer-zero horizontal regression flow
   phase: R0
   scope: NOW
   depends_on:
-  - R0.6
+  - H0.9
   files:
   - fixtures/customer-zero/README.md
   - fixtures/customer-zero/source.md
@@ -10600,6 +11291,16 @@ tasks:
     with no configuration restatement and no restart -> export. It asserts every semantic revision has a patch artifact, every LLM-origin proposal has its
     inference artifact, no proposal was rebased, lint warnings are listed, and a second full run under a different clock yields an identical final semantic_hash.'
   - Update crates/plumb-cli/tests/cli.rs for the lint output change only.
+  - 'Expanded flow (plan v3.2): on a fresh project through the CLI and application services only, with deterministic replay fixtures for inference: init
+    -> import -> required stage execution -> proposals (discovery) -> accept-set of compatible siblings -> individual confirmation where required -> rerun
+    at least one semantic stage after downstream enrichment -> current gate evaluation -> ask (question materialization) -> answer the three HR-style calculation
+    ambiguities (half day, inclusive end, holiday inside period) -> findings materialize and the governed finding/waiver lifecycle where applicable -> scenario
+    execution including expected business failures -> ready -> export and report -> restart/reopen -> a second full deterministic replay.'
+  - 'Proofs (plan v3.2): no hidden or manual database mutation; no direct test-only promotion of Proposed nodes; no startup-injected semantic gate truth;
+    no stale-sibling failure when compatible siblings are accepted as a set; no rerun collision with accepted or enriched deterministic nodes; expected
+    negative business scenarios PASS; no essential product operation exists only in test helpers; restart creates no extra semantic revision; repeated replay
+    produces the frozen deterministic semantic result.'
+  - R0.7 is the gate that proves R0.1-R0.6 and H0.1-H0.9 work together.
   tests:
   - cargo test -p plumb-cli --test customer_zero
   - cargo test -p plumb-cli --test cli lint_lists_warnings_and_errors
@@ -10609,6 +11310,7 @@ tasks:
     graph construction or startup gate-input restatement.
   - Replay is exact and network-free, and two runs differing only in time produce identical final semantic_hash.
   - Lint warnings are visible in the CLI and remain non-blocking.
+  - The expanded customer-zero flow passes end to end with every listed proof, confirming the H0 tranche horizontally.
   source_refs:
   - SRCREF-509798A4E2
   - SRCREF-C1A6FDDD20
@@ -10805,10 +11507,19 @@ tasks:
   - Repaired v3.1 contracts (plan v3.1). make all runs the R0.7 customer-zero flow (cargo test -p plumb-cli --test customer_zero) and the E0.2 backend pilot,
     so bootstrap, absence policy, set acceptance, gate assembly and replay-stable identity stay covered by CI; coverage thresholds apply to the R0 code
     in its crates unchanged.
+  - 'CI quality gate (plan v3.2): the CI quality job executes (not merely installs): cargo fmt --check; cargo clippy --workspace --all-targets -- -D warnings;
+    cargo test --workspace; cargo test -p plumb-inference --features anthropic; cargo build -p plumb-cli --features llm; a Rust dependency vulnerability
+    check (cargo audit) and npm audit --audit-level=high; cd ui && npm run typecheck; cd ui && npm run lint; cd ui && npm run test; cd ui && npm run api:check
+    (generated API drift); the R0.7 customer-zero test and the E0.2 backend E2E; and the E0.3 Playwright E2E.'
+  - 'Release checks (plan v3.2): make e2e and make openapi execute their real checks (E0.3 Playwright run; OpenAPI generation compared with api/modeller.openapi.json
+    and the generated client) and are never file-existence-only.'
+  - 'Tooling policy (plan v3.2): cargo-llvm-cov and cargo-mutants run under the frozen thresholds of this task inside the CI quality gate; any tool CI installs
+    is executed by the gate, otherwise it is removed from CI setup.'
   tests:
   - make all
   acceptance:
   - All thresholds pass and production source contains no unapproved placeholder implementation.
+  - CI runs every listed command and fails on any failure; no installed quality tool is left unused.
   source_refs:
   - SRCREF-C1A6FDDD20
   forbidden: []
@@ -10860,6 +11571,10 @@ tasks:
   steps:
   - Create a document that points to compiler stages S5-S12 and gates Q1-C1 as post-pilot work.
   - Do not implement architecture generation, contract compilation, delivery slicing, code binding or C1 in pilot-v3-foundation scope.
+  - 'Record the deferred performance architecture of architecture §33.10 (plan v3.2): immutable revision cache keyed by RevisionId; no full graph deserialize/recanonicalize/rehash
+    per request; content-addressed node/edge storage reuse; touched-element-only revision finalization; no duplicate head verification under the write lock
+    (CAS preserved); cached inverted BM25 index; pagination that limits before building a projection; large-document profiling and resource budgets. These
+    are not H0 blockers and never permit unbounded inputs.'
   tests:
   - No code tests.
   acceptance:
@@ -10867,6 +11582,7 @@ tasks:
   source_refs:
   - SRCREF-316C9E60F0
   - SRCREF-2992F375D9
+  - SRCREF-95FD5E6084
   forbidden:
   - Do not create post-pilot crates or production code.
   commands: []
