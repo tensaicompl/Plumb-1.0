@@ -1,4 +1,4 @@
-plan_version: 3.2-draft.3
+plan_version: 3.2-draft.4
 release: pilot-v3-foundation
 execution_rule: Execute exactly one ready task at a time in listed order. Only tasks whose scope is allowed by EXECUTION-SCOPE.yaml may execute.
 tasks:
@@ -10391,6 +10391,7 @@ tasks:
   - ui/src/features/requirements/RequirementDetail.tsx
   - ui/src/features/requirements/requirements.test.tsx
   - crates/plumb-cli/src/commands.rs
+  - crates/plumb-api/tests/http_core.rs
   steps:
   - Replace the startup-configured complete F1ValidationInputs and F2ValidationInputs in crates/plumb-api/src/stage/gates.rs with per-evaluation assembly
     from the exact loaded revision, exactly as the architecture §21 gate input assembly matrix defines; install the result through the unchanged with_f1_inputs,
@@ -10424,6 +10425,13 @@ tasks:
     are unchanged.'
   - '[Fable #190] After gate-input assembly, analyse always evaluates F2 from the assembled inputs (missing required external inputs are E_GATE_INPUTS_MISSING);
     it never skips F2 silently or reports success without an F2 result.'
+  - 'Limited http_core ownership (plan v3.2 hotfix): R0.4 owns crates/plumb-api/tests/http_core.rs only for the existing regression expectations
+    directly invalidated by R0.4. In http_core_gate_report_freshness, /api/requirements and /api/requirements/req:a leave the generic 409 loop and are
+    asserted to return 200 with lint_current false, empty smells and lint_findings and null readiness, distinguishable from a current report with zero
+    findings; /api/model/export?format=report keeps its existing 409 E_GATE_REPORT_UNAVAILABLE freshness assertion. In
+    http_core_requirement_projection_and_filters, the exact RequirementDetail expectation gains lint_current true, and an exact RequirementSummary
+    expectation of the same test gains the field only where the schema requires it. No other http_core.rs change; freshness and exact projection
+    assertions are not weakened.'
   tests:
   - cargo test -p plumb-api --test http_stages gate_inputs_follow_new_accepted_requirement_without_restart
   - cargo test -p plumb-api --test http_stages gate_inputs_stale_until_consolidate_rerun
@@ -10436,6 +10444,8 @@ tasks:
   - cargo test -p plumb-api --test openapi
   - cd ui && npm run test
   - cd ui && npm run api:check
+  - cargo test -p plumb-api --test http_core http_core_gate_report_freshness
+  - cargo test -p plumb-api --test http_core http_core_requirement_projection_and_filters
   acceptance:
   - Accepting a new Requirement and re-running consolidate lets F1 evaluate in the same process with no restart and no configuration edit; the former E_STAGE_EVALUATION_FAILED
     coverage mismatch cannot occur.

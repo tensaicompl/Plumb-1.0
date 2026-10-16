@@ -1,7 +1,7 @@
 # Plumb 1.0 — Implementation Plan v3.2
 
 **Status:** Claude Code CLI build contract  
-**Plan version:** `3.2-draft.3`\
+**Plan version:** `3.2-draft.4`\
 **Default execution scope:** `pilot-v3-foundation`  
 **Canonical semantic model:** Plumb Specification Graph (PSG)  
 **Default active profile:** `profile:plumb-software-2026.1`
@@ -6146,6 +6146,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `ui/src/features/requirements/RequirementDetail.tsx`
 - `ui/src/features/requirements/requirements.test.tsx`
 - `crates/plumb-cli/src/commands.rs`
+- `crates/plumb-api/tests/http_core.rs`
 
 **Required actions**
 
@@ -6161,6 +6162,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 10. UI (plan v3.2): RequirementsPage and RequirementDetail show lint as unavailable when lint_current is false and never render an empty smell list as 'no findings' in that case.
 11. Readiness (plan v3.2): ReadyOutcome gains a sorted precondition list; zero Accepted Requirements on the loaded head adds no_accepted_requirements, makes passed() false and makes CLI ready exit 2 printing 'precondition: no_accepted_requirements'. Gate reports, rule applicability and rule results are unchanged.
 12. [Fable #190] After gate-input assembly, analyse always evaluates F2 from the assembled inputs (missing required external inputs are E_GATE_INPUTS_MISSING); it never skips F2 silently or reports success without an F2 result.
+13. Limited http_core ownership (plan v3.2 hotfix): R0.4 owns crates/plumb-api/tests/http_core.rs only for the existing regression expectations directly invalidated by R0.4. In http_core_gate_report_freshness, /api/requirements and /api/requirements/req:a leave the generic 409 loop and are asserted to return 200 with lint_current false, empty smells and lint_findings and null readiness, distinguishable from a current report with zero findings; /api/model/export?format=report keeps its existing 409 E_GATE_REPORT_UNAVAILABLE freshness assertion. In http_core_requirement_projection_and_filters, the exact RequirementDetail expectation gains lint_current true, and an exact RequirementSummary expectation of the same test gains the field only where the schema requires it. No other http_core.rs change; freshness and exact projection assertions are not weakened.
 
 **Commands**
 
@@ -6190,6 +6192,8 @@ cd ui && npm run api:check
 - `cargo test -p plumb-api --test openapi`
 - `cd ui && npm run test`
 - `cd ui && npm run api:check`
+- `cargo test -p plumb-api --test http_core http_core_gate_report_freshness`
+- `cargo test -p plumb-api --test http_core http_core_requirement_projection_and_filters`
 
 **Acceptance**
 
