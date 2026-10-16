@@ -595,6 +595,187 @@ mod docx_contract {
         );
     }
 
+    // ------------------------------------------------------------------ H0.1 resource limits
+
+    fn docx_limit(limit: &str, actual: u64, max: u64) -> ImportError {
+        ImportError::DocxLimit {
+            limit: limit.to_owned(),
+            actual,
+            max,
+        }
+    }
+
+    /// A document whose deepest element is at `depth` (w:document is depth 1), ending in an
+    /// empty element or, when `start_end`, a start/end pair.
+    fn nested(depth: usize, start_end: bool) -> Vec<u8> {
+        let wrappers = depth - 3;
+        let innermost = if start_end { "<w:x></w:x>" } else { "<w:x/>" };
+        docx(&format!(
+            "{}{innermost}{}",
+            "<w:sdt>".repeat(wrappers),
+            "</w:sdt>".repeat(wrappers)
+        ))
+    }
+
+    #[test]
+    fn h0_1_limit_constants_are_exact() {
+        assert_eq!(DOCX_MAX_XML_DEPTH, 256);
+        assert_eq!(DOCX_MAX_TABLE_COLUMNS, 64);
+        assert_eq!(DOCX_MAX_TABLE_ROWS, 10_000);
+    }
+
+    #[test]
+    fn xml_depth_257_fails_with_e_docx_limit() {
+        for start_end in [false, true] {
+            import(&nested(DOCX_MAX_XML_DEPTH, start_end));
+            let error = import_docx(
+                "x.docx",
+                &nested(DOCX_MAX_XML_DEPTH + 1, start_end),
+                &audit(),
+            )
+            .unwrap_err();
+            assert_eq!(error, docx_limit("XML depth", 257, 256));
+            assert_eq!(error.code(), Some(E_DOCX_LIMIT));
+        }
+        // Far deeper input fails at the same element, without recursing into it.
+        let error = import_docx("x.docx", &nested(200_000, false), &audit()).unwrap_err();
+        assert_eq!(error, docx_limit("XML depth", 257, 256));
+        // The styles part is bounded too.
+        let deep_styles = format!(
+            "{}<w:x/>{}",
+            "<w:style>".repeat(DOCX_MAX_XML_DEPTH),
+            "</w:style>".repeat(DOCX_MAX_XML_DEPTH)
+        );
+        let error =
+            import_docx("x.docx", &docx_with_styles(&p("x"), &deep_styles), &audit()).unwrap_err();
+        assert_eq!(error, docx_limit("XML depth", 257, 256));
+    }
+
+    fn table_of(rows: &[String]) -> Vec<u8> {
+        docx(&format!("<w:tbl>{}</w:tbl>", rows.concat()))
+    }
+
+    fn span(n: &str) -> String {
+        tc("x", &format!(r#"<w:gridSpan w:val="{n}"/>"#))
+    }
+
+    #[test]
+    fn grid_span_outside_1_to_64_fails_with_e_docx_limit() {
+        for (value, actual) in [("65", 65), ("18446744073709551615", u64::MAX)] {
+            let error =
+                import_docx("x.docx", &table_of(&[tr(&[span(value)])]), &audit()).unwrap_err();
+            assert_eq!(error, docx_limit("table columns", actual, 64), "{value}");
+            assert_eq!(error.code(), Some(E_DOCX_LIMIT));
+        }
+        // Non-integers and values beyond u64 stay malformed XML.
+        for value in ["0", "-1", "two", "18446744073709551616"] {
+            let error =
+                import_docx("x.docx", &table_of(&[tr(&[span(value)])]), &audit()).unwrap_err();
+            assert!(
+                matches!(error, ImportError::DocxXml { .. }),
+                "{value}: {error:?}"
+            );
+        }
+        // 64 is accepted and expands to 64 logical cells.
+        let imported = import(&table_of(&[tr(&[span("64")]), tr(&[span("64")])]));
+        assert_eq!(extracted_text(&imported).split('\n').count(), 2);
+        assert_eq!(
+            fragment_text(&imported.fragments[0]),
+            format!("x{}", "\t".repeat(63))
+        );
+    }
+
+    #[test]
+    fn row_wider_than_64_columns_fails_with_e_docx_limit() {
+        for row in [
+            tr(&[span("32"), span("33")]),
+            tr(&vec![tc("c", ""); 65]),
+            tr(&[span("64"), tc("c", "")]),
+        ] {
+            let error = import_docx("x.docx", &table_of(&[row]), &audit()).unwrap_err();
+            assert_eq!(error, docx_limit("table columns", 65, 64));
+        }
+        // An unsupported structure in a row is a logical cell too.
+        let row = format!(
+            "<w:tr>{}<w:sdt><w:r><w:t>u</w:t></w:r></w:sdt></w:tr>",
+            span("64")
+        );
+        let error = import_docx("x.docx", &table_of(&[row]), &audit()).unwrap_err();
+        assert_eq!(error, docx_limit("table columns", 65, 64));
+        // Exactly 64 is accepted.
+        import(&table_of(&[tr(&[span("32"), span("32")])]));
+        import(&table_of(&[tr(&vec![tc("c", ""); 64])]));
+    }
+
+    #[test]
+    fn table_row_10001_fails_with_e_docx_limit() {
+        let row = tr(&[tc("r", "")]);
+        let rows = vec![row; DOCX_MAX_TABLE_ROWS + 1];
+        let error = import_docx("x.docx", &table_of(&rows), &audit()).unwrap_err();
+        assert_eq!(error, docx_limit("table rows", 10_001, 10_000));
+        assert_eq!(error.code(), Some(E_DOCX_LIMIT));
+        // 10000 rows: one header row and 9999 TableRow fragments.
+        let imported = import(&table_of(&rows[..DOCX_MAX_TABLE_ROWS]));
+        assert_eq!(imported.fragments.len(), DOCX_MAX_TABLE_ROWS - 1);
+        // The limit is per table.
+        let two = docx(&format!(
+            "<w:tbl>{0}</w:tbl><w:tbl>{0}</w:tbl>",
+            rows[..DOCX_MAX_TABLE_ROWS].concat()
+        ));
+        assert_eq!(import(&two).fragments.len(), 2 * (DOCX_MAX_TABLE_ROWS - 1));
+    }
+
+    #[test]
+    fn fragment_20001_fails_with_e_source_limit() {
+        let paragraphs = |n: usize| p("x").repeat(n);
+        let fragments_error = ImportError::SourceLimit {
+            limit: "fragments".to_owned(),
+            actual: SOURCE_MAX_FRAGMENTS as u64 + 1,
+            max: SOURCE_MAX_FRAGMENTS as u64,
+        };
+        let error = import_docx(
+            "x.docx",
+            &docx(&paragraphs(SOURCE_MAX_FRAGMENTS + 1)),
+            &audit(),
+        )
+        .unwrap_err();
+        assert_eq!(error, fragments_error);
+        assert_eq!(error.code(), Some(E_SOURCE_LIMIT));
+        // Table rows and paragraphs share the budget; a header row is not a fragment.
+        let table = format!("<w:tbl>{}</w:tbl>", tr(&[tc("r", "")]).repeat(5_001));
+        let body = format!("{table}{}", paragraphs(15_001));
+        let error = import_docx("x.docx", &docx(&body), &audit()).unwrap_err();
+        assert_eq!(error, fragments_error);
+        // Exactly 20000 fragments import; empty paragraphs yield no fragment and do not count.
+        let body = format!(
+            "{}{}",
+            paragraphs(SOURCE_MAX_FRAGMENTS),
+            "<w:p/>".repeat(10)
+        );
+        assert_eq!(import(&docx(&body)).fragments.len(), SOURCE_MAX_FRAGMENTS);
+        let body = format!("{table}{}", paragraphs(15_000));
+        assert_eq!(import(&docx(&body)).fragments.len(), SOURCE_MAX_FRAGMENTS);
+    }
+
+    #[test]
+    fn references_and_cdata_resolve_as_before() {
+        let body = concat!(
+            r#"<w:p><w:pPr><w:pStyle w:val="Heading&#49;"/></w:pPr>"#,
+            r#"<w:r><w:t xml:space="preserve">A &amp; B &lt; C &gt; &quot;D&quot; &apos;E&apos; &#169;&#x41;</w:t></w:r></w:p>"#,
+            r#"<w:p><w:r><w:t><![CDATA[x <y> &amp;]]>z&#10;</w:t></w:r></w:p>"#,
+        );
+        let imported = import(&docx(body));
+        assert_eq!(
+            kinds(&imported),
+            pairs(&[
+                (FragmentKind::Heading, "A & B < C > \"D\" 'E' ©A"),
+                (FragmentKind::Paragraph, "x <y> &amp;z\n"),
+            ])
+        );
+        let error = import_docx("x.docx", &docx(&p("&unknown;")), &audit()).unwrap_err();
+        assert!(matches!(error, ImportError::DocxXml { .. }), "{error:?}");
+    }
+
     // ------------------------------------------------------------------ artifacts and determinism
 
     #[test]

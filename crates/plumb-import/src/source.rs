@@ -49,6 +49,18 @@ pub const E_DOCX_XML: &str = "E_DOCX_XML";
 /// The stable code of a DOCX package exceeding a safety limit.
 pub const E_DOCX_LIMIT: &str = "E_DOCX_LIMIT";
 
+/// The stable code of a source exceeding a safety limit common to every importer.
+pub const E_SOURCE_LIMIT: &str = "E_SOURCE_LIMIT";
+
+/// Largest accepted Markdown or plain-text source, checked before decoding.
+pub const TEXT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Most EvidenceFragments one import produces, for every importer.
+pub const SOURCE_MAX_FRAGMENTS: usize = 20000;
+
+/// Longest accepted display name in Unicode scalar values.
+const DISPLAY_NAME_MAX_CHARS: usize = 255;
+
 /// Why a source could not be imported.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ImportError {
@@ -82,6 +94,13 @@ pub enum ImportError {
         actual: u64,
         max: u64,
     },
+    /// A safety limit common to every importer was exceeded.
+    #[error("source {limit} is {actual}, above the limit {max}")]
+    SourceLimit {
+        limit: String,
+        actual: u64,
+        max: u64,
+    },
 }
 
 impl ImportError {
@@ -93,6 +112,7 @@ impl ImportError {
             ImportError::DocxMissingPart { .. } => Some(E_DOCX_MISSING_PART),
             ImportError::DocxXml { .. } => Some(E_DOCX_XML),
             ImportError::DocxLimit { .. } => Some(E_DOCX_LIMIT),
+            ImportError::SourceLimit { .. } => Some(E_SOURCE_LIMIT),
             _ => None,
         }
     }
@@ -580,6 +600,38 @@ pub(crate) struct Segment {
     pub header_cells: Option<Vec<String>>,
 }
 
+fn source_limit(limit: &str, actual: usize, max: usize) -> Result<(), ImportError> {
+    if actual <= max {
+        Ok(())
+    } else {
+        Err(ImportError::SourceLimit {
+            limit: limit.to_owned(),
+            actual: actual as u64,
+            max: max as u64,
+        })
+    }
+}
+
+/// Checks the size of a Markdown or plain-text source; called before decoding.
+pub fn check_text_input_size(bytes: usize) -> Result<(), ImportError> {
+    source_limit("input bytes", bytes, TEXT_MAX_INPUT_BYTES)
+}
+
+/// Checks the number of EvidenceFragments an import would produce.
+pub fn check_fragment_count(fragments: usize) -> Result<(), ImportError> {
+    source_limit("fragments", fragments, SOURCE_MAX_FRAGMENTS)
+}
+
+/// Appends a segment, failing before the vector grows past [`SOURCE_MAX_FRAGMENTS`].
+pub(crate) fn push_segment(
+    segments: &mut Vec<Segment>,
+    segment: Segment,
+) -> Result<(), ImportError> {
+    check_fragment_count(segments.len() + 1)?;
+    segments.push(segment);
+    Ok(())
+}
+
 /// Decodes UTF-8 without loss and normalizes CRLF and lone CR to LF, nothing else.
 pub(crate) fn decode(bytes: &[u8]) -> Result<String, ImportError> {
     let text = std::str::from_utf8(bytes).map_err(|e| ImportError::SourceEncoding {
@@ -620,31 +672,38 @@ pub(crate) fn lists_and_paragraphs(
     consumed: &[bool],
     single_line: impl Fn(&str) -> Option<FragmentKind>,
     segments: &mut Vec<Segment>,
-) {
+) -> Result<(), ImportError> {
     let mut paragraph: Option<(usize, usize)> = None;
     let close = |paragraph: &mut Option<(usize, usize)>, segments: &mut Vec<Segment>| {
-        if let Some((start, end)) = paragraph.take() {
-            segments.push(Segment {
-                kind: FragmentKind::Paragraph,
-                start,
-                end,
-                header_cells: None,
-            });
+        match paragraph.take() {
+            Some((start, end)) => push_segment(
+                segments,
+                Segment {
+                    kind: FragmentKind::Paragraph,
+                    start,
+                    end,
+                    header_cells: None,
+                },
+            ),
+            None => Ok(()),
         }
     };
     for (index, line) in lines.iter().enumerate() {
         if consumed[index] || line.is_blank() {
-            close(&mut paragraph, segments);
+            close(&mut paragraph, segments)?;
             continue;
         }
         if let Some(kind) = single_line(line.text) {
-            close(&mut paragraph, segments);
-            segments.push(Segment {
-                kind,
-                start: line.start,
-                end: line.end,
-                header_cells: None,
-            });
+            close(&mut paragraph, segments)?;
+            push_segment(
+                segments,
+                Segment {
+                    kind,
+                    start: line.start,
+                    end: line.end,
+                    header_cells: None,
+                },
+            )?;
             continue;
         }
         paragraph = Some(match paragraph {
@@ -652,15 +711,60 @@ pub(crate) fn lists_and_paragraphs(
             None => (line.start, line.end),
         });
     }
-    close(&mut paragraph, segments);
+    close(&mut paragraph, segments)
 }
 
 // ============================================================================ node construction
 
+/// A Unicode bidirectional control: ALM, LRM, RLM, the embeddings and overrides, and the
+/// isolates.
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// A Unicode format control (general category Cf), listed by code point.
+fn is_format_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
+/// A display name is non-empty, at most [`DISPLAY_NAME_MAX_CHARS`] characters, without
+/// surrounding whitespace, control, bidi or format characters or path separators, and not the
+/// path component `.` or `..`. It is never trimmed, repaired or normalized.
 fn validate_display_name(display_name: &str) -> Result<(), ImportError> {
     if !display_name.is_empty()
+        && display_name.chars().count() <= DISPLAY_NAME_MAX_CHARS
         && display_name.trim() == display_name
-        && !display_name.chars().any(char::is_control)
+        && display_name != "."
+        && display_name != ".."
+        && !display_name.chars().any(|c| {
+            c.is_control() || c == '/' || c == '\\' || is_bidi_control(c) || is_format_control(c)
+        })
     {
         Ok(())
     } else {
@@ -746,6 +850,8 @@ pub(crate) fn build_with_parse(
     audit: &ImportAudit,
 ) -> Result<ImportedSource, ImportError> {
     validate_display_name(display_name)?;
+    // Producers enforce the budget as they go; this guards every importer's final output.
+    check_fragment_count(segments.len())?;
     parse.validate()?;
     let raw_hash = Hash::content_sha256(bytes);
     let extracted = ExtractedTextArtifact::new(text);

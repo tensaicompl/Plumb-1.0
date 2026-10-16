@@ -9,9 +9,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use plumb_core::{CoreError, GateId, Id};
+use plumb_expr::ExprError;
 use plumb_patch::{
     apply_patch, compute_impact, AcceptancePolicy, ImpactError, PatchError, Proposal,
-    ProposalError, ProposalMateriality,
+    ProposalError, ProposalMateriality, SemanticPatch,
 };
 use plumb_psg::{ElementStatus, Graph, Node, NodePayload, RelationKind};
 use plumb_validation::{EvaluationError, GateReport, GeneratedFinding};
@@ -55,6 +56,13 @@ pub enum IntakeError {
     ConflictingValidationFinding { finding: Id },
     #[error("invalid intake report: {0}")]
     Report(#[from] IntakeReportError),
+    /// A proposed expression exceeds a PlumbExpr safety limit; the source is not retained.
+    #[error("a proposed expression exceeds {limit}: {actual} above the limit {max}")]
+    ExpressionLimit {
+        limit: &'static str,
+        actual: usize,
+        max: usize,
+    },
 }
 
 /// The candidate gate reports supplied to intake, unique per gate and in `GateId::ALL` order.
@@ -164,6 +172,49 @@ fn token_set(text: &str) -> BTreeSet<String> {
     tokenize(text).into_iter().collect()
 }
 
+/// The expression-bearing fields of a payload (compiler architecture §33.1), absent optional
+/// fields omitted.
+fn payload_expressions(payload: &NodePayload) -> Vec<&str> {
+    match payload {
+        NodePayload::Transition(t) => t.guard_expr.iter().map(String::as_str).collect(),
+        NodePayload::Invariant(i) => vec![i.expression.as_str()],
+        NodePayload::ProcessNode(p) => [&p.condition_expr, &p.timer_expr]
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect(),
+        NodePayload::Rule(r) => [&r.condition_expr, &r.action_expr]
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect(),
+        NodePayload::Calculation(c) => vec![c.expression.as_str()],
+        NodePayload::PolicyCondition(c) => vec![c.expression.as_str()],
+        _ => Vec::new(),
+    }
+}
+
+/// Rejects a patch carrying an expression above a PlumbExpr safety limit, in `AddNode` and
+/// `ReplacePayload` payloads at any `Compound` depth. Only the limits are enforced here: any
+/// other parse outcome leaves intake unchanged.
+fn check_expression_limits(patch: &SemanticPatch) -> Result<(), IntakeError> {
+    let payload = match patch {
+        SemanticPatch::Compound { patches } => {
+            return patches.iter().try_for_each(check_expression_limits)
+        }
+        SemanticPatch::AddNode { node } => &node.payload,
+        SemanticPatch::ReplacePayload { payload, .. } => payload,
+        _ => return Ok(()),
+    };
+    for expression in payload_expressions(payload) {
+        if let Err(ExprError::LimitExceeded { limit, actual, max }) = plumb_expr::parse(expression)
+        {
+            return Err(IntakeError::ExpressionLimit { limit, actual, max });
+        }
+    }
+    Ok(())
+}
+
 /// Analyzes `proposal` against `graph` without changing either. A patch that cannot be applied
 /// to `graph` is an error, never a report.
 pub fn intake(
@@ -172,6 +223,7 @@ pub fn intake(
     validation: &IntakeValidationInput,
 ) -> Result<IntakeReport, IntakeError> {
     proposal.validate()?;
+    check_expression_limits(&proposal.patch_set.patch)?;
     let applied = apply_patch(graph, &proposal.patch_set)?;
     let (candidate, delta) = (&applied.graph, &applied.delta);
     let impact = compute_impact(graph, candidate, delta)?;

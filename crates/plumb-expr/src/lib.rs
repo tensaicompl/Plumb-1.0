@@ -21,7 +21,10 @@ pub use eval::{
     eval, round_decimal, EvalContext, EvalError, PredicateError, PredicateProvider, RefValue,
     RoundingError, RoundingSpec, Value, ValueEnv, ValueEnvError,
 };
-pub use parser::{canonicalize, parse, ParseError};
+pub use parser::{
+    canonicalize, parse, ExprError, ParseError, EXPR_MAX_AST_NODES, EXPR_MAX_NESTING_DEPTH,
+    EXPR_MAX_SOURCE_BYTES, E_EXPRESSION_LIMIT,
+};
 pub use render::render_example;
 pub use typecheck::{
     map_pilot_value_type, typecheck, TypeBindingError, TypeCheckError, TypeEnv, TypeEnvError,

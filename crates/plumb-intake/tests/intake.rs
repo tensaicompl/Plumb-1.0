@@ -26,6 +26,10 @@ mod intake {
         RelationProperties, Requirement, RequirementKind, RequirementLevel, ResolutionDecision,
         Term,
     };
+    use plumb_psg::{
+        Calculation, Invariant, PolicyCondition, ProcessNode, ProcessNodeKind, Rule, RuleKind,
+        Transition,
+    };
     use plumb_validation::{
         load_builtin_software_profile, rules, EvaluatorRegistry, F1RequirementValidationInput,
         F1ValidationInputs, GateReport, GeneratedFinding, ValidationContext, ValidationPolicy,
@@ -2028,5 +2032,189 @@ mod intake {
         // Dry run only through the patch engine.
         assert!(INTAKE_SRC.contains("apply_patch(graph, &proposal.patch_set)"));
         assert!(INTAKE_SRC.contains("compute_impact(graph, candidate, delta)"));
+    }
+
+    // ------------------------------------------------------------------ H0.1 expression limits
+
+    /// The eight expression-bearing fields (compiler architecture §33.1), each carrying
+    /// `expression` while every other expression field stays absent or trivial.
+    fn expression_payloads(expression: &str) -> Vec<(&'static str, NodePayload)> {
+        let e = || expression.to_owned();
+        let transition = |guard_expr| {
+            NodePayload::Transition(Transition {
+                stateful_ref: id("entity:leave"),
+                from_state: id("state:draft"),
+                to_state: id("state:submitted"),
+                guard_expr,
+                effect_refs: None,
+            })
+        };
+        let process_node = |condition_expr, timer_expr| {
+            NodePayload::ProcessNode(ProcessNode {
+                process_ref: id("process:leave"),
+                node_kind: ProcessNodeKind::ExclusiveGateway,
+                operation_ref: None,
+                condition_expr,
+                message_ref: None,
+                timer_expr,
+            })
+        };
+        let rule = |condition_expr, action_expr| {
+            NodePayload::Rule(Rule {
+                name: "Leave rule".to_owned(),
+                rule_kind: RuleKind::Business,
+                condition_expr,
+                action_expr,
+            })
+        };
+        vec![
+            ("Transition.guard_expr", transition(Some(e()))),
+            (
+                "Invariant.expression",
+                NodePayload::Invariant(Invariant {
+                    scope_ref: id("entity:leave"),
+                    expression: e(),
+                }),
+            ),
+            ("ProcessNode.condition_expr", process_node(Some(e()), None)),
+            ("ProcessNode.timer_expr", process_node(None, Some(e()))),
+            ("Rule.condition_expr", rule(Some(e()), None)),
+            ("Rule.action_expr", rule(None, Some(e()))),
+            (
+                "Calculation.expression",
+                NodePayload::Calculation(Calculation {
+                    name: "Leave days".to_owned(),
+                    expression: e(),
+                    result_type: "integer".to_owned(),
+                    unit: None,
+                    rounding: None,
+                    calendar_ref: None,
+                    examples: None,
+                }),
+            ),
+            (
+                "PolicyCondition.expression",
+                NodePayload::PolicyCondition(PolicyCondition { expression: e() }),
+            ),
+        ]
+    }
+
+    /// Over-limit expressions: one per limit, with the exact typed error each produces.
+    fn over_limit_expressions() -> Vec<(String, IntakeError)> {
+        let limit = |limit, actual, max| IntakeError::ExpressionLimit { limit, actual, max };
+        vec![
+            ("a".repeat(4097), limit("EXPR_MAX_SOURCE_BYTES", 4097, 4096)),
+            (
+                format!("{}a{}", "(".repeat(65), ")".repeat(65)),
+                limit("EXPR_MAX_NESTING_DEPTH", 65, 64),
+            ),
+            (
+                format!("{}a", "not ".repeat(65)),
+                limit("EXPR_MAX_NESTING_DEPTH", 65, 64),
+            ),
+            (
+                format!("a{}", " + a".repeat(512)),
+                limit("EXPR_MAX_AST_NODES", 1025, 1024),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_expression_field_is_limit_checked_on_add_and_replace() {
+        let g = graph(vec![req("req:base", Accepted, "Employees request leave.")]);
+        let fields: Vec<&str> = expression_payloads("a").iter().map(|(f, _)| *f).collect();
+        assert_eq!(
+            fields,
+            [
+                "Transition.guard_expr",
+                "Invariant.expression",
+                "ProcessNode.condition_expr",
+                "ProcessNode.timer_expr",
+                "Rule.condition_expr",
+                "Rule.action_expr",
+                "Calculation.expression",
+                "PolicyCondition.expression",
+            ]
+        );
+        for (expression, expected) in over_limit_expressions() {
+            for (field, payload) in expression_payloads(&expression) {
+                let ingress = [
+                    ("AddNode", add(node("node:new", Proposed, payload.clone()))),
+                    (
+                        "ReplacePayload",
+                        replace_payload(&g, "req:base", payload.clone()),
+                    ),
+                    (
+                        "nested Compound",
+                        compound(vec![
+                            add(req("req:other", Proposed, "Managers approve leave.")),
+                            compound(vec![add(node("node:new", Proposed, payload.clone()))]),
+                        ]),
+                    ),
+                ];
+                for (form, patch) in ingress {
+                    let p = proposal(&g, patch);
+                    let error = intake(&g, &p, &IntakeValidationInput::empty()).unwrap_err();
+                    assert_eq!(error, expected, "{field} via {form}");
+                    // The error never carries the expression source.
+                    assert!(!error.to_string().contains("aaaa"), "{field} via {form}");
+                    assert!(!error.to_string().contains("(((("), "{field} via {form}");
+                }
+            }
+        }
+        // The guard precedes the dry run: a stale base would otherwise be a patch error.
+        let (expression, expected) = over_limit_expressions().remove(1);
+        let stale = graph(vec![req("req:stale", Accepted, "Something else.")]);
+        let (_, payload) = expression_payloads(&expression).remove(7);
+        let p = proposal(&stale, add(node("node:new", Proposed, payload)));
+        assert_eq!(
+            intake(&g, &p, &IntakeValidationInput::empty()).unwrap_err(),
+            expected
+        );
+    }
+
+    #[test]
+    fn below_limit_expressions_keep_existing_intake_behavior() {
+        let g = graph(vec![req("req:base", Accepted, "Employees request leave.")]);
+        // At-limit, valid, and below-limit syntax errors are not intake errors: intake still
+        // owns no expression syntax policy.
+        let at_limit_bytes = format!("\"{}\"", "x".repeat(4094));
+        let at_limit_nodes = format!("a{}", " + a".repeat(511));
+        for expression in [
+            "requested_days <= 26",
+            at_limit_bytes.as_str(),
+            at_limit_nodes.as_str(),
+            "a +",
+            "",
+            "((a",
+            "1.",
+        ] {
+            for (payload_name, payload) in [
+                (
+                    "PolicyCondition",
+                    NodePayload::PolicyCondition(PolicyCondition {
+                        expression: expression.to_owned(),
+                    }),
+                ),
+                (
+                    "Rule",
+                    NodePayload::Rule(Rule {
+                        name: "Leave rule".to_owned(),
+                        rule_kind: RuleKind::Business,
+                        condition_expr: Some(expression.to_owned()),
+                        action_expr: None,
+                    }),
+                ),
+            ] {
+                let p = proposal(&g, add(node("node:new", Proposed, payload)));
+                let report = intake(&g, &p, &IntakeValidationInput::empty())
+                    .unwrap_or_else(|e| panic!("{payload_name} {expression:?}: {e}"));
+                assert_eq!(report, run(&g, &p), "{payload_name} {expression:?}");
+            }
+        }
+        // Unrelated text fields are not expressions.
+        let long = "word ".repeat(2000);
+        let p = proposal(&g, add(req("req:long", Proposed, long.trim())));
+        run(&g, &p);
     }
 }

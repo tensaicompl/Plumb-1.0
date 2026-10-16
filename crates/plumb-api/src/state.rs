@@ -914,6 +914,11 @@ pub(crate) fn run_intake(
             "the proposed change cannot be applied to the current graph",
         )
         .with_details(json!({ "patch_error": error.to_string() }))),
+        Err(IntakeError::ExpressionLimit { limit, actual, max }) => Err(ApiError::unprocessable(
+            "E_EXPRESSION_LIMIT",
+            "the proposal contains an expression exceeding a safety limit",
+        )
+        .with_details(json!({ "limit": limit, "actual": actual, "max": max }))),
         Err(_) => Err(ApiError::internal("intake")),
     }
 }

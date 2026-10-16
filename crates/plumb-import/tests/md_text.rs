@@ -537,6 +537,167 @@ mod md_text_contract {
         assert_eq!(source.display_name, "HR requirements v2.md");
     }
 
+    #[test]
+    fn display_name_rejects_paths_bidi_format_controls_and_overlong_names() {
+        let overlong = "a".repeat(256);
+        let bad: Vec<String> = [
+            "dir/name.md",
+            "/name.md",
+            "dir\\name.md",
+            "\\",
+            ".",
+            "..",
+            "name\u{200E}.md",
+            "name\u{200F}.md",
+            "\u{202A}name.md",
+            "name\u{202B}.md",
+            "\u{202D}name.md",
+            "exe.\u{202E}dm.txt",
+            "name\u{2066}x\u{2069}.md",
+            "name\u{2067}.md",
+            "name\u{2068}.md",
+            "name\u{061C}.md",
+            "na\u{200B}me.md",
+            "na\u{200C}me.md",
+            "na\u{200D}me.md",
+            "na\u{2060}me.md",
+            "\u{FEFF}name.md",
+            "na\u{00AD}me.md",
+            overlong.as_str(),
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        for name in &bad {
+            for result in [
+                import_markdown(name, b"x", &audit()),
+                import_plain_text(name, b"x", &audit()),
+            ] {
+                assert_eq!(
+                    result,
+                    Err(ImportError::InvalidDisplayName(name.clone())),
+                    "{name:?}"
+                );
+            }
+        }
+        // 255 characters (multi-byte included) and ordinary internal periods are accepted.
+        let longest = format!("{}.md", "é".repeat(252));
+        assert_eq!(longest.chars().count(), 255);
+        for good in [
+            "file.name.md",
+            "...md",
+            "v1.2.final.txt",
+            longest.as_str(),
+            &"a".repeat(255),
+        ] {
+            let NodePayload::SourceArtifact(source) = &import_markdown(good, b"x", &audit())
+                .unwrap()
+                .source
+                .payload
+            else {
+                panic!()
+            };
+            assert_eq!(source.display_name, good);
+        }
+    }
+
+    // ------------------------------------------------------------------ resource limits (H0.1)
+
+    fn source_limit(limit: &str, actual: usize, max: usize) -> ImportError {
+        ImportError::SourceLimit {
+            limit: limit.to_owned(),
+            actual: actual as u64,
+            max: max as u64,
+        }
+    }
+
+    #[test]
+    fn source_limit_constants_and_code_are_exact() {
+        assert_eq!(TEXT_MAX_INPUT_BYTES, 16_777_216);
+        assert_eq!(SOURCE_MAX_FRAGMENTS, 20_000);
+        assert_eq!(E_SOURCE_LIMIT, "E_SOURCE_LIMIT");
+        let error = source_limit("fragments", 1, 0);
+        assert_eq!(error.code(), Some(E_SOURCE_LIMIT));
+        assert_eq!(
+            error.to_string(),
+            "source fragments is 1, above the limit 0"
+        );
+    }
+
+    #[test]
+    fn text_above_16_mib_fails_before_decoding() {
+        // Invalid UTF-8 throughout: only a check that precedes decoding reports E_SOURCE_LIMIT.
+        let oversized = vec![0xFF_u8; TEXT_MAX_INPUT_BYTES + 1];
+        for result in [
+            import_markdown("a.md", &oversized, &audit()),
+            import_plain_text("a.txt", &oversized, &audit()),
+        ] {
+            let error = result.unwrap_err();
+            assert_eq!(
+                error,
+                source_limit(
+                    "input bytes",
+                    TEXT_MAX_INPUT_BYTES + 1,
+                    TEXT_MAX_INPUT_BYTES
+                )
+            );
+            assert_eq!(error.code(), Some(E_SOURCE_LIMIT));
+        }
+        // Exactly 16 MiB passes the size check: invalid bytes then fail at decoding instead.
+        let at_limit = &oversized[..TEXT_MAX_INPUT_BYTES];
+        assert_eq!(check_text_input_size(TEXT_MAX_INPUT_BYTES), Ok(()));
+        for result in [
+            import_markdown("a.md", at_limit, &audit()),
+            import_plain_text("a.txt", at_limit, &audit()),
+        ] {
+            assert_eq!(result.unwrap_err().code(), Some(E_SOURCE_ENCODING));
+        }
+        // And a valid 16 MiB source imports, as a single paragraph.
+        let valid = vec![b'a'; TEXT_MAX_INPUT_BYTES];
+        for imported in [
+            import_markdown("a.md", &valid, &audit()).unwrap(),
+            import_plain_text("a.txt", &valid, &audit()).unwrap(),
+        ] {
+            assert_eq!(imported.fragments.len(), 1);
+        }
+    }
+
+    #[test]
+    fn fragment_20001_fails_with_e_source_limit() {
+        let paragraphs = |n: usize| "p\n\n".repeat(n);
+        let fragments_error =
+            source_limit("fragments", SOURCE_MAX_FRAGMENTS + 1, SOURCE_MAX_FRAGMENTS);
+        // Paragraphs and list items through the shared path, in both importers.
+        for text in [
+            paragraphs(SOURCE_MAX_FRAGMENTS + 1),
+            "- item\n".repeat(SOURCE_MAX_FRAGMENTS + 1),
+            "1. item\n".repeat(SOURCE_MAX_FRAGMENTS + 1),
+        ] {
+            for result in [
+                import_markdown("a.md", text.as_bytes(), &audit()),
+                import_plain_text("a.txt", text.as_bytes(), &audit()),
+            ] {
+                let error = result.unwrap_err();
+                assert_eq!(error, fragments_error);
+                assert_eq!(error.code(), Some(E_SOURCE_LIMIT));
+            }
+        }
+        // Markdown table rows alone, and table rows sharing the budget with headings.
+        let table = |rows: usize| format!("| A |\n|---|\n{}", "| r |\n".repeat(rows));
+        for text in [
+            table(SOURCE_MAX_FRAGMENTS + 1),
+            format!("{}\n{}", table(10_000), "# h\n".repeat(10_001)),
+        ] {
+            let error = import_markdown("a.md", text.as_bytes(), &audit()).unwrap_err();
+            assert_eq!(error, fragments_error);
+        }
+        // Exactly 20000 fragments import.
+        let at_limit = paragraphs(SOURCE_MAX_FRAGMENTS);
+        assert_eq!(txt(&at_limit).fragments.len(), SOURCE_MAX_FRAGMENTS);
+        let mixed = format!("{}\n{}", table(10_000), "# h\n".repeat(10_000));
+        assert_eq!(md(&mixed).fragments.len(), SOURCE_MAX_FRAGMENTS);
+    }
+
     // ------------------------------------------------------------------ encoding (§56)
 
     #[test]

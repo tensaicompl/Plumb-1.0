@@ -1246,6 +1246,114 @@ mod cli {
         assert_eq!((code, value), (0, json!([])));
     }
 
+    /// Runs `import FILE --media-type MEDIA --name NAME --json`: (exit code, stdout, stderr).
+    fn import_file(env: &Env, file: &Path, media_type: &str, name: &str) -> (i32, String, String) {
+        env.run(&[
+            "import",
+            file.to_str().unwrap(),
+            "--media-type",
+            media_type,
+            "--name",
+            name,
+            "--json",
+        ])
+    }
+
+    /// Asserts the CLI's typed oversize rejection carrying the importer's limit error.
+    fn assert_oversized(result: (i32, String, String), import_error: &str) {
+        let (code, out, err) = result;
+        assert_eq!(code, 1, "{out} {err}");
+        let error: Value = serde_json::from_str(err.trim()).unwrap_or_else(|_| panic!("{err}"));
+        assert_eq!(
+            error,
+            json!({
+                "code": "E_INVALID_REQUEST",
+                "message": "the uploaded file cannot be imported as its declared media type",
+                "details": {"import_error": import_error}
+            })
+        );
+    }
+
+    fn sparse(env: &Env, name: &str, len: u64) -> PathBuf {
+        let path = env.path(name);
+        std::fs::File::create(&path).unwrap().set_len(len).unwrap();
+        path
+    }
+
+    #[test]
+    fn cli_import_rejects_oversized_files_before_reading_them() {
+        let env = env();
+        let before = head_graph(&env.db).revision;
+        const DOCX_MEDIA: &str =
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        // Metadata above the limit: rejected from the metadata length alone, before any read.
+        // The 64 GiB sparse file could not be read into memory.
+        let huge = 64 * 1024 * 1024 * 1024_u64;
+        for (media_type, name, max, message) in [
+            (
+                "text/markdown",
+                "huge.md",
+                16_777_216_u64,
+                "source input bytes",
+            ),
+            ("text/plain", "huge.txt", 16_777_216, "source input bytes"),
+            (DOCX_MEDIA, "huge.docx", 134_217_728, "DOCX input bytes"),
+        ] {
+            let file = sparse(&env, name, huge);
+            assert_oversized(
+                import_file(&env, &file, media_type, name),
+                &format!("{message} is {huge}, above the limit {max}"),
+            );
+            // Exactly one byte above the limit.
+            let file = sparse(&env, name, max + 1);
+            assert_oversized(
+                import_file(&env, &file, media_type, name),
+                &format!("{message} is {}, above the limit {max}", max + 1),
+            );
+        }
+        // Misleading metadata (a device reporting length 0): the read stops at limit + 1.
+        assert_oversized(
+            import_file(&env, Path::new("/dev/zero"), "text/plain", "zero.txt"),
+            "source input bytes is 16777217, above the limit 16777216",
+        );
+        // An unsupported media type is still refused, before the file is touched.
+        let (code, _, err) = import_file(&env, &env.path("missing.bin"), "application/pdf", "x");
+        assert_eq!(code, 1);
+        assert!(err.contains("E_UNSUPPORTED_MEDIA_TYPE"), "{err}");
+        // Nothing was imported.
+        let after = head_graph(&env.db).revision;
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.semantic_hash, before.semantic_hash);
+    }
+
+    #[test]
+    fn cli_import_reads_files_of_exactly_the_limit() {
+        let env = env();
+        let before = head_graph(&env.db).revision;
+        const DOCX_MEDIA: &str =
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        // Exactly the limit passes the CLI's size checks and reaches the importer, which then
+        // rejects the content itself (invalid UTF-8, not a ZIP archive), not its size.
+        let file = env.write("limit.txt", &vec![0xFF; 16_777_216]);
+        assert_oversized(
+            import_file(&env, &file, "text/plain", "limit.txt"),
+            "source is not valid UTF-8 (valid up to byte 0)",
+        );
+        let file = sparse(&env, "limit.docx", 134_217_728);
+        let (code, _, err) = import_file(&env, &file, DOCX_MEDIA, "limit.docx");
+        assert_eq!(code, 1);
+        let error: Value = serde_json::from_str(err.trim()).unwrap();
+        let import_error = error["details"]["import_error"].as_str().unwrap();
+        assert!(
+            import_error.starts_with("DOCX archive is unreadable"),
+            "{import_error}"
+        );
+        assert_eq!(head_graph(&env.db).revision.id, before.id);
+        // A small ordinary import keeps working.
+        let source = env.import();
+        assert!(head_graph(&env.db).graph.node(&id(&source)).is_some());
+    }
+
     #[test]
     fn cli_extract_replay_then_apply_accept_and_reject() {
         let env = env();

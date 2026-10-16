@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 plumb-core = { path = "../plumb-core" }
+plumb-expr = { path = "../plumb-expr" }
 plumb-psg = { path = "../plumb-psg" }
 plumb-patch = { path = "../plumb-patch" }
 plumb-validation = { path = "../plumb-validation" }

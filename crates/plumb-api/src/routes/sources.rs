@@ -5,9 +5,9 @@
 //! before the graph commit and stay (immutable, possibly orphaned) if the commit loses its race.
 //! No segmentation, model call or Requirement creation happens here.
 
-use axum::extract::multipart::MultipartRejection;
-use axum::extract::{Multipart, Path, RawQuery, State};
-use axum::http::HeaderMap;
+use axum::extract::multipart::{MultipartError, MultipartRejection};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, RawQuery, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -17,11 +17,15 @@ use plumb_psg::{EvidenceLocator, NodePayload, NodeType};
 use crate::application::require_importable;
 use crate::error::ApiError;
 use crate::openapi::{Source, Span, SpanPage};
+use crate::routes::MAX_SOURCE_UPLOAD_BODY_BYTES;
 use crate::state::{check_if_match, paginate, read_json, ApiState, PageRequest, QueryParams};
 
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/api/sources", post(create_source))
+        .route(
+            "/api/sources",
+            post(create_source).layer(DefaultBodyLimit::max(MAX_SOURCE_UPLOAD_BODY_BYTES)),
+        )
         .route("/api/sources/{id}", get(get_source))
         .route("/api/sources/{id}/spans", get(get_source_spans))
 }
@@ -32,16 +36,22 @@ struct Upload {
     bytes: Vec<u8>,
 }
 
-/// Reads the complete multipart body before any store is touched.
+/// A multipart read failure: the body limit is 413, anything else stays a malformed body.
+fn multipart_error(error: MultipartError) -> ApiError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::payload_too_large(MAX_SOURCE_UPLOAD_BODY_BYTES)
+    } else {
+        ApiError::invalid("malformed multipart body")
+    }
+}
+
+/// Reads the complete multipart body, bounded by the route's body limit, before any store is
+/// touched.
 async fn read_upload(multipart: Result<Multipart, MultipartRejection>) -> Result<Upload, ApiError> {
     let mut multipart =
         multipart.map_err(|_| ApiError::invalid("a multipart/form-data body is required"))?;
     let mut upload = None;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| ApiError::invalid("malformed multipart body"))?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
         if field.name() != Some("file") {
             return Err(ApiError::invalid(
                 "only the multipart part `file` is accepted",
@@ -56,11 +66,7 @@ async fn read_upload(multipart: Result<Multipart, MultipartRejection>) -> Result
             .ok_or_else(|| ApiError::invalid("the `file` part needs a non-empty filename"))?
             .to_owned();
         let media_type = field.content_type().unwrap_or_default().to_owned();
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|_| ApiError::invalid("malformed multipart body"))?
-            .to_vec();
+        let bytes = field.bytes().await.map_err(multipart_error)?.to_vec();
         upload = Some(Upload {
             display_name,
             media_type,

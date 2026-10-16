@@ -19,6 +19,16 @@ use crate::types::Unit;
 #[grammar = "grammar.pest"]
 struct PlumbExprGrammar;
 
+/// Largest accepted PlumbExpr source in bytes.
+pub const EXPR_MAX_SOURCE_BYTES: usize = 4096;
+/// Deepest accepted parenthesis, call-argument or consecutive prefix-operator nesting.
+pub const EXPR_MAX_NESTING_DEPTH: usize = 64;
+/// Most nodes of one built AST.
+pub const EXPR_MAX_AST_NODES: usize = 1024;
+
+/// The stable code of an expression exceeding a safety limit.
+pub const E_EXPRESSION_LIMIT: &str = "E_EXPRESSION_LIMIT";
+
 /// Why an input is not a PlumbExpr v1 expression. Offsets are zero-based UTF-8 byte offsets
 /// into the input; diagnostic prose is not part of the contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -39,13 +49,23 @@ pub enum ParseError {
     InvalidDateTime { offset: usize },
     #[error("invalid unit at byte {offset}")]
     InvalidUnit { offset: usize },
+    /// A safety limit was exceeded; `limit` names the constant.
+    #[error("expression {limit} is {actual}, above the limit {max}")]
+    LimitExceeded {
+        limit: &'static str,
+        actual: usize,
+        max: usize,
+    },
 }
+
+/// The expression error under its contract name; the same type as [`ParseError`].
+pub type ExprError = ParseError;
 
 impl ParseError {
     /// The byte offset, when the error has one.
     pub fn offset(&self) -> Option<usize> {
         match self {
-            ParseError::Empty => None,
+            ParseError::Empty | ParseError::LimitExceeded { .. } => None,
             ParseError::Syntax { offset }
             | ParseError::InvalidInteger { offset }
             | ParseError::InvalidDecimal { offset }
@@ -55,13 +75,140 @@ impl ParseError {
             | ParseError::InvalidUnit { offset } => Some(*offset),
         }
     }
+
+    /// The stable error code, where the expression contract defines one.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            ParseError::LimitExceeded { .. } => Some(E_EXPRESSION_LIMIT),
+            _ => None,
+        }
+    }
+}
+
+fn limit(limit: &'static str, actual: usize, max: usize) -> Result<(), ParseError> {
+    if actual <= max {
+        Ok(())
+    } else {
+        Err(ParseError::LimitExceeded { limit, actual, max })
+    }
+}
+
+/// How the scan classifies the token before a `-`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Previous {
+    /// Start of input, an opening bracket, a comma, an operator or an operator keyword: a
+    /// following `-` is a prefix operator.
+    Operator,
+    /// A literal, identifier or closing bracket: a following `-` is binary.
+    Operand,
+}
+
+/// The lexical pre-scan run before the recursive grammar: rejects bracket nesting (grouping
+/// parentheses, call arguments and lists) and runs of consecutive prefix operators (`-`,
+/// `not`) deeper than [`EXPR_MAX_NESTING_DEPTH`]. String literal contents, escapes included,
+/// are skipped. It never decides syntactic acceptance; the grammar does.
+fn check_nesting(input: &str) -> Result<(), ParseError> {
+    let check = |depth: usize| limit("EXPR_MAX_NESTING_DEPTH", depth, EXPR_MAX_NESTING_DEPTH);
+    let bytes = input.as_bytes();
+    let mut depth = 0usize;
+    let mut prefix_run = 0usize;
+    let mut previous = Previous::Operator;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        match byte {
+            b' ' | b'\t' | b'\r' | b'\n' => {
+                i += 1;
+                continue;
+            }
+            b'"' => {
+                // Skip to the closing quote; a backslash escapes the next byte.
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+                previous = Previous::Operand;
+                prefix_run = 0;
+                continue;
+            }
+            b'(' | b'[' => {
+                depth += 1;
+                check(depth)?;
+                previous = Previous::Operator;
+                prefix_run = 0;
+            }
+            b')' | b']' => {
+                depth = depth.saturating_sub(1);
+                previous = Previous::Operand;
+                prefix_run = 0;
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'>') => {
+                i += 2;
+                previous = Previous::Operator;
+                prefix_run = 0;
+                continue;
+            }
+            b'-' if previous == Previous::Operator => {
+                prefix_run += 1;
+                check(prefix_run)?;
+            }
+            b if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' => {
+                let start = i;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
+                {
+                    i += 1;
+                }
+                match &input[start..i] {
+                    "not" => {
+                        prefix_run += 1;
+                        check(prefix_run)?;
+                        previous = Previous::Operator;
+                    }
+                    "and" | "or" | "in" | "if" | "then" | "else" => {
+                        previous = Previous::Operator;
+                        prefix_run = 0;
+                    }
+                    _ => {
+                        previous = Previous::Operand;
+                        prefix_run = 0;
+                    }
+                }
+                continue;
+            }
+            _ => {
+                previous = Previous::Operator;
+                prefix_run = 0;
+            }
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+/// Counts AST nodes as they are built and fails at node [`EXPR_MAX_AST_NODES`] + 1.
+struct Budget {
+    nodes: usize,
+}
+
+impl Budget {
+    fn node(&mut self) -> Result<(), ParseError> {
+        self.nodes += 1;
+        limit("EXPR_MAX_AST_NODES", self.nodes, EXPR_MAX_AST_NODES)
+    }
 }
 
 /// Parses one PlumbExpr v1 expression.
+///
+/// Safety limits are checked before the grammar runs (source bytes, then the nesting
+/// pre-scan) and while the AST is built (node count).
 pub fn parse(input: &str) -> Result<Ast, ParseError> {
+    limit("EXPR_MAX_SOURCE_BYTES", input.len(), EXPR_MAX_SOURCE_BYTES)?;
     if input.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n')) {
         return Err(ParseError::Empty);
     }
+    check_nesting(input)?;
     let mut pairs = PlumbExprGrammar::parse(Rule::program, input).map_err(|e| {
         let offset = match e.location {
             pest::error::InputLocation::Pos(p) => p,
@@ -74,7 +221,7 @@ pub fn parse(input: &str) -> Result<Ast, ParseError> {
         .into_inner()
         .find(|p| p.as_rule() == Rule::expr)
         .ok_or(ParseError::Syntax { offset: 0 })?;
-    build(expr)
+    build(expr, &mut Budget { nodes: 0 })
 }
 
 /// `unparse(parse(input))`: the canonical source text of an accepted input.
@@ -139,10 +286,14 @@ fn operator(pair: &Pair<'_, Rule>) -> Result<BinaryOp, ParseError> {
 
 /// Folds `operand (op operand)*` left-associatively; `fixed` names the operator of keyword
 /// levels (`or`, `and`) whose tokens are filtered out.
-fn fold_left(pair: Pair<'_, Rule>, fixed: Option<BinaryOp>) -> Result<Ast, ParseError> {
+fn fold_left(
+    pair: Pair<'_, Rule>,
+    fixed: Option<BinaryOp>,
+    budget: &mut Budget,
+) -> Result<Ast, ParseError> {
     let mut items = children(pair).into_iter();
     let first = items.next().ok_or(ParseError::Syntax { offset: 0 })?;
-    let mut acc = build(first)?;
+    let mut acc = build(first, budget)?;
     while let Some(next) = items.next() {
         let (op, operand) = match fixed {
             Some(op) => (op, next),
@@ -152,12 +303,15 @@ fn fold_left(pair: Pair<'_, Rule>, fixed: Option<BinaryOp>) -> Result<Ast, Parse
                 (op, operand)
             }
         };
-        acc = binary(op, acc, build(operand)?);
+        let right = build(operand, budget)?;
+        budget.node()?;
+        acc = binary(op, acc, right);
     }
     Ok(acc)
 }
 
-fn build(pair: Pair<'_, Rule>) -> Result<Ast, ParseError> {
+/// Builds the AST of a pair, charging every constructed node to `budget`.
+fn build(pair: Pair<'_, Rule>, budget: &mut Budget) -> Result<Ast, ParseError> {
     match pair.as_rule() {
         Rule::expr | Rule::primary => {
             let inner = pair
@@ -165,29 +319,38 @@ fn build(pair: Pair<'_, Rule>) -> Result<Ast, ParseError> {
                 .into_inner()
                 .next()
                 .ok_or_else(|| syntax(&pair))?;
-            build(inner)
+            build(inner, budget)
         }
         Rule::conditional => {
             let parts = children(pair.clone());
             let [condition, then_expr, else_expr]: [Pair<'_, Rule>; 3] =
                 parts.try_into().map_err(|_| syntax(&pair))?;
+            let condition = build(condition, budget)?;
+            let then_expr = build(then_expr, budget)?;
+            let else_expr = build(else_expr, budget)?;
+            budget.node()?;
             Ok(Ast::Conditional {
-                condition: Box::new(build(condition)?),
-                then_expr: Box::new(build(then_expr)?),
-                else_expr: Box::new(build(else_expr)?),
+                condition: Box::new(condition),
+                then_expr: Box::new(then_expr),
+                else_expr: Box::new(else_expr),
             })
         }
         Rule::implication => {
             let mut parts = children(pair.clone()).into_iter();
-            let left = build(parts.next().ok_or_else(|| syntax(&pair))?)?;
+            let left = build(parts.next().ok_or_else(|| syntax(&pair))?, budget)?;
             match (parts.next(), parts.next()) {
-                (Some(op), Some(right)) => Ok(binary(operator(&op)?, left, build(right)?)),
+                (Some(op), Some(right)) => {
+                    let op = operator(&op)?;
+                    let right = build(right, budget)?;
+                    budget.node()?;
+                    Ok(binary(op, left, right))
+                }
                 _ => Ok(left),
             }
         }
-        Rule::disjunction => fold_left(pair, Some(BinaryOp::Or)),
-        Rule::conjunction => fold_left(pair, Some(BinaryOp::And)),
-        Rule::comparison | Rule::additive | Rule::multiplicative => fold_left(pair, None),
+        Rule::disjunction => fold_left(pair, Some(BinaryOp::Or), budget),
+        Rule::conjunction => fold_left(pair, Some(BinaryOp::And), budget),
+        Rule::comparison | Rule::additive | Rule::multiplicative => fold_left(pair, None, budget),
         Rule::unary => {
             let mut ops = Vec::new();
             let mut operand = None;
@@ -198,11 +361,12 @@ fn build(pair: Pair<'_, Rule>) -> Result<Ast, ParseError> {
                     } else {
                         UnaryOp::Not
                     }),
-                    _ => operand = Some(build(inner)?),
+                    _ => operand = Some(build(inner, budget)?),
                 }
             }
             let mut acc = operand.ok_or_else(|| syntax(&pair))?;
             for op in ops.into_iter().rev() {
+                budget.node()?;
                 acc = Ast::Unary {
                     op,
                     expr: Box::new(acc),
@@ -214,16 +378,22 @@ fn build(pair: Pair<'_, Rule>) -> Result<Ast, ParseError> {
             let mut parts = children(pair.clone()).into_iter();
             let name = parts.next().ok_or_else(|| syntax(&pair))?;
             let function = Symbol::new(name.as_str()).map_err(|_| syntax(&name))?;
-            let args = parts.map(build).collect::<Result<_, _>>()?;
+            let args = parts
+                .map(|arg| build(arg, budget))
+                .collect::<Result<_, _>>()?;
+            budget.node()?;
             Ok(Ast::Call { function, args })
         }
-        Rule::list => Ok(Ast::List(
-            children(pair)
+        Rule::list => {
+            let items = children(pair)
                 .into_iter()
-                .map(build)
-                .collect::<Result<_, _>>()?,
-        )),
+                .map(|item| build(item, budget))
+                .collect::<Result<_, _>>()?;
+            budget.node()?;
+            Ok(Ast::List(items))
+        }
         Rule::identifier => {
+            budget.node()?;
             let segments = pair
                 .clone()
                 .into_inner()
@@ -233,10 +403,20 @@ fn build(pair: Pair<'_, Rule>) -> Result<Ast, ParseError> {
                 Identifier::new(segments).map_err(|_| syntax(&pair))?,
             ))
         }
-        Rule::bool_lit => Ok(Ast::Literal(Literal::Bool(pair.as_str() == "true"))),
-        Rule::number => number(&pair),
-        Rule::string => Ok(Ast::Literal(Literal::String(string(&pair)?))),
+        Rule::bool_lit => {
+            budget.node()?;
+            Ok(Ast::Literal(Literal::Bool(pair.as_str() == "true")))
+        }
+        Rule::number => {
+            budget.node()?;
+            number(&pair)
+        }
+        Rule::string => {
+            budget.node()?;
+            Ok(Ast::Literal(Literal::String(string(&pair)?)))
+        }
         Rule::date_lit => {
+            budget.node()?;
             let text_pair = single(pair.clone())?;
             let text = string(&text_pair)?;
             let offset = text_pair.as_span().start();
@@ -245,6 +425,7 @@ fn build(pair: Pair<'_, Rule>) -> Result<Ast, ParseError> {
             )))
         }
         Rule::datetime_lit => {
+            budget.node()?;
             let text_pair = single(pair.clone())?;
             let text = string(&text_pair)?;
             let offset = text_pair.as_span().start();
@@ -254,6 +435,7 @@ fn build(pair: Pair<'_, Rule>) -> Result<Ast, ParseError> {
             Ok(Ast::Literal(Literal::DateTime(timestamp)))
         }
         Rule::duration_lit | Rule::quantity_lit => {
+            budget.node()?;
             let is_duration = pair.as_rule() == Rule::duration_lit;
             let parts = children(pair.clone());
             let [number_pair, unit_pair]: [Pair<'_, Rule>; 2] =

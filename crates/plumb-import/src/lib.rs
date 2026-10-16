@@ -28,10 +28,12 @@ pub use segment::{
     SEGMENTATION_OUTPUT_VERSION, SEGMENTATION_TASK_KIND,
 };
 pub use source::{
-    source_parse_metadata, ExtractedTextArtifact, FragmentKind, FragmentMetadata, ImportAudit,
-    ImportError, ImportWarning, ImportWarningCode, ImportedSource, ParseMetadata, ParseStatus,
-    SourceArtifactLinks, SourceKind, UnknownImportValue, EXTRACTED_TEXT_MEDIA_TYPE,
-    EXTRACTED_TEXT_VERSION, E_DOCX_ARCHIVE, E_DOCX_LIMIT, E_DOCX_MISSING_PART, E_DOCX_XML,
-    E_SOURCE_ENCODING, FRAGMENT_EXTENSION, PARSE_EXTENSION, SOURCE_ARTIFACTS_EXTENSION,
+    check_fragment_count, check_text_input_size, source_parse_metadata, ExtractedTextArtifact,
+    FragmentKind, FragmentMetadata, ImportAudit, ImportError, ImportWarning, ImportWarningCode,
+    ImportedSource, ParseMetadata, ParseStatus, SourceArtifactLinks, SourceKind,
+    UnknownImportValue, EXTRACTED_TEXT_MEDIA_TYPE, EXTRACTED_TEXT_VERSION, E_DOCX_ARCHIVE,
+    E_DOCX_LIMIT, E_DOCX_MISSING_PART, E_DOCX_XML, E_SOURCE_ENCODING, E_SOURCE_LIMIT,
+    FRAGMENT_EXTENSION, PARSE_EXTENSION, SOURCE_ARTIFACTS_EXTENSION, SOURCE_MAX_FRAGMENTS,
+    TEXT_MAX_INPUT_BYTES,
 };
 pub use text::import_plain_text;

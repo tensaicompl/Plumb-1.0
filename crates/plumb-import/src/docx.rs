@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 
 use plumb_psg::EvidenceLocator;
+use quick_xml::escape::unescape;
 use quick_xml::events::Event;
 use quick_xml::name::ResolveResult;
 use quick_xml::NsReader;
@@ -16,8 +17,8 @@ use zip::result::ZipError;
 use zip::ZipArchive;
 
 use crate::source::{
-    build_with_parse, FragmentKind, ImportAudit, ImportError, ImportWarning, ImportWarningCode,
-    ImportedSource, ParseMetadata, Segment, SourceKind,
+    build_with_parse, check_fragment_count, push_segment, FragmentKind, ImportAudit, ImportError,
+    ImportWarning, ImportWarningCode, ImportedSource, ParseMetadata, Segment, SourceKind,
 };
 
 /// Largest accepted DOCX input.
@@ -28,6 +29,12 @@ pub const DOCX_MAX_ENTRIES: usize = 4096;
 pub const DOCX_MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 /// Largest XML part actually read.
 pub const DOCX_MAX_XML_PART_BYTES: u64 = 32 * 1024 * 1024;
+/// Deepest open-element nesting accepted while parsing one XML part.
+pub const DOCX_MAX_XML_DEPTH: usize = 256;
+/// Largest accepted `w:gridSpan` value and summed span of one table row.
+pub const DOCX_MAX_TABLE_COLUMNS: usize = 64;
+/// Most rows accepted in one table.
+pub const DOCX_MAX_TABLE_ROWS: usize = 10000;
 
 /// The main document part.
 pub const DOCX_DOCUMENT_PART: &str = "word/document.xml";
@@ -83,6 +90,21 @@ pub fn check_total_uncompressed(total: u64) -> Result<(), ImportError> {
 /// Checks the size of one XML part as read.
 pub fn check_xml_part_size(bytes: u64) -> Result<(), ImportError> {
     limit("XML part bytes", bytes, DOCX_MAX_XML_PART_BYTES)
+}
+
+/// Checks the nesting depth of an element about to be added to the tree.
+fn check_xml_depth(depth: usize) -> Result<(), ImportError> {
+    limit("XML depth", depth as u64, DOCX_MAX_XML_DEPTH as u64)
+}
+
+/// Checks a `w:gridSpan` value or the summed span of one table row.
+fn check_table_columns(columns: u64) -> Result<(), ImportError> {
+    limit("table columns", columns, DOCX_MAX_TABLE_COLUMNS as u64)
+}
+
+/// Checks the number of a table row about to be read.
+fn check_table_rows(rows: usize) -> Result<(), ImportError> {
+    limit("table rows", rows as u64, DOCX_MAX_TABLE_ROWS as u64)
 }
 
 // ============================================================================ package
@@ -194,7 +216,8 @@ fn is_wordprocessingml(namespace: &ResolveResult<'_>) -> bool {
     }
 }
 
-/// Parses `xml` into a namespace-resolved element tree.
+/// Parses `xml` into a namespace-resolved element tree. An element is checked against
+/// [`DOCX_MAX_XML_DEPTH`] before it is added to the tree.
 fn parse_xml(part: &str, xml: &str) -> Result<Element, ImportError> {
     let mut reader = NsReader::from_str(xml);
     reader.config_mut().trim_text(false);
@@ -209,10 +232,13 @@ fn parse_xml(part: &str, xml: &str) -> Result<Element, ImportError> {
             .map_err(|e| xml_error(part, e.to_string()))?;
         match event {
             Event::Start(start) => {
+                // The stack holds a synthetic root, so its length is the new element's depth.
+                check_xml_depth(stack.len())?;
                 let element = open_element(part, &reader, &start)?;
                 stack.push(element);
             }
             Event::Empty(start) => {
+                check_xml_depth(stack.len())?;
                 let element = open_element(part, &reader, &start)?;
                 push_child(&mut stack, Content::Element(element));
             }
@@ -225,15 +251,23 @@ fn parse_xml(part: &str, xml: &str) -> Result<Element, ImportError> {
                 }
             }
             Event::Text(text) => {
-                let text = text
-                    .unescape()
+                let text = text.decode().map_err(|e| xml_error(part, e.to_string()))?;
+                push_text(&mut stack, &text);
+            }
+            Event::GeneralRef(reference) => {
+                // Entity and character references are separate events; unescaping the reference
+                // alone resolves exactly the predefined entities and character references.
+                let name = reference
+                    .decode()
                     .map_err(|e| xml_error(part, e.to_string()))?;
-                push_child(&mut stack, Content::Text(text.into_owned()));
+                let escaped = format!("&{name};");
+                let text = unescape(&escaped).map_err(|e| xml_error(part, e.to_string()))?;
+                push_text(&mut stack, &text);
             }
             Event::CData(data) => {
                 let text = String::from_utf8(data.into_inner().into_owned())
                     .map_err(|e| xml_error(part, e.to_string()))?;
-                push_child(&mut stack, Content::Text(text));
+                push_text(&mut stack, &text);
             }
             Event::Eof => break,
             Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
@@ -258,17 +292,19 @@ fn open_element(
     reader: &NsReader<&[u8]>,
     start: &quick_xml::events::BytesStart<'_>,
 ) -> Result<Element, ImportError> {
-    let (namespace, _) = reader.resolve_element(start.name());
+    let (namespace, _) = reader.resolver().resolve_element(start.name());
     let word = is_wordprocessingml(&namespace)
         .then(|| String::from_utf8_lossy(start.local_name().as_ref()).into_owned());
     let mut attributes = BTreeMap::new();
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|e| xml_error(part, e.to_string()))?;
-        let (namespace, local) = reader.resolve_attribute(attribute.key);
+        let (namespace, local) = reader.resolver().resolve_attribute(attribute.key);
         if is_wordprocessingml(&namespace) {
-            let value = attribute
-                .unescape_value()
+            let value = reader
+                .decoder()
+                .decode(&attribute.value)
                 .map_err(|e| xml_error(part, e.to_string()))?;
+            let value = unescape(&value).map_err(|e| xml_error(part, e.to_string()))?;
             attributes.insert(
                 String::from_utf8_lossy(local.as_ref()).into_owned(),
                 value.into_owned(),
@@ -285,6 +321,17 @@ fn open_element(
 fn push_child(stack: &mut [Element], content: Content) {
     if let Some(parent) = stack.last_mut() {
         parent.children.push(content);
+    }
+}
+
+/// Appends character data, merging it into an immediately preceding text child so that text
+/// split around references forms one text node.
+fn push_text(stack: &mut [Element], text: &str) {
+    if let Some(parent) = stack.last_mut() {
+        match parent.children.last_mut() {
+            Some(Content::Text(previous)) => previous.push_str(text),
+            _ => parent.children.push(Content::Text(text.to_owned())),
+        }
     }
 }
 
@@ -497,9 +544,22 @@ struct Importer<'s> {
     styles: &'s Styles,
     records: Vec<Record>,
     warnings: Vec<ImportWarning>,
+    /// EvidenceFragments the records yield so far.
+    fragments: usize,
 }
 
 impl Importer<'_> {
+    /// Appends a record, checking the fragment budget before a fragment-yielding record is
+    /// added. A record yields a fragment exactly when it has a kind and non-empty text.
+    fn push_record(&mut self, record: Record) -> Result<(), ImportError> {
+        if record.fragment.is_some() && !record.text.is_empty() {
+            check_fragment_count(self.fragments + 1)?;
+            self.fragments += 1;
+        }
+        self.records.push(record);
+        Ok(())
+    }
+
     fn warn(&mut self, xpath: String) {
         self.warnings.push(ImportWarning {
             code: ImportWarningCode::DocxUnsupportedVisible,
@@ -519,10 +579,10 @@ impl Importer<'_> {
                     flatten_unsupported(child, &mut visible);
                     if visible.unsupported {
                         self.warn(path);
-                        self.records.push(Record {
+                        self.push_record(Record {
                             text: visible.text,
                             fragment: Some((FragmentKind::Paragraph, None)),
-                        });
+                        })?;
                     }
                 }
             }
@@ -537,11 +597,10 @@ impl Importer<'_> {
             self.warn(path.to_owned());
         }
         let fragment = (!visible.text.is_empty()).then_some((kind, None));
-        self.records.push(Record {
+        self.push_record(Record {
             text: visible.text,
             fragment,
-        });
-        Ok(())
+        })
     }
 
     fn table(&mut self, table: &Element, path: &str) -> Result<(), ImportError> {
@@ -552,23 +611,24 @@ impl Importer<'_> {
                 Some("tblPr" | "tblGrid") => {}
                 Some("tr") => {
                     row_number += 1;
+                    check_table_rows(row_number)?;
                     let row_path = format!("{path}/w:tr[{row_number}]");
                     let cells = self.row(child, &row_path)?;
                     let text = cells.join("\t");
                     match &header {
                         None => {
                             header = Some(cells);
-                            self.records.push(Record {
+                            self.push_record(Record {
                                 text,
                                 fragment: None,
-                            });
+                            })?;
                         }
                         Some(header_cells) => {
                             let fragment = cells
                                 .iter()
                                 .any(|c| !c.is_empty())
                                 .then(|| (FragmentKind::TableRow, Some(header_cells.clone())));
-                            self.records.push(Record { text, fragment });
+                            self.push_record(Record { text, fragment })?;
                         }
                     }
                 }
@@ -577,10 +637,10 @@ impl Importer<'_> {
                     flatten_unsupported(child, &mut visible);
                     if visible.unsupported {
                         self.warn(format!("{path}/*[{}]", index + 1));
-                        self.records.push(Record {
+                        self.push_record(Record {
                             text: visible.text,
                             fragment: Some((FragmentKind::Paragraph, None)),
-                        });
+                        })?;
                     }
                 }
             }
@@ -588,9 +648,11 @@ impl Importer<'_> {
         Ok(())
     }
 
-    /// The logical cells of a row, with merges expanded.
+    /// The logical cells of a row, with merges expanded. The summed span is checked against
+    /// [`DOCX_MAX_TABLE_COLUMNS`] before any cell is added.
     fn row(&mut self, row: &Element, path: &str) -> Result<Vec<String>, ImportError> {
         let mut cells = Vec::new();
+        let mut width: u64 = 0;
         let mut cell_number = 0;
         for child in row.elements() {
             match child.word.as_deref() {
@@ -598,13 +660,14 @@ impl Importer<'_> {
                 Some("tc") => {
                     cell_number += 1;
                     let cell_path = format!("{path}/w:tc[{cell_number}]");
-                    self.cell(child, &cell_path, &mut cells)?;
+                    self.cell(child, &cell_path, &mut width, &mut cells)?;
                 }
                 _ => {
                     let mut visible = Visible::new();
                     flatten_unsupported(child, &mut visible);
                     if visible.unsupported {
                         self.warn(path.to_owned());
+                        width = add_columns(width, 1)?;
                         cells.push(visible.text);
                     }
                 }
@@ -617,6 +680,7 @@ impl Importer<'_> {
         &mut self,
         cell: &Element,
         path: &str,
+        width: &mut u64,
         cells: &mut Vec<String>,
     ) -> Result<(), ImportError> {
         let properties = cell.child("tcPr");
@@ -625,8 +689,11 @@ impl Importer<'_> {
             .map(|g| g.attribute("val").unwrap_or_default())
         {
             None => 1,
-            Some(value) => match value.parse::<usize>() {
-                Ok(span) if span >= 1 => span,
+            Some(value) => match value.parse::<u64>() {
+                Ok(span) if span >= 1 => {
+                    check_table_columns(span)?;
+                    span
+                }
                 _ => {
                     return Err(xml_error(
                         DOCX_DOCUMENT_PART,
@@ -648,6 +715,8 @@ impl Importer<'_> {
                 }
             },
         };
+        // Checked before the cell or its span is materialized; a valid span is at most 64.
+        *width = add_columns(*width, span)?;
         let mut paragraphs: Vec<String> = Vec::new();
         let mut unsupported = false;
         let mut paragraph_number = 0;
@@ -677,9 +746,17 @@ impl Importer<'_> {
             self.warn(path.to_owned());
         }
         cells.push(text);
-        cells.extend(std::iter::repeat_n(String::new(), span - 1));
+        // A checked span is in 1..=DOCX_MAX_TABLE_COLUMNS, so the conversion cannot truncate.
+        cells.extend(std::iter::repeat_n(String::new(), span as usize - 1));
         Ok(())
     }
+}
+
+/// The summed span of a row after adding `span` columns, checked without overflow.
+fn add_columns(width: u64, span: u64) -> Result<u64, ImportError> {
+    let width = width.saturating_add(span);
+    check_table_columns(width)?;
+    Ok(width)
 }
 
 /// Imports a DOCX package.
@@ -710,6 +787,7 @@ pub fn import_docx(
         styles: &styles,
         records: Vec::new(),
         warnings: Vec::new(),
+        fragments: 0,
     };
     importer.body(body)?;
 
@@ -723,12 +801,15 @@ pub fn import_docx(
         text.push_str(&record.text);
         if let Some((kind, header_cells)) = record.fragment {
             if !record.text.is_empty() {
-                segments.push(Segment {
-                    kind,
-                    start,
-                    end: text.len(),
-                    header_cells,
-                });
+                push_segment(
+                    &mut segments,
+                    Segment {
+                        kind,
+                        start,
+                        end: text.len(),
+                        header_cells,
+                    },
+                )?;
             }
         }
     }

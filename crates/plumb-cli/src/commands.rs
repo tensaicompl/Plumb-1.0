@@ -3,20 +3,22 @@
 //! as its If-Match equivalent and the store CAS as final authority; nothing is reloaded,
 //! retried, rebased or resubmitted.
 
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
 use plumb_api::application::{
-    bootstrap_project_database, export_artifact, open_application, round_size, ApplicationError,
-    ProposalAction,
+    bootstrap_project_database, export_artifact, open_application, require_importable, round_size,
+    ApplicationError, ProposalAction,
 };
 use plumb_api::error::ApiError;
 use plumb_api::openapi::{ExportFormat, JobStatus};
 use plumb_api::{serve_blocking, ApiState, Recipe};
 use plumb_core::{to_canonical_json, Clock, Id, SystemClock};
+use plumb_import::docx::{check_input_size, DOCX_MAX_INPUT_BYTES};
+use plumb_import::{check_text_input_size, ImportError, SourceKind, TEXT_MAX_INPUT_BYTES};
 use plumb_store::BranchName;
 use plumb_validation::load_builtin_software_profile;
 use serde::Serialize;
@@ -173,6 +175,56 @@ pub fn open(
     )?)
 }
 
+/// Whether `media_type` is DOCX; every other importable media type is Markdown or plain text.
+fn is_docx(media_type: &str) -> bool {
+    media_type == SourceKind::Docx.media_type()
+}
+
+/// The content limit of a supported import media type (architecture §33.1).
+fn import_limit(media_type: &str) -> Result<u64, CliError> {
+    require_importable(media_type)?;
+    Ok(if is_docx(media_type) {
+        DOCX_MAX_INPUT_BYTES
+    } else {
+        TEXT_MAX_INPUT_BYTES as u64
+    })
+}
+
+/// Checks `bytes` against the media type's limit with the importer's own typed limit error.
+fn check_import_size(media_type: &str, bytes: u64) -> Result<(), ImportError> {
+    if is_docx(media_type) {
+        check_input_size(bytes)
+    } else {
+        check_text_input_size(usize::try_from(bytes).unwrap_or(usize::MAX))
+    }
+}
+
+/// The import service's rejection of an oversized file, as `create_source` reports it.
+fn oversized(error: ImportError) -> CliError {
+    CliError::Api(
+        ApiError::invalid("the uploaded file cannot be imported as its declared media type")
+            .with_details(json!({ "import_error": error.to_string() })),
+    )
+}
+
+/// Reads `file` for import: the metadata length is checked against the declared media type's
+/// limit before reading, then at most limit + 1 bytes are read, so an oversized or growing file
+/// is never read into memory whole.
+fn read_import_file(file: &Path, media_type: &str) -> Result<Vec<u8>, CliError> {
+    let limit = import_limit(media_type)?;
+    let check = |bytes: u64| check_import_size(media_type, bytes).map_err(oversized);
+    let io = |e: std::io::Error| CliError::Io(format!("cannot read {}: {e}", file.display()));
+    check(std::fs::metadata(file).map_err(io)?.len())?;
+    let mut bytes = Vec::new();
+    File::open(file)
+        .map_err(io)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    check(bytes.len() as u64)?;
+    Ok(bytes)
+}
+
 /// `import <FILE> --media-type --name`: the shared `create_source` service.
 pub fn import(
     state: &ApiState,
@@ -180,8 +232,7 @@ pub fn import(
     media_type: &str,
     name: &str,
 ) -> Result<Done, CliError> {
-    let bytes = std::fs::read(file)
-        .map_err(|e| CliError::Io(format!("cannot read {}: {e}", file.display())))?;
+    let bytes = read_import_file(file, media_type)?;
     let loaded = state.head()?;
     let result = state.create_source(&loaded, name, media_type, &bytes)?;
     let text = format!(

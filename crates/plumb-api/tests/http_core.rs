@@ -3010,6 +3010,273 @@ mod http_core {
         );
     }
 
+    // ------------------------------------------------------------------ H0.1 body and expression limits
+
+    const MAX_JSON: usize = 4 * 1024 * 1024;
+    const MAX_SOURCE: usize = 129 * 1024 * 1024;
+
+    fn assert_payload_too_large(r: &Reply, limit_bytes: usize) {
+        assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            r.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            r.json(),
+            json!({
+                "code": "E_PAYLOAD_TOO_LARGE",
+                "message": "the request body exceeds the size limit",
+                "details": {"limit_bytes": limit_bytes}
+            })
+        );
+    }
+
+    async fn post_raw(app: &App, uri: &str, content_type: &str, body: Vec<u8>) -> Reply {
+        let request = Request::post(uri)
+            .header(header::CONTENT_TYPE, content_type)
+            .header("if-match", semantic(app))
+            .body(Body::from(body))
+            .unwrap();
+        send(&app.router, request).await
+    }
+
+    #[test]
+    fn http_core_body_limit_constants_are_exact() {
+        assert_eq!(plumb_api::routes::MAX_JSON_BODY_BYTES, MAX_JSON);
+        assert_eq!(plumb_api::routes::MAX_JSON_BODY_BYTES, 4_194_304);
+        assert_eq!(plumb_api::routes::MAX_SOURCE_UPLOAD_BODY_BYTES, MAX_SOURCE);
+        assert_eq!(plumb_api::routes::MAX_SOURCE_UPLOAD_BODY_BYTES, 135_266_304);
+    }
+
+    #[tokio::test]
+    async fn json_body_above_4_mib_is_typed_413() {
+        let app = app();
+        let before = revision_count(&app);
+        for uri in [
+            "/api/requirements/req:p/classify",
+            "/api/proposals/intake",
+            "/api/glossary/term:leave/edit",
+        ] {
+            let r = post_raw(&app, uri, "application/json", vec![b' '; MAX_JSON + 1]).await;
+            assert_payload_too_large(&r, MAX_JSON);
+        }
+        // Exactly 4 MiB is not a size failure: whitespace is malformed JSON, the existing 400.
+        let r = post_raw(
+            &app,
+            "/api/requirements/req:p/classify",
+            "application/json",
+            vec![b' '; MAX_JSON],
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(r.code(), "E_INVALID_REQUEST");
+        // Malformed JSON below the limit keeps its existing typed 400.
+        let r = post_raw(
+            &app,
+            "/api/requirements/req:p/classify",
+            "application/json",
+            b"{".to_vec(),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(r.code(), "E_INVALID_REQUEST");
+        assert_eq!(revision_count(&app), before);
+    }
+
+    #[tokio::test]
+    async fn source_upload_has_its_own_129_mib_limit() {
+        let app = app();
+        let before = revision_count(&app);
+        // Above 4 MiB and below 129 MiB: the source route's limit overrides the router-wide
+        // 4 MiB default, so the upload imports.
+        let text = vec![b'a'; 5 * 1024 * 1024];
+        let r = upload(
+            &app,
+            Some(&semantic(&app)),
+            Some("big.md"),
+            "text/markdown",
+            &text,
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        assert_eq!(revision_count(&app), before + 1);
+        // Above 129 MiB the body is rejected as a typed 413 with the source limit.
+        let after_import = revision_count(&app);
+        let (content_type, body) =
+            multipart(Some("huge.md"), "text/markdown", &vec![b'a'; MAX_SOURCE]);
+        assert!(body.len() > MAX_SOURCE);
+        let r = post_raw(&app, "/api/sources", &content_type, body).await;
+        assert_payload_too_large(&r, MAX_SOURCE);
+        assert_eq!(revision_count(&app), after_import);
+        // A malformed multipart body below the limit stays the existing 400.
+        let r = post_raw(
+            &app,
+            "/api/sources",
+            "multipart/form-data; boundary=plumb-boundary-7f3a",
+            b"--plumb-boundary-7f3a\r\nnot a part".to_vec(),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(r.code(), "E_INVALID_REQUEST");
+        assert_eq!(revision_count(&app), after_import);
+    }
+
+    /// [`app`] with the A0.3 runtime, which proposal intake needs.
+    fn app_with_runtime() -> App {
+        let App {
+            _dir, path, state, ..
+        } = app();
+        drop(state);
+        let reports = {
+            let store = open_store(&path);
+            let head = store
+                .load_revision(&store.head(&BranchName::main()).unwrap().unwrap())
+                .unwrap();
+            [GateId::I0, GateId::F1, GateId::F4]
+                .iter()
+                .map(|g| gate_report(&head.graph, *g))
+                .collect()
+        };
+        let identity = ApiIdentity::new(
+            "alice".into(),
+            id(ACTOR),
+            vec!["analyst".into(), "reviewer".into()],
+            "pilot".into(),
+        )
+        .unwrap();
+        let runtime = plumb_api::A03RuntimeConfig {
+            workflow_store: plumb_store::SqliteWorkflowStore::open(&path).unwrap(),
+            inference_provider: Arc::new(plumb_inference::NullProvider),
+            provider_policy: plumb_inference::ProviderPolicy {
+                provider: "null".into(),
+                config: plumb_core::CanonicalJson::new(json!({})),
+            },
+            session_turn_config: plumb_session::SessionTurnConfig {
+                retrieval_top_k: 3,
+                max_open_questions: 3,
+                max_context_bytes: 65536,
+            },
+            assistant_actor_ref: id("agent:assistant"),
+            calendars: Arc::new(plumb_functional::ExprStaticCalendarProvider::new([]).unwrap()),
+            predicates: Arc::new(plumb_api::DirectManagerPredicates::new(&[]).unwrap()),
+            expression_scopes: Vec::new(),
+            calculation_scope_overrides: Vec::new(),
+            runtime_semantic_values: Vec::new(),
+        };
+        let state = ApiState::new_with_runtime(
+            BranchName::main(),
+            open_store(&path),
+            SqliteArtifactStore::open(&path).unwrap(),
+            identity,
+            fixed(),
+            reports,
+            profile(),
+            runtime,
+        )
+        .unwrap();
+        let router = router(state.clone());
+        App {
+            _dir,
+            path,
+            state,
+            router,
+        }
+    }
+
+    #[tokio::test]
+    async fn intake_expression_limit_is_422() {
+        let app = app_with_runtime();
+        let before = head(&app);
+        let marker = "leave_days_marker";
+        let expression = format!("{}{marker}{}", "(".repeat(65), ")".repeat(65));
+        let calculation = node(
+            "calc:oversized",
+            "Proposed",
+            "Calculation",
+            json!({
+                "name": "Oversized", "expression": expression, "result_type": "Int",
+                "unit": null, "rounding": null, "calendar_ref": null, "examples": null
+            }),
+        );
+        let proposal = plumb_patch::Proposal::new(
+            plumb_core::StageId::S1,
+            PatchSet {
+                base_semantic_hash: before.revision.semantic_hash.clone(),
+                patch: SemanticPatch::AddNode { node: calculation },
+            },
+            Vec::new(),
+            Vec::new(),
+            plumb_patch::ProposalMateriality::Semantic,
+            plumb_patch::AcceptancePolicy::HumanConfirm,
+            None,
+        )
+        .unwrap();
+        let r = post(
+            &app,
+            "/api/proposals/intake",
+            Some(&semantic(&app)),
+            Some(json!({"kind": "create", "payload": proposal, "evidence": []})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", r.json());
+        assert_eq!(
+            r.json(),
+            json!({
+                "code": "E_EXPRESSION_LIMIT",
+                "message": "the proposal contains an expression exceeding a safety limit",
+                "details": {"limit": "EXPR_MAX_NESTING_DEPTH", "actual": 65, "max": 64}
+            })
+        );
+        let text = String::from_utf8_lossy(&r.bytes);
+        assert!(!text.contains(marker));
+        assert!(!text.contains("(("));
+        // Nothing was committed or persisted.
+        let after = head(&app);
+        assert_eq!(after.revision.id, before.revision.id);
+        assert_eq!(after.revision.semantic_hash, before.revision.semantic_hash);
+        assert!(after.graph.node(&id("calc:oversized")).is_none());
+        assert_eq!(
+            plumb_store::SqliteWorkflowStore::open(&app.path)
+                .unwrap()
+                .proposal(&proposal.id)
+                .unwrap(),
+            None
+        );
+        // The same proposal below the limit is admitted by the same path.
+        let ok = node(
+            "calc:oversized",
+            "Proposed",
+            "Calculation",
+            json!({
+                "name": "Oversized", "expression": format!("{}{marker}{}", "(".repeat(3), ")".repeat(3)),
+                "result_type": "Int", "unit": null, "rounding": null, "calendar_ref": null,
+                "examples": null
+            }),
+        );
+        let proposal = plumb_patch::Proposal::new(
+            plumb_core::StageId::S1,
+            PatchSet {
+                base_semantic_hash: before.revision.semantic_hash.clone(),
+                patch: SemanticPatch::AddNode { node: ok },
+            },
+            Vec::new(),
+            Vec::new(),
+            plumb_patch::ProposalMateriality::Semantic,
+            plumb_patch::AcceptancePolicy::HumanConfirm,
+            None,
+        )
+        .unwrap();
+        let r = post(
+            &app,
+            "/api/proposals/intake",
+            Some(&semantic(&app)),
+            Some(json!({"kind": "create", "payload": proposal, "evidence": []})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        assert_eq!(head(&app).revision.id, before.revision.id);
+    }
+
     // ------------------------------------------------------------------ source guards
 
     #[test]

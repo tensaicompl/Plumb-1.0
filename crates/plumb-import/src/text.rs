@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::source::{
-    build, decode, lines, lists_and_paragraphs, FragmentKind, ImportAudit, ImportError,
-    ImportedSource, SourceKind,
+    build, check_text_input_size, decode, lines, lists_and_paragraphs, FragmentKind, ImportAudit,
+    ImportError, ImportedSource, SourceKind,
 };
 
 /// An unordered list line.
@@ -35,11 +35,12 @@ pub fn import_plain_text(
     bytes: &[u8],
     audit: &ImportAudit,
 ) -> Result<ImportedSource, ImportError> {
+    check_text_input_size(bytes.len())?;
     let text = decode(bytes)?;
     let lines = lines(&text);
     let consumed = vec![false; lines.len()];
     let mut segments = Vec::new();
-    lists_and_paragraphs(&lines, &consumed, list_item, &mut segments);
+    lists_and_paragraphs(&lines, &consumed, list_item, &mut segments)?;
     build(
         SourceKind::PlainText,
         display_name,

@@ -856,6 +856,204 @@ fn parser_source_guard() {
     assert!(!include_str!("../src/lib.rs").contains("pest::"));
 }
 
+// ---------------------------------------------------------------- H0.1 resource limits
+
+fn limit_error(limit: &'static str, actual: usize, max: usize) -> ParseError {
+    ParseError::LimitExceeded { limit, actual, max }
+}
+
+/// Asserts the typed limit error under both public names and its stable code.
+fn assert_limit(input: &str, limit: &'static str, actual: usize, max: usize) {
+    let error = parse(input).unwrap_err();
+    assert_eq!(error, limit_error(limit, actual, max), "{input:?}");
+    assert!(matches!(
+        error,
+        ExprError::LimitExceeded { limit: l, actual: a, max: m } if l == limit && a == actual && m == max
+    ));
+    assert_eq!(error.code(), Some(E_EXPRESSION_LIMIT));
+    assert_eq!(error.offset(), None);
+    assert_eq!(canonicalize(input), Err(error));
+}
+
+/// Accepting deep-but-allowed input recurses through the pest grammar, whose unoptimized
+/// frames are far larger than optimized ones; the boundary acceptance tests therefore run on
+/// a thread with an explicit stack instead of the default test-thread stack.
+fn on_large_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(f)
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+#[test]
+fn parser_limit_constants_are_exact() {
+    assert_eq!(EXPR_MAX_SOURCE_BYTES, 4096);
+    assert_eq!(EXPR_MAX_NESTING_DEPTH, 64);
+    assert_eq!(EXPR_MAX_AST_NODES, 1024);
+    assert_eq!(E_EXPRESSION_LIMIT, "E_EXPRESSION_LIMIT");
+    // Existing errors keep no code.
+    assert_eq!(ParseError::Empty.code(), None);
+    assert_eq!(ParseError::Syntax { offset: 0 }.code(), None);
+}
+
+#[test]
+fn parser_source_byte_limit() {
+    // 4096 bytes is accepted; the limit counts bytes, not characters.
+    let at_limit = format!("\"{}\"", "x".repeat(4094));
+    assert_eq!(at_limit.len(), 4096);
+    p(&at_limit);
+    let multibyte = format!("\"{}\"", "é".repeat(2047));
+    assert_eq!(multibyte.len(), 4096);
+    p(&multibyte);
+    assert_limit(
+        &format!("\"{}\"", "x".repeat(4095)),
+        "EXPR_MAX_SOURCE_BYTES",
+        4097,
+        4096,
+    );
+    let multibyte_over = format!("\"{}x\"", "é".repeat(2047));
+    assert_eq!(multibyte_over.chars().count(), 2050);
+    assert_limit(&multibyte_over, "EXPR_MAX_SOURCE_BYTES", 4097, 4096);
+    // Checked before everything else, emptiness included.
+    assert_limit(&" ".repeat(5000), "EXPR_MAX_SOURCE_BYTES", 5000, 4096);
+}
+
+#[test]
+fn parser_nesting_limit_is_checked_before_the_grammar() {
+    let nest = "EXPR_MAX_NESTING_DEPTH";
+    // 65 levels of each nesting form fail at the 65th.
+    assert_limit(
+        &format!("{}a{}", "(".repeat(65), ")".repeat(65)),
+        nest,
+        65,
+        64,
+    );
+    assert_limit(
+        &format!("{}a{}", "f(".repeat(65), ")".repeat(65)),
+        nest,
+        65,
+        64,
+    );
+    assert_limit(
+        &format!("{}a{}", "f(a, ".repeat(65), ")".repeat(65)),
+        nest,
+        65,
+        64,
+    );
+    assert_limit(
+        &format!("{}a{}", "[".repeat(65), "]".repeat(65)),
+        nest,
+        65,
+        64,
+    );
+    assert_limit(&format!("{}a", "-".repeat(65)), nest, 65, 64);
+    assert_limit(&format!("{}a", "- ".repeat(65)), nest, 65, 64);
+    assert_limit(&format!("{}a", "not ".repeat(65)), nest, 65, 64);
+    assert_limit(&format!("{}a", "not -".repeat(33)), nest, 65, 64);
+    assert_limit(&format!("b + {}a", "-".repeat(65)), nest, 65, 64);
+    // Far deeper or unbalanced input fails the scan too; on the default test-thread stack
+    // this would overflow if the recursive grammar ran first.
+    assert_limit(&"(".repeat(4096), nest, 65, 64);
+    assert_limit(
+        &format!("{}a{}", "(".repeat(2000), ")".repeat(2000)),
+        nest,
+        65,
+        64,
+    );
+}
+
+#[test]
+fn parser_nesting_scan_skips_strings_and_binary_operators() {
+    // Syntax characters inside string literals, escapes included, are not nesting.
+    p(&format!("\"{}\"", "(".repeat(100)));
+    p(&format!("\"{}\"", "-".repeat(100)));
+    p(&format!("\"\\\"{}\\\"\"", "[".repeat(100)));
+    p(&format!("f(\"{}\")", ")(".repeat(100)));
+    // Binary minus, implication and keywords end a prefix run.
+    p(&format!("{}a", "a - ".repeat(100)));
+    p(&format!("{}a", "a -> -".repeat(100)));
+    p(&format!("{}a", "a and not ".repeat(100)));
+    // Unbalanced input below the limit keeps its existing syntax error.
+    assert_eq!(parse("((a"), Err(ParseError::Syntax { offset: 3 }));
+    assert_eq!(parse("a))"), Err(ParseError::Syntax { offset: 1 }));
+}
+
+#[test]
+fn parser_nesting_boundary_64_is_accepted() {
+    on_large_stack(|| {
+        let parens = format!("{}a{}", "(".repeat(64), ")".repeat(64));
+        assert_eq!(p(&parens), ident("a"));
+        assert_eq!(canon(&parens), "a");
+        let calls = format!("{}a{}", "f(".repeat(64), ")".repeat(64));
+        let mut expected = ident("a");
+        for _ in 0..64 {
+            expected = call("f", vec![expected]);
+        }
+        assert_eq!(p(&calls), expected);
+        p(&format!("{}a{}", "[".repeat(64), "]".repeat(64)));
+        let negations = format!("{}a", "-".repeat(64));
+        let mut expected = ident("a");
+        for _ in 0..64 {
+            expected = un(UnaryOp::Negate, expected);
+        }
+        assert_eq!(p(&negations), expected);
+        p(&format!("{}a", "not ".repeat(64)));
+        // Each run resets: 64 nested groups, each opening with 64 prefix operators.
+        p(&format!(
+            "{}a{}",
+            format!("({}", "-".repeat(64)).repeat(10),
+            ")".repeat(10)
+        ));
+    });
+}
+
+#[test]
+fn parser_ast_node_budget() {
+    let nodes = "EXPR_MAX_AST_NODES";
+    on_large_stack(move || {
+        // n operands of a binary chain build 2n - 1 nodes.
+        let chain = |operands: usize| format!("a{}", " + a".repeat(operands - 1));
+        // 1024 nodes: 512 operands (1023 nodes), the first one negated.
+        let at_limit = format!("-{}", chain(512));
+        let mut expected = un(UnaryOp::Negate, ident("a"));
+        for _ in 1..512 {
+            expected = bin(BinaryOp::Add, expected, ident("a"));
+        }
+        assert_eq!(p(&at_limit), expected);
+        assert_eq!(canon(&at_limit), at_limit);
+        // 1025 nodes: 513 operands.
+        assert_limit(&chain(513), nodes, 1025, 1024);
+        // Every node kind is charged: lists, calls, literals and conditionals.
+        assert_limit(
+            &format!("[{}]", vec!["1"; 1024].join(", ")),
+            nodes,
+            1025,
+            1024,
+        );
+        p(&format!("[{}]", vec!["1"; 1023].join(", ")));
+        assert_limit(
+            &format!("f({})", vec!["1"; 1024].join(",")),
+            nodes,
+            1025,
+            1024,
+        );
+        p(&format!("f({})", vec!["1"; 1023].join(",")));
+        // A conditional over a 511-operand chain: 3 + 1021 = 1024 nodes; one negation more fails.
+        p(&format!("if a then a else {}", chain(511)));
+        assert_limit(
+            &format!("if a then a else -{}", chain(511)),
+            nodes,
+            1025,
+            1024,
+        );
+        // Right-associative implication chains are charged as they are built.
+        assert_limit(&format!("{}a", "a -> ".repeat(512)), nodes, 1025, 1024);
+        p(&format!("{}a", "a -> ".repeat(511)));
+    });
+}
+
 // ---------------------------------------------------------------- properties
 
 fn symbol_strategy() -> impl Strategy<Value = Symbol> {

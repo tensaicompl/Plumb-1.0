@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::source::{
-    build, decode, lines, lists_and_paragraphs, FragmentKind, ImportAudit, ImportError,
-    ImportedSource, Line, Segment, SourceKind,
+    build, check_text_input_size, decode, lines, lists_and_paragraphs, push_segment, FragmentKind,
+    ImportAudit, ImportError, ImportedSource, Line, Segment, SourceKind,
 };
 use crate::text::list_item;
 
@@ -35,7 +35,11 @@ pub fn table_cells(line: &str) -> Vec<String> {
 }
 
 /// Marks recognized table blocks as consumed and emits one TableRow per data row.
-fn tables(lines: &[Line<'_>], consumed: &mut [bool], segments: &mut Vec<Segment>) {
+fn tables(
+    lines: &[Line<'_>],
+    consumed: &mut [bool],
+    segments: &mut Vec<Segment>,
+) -> Result<(), ImportError> {
     let mut index = 0;
     while index < lines.len() {
         let is_candidate = |line: &Line<'_>| !line.is_blank() && line.text.contains('|');
@@ -60,14 +64,18 @@ fn tables(lines: &[Line<'_>], consumed: &mut [bool], segments: &mut Vec<Segment>
             *flag = true;
         }
         for row in data {
-            segments.push(Segment {
-                kind: FragmentKind::TableRow,
-                start: row.start,
-                end: row.end,
-                header_cells: Some(header_cells.clone()),
-            });
+            push_segment(
+                segments,
+                Segment {
+                    kind: FragmentKind::TableRow,
+                    start: row.start,
+                    end: row.end,
+                    header_cells: Some(header_cells.clone()),
+                },
+            )?;
         }
     }
+    Ok(())
 }
 
 fn heading_or_list(line: &str) -> Option<FragmentKind> {
@@ -84,12 +92,13 @@ pub fn import_markdown(
     bytes: &[u8],
     audit: &ImportAudit,
 ) -> Result<ImportedSource, ImportError> {
+    check_text_input_size(bytes.len())?;
     let text = decode(bytes)?;
     let lines = lines(&text);
     let mut consumed = vec![false; lines.len()];
     let mut segments = Vec::new();
-    tables(&lines, &mut consumed, &mut segments);
-    lists_and_paragraphs(&lines, &consumed, heading_or_list, &mut segments);
+    tables(&lines, &mut consumed, &mut segments)?;
+    lists_and_paragraphs(&lines, &consumed, heading_or_list, &mut segments)?;
     build(
         SourceKind::Markdown,
         display_name,

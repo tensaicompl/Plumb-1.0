@@ -41,7 +41,7 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"
 unicode-normalization = "0.1"
 regex = "1.10"
 zip = "2.2"
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -110,6 +110,17 @@ impl ApiError {
         error
     }
 
+    /// 413 `E_PAYLOAD_TOO_LARGE`: the request body exceeds the route's body limit of
+    /// `limit_bytes` (architecture §33.1). No request data is echoed.
+    pub fn payload_too_large(limit_bytes: usize) -> ApiError {
+        ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "E_PAYLOAD_TOO_LARGE",
+            "the request body exceeds the size limit",
+        )
+        .with_details(json!({ "limit_bytes": limit_bytes }))
+    }
+
     /// 415 `E_UNSUPPORTED_MEDIA_TYPE`.
     pub fn unsupported_media_type(media_type: &str) -> ApiError {
         ApiError::new(

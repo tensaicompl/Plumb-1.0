@@ -10,6 +10,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::CoreError;
 
+/// Longest accepted serialized Id in bytes: namespace, colons and body segments. The grammar is
+/// ASCII-only, so this is also the longest Id in characters.
+pub const ID_MAX_BYTES: usize = 255;
+
 /// An immutable, validated Plumb identifier such as `req:HR-001`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(String);
@@ -56,7 +60,7 @@ impl TryFrom<String> for Id {
     type Error = CoreError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        if is_valid_id(&value) {
+        if value.len() <= ID_MAX_BYTES && is_valid_id(&value) {
             Ok(Self(value))
         } else {
             Err(CoreError::InvalidId(value))
@@ -184,5 +188,39 @@ mod tests {
             );
         }
         assert!(serde_json::from_str::<Id>("42").is_err());
+    }
+
+    /// An otherwise-valid Id of exactly `len` bytes.
+    fn id_of_len(len: usize) -> String {
+        let id = format!("req:{}", "A".repeat(len - "req:".len()));
+        assert_eq!(id.len(), len);
+        id
+    }
+
+    #[test]
+    fn id_of_exactly_max_bytes_is_accepted_unchanged() {
+        let s = id_of_len(ID_MAX_BYTES);
+        let id: Id = s.parse().unwrap();
+        assert_eq!(id.as_str().as_bytes(), s.as_bytes());
+        assert_eq!(Id::try_from(s.clone()).unwrap(), id);
+        let back: Id = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.as_str(), s);
+    }
+
+    #[test]
+    fn id_longer_than_max_bytes_is_rejected_without_truncation() {
+        for len in [ID_MAX_BYTES + 1, ID_MAX_BYTES + 2, 4096] {
+            let s = id_of_len(len);
+            assert_eq!(s.parse::<Id>(), Err(CoreError::InvalidId(s.clone())));
+            assert_eq!(
+                Id::try_from(s.clone()),
+                Err(CoreError::InvalidId(s.clone()))
+            );
+            let json = serde_json::to_string(&s).unwrap();
+            assert!(serde_json::from_str::<Id>(&json).is_err(), "{len} bytes");
+        }
+        let multi_segment = format!("rev:42:{}", "a".repeat(ID_MAX_BYTES + 1 - "rev:42:".len()));
+        assert_eq!(multi_segment.len(), ID_MAX_BYTES + 1);
+        assert!(multi_segment.parse::<Id>().is_err());
     }
 }
