@@ -1,7 +1,7 @@
 # Plumb 1.0 — Implementation Plan v3.2
 
 **Status:** Claude Code CLI build contract  
-**Plan version:** `3.2-draft.4`\
+**Plan version:** `3.2-draft.5`\
 **Default execution scope:** `pilot-v3-foundation`  
 **Canonical semantic model:** Plumb Specification Graph (PSG)  
 **Default active profile:** `profile:plumb-software-2026.1`
@@ -6245,6 +6245,8 @@ cd ui && npm run api:check
 - `crates/plumb-functional/src/question.rs`
 - `crates/plumb-functional/tests/question.rs`
 - `crates/plumb-api/src/application.rs`
+- `crates/plumb-validation/tests/evaluator.rs`
+- `crates/plumb-functional/tests/round.rs`
 
 **Required actions**
 
@@ -6255,6 +6257,7 @@ cd ui && npm run api:check
 5. Add a two-run test in crates/plumb-api/tests/http_workflow.rs: the same source, answers, policy and acceptances under two FixedClock instants produce identical final semantic_hash. If any other volatility source keeps the hashes apart, stop with BLOCKED-IMPLEMENTATION-CONTRACT naming it.
 6. Question identity (plan v3.2): question_id hashes exactly RFC 8785 {project_id, template_id, finding_ref, subject} with subject = QuestionTemplate::base_slots minus finding_ref (architecture §4.8); priority, stakeholder_ref, blast radius, round_ref, prompt, status and answer_schema never enter the identity; duplicate suppression uses the same key; a rematerialization that only changes priority, stakeholder_ref or round_ref updates the existing Question through one non-semantic ReplacePayload on the same ID.
 7. R0.5 does not change HTTP optimistic concurrency; that is H0.2.
+8. Limited golden ownership (plan v3.2 hotfix): R0.5 owns crates/plumb-validation/tests/evaluator.rs only to update the existing hand-authored golden values that the R0.5 semantic projection changes directly, namely GOLDEN_BASELINE, the baseline_semantic_hash embedded in GOLDEN_REPORT and GOLDEN_REPORT_HASH; no other evaluator golden or rule expectation changes unless an independently demonstrated R0.5 identity or projection change requires it. R0.5 owns crates/plumb-functional/tests/round.rs only to update the seven Question ID literals in hr_round_of_seven_representative_questions that change solely because of the frozen R0.5 Question identity formula; no ordering, composition or round semantics are weakened.
 
 **Commands**
 
@@ -6278,6 +6281,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `cargo test -p plumb-functional`
 - `cargo test -p plumb-functional --test question question_id_ignores_priority_and_routing`
 - `cargo test -p plumb-api --test http_workflow rematerialization_updates_routing_without_new_question`
+- `cargo test -p plumb-validation --test evaluator gate_report_matches_the_hand_authored_golden`
+- `cargo test -p plumb-functional --test round hr_round_of_seven_representative_questions`
 
 **Acceptance**
 

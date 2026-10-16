@@ -1,4 +1,4 @@
-plan_version: 3.2-draft.4
+plan_version: 3.2-draft.5
 release: pilot-v3-foundation
 tasks:
 - id: P0.1
