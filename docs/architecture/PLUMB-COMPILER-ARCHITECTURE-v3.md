@@ -2774,6 +2774,11 @@ Untrusted input never reaches an unbounded allocation, unbounded recursion or an
 - **Expressions.** `plumb_expr::parse` rejects sources above 4096 bytes and a lexical pre-scan rejects nesting above 64 before the recursive grammar runs; the built AST is rejected above 1024 nodes. The error is a typed `ExprError::LimitExceeded {limit, actual, max}` with code `E_EXPRESSION_LIMIT`. X1.3 intake checks every expression-bearing payload field of a proposal — `Transition.guard_expr`, `Invariant.expression`, `ProcessNode.condition_expr`, `ProcessNode.timer_expr`, `Rule.condition_expr`, `Rule.action_expr`, `Calculation.expression`, `PolicyCondition.expression` — against the same limits, so an oversized or pathological expression can never be persisted in the PSG.
 - **HTTP.** PLUMB owns its body limits: 129 MiB on `POST /api/sources`, 4 MiB elsewhere. An oversized body is 413 `E_PAYLOAD_TOO_LARGE` in the ordinary typed JSON envelope with `details.limit_bytes`. No OpenAPI operation changes.
 
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #367] validate_display_name rejects '/', '\\', '.', '..', Unicode bidi and format control characters and names longer than 255 characters with a typed import error, and the core Id grammar rejects IDs longer than a frozen maximum length.
+
+
 ### 33.2 Revision-complete optimistic concurrency (H0.2)
 
 Proposed elements do not contribute to `semantic_hash`, so a semantic-hash `If-Match` lets a write based on a stale view of Proposed state pass. The concurrency token becomes the exact branch-head GraphRevision ID.
@@ -2784,6 +2789,13 @@ Proposed elements do not contribute to `semantic_hash`, so a semantic-hash `If-M
 - The UI carries the ETag of the data the user actually reviewed: each query keeps the response `ETag`, and a mutation sends that value. `useVersionedMutation` no longer fetches `/api/model/version` inside the mutation; a 412 keeps the existing conflict dialog and never retries.
 - OpenAPI descriptions of `ETag`/`If-Match` change to the revision ID; the operation inventory stays 74 and the generated client is regenerated.
 
+**Entity-tag form (plan v3.2 hotfix).** The `ETag` value is the RFC 9110 strong entity-tag form of the revision ID (the revision ID in double quotes); `If-Match` accepts that quoted form or the bare revision ID; weak validators and `*` are 412 `E_PRECONDITION_FAILED`. This refines the "exact string" wording above.
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #209] ETag is emitted as an RFC 9110 strong entity-tag (the quoted revision ID) and If-Match accepts exactly that quoted form or the bare revision ID; weak and '*' validators are 412 E_PRECONDITION_FAILED, as documented in OpenAPI.
+
+
 ### 33.3 Retryable and process-owned stage execution (H0.3)
 
 - **Identity versus attempts.** The content-addressed recipe job ID and child StageJob ID stay exactly as captured. Each recipe job row gains `attempt` (starting at 1) and an attempt record table `stage_recipe_job_attempts(recipe_job_id, attempt, owner_id, started_at, ended_at, outcome, error)`; `STORE_SCHEMA_VERSION` increases by exactly 1 with an in-place additive migration.
@@ -2792,6 +2804,17 @@ Proposed elements do not contribute to `semantic_hash`, so a semantic-hash `If-M
 - **Recovery.** Startup recovery interrupts (`E_JOB_INTERRUPTED`) only in-flight jobs whose lease has expired or that have no owner (pre-H0.3 rows); a second live process never interrupts a job with an unexpired lease owned by another process.
 - **Read-only commands.** The application has an explicit open mode: `Interactive` (worker, recovery, reconciliation) and `ReadOnly` (no worker, no recovery or reconciliation writes). Read-only CLI commands open `ReadOnly`.
 - **Worker errors.** The worker never discards an execution error: any `Err` from executing a claimed job persists the job as Failed with `E_INTERNAL` and the bounded message, and is logged.
+
+**Graceful shutdown (plan v3.2 hotfix).** On SIGINT/SIGTERM or server shutdown the queue closes to new claims; the in-flight job reaches its next bounded safe step boundary (after the current provider call returns and its bundle is persisted, or before the next phase starts) within `STAGE_SHUTDOWN_GRACE_SECONDS` = 30, otherwise it is persisted Failed with `E_JOB_INTERRUPTED`; the worker `JoinHandle` is joined with that bound. An in-flight paid inference is never abandoned in an ambiguous job state.
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #62] Acquisition reuses an already persisted ValidatedInference whose request hash equals the planned request ID instead of calling the provider again (so a retried attempt never re-bills or re-generates a completed request), and the live provider retries 429/529/5xx with bounded backoff honoring retry-after without repairing output.
+- [Fable #179] run_stage fails with a typed 503 when the job cannot be enqueued because the worker is gone, and a panic while executing a claimed job is caught, persists that job as Failed with E_INTERNAL and is logged, and the worker keeps serving later jobs.
+- [Fable #183] Interactive startup recovery and reconciliation are per-row fault tolerant: a row that cannot be decoded or reconciled is marked failed with a typed corruption error and logged, the remaining rows are processed, and opening the application does not fail because of it.
+- [Fable #188] Recovery of an interrupted recipe job whose child proposals were already persisted either settles the parent to Ready over those proposals or marks the proposals stale in the same transaction; a pending stage proposal is never left linked to a Failed parent that cannot reflect its acceptance.
+- [Fable #253] Every failed inference acquisition records in its failed attempt and job error a bounded typed detail (provider error class, HTTP status and provider request id when present, request ID and task kind, sorted schema-validation errors), and stores any rejected raw provider response as a content-addressed InferenceResponse artifact referenced from that failure.
+
 
 ### 33.4 Executable business failures and outcomes (H0.4)
 
@@ -2803,6 +2826,15 @@ The simulator maps every `ExecutionResult::Failed` to Fail today and makes any O
 - **Business rejection.** For a business failure kind the candidates are the Operation's Accepted `business_failure` Outcomes whose entry for that Operation lists the kind. Exactly one candidate becomes the observed outcome, the state stays the pre-state, no event is produced, and `then` is compared normally — so a Scenario whose `then.outcomes` names that Outcome passes. No candidate is Fail with the existing execution-failure diff (unexpected rejection); several candidates are Undecidable with `OUTCOME_SELECTION`.
 - **Model failures.** `postcondition_violation` and `evaluation_failed` remain Fail whatever the Scenario expects.
 - The HR negative scenarios (for example SCN-010 insufficient balance, SCN-013 non-manager approval, SCN-022 withdraw approved) are the regression shapes; E0.1 maps the fixture `then.outcome: business_failure` to the Operation's selected `business_failure` Outcome reference.
+
+**Holiday-policy question (plan v3.2 hotfix).** The `f2.calculation.holiday-policy.v1` answer schema offers only recordable answers: `{"type":"object","additionalProperties":false,"required":["holiday_consumes_working_day","calendar_ref"],"properties":{"holiday_consumes_working_day":{"const":false},"calendar_ref":{"type":"string","enum":[<sorted Accepted Calendar IDs>]}}}`. The prompt states that a configured holiday never consumes a working day and asks which Accepted Calendar applies. The resolver mapping is unchanged (false + `calendar_ref` binds the Accepted Calendar; `UnsupportedHolidayPolicy` remains a defensive error), so the immutable HR expert answer stays valid.
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #116] content-dependent model conditions in a scenario run yield a per-scenario Undecidable/Fail verdict with a typed reason while other scenarios still execute; UNIQUE decision-table overlaps are rejected at model build and Given literals are type-checked at scenario validation.
+- [Fable #117] an Operation governed by several DecisionTables routes each supplied decision_input to its table (or reports a dedicated typed condition when routing is ambiguous), with a test.
+- [Fable #119] an unparseable expression at any simulation site (precondition, postcondition, rule condition, transition guard, invariant) compiles to Unparseable and makes only dependent scenarios Undecidable; type errors in parseable expressions remain build errors.
+
 
 ### 33.5 Replay-safe semantic stages (H0.5)
 
@@ -2819,12 +2851,30 @@ A deterministic producer recognizes its own accepted output by its deterministic
 - A rerun whose existing node matches on ID, type, origin and owned fields is a no-op for that node (no proposal). A mismatch of any owned field or of the origin is a real conflict (`ExistingCandidateConflict` / `ExistingVocabularyCandidateConflict`). Vocabulary no longer accepts any Accepted node without comparing its owned fields.
 - Batch analysis is per-target tolerant: one unsupported, stale or origin-less target yields a deterministic per-target disposition in the analysis result instead of aborting the batch. EARS analysis of a Requirement without the S1.1 segment origin yields the disposition `not_applicable: missing_segment_origin` for that Requirement.
 
+**Analyzer issues (plan v3.2 hotfix).** Production never discards analyzer findings, conflicts or issues required by governed resolution: each phase persists its batch-level issues and per-target dispositions in its CompileRun intermediate projection and surfaces them in the job result, or classifies them explicitly as non-governable. No caller reads only `.proposals`.
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #105] the owned-field reconciliation table also covers S2 lifecycle Transition (enrichable guard_expr, effect_refs), S2.6 Calculation (enrichable examples and governed inclusive_end rewrite) and S4.5 verification obligations (enrichable acceptance_condition, required_evidence_kind).
+- [Fable #106] a deterministic candidate whose ID holds a Rejected or otherwise inactive node gets an explicit rejected/inactive disposition (never ExistingEquivalent), and dependent candidates report a typed dependency-rejected issue instead of staying pending.
+- [Fable #138] When a same-type Proposed Term or Concept exists at the deterministic ID with a different vocabulary_origin or evidence, analyze_vocabulary records a deterministic per-key disposition (pending_candidate_differs) and continues with every other key; only a different node type at that ID, or an Accepted owned-field mismatch, is ExistingVocabularyCandidateConflict, and no conflict aborts the whole analysis.
+
+
 ### 33.6 Finding and waiver governance closure (H0.6)
 
 - **Durable findings.** `materialize_gate_findings` turns the findings of the current persisted F1, F2 or F4 GateReport into durable Accepted Finding nodes: every `GeneratedFinding` whose ID is absent from the graph is added in one non-semantic AutoNonSemantic proposal (Findings are excluded from `semantic_hash`); present IDs are no-ops. It is exposed as the CLI `findings materialize` and listed by the read-only `findings list`.
 - **Dispositions.** Each finding has exactly one disposition: `question_resolvable` when a frozen Question template matches its code and condition (it is materialized through S3.1 and resolved through S3.3); `waivable` when its rule's `waiver_policy` is `decision_required`, or `profile_allow` and the active profile allows waivers (it is governed through the existing waiver path); `non_waivable` otherwise (`forbidden`): it can only be fixed in the model.
 - **Aggregate checks.** `PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER` (and any equivalent aggregate) counts a blocker as unresolved only when it is Open and not governed. A finding is governed when an Accepted, non-superseded ResolutionDecision answers a Question whose `finding_ref` is that finding, or when a current applicable waiver decision covers it. The same rule applies to supplemental `analysis_findings`, by finding ID. No finding is excluded from the check; only governed ones stop counting.
 - **Waiver actor.** The existing check is retained: a waiver decision's `decided_by` must be an Accepted Agent of kind `human`; an unknown, non-Accepted or non-human actor never satisfies a waiver.
+
+**Correction and lifecycle (plan v3.2 hotfix).** The waiver actor check above exists today only in the producer (`prepare_waiver_material`); the gate-time consumer (`governed_waiver` / `check_waiver_decision`) does not check `decided_by`. H0.6 adds the consumer-side check: a waiver decision whose `decided_by` is not an Accepted human Agent is malformed and never applied. In addition: a rule never consumes a Finding it generated itself; an Open Finding whose affected refs no longer all exist as baseline elements is reported stale and closed through one governed non-semantic status update; a governed Finding is closed (Resolved or Waived) through governance; findings of the current I0 report are materialized as well.
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #124] materialize_gate_findings also materializes findings of the current persisted I0 GateReport, so waivable I0 rules (PARSE_STATUS decision_required, AGENT_IDENTIFIED profile_allow) have a reachable governance path.
+- [Fable #125] governed_waiver/check_waiver_decision require decision.decided_by to be an Accepted Agent of kind human at gate evaluation (not only at waiver creation); a waiver decision by a non-human, non-Accepted or unknown actor is MalformedWaiverDecision and never applied, with consumer-side regression tests.
+- [Fable #234] The waiver staleness test first proves the finding is current on a fresh app, then moves the head and asserts 409 E_FINDING_NOT_CURRENT; waiver test finding IDs are derived from the evaluated report, never hard-coded.
+
 
 ### 33.7 Blocking rule fidelity and semantic edit guards (H0.7)
 
@@ -2834,11 +2884,38 @@ A deterministic producer recognizes its own accepted output by its deterministic
 - **Lint.** Numeric tokenization treats as one non-violating token: digit groups with thousands separators (`1,000`, `12,500.50`); ISO dates (`2026-01-01`); a number joined by a hyphen to a word (`5-day`, which counts as having a unit); `HH:MM` times (`09:30`); a parenthesised list numeral (`(3)`); and decimals (`1.5`).
 - **Requirement edits.** `classify_requirement` and `accept_requirement_ears` act only on Proposed or Accepted Requirements; any other status is 422 `E_SEMANTIC_INVARIANT` with error `RequirementNotEditable`.
 
+**Rule adjudications (plan v3.2 hotfix).** Each of the following is resolved against the authoritative profile, rulebook and metamodel into one contract: `PLUMB.F1.REQ.NO_CONTRADICTION` gets its deterministic producer or a recorded NOT_APPLICABLE reason when no producer input exists; `PLUMB.F2.STATE.REACHABILITY` evaluates reachability from the declared initial state instead of a permanent evaluator ERROR; Dynamic SoD, MutualExclusion and RequiredCombination constraints present in the graph are evaluated, never NOT_APPLICABLE; `PLUMB.F1.REQ.MODALITY_EXPLICIT` applies exactly per `applies_when` and treats `must` per the profile modality list; `PLUMB.F3.ASSUMPTION.OWNER` evaluates exactly the profile condition; `OPERATION.PERFORMER` and `INVARIANT.EXPRESSIBLE` profile alternatives become representable through governed directory material or are reported as violations, never evaluator errors.
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #71] numeric tokenization also treats a slash-joined numeric ratio/frequency form (e.g. '24/7') as one non-violating token, with a negative fixture.
+- [Fable #72] clause-boundary detection uses the same numeric tokenizer, so a '.' or ',' inside a numeric token is never a clause boundary, with fixtures '0.5 days by the system' and '2.5 days without approval'.
+- [Fable #73] MISSING_ACTOR looks back across a comma-delimited parenthetical to the preceding segment before reporting, with negative fixtures 'The system, upon approval, shall ...' and 'The manager, or a delegate, shall approve ...'.
+- [Fable #74] RELATIVE_TIME_NO_ANCHOR accepts an optional qualifier (working/business/calendar) before the unit and treats an operation-duration bound ('complete/respond within N <time unit>') as anchored, and fixture-contract expectations record the lint outcome for HR-030.
+- [Fable #75] each Error-severity lint rule (NUMBER_NO_UNIT, RELATIVE_TIME_NO_ANCHOR, MISSING_ACTOR) has a table-driven adversarial fixture set of ordinary-English negatives and true positives, and run_benchmark/compare_to_baseline/recommend_severities error paths are tested.
+- [Fable #76] every public lint benchmark entry point (including recommend_severities) validates its threshold Ratio (denominator > 0, value <= 1) and returns LintError::Benchmark otherwise.
+- [Fable #126] PLUMB.F1.QUALITY_FINDINGS_CLEAR skips Requirements whose statement is empty or whitespace-only (owned by ISO29148.F1.REQ.STATEMENT_PRESENT) and evaluates every other Requirement; a lint error on one Requirement never turns the rule into an evaluator ERROR for the others.
+- [Fable #131] ISO/PLUMB I0 LOCATABLE, HASH_MATCH and PARSE_STATUS return NOT_APPLICABLE with a recorded reason when the baseline contains no evidence of a built-in source kind, and any baseline EvidenceFragment of a non-built-in source kind is reported, never silently treated as verified.
+- [Fable #164] PLUMB.F2 decision-table NO_OVERLAP is NOT_APPLICABLE for overlap-permitting hit policies (ANY, COLLECT, RULE ORDER, PRIORITY) per the profile applies_when, while coverage is still analysed; only genuinely unsupported structure is an ERROR.
+- [Fable #165] F4 TRACE_COMPLETE additionally requires the execution phase to end with its S4.2 terminal step (execution_completed for a completed run) and reports trace_execution_incomplete otherwise.
+- [Fable #299] PLUMB.F1.REQ.TYPE_KNOWN is declared pass-by-construction in the profile, F3 QUESTION.NO_BLOCKING_OPEN treats Questions on blocker Findings of any family as blocking, and F1 CRITERIA_FOR_BEHAVIOR honours its 'in implementation scope' qualifier, each matching the profile text.
+
+
 ### 33.8 Inference-provider and pilot network security (H0.8)
 
 - **Anthropic.** The native Messages API is authenticated with `x-api-key: <key>`, never `Authorization: Bearer`. The configured `anthropic-version` is retained, and `anthropic-workspace-id` is sent exactly when configured. Redirects stay disabled and the key stays redacted. Contract tests assert the exact headers. The `anthropic`/`llm` features compile (`cargo build -p plumb-cli --features llm`).
 - **Replay.** `MockProvider::execute` validates the fixture's validated output against the request material's compiled task output schema before returning it, exactly as the live provider does before admission; an invalid fixture is `ProviderError::SchemaInvalidOutput`. A replay fixture is never a schema bypass.
 - **Loopback-only serving.** The product has no user authentication yet. `serve` refuses any non-loopback bind address with a typed configuration error. Every request must carry a `Host` whose host part is `127.0.0.1`, `[::1]` or `localhost`, otherwise 403 `E_FORBIDDEN_HOST`. A request with an `Origin` header must have an `http` origin whose host is one of those loopback hosts (any port), otherwise 403 `E_FORBIDDEN_ORIGIN`. No pretend authentication is added.
+
+**Prompt-injection boundary (plan v3.2 hotfix).** Every prompt states that all document and context text supplied to the model is untrusted source material and that instructions inside it must not be followed. Deterministic structured validation (schema, binding and domain checks) remains the primary security boundary; prompting is never claimed as a security control.
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #63] the Anthropic adapter's total request timeout is an explicit, validated, identity-bound adapter config value (with a separate connect timeout) whose default is sized for the configured max_tokens, and a timeout is a typed ProviderError distinct from transport failure.
+- [Fable #64] every prompt in prompts/ states exactly the constraints of its task output schema and consumer (including 'a definition requires a non-null concept_kind' for s1-vocabulary), verified by a test that each prompt's documented output shape validates against its schema.
+- [Fable #65] each inference output schema encodes the pilot contract its prompt states (no forbidden process node kinds, minLength 1 on timer_expr, no AUTO_DERIVATION in session-turn, constraint enums named in s1-classify-requirement), so schema validation rejects prompt-forbidden shapes.
+- [Fable #66] the persisted inference artifact's parameters equal the effective request-body generation parameters actually sent (explicitly none beyond model/max_tokens if so documented), and golden-test 'anthropic' policies use only configuration the real adapter accepts.
+
 
 ### 33.9 Database and runtime-configuration boundaries (H0.9)
 
@@ -2847,6 +2924,12 @@ A deterministic producer recognizes its own accepted output by its deterministic
 - **Typed store errors.** Store failures map to typed errors instead of `E_INTERNAL`: branch not found is 404 `E_BRANCH_NOT_FOUND`; uninitialized database is 409 `E_DATABASE_NOT_INITIALIZED`; SQLite busy/locked is 503 `E_DATABASE_BUSY`; read-only database on a write is 409 `E_DATABASE_READ_ONLY`; detected corruption is 500 `E_STORE_CORRUPT`.
 - **Eager configuration validation.** Building the application runtime validates every policy a later stage or session will use, before any paid inference: `duplicate_policy`, `vocabulary_policy`, `session_turn`, `provider_policy`, calendars, direct managers, expression scopes, `scenario_derivation` and `verification_applicability`. The CLI configuration rejects duplicate JSON object keys at any depth.
 - **Identity.** `identity.actor_ref`, `stage_actor_ref` and `assistant_actor_ref` must be pairwise distinct whenever an application is opened with runtime configuration, not only at `init`.
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #3] A stored revision whose psg_schema_version differs from PSG_SCHEMA_VERSION fails with a typed unsupported-version store error (never E_STORE_CORRUPT), and any change to the serialized form of Node, Edge or NodePayload must bump PSG_SCHEMA_VERSION, enforced by a test pinning the canonical bytes of a fixture node of every payload variant.
+- [Fable #199] The store durability profile is frozen and documented in the operations notes: the revision and workflow stores use synchronous=FULL (or NORMAL with an explicit documented power-loss window), and a test asserts the configured pragma.
+
 
 ### 33.10 Deferred performance architecture (POST.0)
 
@@ -2860,3 +2943,141 @@ The following are post-pilot optimizations, recorded under POST.0. They are not 
 - a cached inverted BM25 index;
 - pagination that limits before building a whole projection;
 - large-document profiling and resource budgets.
+
+**Pre-release trigger (plan v3.2 hotfix).** E0.4 runs a representative-scale benchmark reproducing the audit's measured shapes (a 50,000-paragraph Markdown import, a 10,000-node graph, 8 concurrent `GET /api/model/version` requests) plus customer-zero. Each CLI command must complete within 120 s, peak RSS must stay at or below 4 GiB, and the 8 concurrent version reads must complete within 4 s in total. If the benchmark fails, the corresponding item above becomes a pre-release blocker instead of accepted performance debt.
+
+### 33.11 Semantic integrity and crash recovery (H0.10, plan v3.2 hotfix)
+
+- **Artifact integrity.** Every artifact read recomputes the content hash from the stored bytes and requires it to equal the requested and stored key; a mismatch is typed store corruption (`E_STORE_CORRUPT` through the H0.9 mapping) and is never returned as a valid Artifact.
+- **Plain stage commit reconciliation.** An automatic/plain stage child whose semantic revision was committed before a crash is settled on recovery to that revision (child Committed with its output ref, parent Committed with that result revision), found by walking from the head to the revision whose parent is the child base and whose `accepted_patch_ref` is the child's output PatchSet. This runs before any expired or ownerless in-flight attempt is interrupted; committed work is never marked Failed and never committed twice.
+- **Session-turn revision binding.** Recovery of a prepared or committed session turn keeps the base revision its proposals were produced against and never rebinds them to the head current at read time.
+- **Proposal occurrence identity.** The content-addressed semantic Proposal ID is unchanged. Workflow rows are keyed by `(proposal_id, base_revision_id)` with the durable occurrence key `occ:<first 16 hex of SHA-256(RFC 8785 {proposal_id, base_revision_id})>`. Historical occurrences are immutable. A lookup or action by proposal ID resolves exactly the pending occurrence whose `base_revision_id` is the loaded head; if there is none the existing `E_PROPOSAL_BASELINE_CHANGED` semantics apply. An older rejected, stale or resolved occurrence never blocks persisting and governing the identical proposal on a later baseline. `STORE_SCHEMA_VERSION` increases by exactly 1 with an in-place migration that keeps each existing row as its occurrence.
+- **Scenario dependency invalidation.** A Scenario's dirty-dependency set contains the Accepted Invariants scoped to its footprint, its footprint Entities and Attributes, and the Calculation, DecisionTable, Operation and Transition dependencies already tracked. Editing any of them re-executes the scenario deterministically; a ScenarioRun for an older dependency state is reported stale, never current.
+- **Graph-bound payload references.** Graph validation rejects a missing, wrong-type or forbidden-status graph-bound reference with a typed GraphViolation. A baseline-participating element's graph-bound reference targets a baseline-participating node (Accepted, Suspect, Superseded or Deprecated) except where the table names Agent (Accepted only); a Proposed element may also reference Proposed nodes; a Rejected target is never valid. External identifiers are never treated as graph references. Where the metamodel names a different target type than the table below, the metamodel wins and H0.10 stops with BLOCKED-SPEC-CONFLICT instead of guessing.
+
+| Payload field | Class | Expected target |
+|---|---|---|
+| `EvidenceFragment.source_ref` | graph | SourceArtifact |
+| `Finding.affected_refs` | graph | any node or edge (existence) |
+| `Finding.waiver_ref` | graph | ResolutionDecision |
+| `Question.finding_ref` | graph | Finding |
+| `Question.stakeholder_ref` | graph | Stakeholder |
+| `Question.round_ref` | external | workflow round identifier |
+| `Question.context_refs` | graph | any node |
+| `ResolutionDecision.question_ref` | graph | Question |
+| `ResolutionDecision.proposal_ref` | external | workflow proposal identifier |
+| `ResolutionDecision.decided_by` | graph | Agent (Accepted) |
+| `ResolutionDecision.supersedes` | graph | ResolutionDecision |
+| `Assumption.owner_ref` | graph | Agent or Stakeholder |
+| `Assumption.finding_ref` | graph | Finding |
+| `Assumption.risk_ref` | graph | node of the metamodel risk type (post-pilot; H0.7 adjudicates the rule) |
+| `Need.stakeholder_refs` | graph | Stakeholder |
+| `Need.goal_refs` | graph | Goal |
+| `Requirement.owner_refs` | graph | Agent, Stakeholder or Actor |
+| `Requirement.stakeholder_refs` | graph | Stakeholder |
+| `AcceptanceCriterion.measure_ref` | graph | node of the metamodel measure type (existence) |
+| `AcceptanceCriterion.scenario_ref` | graph | Scenario |
+| `Term.definition_ref` | graph | Concept |
+| `DomainRelationship.from_entity / to_entity` | graph | Entity |
+| `Transition.stateful_ref` | graph | Entity |
+| `Transition.from_state / to_state` | graph | State |
+| `Transition.effect_refs` | graph | Event or Operation |
+| `Invariant.scope_ref` | graph | Entity, Attribute, Process or Operation |
+| `Operation.input_schema_ref / output_schema_ref` | external | schema document identifier (not a PSG node in the pilot) |
+| `Event.payload_schema_ref` | external | schema document identifier (not a PSG node in the pilot) |
+| `ProcessNode.process_ref` | graph | Process |
+| `ProcessNode.operation_ref` | graph | Operation |
+| `ProcessNode.message_ref` | graph | Event |
+| `Calculation.calendar_ref` | graph | Calendar |
+| `Scenario.requirement_refs` | graph | Requirement |
+| `Scenario.derived_from_refs` | graph | any node |
+| `ResourceScope.resource_ref` | graph | Entity or Attribute |
+| `SeparationConstraint.role_refs` | graph | BusinessRole or SecurityRole |
+| `ScenarioRun.scenario_ref` | graph | Scenario |
+| `DerivationRecord.id, StandardsProfile.id` | self | the node's own identity |
+| `all post-pilot payload references (QualityScenario, Architecture*, View, Viewpoint, Technology*, ApiOperation, Message, Capability, WorkPackage, TaskContract, Migration, TestExecution, TestReceipt, ArchitectureCheck, CoverageRecord)` | graph | existence only in the pilot; type contracts arrive with their post-pilot stages |
+
+- **Numeric type and scale integrity.** `Decimal(n)` scale applies equally to scalar Decimal values and unit-bearing Quantity values and results. Calculation result checking follows the frozen order parse -> type -> evaluate -> round per declared rounding -> scale check -> unit check; a value violating its declared scale fails with a typed error with or without a unit, and a division followed by the declared business rounding can satisfy its declared scale.
+- **Calendar coverage.** A Calendar declares coverage as a closed list of covered years, carried identically by the runtime calendar configuration and the PSG Calendar material. Business-day evaluation of a date outside coverage is the typed `EvalError::CalendarCoverageUnavailable` and makes dependent calculations and scenarios Undecidable, never an assumed working day.
+- **Scenario calculation result references.** `Then.calculation_results` entries and `result:<key>` semantic references resolve deterministically to the named Calculation's execution result in the scenario trace (the HR boundary scenarios require it); an unresolvable reference is a typed scenario validation error at derivation.
+- **Supersession lifecycle.** A Supersede patch accepts only an Accepted, Suspect or Deprecated predecessor; superseding a Proposed or Rejected node is a typed PatchError and never promotes it into the baseline; re-superseding a Superseded target is the typed conflict `SupersedeAlreadyApplied`; a governed requirement-supersession decision that no longer applies yields a per-decision disposition instead of failing the duplicate batch.
+- **Additional integrity adjudications.** EvidenceManifest validation cross-checks every fragment's `source_ref` against a manifest source. A session-generated Proposal's materiality and acceptance policy are recomputed from its actual semantic delta (a semantic delta is never labelled non-semantic). A persisted GateReport is current only when it contains a result for every rule of its gate in the active profile and its supplemental-input hash equals the current assembled inputs. Finding self-feeding and stale Open Findings are owned by H0.6 (§33.6).
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #1] WorkflowStore::resolve_proposal(Accepted) requires the resolution revision to be on the proposal's branch lineage with version > base_revision_id's version and returns a typed workflow error otherwise; every acceptance path either resolves the proposal in the revision-commit transaction or is reconciled on startup from the committed acceptance companion.
+- [Fable #18] X1.3 intake computes Jaccard novelty for Scenario subjects from the scenario name and the string leaves of given/when/then only (no JSON keys or scenario_kind), and excludes Scenario duplicate candidates whose only shared terms occur in every Scenario document, under a RETRIEVAL_INDEX_VERSION bump.
+- [Fable #20] Every importer normalises extracted text to Unicode NFC before building EvidenceFragments, so retrieval documents and Term keys never differ between NFC and NFD spellings of the same text.
+- [Fable #21] An IntakeReport subject_novelty entry has nearest_ref Some exactly when its similarity is greater than 0, and IntakeReport validation rejects any other combination.
+- [Fable #27] plumb_core::to_canonical_json and canonical_hash fail with CoreError::Canonicalization when any serialized object emits a duplicate member name, including stringified map keys, instead of keeping the first.
+- [Fable #28] Canonicalisation rejects with CoreError::Canonicalization any integer value or integer map key outside the I-JSON range ±(2^53−1), and no hashed payload field may carry an integer that can legitimately exceed it.
+- [Fable #29] plumb-core tests pin CoreError::Canonicalization for NaN/±Infinity, RawValue, non-string keys, duplicate keys and out-of-range integers, and the canonical property tests draw integers only from the I-JSON safe range and assert a parse round-trip.
+- [Fable #35] Graph::new and Graph::validate report every cycle of each acyclic relation kind (each disjoint cycle exactly once), pinned by a test with two disjoint cycles of the same relation.
+- [Fable #40] EvidenceLocator::validate rejects a TextRange whose start is greater than its end, so no evidence ID is minted for an inverted range.
+- [Fable #46] The DOCX importer flattens only mc:Choice content of an mc:AlternateContent element (mc:Fallback only when no Choice is present), so text-box text is extracted exactly once.
+- [Fable #47] The DOCX importer treats numPr with numId 0, or without numId, as removing numbering, including numbering inherited from the style chain, so such paragraphs are classified as Paragraph, not ListItem.
+- [Fable #48] The deterministic segmentation fallback does not end a sentence at a period that follows a purely numeric leading ordinal (^\s*\d+[.)]\s+), and the HR DOCX fallback test asserts exactly one candidate per requirement fragment.
+- [Fable #49] The Markdown importer treats indented (>= 2 spaces or tab) non-blank lines immediately following a list item as that item's continuation (GFM semantics), and the S0.1 contract is amended accordingly.
+- [Fable #51] The Markdown and plain-text line classifiers accept an optional leading U+FEFF on the first line, so a BOM never changes its heading or list classification (offsets and text unchanged).
+- [Fable #52] A Markdown table block starts only at a line whose successor is a delimiter row with the same cell count, and lines before it never join the table block.
+- [Fable #53] The DOCX importer applies the same CRLF/CR-to-LF normalisation as Markdown and plain-text decoding before building records and fragments.
+- [Fable #54] A DOCX table with only a header row yields a Paragraph fragment of its text (or a typed W_DOCX warning with partial parse status), never a silent omission.
+- [Fable #55] The DOCX importer creates no EvidenceFragment for a record whose text is only whitespace; the text stays in the extracted artifact.
+- [Fable #77] compare_to_baseline rejects a report whose sentence_count differs from the baseline corpus_sentence_count with a typed benchmark error.
+- [Fable #85] compute_impact seeds edge endpoints only when the endpoint node is baseline-participating in the base or result graph, so DirtySet never contains a non-baseline node (test: demote + retarget in one patch).
+- [Fable #88] Proposal.confidence is represented so its wire form and its canonical identity bytes are identical (f64 or fixed-point), or it is excluded from the identity projection, with a cross-language ID reproduction test.
+- [Fable #94] prepare_turn performs every validation (context selection, budget, allowed refs, plan validation) before its first store write, so a rejected turn persists no artifact (test: store has no puts after ContextBudgetExceeded).
+- [Fable #96] stage-job governed commit recording reports a structurally invalid decision node as a distinct 'decision_node' mismatch, separate from 'decision_status', in both the single and batch recorders.
+- [Fable #97] planned and input artifact media types are validated with the require_text rule (non-empty, no surrounding whitespace or control characters) and a type/subtype shape.
+- [Fable #109] S2.6 calculation name grounding rejects ranges with surrounding whitespace/control characters exactly like the state and domain producers, and identity never uses a trimmed name that differs from the persisted range.
+- [Fable #139] The S1.2 EARS grounding catalog is built from an explicit per-payload-type allow-list of human-text fields (for example name, statement, definition, term, aliases, description) and never contains payload type tags, enum wire strings or Id values; a grounding to any other value is rejected.
+- [Fable #143] Requirement modality extraction ignores modal verbs inside relative clauses (who/which/that) and raises an issue instead of silently choosing when a statement contains more than one distinct main-clause modal.
+- [Fable #147] PlumbExpr date arithmetic whose result falls outside years 0000..=9999 fails with EvalError::DateOutOfRange in both directions, with a regression test for 0000-01-01 - 1 day.
+- [Fable #148] round_decimal returns RoundingError::Overflow whenever the rounded value cannot carry exactly the requested scale, with tests at scale 28 (10.5) and scale 2 (Decimal::MAX).
+- [Fable #149] PlumbExpr list type checking is order independent: an empty-list element without context is deferred and re-checked against the element type established by the other items, exactly as check_pair does.
+- [Fable #150] PlumbExpr evaluation distinguishes an absent path from a present path that navigates through a non-Ref value: the latter is ValueTypeMismatch in both identifier lookup and exists(), never MissingValue or false.
+- [Fable #156] The S2.5 numeric contract states that Decimal products and quotients are rounded to 28 fractional digits with the rust_decimal default strategy, and a test pins a product whose exact scale exceeds 28.
+- [Fable #162] Decision-table Decimal output and default-output literals are scale-checked after normalization (trailing zeros removed), and numeric input interval bounds are checked against their column scale the same way.
+- [Fable #195] Every gate evaluation persists its canonical GateReport bytes as an immutable content-addressed GateReport artifact; the (revision, gate) row is only the current index and never the sole record of an evaluation.
+- [Fable #196] Every reconciliation of an interrupted acceptance resolves the workflow proposal with the revision whose decision_refs contain its acceptance decision (found by walking the branch), never the current head.
+- [Fable #259] The s2-operation and s2-process inference output schemas use the same shared ID pattern as every other inference schema, and the affected request IDs and replay fixtures are regenerated under that change.
+- [Fable #298] Every F1 GateReport binds a hash of the effective lint rule registry (rule IDs with default and overridden severities), so a changed lint default changes the report's input binding and currency, and UI tests use only rule IDs present in the profile or lint registry.
+- [Fable #343] working_days semantics are frozen as the half-open period [start, end) when inclusive_end is false and [start, end] when true, and the architecture §calculation callables text and the plumb-expr table tests state exactly that.
+- [Fable #368] Import artifacts are persisted in the same store transaction as the revision commit, or an unreferenced-artifact sweep reclaims artifacts no revision, job, proposal or turn references, never deleting a referenced one.
+
+### 33.12 Product, API and audit-quality closure (H0.11, plan v3.2 hotfix)
+
+- **Cursor recovery.** A list whose page-2+ cursor fails with `E_CURSOR_BASELINE_CHANGED` resets to its first page on the current baseline and refetches exactly once; a historical cursor is never retried.
+- **Read errors.** Reads are retried automatically only on a network failure or HTTP 502, 503 or 504, at most 2 retries with backoff; every other status fails immediately and the UI shows the backend typed code and message.
+- **Mutation transport failures.** A network or non-HTTP failure during a write is shown to the user with a typed transport-failure message; no mutation fails silently.
+- **WebSocket lifecycle.** The DesignEvent stream reconnects with exponential backoff from 1 s doubling to a 30 s cap with jitter; after a reconnect or a lag close it invalidates the current model queries exactly once; unmounting stops reconnection.
+- **Preview/discard lifecycle.** Preview endpoints never persist a pending WorkflowProposal; a proposal becomes durable only on submission. Answer and question flows that persist proposals expose an explicit discard that moves the pending occurrence to the new terminal state `abandoned`. Accepted, rejected and abandoned history is never deleted.
+- **Locale reachability.** The UI offers English and Polish through a supported locale selection persisted per browser, defaulting to the browser language with English fallback for any missing key.
+- **HTTP error envelope.** Every framework/extractor failure on the supported API boundary (400 malformed JSON, query or path; 404 unknown route; 405 method; 413 body limit; 415 media type) returns the typed `{code, message, details}` envelope. `crates/plumb-api/src/error_catalogue.rs` is the authoritative catalogue (code, HTTP status, meaning); a test proves every ApiError code used in the source is catalogued and documented in OpenAPI. No raw SQLite or Rust debug text appears in a product error.
+- **F3 API reachability.** The HTTP product flow can evaluate F3 through the existing gate surface, and `GET /api/gates` reports each gate as `not_evaluated`, `current` or `stale`.
+- **Collection robustness.** Scenario, DecisionTable, Question and Assumption lists apply cheap filters first and project each item independently; an item that fails projection appears with a typed health marker (code and element ID) and the rest are returned; the item's detail route fails strictly with its typed error. Corruption is never hidden.
+- **UI workflow completeness.** EARS review, glossary confirmation and edit, proposal discovery and governance, search result dismissal and currentness, and provenance rendering work end to end; a control the backend deterministically rejects for the displayed lifecycle state is not offered.
+
+**Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
+
+- [Fable #144] glossary.md and model-report.md escape line-start block markers ('-', '+', '>', ordered-list numerals and setext underlines) or render multi-line semantic strings in fenced blocks, so every semantic string renders unchanged.
+- [Fable #181] A run or rules recipe with no eligible targets either still evaluates its gate on the base revision or fails with a typed E_STAGE_SCOPE_EMPTY; it never reports success without evaluating its gate, and the CLI prints the outcome.
+- [Fable #182] Stage plan and evaluation failures carry a non-empty details.error naming the typed error (never derived from the Debug form of a string), with a test asserting it for a phase plan failure.
+- [Fable #187] The CLI provider-option check names the actually offending flag for every conflicting combination (e.g. --provider replay with --anthropic-api-key-file reports --anthropic-api-key-file), and cli tests assert each exact message.
+- [Fable #202] plumb serve emits a tracing record per request (method, route, status, latency) and logs the underlying cause at every ApiError::internal site; ui/package.json gains dev and build scripts and the supported way to run the UI against plumb serve is documented and used by E0.3.
+- [Fable #205] Every API error message or detail that echoes client-supplied text truncates it to at most 64 characters followed by an ellipsis through one shared helper.
+- [Fable #207] A turn request for a session that already has a turn in flight is rejected with 409 E_SESSION_TURN_IN_FLIGHT before any workflow write or provider call, and a test with a blocking provider proves it.
+- [Fable #218] Write controls that require a role the current identity lacks (per GET /api/me roles) are hidden or disabled with an explanation, and a test proves a non-analyst is not offered analyst actions.
+- [Fable #221] Edit forms seeded from server data (e.g. SentenceReview slots) reset or show a conflict when the underlying server value changes, so a submitted patch always equals the visible change against the reviewed version.
+- [Fable #224] Positional UI lists (scenario given/then rows, trace diffs, spans, lint findings, smells) are keyed by index or a stable unique ID, never by display text, with a test rendering two identical rows.
+- [Fable #225] The router defines catalogue-backed not-found and error components, nested routes mark their nav section aria-current, and data tables have a caption and scoped headers.
+- [Fable #226] Each H0.11 UI behaviour (cursor reset, transport failure, discard/abandon, socket close and reconnect, search dismissal, not-found) has a Vitest regression test that fails on the pre-fix behaviour.
+- [Fable #235] HTTP tests cover a concurrent turn on one session with a blocking provider and each of E_SOURCE_CONFLICT, E_ROUND_INCONSISTENT, E_GATE_REPORT_INCOHERENT, E_SCENARIO_PROJECTION_INVALID and E_QUESTION_PROJECTION_INVALID from persisted data.
+- [Fable #237] The /api/events forwarder reads the socket concurrently (answering Ping, detecting Close promptly) and closes a lagged subscriber with a distinct close code and reason meaning events were missed.
+- [Fable #269] GET /api/search declares q as a required query parameter in OpenAPI and the generated client, matching the handler's 400 on an absent or blank q.
+- [Fable #307] Every artifact written by report --out (including scenarios.yaml and gate-report.json) is exportable via export --format and GET /api/model/export, or the CLI help and OpenAPI ExportFormat state the restriction explicitly.
+- [Fable #314] create_source returns 409 E_SOURCE_EXISTS when the existing SourceArtifact node's payload and extensions equal the freshly imported node's (audit metadata ignored) and E_SOURCE_CONFLICT only when they differ, with a regression test under two different clock instants.
+- [Fable #321] Every closed-enum wire field in the OpenAPI contract (including ClassifyRequest.class and RequirementSummary.class) references its closed enum schema, and every importer rejects a source yielding zero EvidenceFragments with a typed error (HTTP 400 / CLI non-zero) before any artifact or revision is written.
+- [Fable #350] GET /api/search either includes Proposed Requirement and Term nodes as hits labelled with their lifecycle status or the contract and UI state explicitly that only Accepted elements are searchable, with a test pinning the chosen behaviour.
+- [Fable #352] The UI router renders a shell-integrated typed not-found page for unknown routes, and every routed page including /sessions has exactly one h1.
+- [Fable #355] A failed session turn shows a turn-specific message carrying the backend typed code and message, and session creation is refused with a typed error (and the UI Start control disabled) when the configured provider mode is null.

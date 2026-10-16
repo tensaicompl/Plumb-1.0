@@ -1,5 +1,5 @@
 {
-  "plan_version": "3.2-draft.1",
+  "plan_version": "3.2-draft.2",
   "release": "pilot-v3-foundation",
   "execution_rule": "Execute exactly one ready task at a time in listed order. Only tasks whose scope is allowed by EXECUTION-SCOPE.yaml may execute.",
   "tasks": [
@@ -4523,7 +4523,8 @@
         "Factual gate inputs (plan v3.2): every factual F1, F2 and F4 input comes from the current PSG and current durable stage artifacts; configuration supplies only policy, execution/environment material and explicit external facts (architecture §21 'Current gate truth and requirement reads').",
         "Requirement reads (plan v3.2): list_requirements and get_requirement never require a current F1 GateReport; RequirementSummary and RequirementDetail gain the required boolean lint_current (true exactly when a current F1 report exists for the loaded head); when false, smells and lint_findings are empty and readiness is null. Update crates/plumb-api/src/openapi.rs, regenerate api/modeller.openapi.json and ui/src/api/schema.d.ts; the operation inventory stays 74.",
         "UI (plan v3.2): RequirementsPage and RequirementDetail show lint as unavailable when lint_current is false and never render an empty smell list as 'no findings' in that case.",
-        "Readiness (plan v3.2): ReadyOutcome gains a sorted precondition list; zero Accepted Requirements on the loaded head adds no_accepted_requirements, makes passed() false and makes CLI ready exit 2 printing 'precondition: no_accepted_requirements'. Gate reports, rule applicability and rule results are unchanged."
+        "Readiness (plan v3.2): ReadyOutcome gains a sorted precondition list; zero Accepted Requirements on the loaded head adds no_accepted_requirements, makes passed() false and makes CLI ready exit 2 printing 'precondition: no_accepted_requirements'. Gate reports, rule applicability and rule results are unchanged.",
+        "[Fable #190] After gate-input assembly, analyse always evaluates F2 from the assembled inputs (missing required external inputs are E_GATE_INPUTS_MISSING); it never skips F2 silently or reports success without an F2 result."
       ],
       "tests": [
         "cargo test -p plumb-api --test http_stages gate_inputs_follow_new_accepted_requirement_without_restart",
@@ -4768,7 +4769,8 @@
         "crates/plumb-api/src/error.rs",
         "crates/plumb-api/tests/http_core.rs",
         "crates/plumb-cli/src/commands.rs",
-        "crates/plumb-cli/tests/cli.rs"
+        "crates/plumb-cli/tests/cli.rs",
+        "crates/plumb-core/src/id.rs"
       ],
       "steps": [
         "Implement architecture §33.1 exactly with the frozen constants DOCX_MAX_XML_DEPTH = 256, DOCX_MAX_TABLE_COLUMNS = 64, DOCX_MAX_TABLE_ROWS = 10000, TEXT_MAX_INPUT_BYTES = 16777216, SOURCE_MAX_FRAGMENTS = 20000, EXPR_MAX_SOURCE_BYTES = 4096, EXPR_MAX_NESTING_DEPTH = 64, EXPR_MAX_AST_NODES = 1024, MAX_SOURCE_UPLOAD_BODY_BYTES = 135266304 and MAX_JSON_BODY_BYTES = 4194304, exported from their owning crates; the existing DOCX_MAX_INPUT_BYTES, DOCX_MAX_ENTRIES, DOCX_MAX_TOTAL_UNCOMPRESSED_BYTES and DOCX_MAX_XML_PART_BYTES stay unchanged.",
@@ -4779,7 +4781,8 @@
         "In crates/plumb-expr, plumb_expr::parse rejects sources above 4096 bytes, a lexical pre-scan rejects parenthesis, call-argument or consecutive prefix-operator nesting above 64 before the pest grammar runs, and the built AST is rejected above 1024 nodes, all as ExprError::LimitExceeded {limit, actual, max} with code E_EXPRESSION_LIMIT.",
         "X1.3 intake (crates/plumb-intake/src/intake.rs, adding the internal path dependency plumb-expr to crates/plumb-intake/Cargo.toml) rejects any proposal carrying an expression-bearing field (Transition.guard_expr, Invariant.expression, ProcessNode.condition_expr, ProcessNode.timer_expr, Rule.condition_expr, Rule.action_expr, Calculation.expression, PolicyCondition.expression) that exceeds the expression limits, as a typed intake error surfaced by the API as 422 E_EXPRESSION_LIMIT.",
         "In crates/plumb-api/src/routes/mod.rs and routes/sources.rs install PLUMB-owned body limits (129 MiB on POST /api/sources, 4 MiB elsewhere) with axum's built-in DefaultBodyLimit; an oversized body is 413 E_PAYLOAD_TOO_LARGE (crates/plumb-api/src/error.rs) in the typed JSON envelope with details.limit_bytes. No OpenAPI change.",
-        "Add adversarial regression fixtures built in the tests: deep XML nesting, a w:gridSpan of 18446744073709551615 and of 65, a 10001-row table, a source producing 20001 fragments, a 16 MiB + 1 text, an expression of 4097 bytes, 65 nested parentheses, 65 prefix operators and 1025 AST nodes, and oversized HTTP bodies."
+        "Add adversarial regression fixtures built in the tests: deep XML nesting, a w:gridSpan of 18446744073709551615 and of 65, a 10001-row table, a source producing 20001 fragments, a 16 MiB + 1 text, an expression of 4097 bytes, 65 nested parentheses, 65 prefix operators and 1025 AST nodes, and oversized HTTP bodies.",
+        "[Fable #367] validate_display_name rejects '/', '\\\\', '.', '..', Unicode bidi and format control characters and names longer than 255 characters with a typed import error, and the core Id grammar rejects IDs longer than a frozen maximum length."
       ],
       "tests": [
         "cargo test -p plumb-import --test docx",
@@ -4866,7 +4869,8 @@
         "Keep semantic_hash in the version endpoint, write results and 412 bodies; keep cursor baseline protection exactly as it is.",
         "Update the ETag/If-Match descriptions in crates/plumb-api/src/openapi.rs, regenerate api/modeller.openapi.json and ui/src/api/schema.d.ts (npm run api:generate); the operation count stays 74.",
         "In the UI, every query used to review data keeps its response ETag (client.ts exposes it) and useVersionedMutation sends that reviewed ETag as If-Match; it no longer calls fetchLatestModelVersion or GET /api/model/version inside the mutation. A 412 keeps the existing ConflictDialog and never retries.",
-        "Migration tests: a write whose If-Match is the head semantic hash (old token) is 412; a change that alters only Proposed or evidence state (equal semantic hash, new revision) makes a reviewed ETag stale and the write 412; a write with the reviewed current revision ID succeeds."
+        "Migration tests: a write whose If-Match is the head semantic hash (old token) is 412; a change that alters only Proposed or evidence state (equal semantic hash, new revision) makes a reviewed ETag stale and the write 412; a write with the reviewed current revision ID succeeds.",
+        "[Fable #209] ETag is emitted as an RFC 9110 strong entity-tag (the quoted revision ID) and If-Match accepts exactly that quoted form or the bare revision ID; weak and '*' validators are 412 E_PRECONDITION_FAILED, as documented in OpenAPI."
       ],
       "tests": [
         "cargo test -p plumb-api --test http_core",
@@ -4933,7 +4937,15 @@
         "crates/plumb-api/tests/http_stages.rs",
         "crates/plumb-cli/src/main.rs",
         "crates/plumb-cli/src/commands.rs",
-        "crates/plumb-cli/tests/cli.rs"
+        "crates/plumb-cli/tests/cli.rs",
+        "crates/plumb-api/src/stage/acquire.rs",
+        "crates/plumb-api/src/server.rs",
+        "crates/plumb-api/src/error.rs",
+        "crates/plumb-inference/src/anthropic.rs",
+        "crates/plumb-inference/src/provider.rs",
+        "crates/plumb-inference/src/model.rs",
+        "crates/plumb-inference/tests/provider_contract.rs",
+        "crates/plumb-artifacts/src/model.rs"
       ],
       "steps": [
         "Implement architecture §33.3: add attempt to recipe jobs and the stage_recipe_job_attempts table through an additive in-place migration that increments STORE_SCHEMA_VERSION by exactly 1; content-addressed recipe job and StageJob IDs are unchanged.",
@@ -4941,7 +4953,13 @@
         "Add the retry application service and the CLI command retry <JOB_ID>: only a Failed recipe job is retried, as attempt N+1 under the same ID, with its Failed children re-queued; a moved branch head is 409 E_STAGE_RETRY_BASE_MOVED with nothing changed; Stale, Ready and Committed jobs are refused.",
         "Claim jobs with owner_id = own:<first 16 hex of SHA-256(RFC 8785 {pid, process start time, db path})> and lease_expires_at = now + 60 s; the worker renews the lease every 15 s; startup recovery interrupts only expired or ownerless in-flight jobs.",
         "Add the application open modes Interactive and ReadOnly; ReadOnly starts no worker and performs no interruption, recovery or reconciliation writes; the read-only CLI commands (architecture §33.9 list) use ReadOnly.",
-        "Replace every discarded worker result (let _ = state.execute_recipe_job(...)) with persistence of the job as Failed with E_INTERNAL and its bounded message, plus a tracing error event."
+        "Replace every discarded worker result (let _ = state.execute_recipe_job(...)) with persistence of the job as Failed with E_INTERNAL and its bounded message, plus a tracing error event.",
+        "Graceful shutdown (plan v3.2 hotfix): on SIGINT/SIGTERM or serve shutdown the job queue closes to new claims, the in-flight job reaches its next bounded safe step boundary (after the current provider call returns and its bundle is persisted, or before the next phase starts) within STAGE_SHUTDOWN_GRACE_SECONDS = 30, otherwise it is persisted Failed with E_JOB_INTERRUPTED; the worker JoinHandle is joined with that bound; an in-flight paid inference is never abandoned in an ambiguous job state.",
+        "[Fable #62] Acquisition reuses an already persisted ValidatedInference whose request hash equals the planned request ID instead of calling the provider again (so a retried attempt never re-bills or re-generates a completed request), and the live provider retries 429/529/5xx with bounded backoff honoring retry-after without repairing output.",
+        "[Fable #179] run_stage fails with a typed 503 when the job cannot be enqueued because the worker is gone, and a panic while executing a claimed job is caught, persists that job as Failed with E_INTERNAL and is logged, and the worker keeps serving later jobs.",
+        "[Fable #183] Interactive startup recovery and reconciliation are per-row fault tolerant: a row that cannot be decoded or reconciled is marked failed with a typed corruption error and logged, the remaining rows are processed, and opening the application does not fail because of it.",
+        "[Fable #188] Recovery of an interrupted recipe job whose child proposals were already persisted either settles the parent to Ready over those proposals or marks the proposals stale in the same transaction; a pending stage proposal is never left linked to a Failed parent that cannot reflect its acceptance.",
+        "[Fable #253] Every failed inference acquisition records in its failed attempt and job error a bounded typed detail (provider error class, HTTP status and provider request id when present, request ID and task kind, sorted schema-validation errors), and stores any rejected raw provider response as a content-addressed InferenceResponse artifact referenced from that failure."
       ],
       "tests": [
         "cargo test -p plumb-store --test stages",
@@ -4951,7 +4969,8 @@
         "cargo test -p plumb-api --test http_stages second_process_does_not_interrupt_live_jobs",
         "cargo test -p plumb-api --test http_stages worker_error_is_persisted",
         "cargo test -p plumb-cli --test cli read_only_commands_write_nothing",
-        "cargo test -p plumb-cli --test cli"
+        "cargo test -p plumb-cli --test cli",
+        "cargo test -p plumb-api --test http_stages shutdown_drains_or_persists_interrupted"
       ],
       "acceptance": [
         "An operationally failed recipe can be retried explicitly without changing its captured identity; Stale work is never retried or rebased.",
@@ -5002,7 +5021,11 @@
         "crates/plumb-functional/tests/directory.rs",
         "crates/plumb-cli/src/config.rs",
         "crates/plumb-cli/tests/cli.rs",
-        "crates/plumb-api/tests/http_stages.rs"
+        "crates/plumb-api/tests/http_stages.rs",
+        "crates/plumb-functional/src/question_templates.rs",
+        "crates/plumb-functional/tests/question.rs",
+        "crates/plumb-functional/tests/resolution.rs",
+        "crates/plumb-sim/src/materialize.rs"
       ],
       "steps": [
         "Implement architecture §33.4: classify ExecutionFailure kinds into business rejections (authorization_denied, precondition_rejected, transition_guard_rejected, invalid_source_state, invariant_violation, no_decision_row) and model failures (postcondition_violation, evaluation_failed); a simulator Err never yields a verdict.",
@@ -5010,7 +5033,11 @@
         "Successful execution: one success/partial candidate without selection is selected as today; several candidates require a when entry each; exactly one true selects it; otherwise Undecidable with OUTCOME_SELECTION.",
         "Business rejection: exactly one business_failure candidate listing the failure kind becomes the observed outcome with the pre-state kept and no events, and then is compared normally; none is Fail with the existing execution-failure diff; several are Undecidable with OUTCOME_SELECTION. Model failures stay Fail.",
         "Extend the R0.6 semantic directory with outcome_selections drafts (outcome_ref, operation_ref, when or on_failures) producing HUMAN_CONFIRM SetNodeExtension proposals on existing Accepted Outcomes; the CLI configuration carries the field inside directory.",
-        "Add HR-shaped regression graphs in the plumb-sim tests for insufficient balance (precondition_rejected), non-manager approval or rejection (authorization_denied) and invalid state (invalid_source_state), each expected to PASS, plus a scenario expecting a business failure that executes successfully (Fail) and an internal error that never passes."
+        "Add HR-shaped regression graphs in the plumb-sim tests for insufficient balance (precondition_rejected), non-manager approval or rejection (authorization_denied) and invalid state (invalid_source_state), each expected to PASS, plus a scenario expecting a business failure that executes successfully (Fail) and an internal error that never passes.",
+        "Holiday-policy question (plan v3.2 hotfix): the f2.calculation.holiday-policy.v1 answer schema is exactly {\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"holiday_consumes_working_day\",\"calendar_ref\"],\"properties\":{\"holiday_consumes_working_day\":{\"const\":false},\"calendar_ref\":{\"type\":\"string\",\"enum\":[sorted Accepted Calendar IDs]}}} and its prompt states that a configured holiday never consumes a working day and asks which Accepted Calendar applies; the resolver mapping is unchanged (false + calendar_ref binds the Accepted Calendar; UnsupportedHolidayPolicy stays as a defensive error), so the immutable HR expert answer {holiday_consumes_working_day: false, calendar_ref: cal:PL-Office} stays valid.",
+        "[Fable #116] content-dependent model conditions in a scenario run yield a per-scenario Undecidable/Fail verdict with a typed reason while other scenarios still execute; UNIQUE decision-table overlaps are rejected at model build and Given literals are type-checked at scenario validation.",
+        "[Fable #117] an Operation governed by several DecisionTables routes each supplied decision_input to its table (or reports a dedicated typed condition when routing is ambiguous), with a test.",
+        "[Fable #119] an unparseable expression at any simulation site (precondition, postcondition, rule condition, transition guard, invariant) compiles to Unparseable and makes only dependent scenarios Undecidable; type errors in parseable expressions remain build errors."
       ],
       "tests": [
         "cargo test -p plumb-sim --test execute",
@@ -5019,7 +5046,8 @@
         "cargo test -p plumb-sim --test execute multiple_outcomes_select_deterministically",
         "cargo test -p plumb-functional --test directory",
         "cargo test -p plumb-api --test http_stages",
-        "cargo test -p plumb-cli --test cli"
+        "cargo test -p plumb-cli --test cli",
+        "cargo test -p plumb-functional --test question holiday_policy_offers_only_recordable_answers"
       ],
       "acceptance": [
         "A Scenario expecting a modeled business rejection passes when that rejection occurs; unexpected rejections, model failures and internal errors never pass.",
@@ -5068,14 +5096,25 @@
         "crates/plumb-functional/tests/ears.rs",
         "crates/plumb-functional/tests/vocabulary.rs",
         "crates/plumb-api/src/stage/phases.rs",
-        "crates/plumb-api/tests/http_stages.rs"
+        "crates/plumb-api/tests/http_stages.rs",
+        "crates/plumb-functional/src/state.rs",
+        "crates/plumb-functional/src/calculation.rs",
+        "crates/plumb-functional/src/verification.rs",
+        "crates/plumb-functional/tests/state.rs",
+        "crates/plumb-functional/tests/calculation.rs",
+        "crates/plumb-functional/tests/verification.rs",
+        "crates/plumb-api/src/stage/mod.rs"
       ],
       "steps": [
         "Implement architecture §33.5: presence checks in domain.rs and vocabulary.rs compare the deterministic ID, node type, origin extension value and the producer-owned payload fields of the frozen table only; enrichable fields never cause a conflict and are never overwritten.",
         "A mismatch of an owned field or of the origin stays a real ExistingCandidateConflict / ExistingVocabularyCandidateConflict; vocabulary stops accepting any Accepted node without comparing owned fields.",
         "Batch analysis is per-target tolerant: an unsupported, stale or origin-less target yields a deterministic per-target disposition in the analysis result; EARS analysis of a Requirement without the S1.1 segment origin yields not_applicable: missing_segment_origin for that Requirement instead of aborting the batch.",
         "Surface the per-target dispositions in the phase evaluation without failing the phase (crates/plumb-api/src/stage/phases.rs).",
-        "Add rerun tests: run the stage, accept and enrich its output (for example Attribute value_type and unit, DomainRelationship cardinality, Term aliases), rerun the stage and prove no proposal, no conflict and no overwrite; then change an owned field and prove a conflict."
+        "Add rerun tests: run the stage, accept and enrich its output (for example Attribute value_type and unit, DomainRelationship cardinality, Term aliases), rerun the stage and prove no proposal, no conflict and no overwrite; then change an owned field and prove a conflict.",
+        "Analyzer issues (plan v3.2 hotfix): production never discards analyzer findings, conflicts or issues needed by governed resolution; every phase persists its batch-level issues and per-target dispositions in its CompileRun intermediate projection and surfaces them in the job result, or classifies them explicitly as non-governable; no caller reads only .proposals.",
+        "[Fable #105] the owned-field reconciliation table also covers S2 lifecycle Transition (enrichable guard_expr, effect_refs), S2.6 Calculation (enrichable examples and governed inclusive_end rewrite) and S4.5 verification obligations (enrichable acceptance_condition, required_evidence_kind).",
+        "[Fable #106] a deterministic candidate whose ID holds a Rejected or otherwise inactive node gets an explicit rejected/inactive disposition (never ExistingEquivalent), and dependent candidates report a typed dependency-rejected issue instead of staying pending.",
+        "[Fable #138] When a same-type Proposed Term or Concept exists at the deterministic ID with a different vocabulary_origin or evidence, analyze_vocabulary records a deterministic per-key disposition (pending_candidate_differs) and continues with every other key; only a different node type at that ID, or an Accepted owned-field mismatch, is ExistingVocabularyCandidateConflict, and no conflict aborts the whole analysis."
       ],
       "tests": [
         "cargo test -p plumb-functional --test domain rerun_after_enrichment_is_idempotent",
@@ -5129,7 +5168,9 @@
         "crates/plumb-api/tests/http_workflow.rs",
         "crates/plumb-cli/src/main.rs",
         "crates/plumb-cli/src/commands.rs",
-        "crates/plumb-cli/tests/cli.rs"
+        "crates/plumb-cli/tests/cli.rs",
+        "crates/plumb-validation/src/evaluator.rs",
+        "crates/plumb-validation/tests/evaluator.rs"
       ],
       "steps": [
         "Implement architecture §33.6: add the materialize_gate_findings application service turning the findings of the current persisted F1, F2 or F4 GateReport into durable Accepted Finding nodes through one non-semantic AutoNonSemantic proposal (absent IDs only; present IDs are no-ops).",
@@ -5137,13 +5178,18 @@
         "Change PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER so an Open blocker counts only when it is not governed by an Accepted, non-superseded ResolutionDecision answering a Question with that finding_ref or by a current applicable waiver; apply the same rule to supplemental analysis_findings by ID. Rule metadata and the rule count are unchanged.",
         "Keep the waiver actor check (decided_by must be an Accepted human Agent) and add explicit regression tests for an unknown, non-Accepted and non-human actor.",
         "Add the CLI commands findings list (read-only: current gate findings with disposition and governance state) and findings materialize.",
-        "Add an end-to-end governance test: evaluate F2 with a blocker, materialize findings, resolve one through its Question and waive another, re-evaluate F2 and see both no longer block while a non_waivable one still blocks."
+        "Add an end-to-end governance test: evaluate F2 with a blocker, materialize findings, resolve one through its Question and waive another, re-evaluate F2 and see both no longer block while a non_waivable one still blocks.",
+        "Finding lifecycle (plan v3.2 hotfix): a rule never consumes a Finding it generated itself (aggregate rules exclude findings whose code is their own and findings derived from their own previous report); an Open Finding whose affected refs no longer all exist as baseline elements is reported stale and closed through one governed non-semantic status update, never left Open; a governed Finding is closed (status Resolved or Waived) through governance, closing the lifecycle; analyzer issues needed for governance are persisted per H0.5.",
+        "[Fable #124] materialize_gate_findings also materializes findings of the current persisted I0 GateReport, so waivable I0 rules (PARSE_STATUS decision_required, AGENT_IDENTIFIED profile_allow) have a reachable governance path.",
+        "[Fable #125] governed_waiver/check_waiver_decision require decision.decided_by to be an Accepted Agent of kind human at gate evaluation (not only at waiver creation); a waiver decision by a non-human, non-Accepted or unknown actor is MalformedWaiverDecision and never applied, with consumer-side regression tests.",
+        "[Fable #234] The waiver staleness test first proves the finding is current on a fresh app, then moves the head and asserts 409 E_FINDING_NOT_CURRENT; waiver test finding IDs are derived from the evaluated report, never hard-coded."
       ],
       "tests": [
         "cargo test -p plumb-validation --test f2 governed_blocker_is_not_unresolved",
         "cargo test -p plumb-validation --test waiver",
         "cargo test -p plumb-api --test http_workflow finding_governance_round_trip",
-        "cargo test -p plumb-cli --test cli"
+        "cargo test -p plumb-cli --test cli",
+        "cargo test -p plumb-validation --test waiver consumer_rejects_non_human_waiver_actor"
       ],
       "acceptance": [
         "Every waivable or question-resolvable deterministic failure has a reachable governance path through product surfaces.",
@@ -5192,14 +5238,39 @@
         "crates/plumb-functional/src/directory.rs",
         "crates/plumb-functional/tests/directory.rs",
         "crates/plumb-api/src/routes/requirements.rs",
-        "crates/plumb-api/tests/http_workflow.rs"
+        "crates/plumb-api/tests/http_workflow.rs",
+        "crates/plumb-validation/src/rules/f1.rs",
+        "crates/plumb-validation/src/rules/f3.rs",
+        "crates/plumb-validation/src/rules/f4.rs",
+        "crates/plumb-validation/src/rules/i0.rs",
+        "crates/plumb-validation/src/authorization_analysis.rs",
+        "crates/plumb-validation/tests/f1.rs",
+        "crates/plumb-validation/tests/f3.rs",
+        "crates/plumb-validation/tests/f4.rs",
+        "crates/plumb-validation/tests/i0.rs",
+        "crates/plumb-validation/tests/authorization_analysis.rs",
+        "crates/plumb-lint/src/benchmark.rs",
+        "crates/plumb-functional/src/duplicates.rs",
+        "crates/plumb-functional/tests/duplicates.rs"
       ],
       "steps": [
         "Implement architecture §33.7 permission fidelity: RBAC.F2.PERMISSION.CONCRETE passes with at least one permits target, every target an Accepted Operation, and exactly one scoped_to Accepted ResourceScope.",
         "Attribute every process node-shape violation to exactly one of the four F2 process rules by node kind (start/end events, gateways, tasks, all other kinds to BPMN.F2.PROCESS.REACHABLE) through one exhaustive match, and add a cross-check test that is_qualified holds exactly when all four rules pass.",
         "Define the Event node extension plumb_functional:event_disposition {version: 1, external_source: bool, terminal_purpose: null|terminal|audit}, produce it only through R0.6 directory event_dispositions drafts (HUMAN_CONFIRM SetNodeExtension), and make PLUMB.F2.EVENT.PRODUCER/CONSUMER pass or report a violation from it instead of returning an evaluator error.",
         "Fix lint numeric tokenization for thousands separators, ISO dates, number-hyphen-word units, HH:MM times, parenthesised list numerals and decimals, with negative fixtures that produce no blocker for each normal form.",
-        "Guard classify_requirement and accept_requirement_ears: only Proposed or Accepted Requirements; any other status is 422 E_SEMANTIC_INVARIANT with error RequirementNotEditable."
+        "Guard classify_requirement and accept_requirement_ears: only Proposed or Accepted Requirements; any other status is 422 E_SEMANTIC_INVARIANT with error RequirementNotEditable.",
+        "Rule adjudications (plan v3.2 hotfix), each resolved against the authoritative profile, rulebook and metamodel into one contract with tests: PLUMB.F1.REQ.NO_CONTRADICTION gets its deterministic producer (contradicting Accepted Requirement pairs from the frozen F1 contradiction contract) or is documented NOT_APPLICABLE with a recorded reason when no producer input exists; PLUMB.F2.STATE.REACHABILITY evaluates reachability from the declared initial state instead of a permanent evaluator ERROR; Dynamic SoD, MutualExclusion and RequiredCombination constraints present in the graph are evaluated, never NOT_APPLICABLE; PLUMB.F1.REQ.MODALITY_EXPLICIT applies exactly per its applies_when and treats 'must' per the profile modality list; PLUMB.F3.ASSUMPTION.OWNER evaluates exactly the profile condition (an undocumented risk_ref alternative is removed or declared); OPERATION.PERFORMER and INVARIANT.EXPRESSIBLE profile alternatives become representable through governed directory material or are reported as violations, never evaluator errors.",
+        "[Fable #71] numeric tokenization also treats a slash-joined numeric ratio/frequency form (e.g. '24/7') as one non-violating token, with a negative fixture.",
+        "[Fable #72] clause-boundary detection uses the same numeric tokenizer, so a '.' or ',' inside a numeric token is never a clause boundary, with fixtures '0.5 days by the system' and '2.5 days without approval'.",
+        "[Fable #73] MISSING_ACTOR looks back across a comma-delimited parenthetical to the preceding segment before reporting, with negative fixtures 'The system, upon approval, shall ...' and 'The manager, or a delegate, shall approve ...'.",
+        "[Fable #74] RELATIVE_TIME_NO_ANCHOR accepts an optional qualifier (working/business/calendar) before the unit and treats an operation-duration bound ('complete/respond within N <time unit>') as anchored, and fixture-contract expectations record the lint outcome for HR-030.",
+        "[Fable #75] each Error-severity lint rule (NUMBER_NO_UNIT, RELATIVE_TIME_NO_ANCHOR, MISSING_ACTOR) has a table-driven adversarial fixture set of ordinary-English negatives and true positives, and run_benchmark/compare_to_baseline/recommend_severities error paths are tested.",
+        "[Fable #76] every public lint benchmark entry point (including recommend_severities) validates its threshold Ratio (denominator > 0, value <= 1) and returns LintError::Benchmark otherwise.",
+        "[Fable #126] PLUMB.F1.QUALITY_FINDINGS_CLEAR skips Requirements whose statement is empty or whitespace-only (owned by ISO29148.F1.REQ.STATEMENT_PRESENT) and evaluates every other Requirement; a lint error on one Requirement never turns the rule into an evaluator ERROR for the others.",
+        "[Fable #131] ISO/PLUMB I0 LOCATABLE, HASH_MATCH and PARSE_STATUS return NOT_APPLICABLE with a recorded reason when the baseline contains no evidence of a built-in source kind, and any baseline EvidenceFragment of a non-built-in source kind is reported, never silently treated as verified.",
+        "[Fable #164] PLUMB.F2 decision-table NO_OVERLAP is NOT_APPLICABLE for overlap-permitting hit policies (ANY, COLLECT, RULE ORDER, PRIORITY) per the profile applies_when, while coverage is still analysed; only genuinely unsupported structure is an ERROR.",
+        "[Fable #165] F4 TRACE_COMPLETE additionally requires the execution phase to end with its S4.2 terminal step (execution_completed for a completed run) and reports trace_execution_incomplete otherwise.",
+        "[Fable #299] PLUMB.F1.REQ.TYPE_KNOWN is declared pass-by-construction in the profile, F3 QUESTION.NO_BLOCKING_OPEN treats Questions on blocker Findings of any family as blocking, and F1 CRITERIA_FOR_BEHAVIOR honours its 'in implementation scope' qualifier, each matching the profile text."
       ],
       "tests": [
         "cargo test -p plumb-validation --test f2",
@@ -5256,13 +5327,46 @@
         "crates/plumb-api/src/error.rs",
         "crates/plumb-api/tests/http_core.rs",
         "crates/plumb-cli/src/commands.rs",
-        "crates/plumb-cli/tests/cli.rs"
+        "crates/plumb-cli/tests/cli.rs",
+        "prompts/s1-classify-requirement.md",
+        "prompts/s1-ears.md",
+        "prompts/s1-segment-requirements.md",
+        "prompts/s1-vocabulary.md",
+        "prompts/s2-calculation.md",
+        "prompts/s2-data-classification.md",
+        "prompts/s2-domain.md",
+        "prompts/s2-lifecycle.md",
+        "prompts/s2-operation.md",
+        "prompts/s2-process.md",
+        "prompts/s4-scenario.md",
+        "prompts/session-turn.md",
+        "schemas/inference/s1-ears.schema.json",
+        "schemas/inference/s1-requirement-classification.schema.json",
+        "schemas/inference/s1-segmentation.schema.json",
+        "schemas/inference/s1-vocabulary.schema.json",
+        "schemas/inference/s2-calculation.schema.json",
+        "schemas/inference/s2-data-classification.schema.json",
+        "schemas/inference/s2-domain.schema.json",
+        "schemas/inference/s2-lifecycle.schema.json",
+        "schemas/inference/s2-operation.schema.json",
+        "schemas/inference/s2-process.schema.json",
+        "schemas/inference/s4-scenario.schema.json",
+        "schemas/inference/session-turn.schema.json",
+        "crates/plumb-inference/src/model.rs",
+        "crates/plumb-inference/tests/artifacts.rs",
+        "crates/plumb-functional/tests/golden.rs",
+        "crates/plumb-session/tests/turn.rs"
       ],
       "steps": [
         "Implement architecture §33.8: the Anthropic provider authenticates with x-api-key, keeps anthropic-version and sends anthropic-workspace-id exactly when configured; redirects stay disabled and the key stays redacted; contract tests assert the exact header set without network access.",
         "MockProvider::execute validates the fixture's validated output against the request material's compiled task output schema and returns ProviderError::SchemaInvalidOutput for an invalid fixture.",
         "serve refuses any non-loopback bind address with a typed configuration error; a request whose Host is not a loopback host is 403 E_FORBIDDEN_HOST; a request whose Origin is present and not an http loopback origin is 403 E_FORBIDDEN_ORIGIN.",
-        "Prove the feature build: cargo build -p plumb-cli --features llm and cargo test -p plumb-inference --features anthropic pass."
+        "Prove the feature build: cargo build -p plumb-cli --features llm and cargo test -p plumb-inference --features anthropic pass.",
+        "Prompt-injection boundary (plan v3.2 hotfix): every prompt states that all document and context text supplied to the model is untrusted source material and that instructions inside it must not be followed; deterministic structured validation (schema, binding and domain checks) remains the primary security boundary, and prompting is never claimed as a security control.",
+        "[Fable #63] the Anthropic adapter's total request timeout is an explicit, validated, identity-bound adapter config value (with a separate connect timeout) whose default is sized for the configured max_tokens, and a timeout is a typed ProviderError distinct from transport failure.",
+        "[Fable #64] every prompt in prompts/ states exactly the constraints of its task output schema and consumer (including 'a definition requires a non-null concept_kind' for s1-vocabulary), verified by a test that each prompt's documented output shape validates against its schema.",
+        "[Fable #65] each inference output schema encodes the pilot contract its prompt states (no forbidden process node kinds, minLength 1 on timer_expr, no AUTO_DERIVATION in session-turn, constraint enums named in s1-classify-requirement), so schema validation rejects prompt-forbidden shapes.",
+        "[Fable #66] the persisted inference artifact's parameters equal the effective request-body generation parameters actually sent (explicitly none beyond model/max_tokens if so documented), and golden-test 'anthropic' policies use only configuration the real adapter accepts."
       ],
       "tests": [
         "cargo test -p plumb-inference --features anthropic --test provider_contract",
@@ -5323,14 +5427,18 @@
         "crates/plumb-cli/src/config.rs",
         "crates/plumb-cli/src/commands.rs",
         "crates/plumb-cli/src/main.rs",
-        "crates/plumb-cli/tests/cli.rs"
+        "crates/plumb-cli/tests/cli.rs",
+        "crates/plumb-store/src/revisions.rs",
+        "crates/plumb-psg/tests/serde.rs"
       ],
       "steps": [
         "Implement architecture §33.9: every non-init open uses an existing-database mode that never creates the schema; a zero-byte, foreign or uninitialized database is E_DATABASE_NOT_INITIALIZED.",
         "Open the read-only CLI commands (vocab, questions, rounds show, export, report, proposals, findings list) with SQLite read-only access, no journal-mode change and the H0.3 ReadOnly application mode; they succeed on a read-only database file.",
         "Map store failures to typed errors: E_BRANCH_NOT_FOUND (404), E_DATABASE_NOT_INITIALIZED (409), E_DATABASE_BUSY (503), E_DATABASE_READ_ONLY (409), E_STORE_CORRUPT (500); everything else keeps its current mapping.",
         "Validate duplicate_policy, vocabulary_policy, session_turn, provider_policy, calendars, direct managers, expression scopes, scenario_derivation and verification_applicability when the application runtime is built; reject duplicate JSON object keys at any depth in the CLI configuration.",
-        "Require identity.actor_ref, stage_actor_ref and assistant_actor_ref to be pairwise distinct on every open with runtime configuration."
+        "Require identity.actor_ref, stage_actor_ref and assistant_actor_ref to be pairwise distinct on every open with runtime configuration.",
+        "[Fable #3] A stored revision whose psg_schema_version differs from PSG_SCHEMA_VERSION fails with a typed unsupported-version store error (never E_STORE_CORRUPT), and any change to the serialized form of Node, Edge or NodePayload must bump PSG_SCHEMA_VERSION, enforced by a test pinning the canonical bytes of a fixture node of every payload variant.",
+        "[Fable #199] The store durability profile is frozen and documented in the operations notes: the revision and workflow stores use synchronous=FULL (or NORMAL with an explicit documented power-loss window), and a test asserts the configured pragma."
       ],
       "tests": [
         "cargo test -p plumb-store --test revisions open_existing_never_creates_schema",
@@ -5369,12 +5477,371 @@
       "commit_message": "H0.9: Harden database and runtime-configuration operational boundaries"
     },
     {
+      "id": "H0.10",
+      "title": "Close semantic integrity and crash-recovery gaps",
+      "phase": "H0",
+      "scope": "NOW",
+      "depends_on": [
+        "H0.9"
+      ],
+      "files": [
+        "crates/plumb-artifacts/src/sqlite.rs",
+        "crates/plumb-artifacts/src/store.rs",
+        "crates/plumb-artifacts/tests/store.rs",
+        "crates/plumb-core/src/canonical.rs",
+        "crates/plumb-core/src/canonical_json.rs",
+        "crates/plumb-core/tests/canonical.rs",
+        "crates/plumb-core/tests/canonical_json.rs",
+        "crates/plumb-psg/src/graph.rs",
+        "crates/plumb-psg/src/registry.rs",
+        "crates/plumb-psg/src/refs.rs",
+        "crates/plumb-psg/src/payload.rs",
+        "crates/plumb-psg/tests/graph.rs",
+        "crates/plumb-patch/src/apply.rs",
+        "crates/plumb-patch/src/impact.rs",
+        "crates/plumb-patch/src/proposal.rs",
+        "crates/plumb-patch/tests/patch.rs",
+        "crates/plumb-patch/tests/impact.rs",
+        "crates/plumb-patch/tests/proposal.rs",
+        "crates/plumb-store/src/workflow.rs",
+        "crates/plumb-store/src/schema.rs",
+        "crates/plumb-store/src/lib.rs",
+        "crates/plumb-store/tests/workflow.rs",
+        "crates/plumb-session/src/turn.rs",
+        "crates/plumb-session/tests/turn.rs",
+        "crates/plumb-import/src/docx.rs",
+        "crates/plumb-import/src/md.rs",
+        "crates/plumb-import/src/text.rs",
+        "crates/plumb-import/src/segment.rs",
+        "crates/plumb-import/src/fallback.rs",
+        "crates/plumb-import/src/manifest.rs",
+        "crates/plumb-import/tests/docx.rs",
+        "crates/plumb-import/tests/md_text.rs",
+        "crates/plumb-import/tests/segment.rs",
+        "crates/plumb-intake/src/intake.rs",
+        "crates/plumb-intake/src/index.rs",
+        "crates/plumb-intake/src/report.rs",
+        "crates/plumb-intake/tests/intake.rs",
+        "crates/plumb-intake/tests/bm25.rs",
+        "crates/plumb-expr/src/eval.rs",
+        "crates/plumb-expr/src/typecheck.rs",
+        "crates/plumb-expr/src/calendar.rs",
+        "crates/plumb-expr/src/types.rs",
+        "crates/plumb-expr/tests/eval.rs",
+        "crates/plumb-sim/src/incremental.rs",
+        "crates/plumb-sim/src/compare.rs",
+        "crates/plumb-sim/src/execute.rs",
+        "crates/plumb-sim/src/materialize.rs",
+        "crates/plumb-sim/tests/incremental.rs",
+        "crates/plumb-sim/tests/compare.rs",
+        "crates/plumb-sim/tests/execute.rs",
+        "crates/plumb-functional/src/calculation.rs",
+        "crates/plumb-functional/src/decision_table.rs",
+        "crates/plumb-functional/src/duplicates.rs",
+        "crates/plumb-functional/src/ears.rs",
+        "crates/plumb-functional/src/requirements.rs",
+        "crates/plumb-functional/src/scenario.rs",
+        "crates/plumb-functional/tests/calculation.rs",
+        "crates/plumb-functional/tests/decision_table.rs",
+        "crates/plumb-functional/tests/duplicates.rs",
+        "crates/plumb-functional/tests/ears.rs",
+        "crates/plumb-functional/tests/requirements.rs",
+        "crates/plumb-functional/tests/scenario.rs",
+        "crates/plumb-validation/src/calculation_analysis.rs",
+        "crates/plumb-validation/src/evaluator.rs",
+        "crates/plumb-validation/tests/calculation_analysis.rs",
+        "crates/plumb-validation/tests/evaluator.rs",
+        "crates/plumb-lint/src/benchmark.rs",
+        "crates/plumb-lint/tests/rules.rs",
+        "crates/plumb-compiler/src/job.rs",
+        "crates/plumb-compiler/src/stage.rs",
+        "crates/plumb-compiler/tests/job.rs",
+        "crates/plumb-compiler/tests/stage.rs",
+        "schemas/inference/s2-operation.schema.json",
+        "schemas/inference/s2-process.schema.json",
+        "crates/plumb-functional/tests/operation.rs",
+        "crates/plumb-functional/tests/process.rs",
+        "crates/plumb-api/src/application.rs",
+        "crates/plumb-api/src/state.rs",
+        "crates/plumb-api/src/workflow.rs",
+        "crates/plumb-api/src/stage/acceptance.rs",
+        "crates/plumb-api/src/stage/mod.rs",
+        "crates/plumb-api/src/stage/gates.rs",
+        "crates/plumb-api/src/routes/sessions.rs",
+        "crates/plumb-api/src/routes/proposals.rs",
+        "crates/plumb-api/tests/http_workflow.rs",
+        "crates/plumb-api/tests/http_stages.rs"
+      ],
+      "steps": [
+        "Implement architecture §33.11 (plan v3.2 hotfix).",
+        "Artifact integrity: every artifact read (SqliteArtifactStore::get and every bulk read) recomputes the content hash from the stored bytes and requires it to equal the requested and stored key; a mismatch is typed store corruption (E_STORE_CORRUPT through the H0.9 mapping) and is never returned as a valid Artifact; tests corrupt stored bytes in place and prove the typed failure.",
+        "Plain stage commit reconciliation: an automatic/plain stage child whose semantic revision was committed before a crash is settled on recovery to that committed revision (child Committed with its output ref, parent Committed with that result revision), found by walking the branch from the head to the revision whose parent is the child base and whose accepted_patch_ref is the child's output PatchSet; this runs before any expired/ownerless in-flight attempt is interrupted, never marks the committed work Failed and never commits a second revision.",
+        "Session-turn revision binding: recovery of a prepared or committed session turn keeps the base revision the turn's proposals were produced against; the turn's proposals are never rebound to the head current at read time, and the recovered workflow history describes the event that happened.",
+        "Proposal occurrence identity: the content-addressed semantic Proposal ID stays unchanged; workflow rows gain a durable occurrence key occ:<first 16 hex of SHA-256(RFC 8785 {proposal_id, base_revision_id})> with the store primary key (proposal_id, base_revision_id); historical occurrences are immutable; proposal lookups and actions by proposal ID resolve exactly the pending occurrence whose base_revision_id is the loaded head (none is E_PROPOSAL_BASELINE_CHANGED with the existing semantics, never a match on an older occurrence); an older rejected, stale or resolved occurrence never blocks persisting and governing the identical proposal on a later baseline; STORE_SCHEMA_VERSION increases by exactly 1 with an in-place migration that keeps every existing row as its occurrence.",
+        "Scenario dependency invalidation: the dirty-scenario dependency set of a Scenario contains every element whose change can alter its verdict — the Accepted Invariants scoped to its footprint, its footprint Entities and Attributes, and the Calculation, DecisionTable, Operation and Transition dependencies already tracked; editing any of them marks the scenario dirty and re-executes it deterministically; a ScenarioRun computed for an older dependency state is reported stale, never current.",
+        "Graph-bound payload references: a census table in architecture §33.11 lists every payload Id field as graph-bound (with expected node types and allowed statuses) or external/opaque; Graph validation rejects a missing, wrong-type or forbidden-status graph-bound reference with a typed GraphViolation, and never treats an external identifier as a graph reference.",
+        "Numeric type and scale integrity: Decimal(n) scale applies equally to scalar Decimal values and unit-bearing Quantity values and results; calculation result-type validation applies the declared rounding/rescaling before the scale check, in the frozen order parse -> type -> evaluate -> round per declared rounding -> scale check -> unit check; a value violating its declared scale fails with a typed error whether or not it carries a unit.",
+        "Calendar coverage: a Calendar declares coverage as a closed list of covered years (calendar runtime configuration and the PSG Calendar week_pattern/holiday material carry the same coverage); business-day evaluation of a date outside coverage is the typed EvalError::CalendarCoverageUnavailable and makes dependent calculations and scenarios Undecidable, never an assumed working day.",
+        "Scenario calculation result references: Then.calculation_results entries and result:<key> semantic references resolve deterministically to the named Calculation's execution result in the scenario trace; an unresolvable reference is a typed scenario validation error at derivation, never a silent Undecidable at comparison.",
+        "Supersession lifecycle: a Supersede patch accepts only an Accepted, Suspect or Deprecated predecessor; superseding a Proposed or Rejected node is a typed PatchError and never promotes it into the baseline; re-superseding an already Superseded target is the typed conflict SupersedeAlreadyApplied; a governed requirement-supersession decision that no longer applies yields a per-decision disposition in the duplicate analysis instead of failing the batch.",
+        "Additional integrity adjudications: EvidenceManifest validation cross-checks every fragment's source_ref against a manifest source; a session-generated Proposal's materiality and acceptance policy are recomputed from its actual semantic delta (a semantic delta can never be labelled NonSemantic/AutoNonSemantic); a persisted GateReport is current only when it contains a result for every rule of its gate in the active profile and its supplemental-input hash equals the current assembled inputs; the Finding self-feeding and stale-Finding items are owned by H0.6.",
+        "[Fable #1] WorkflowStore::resolve_proposal(Accepted) requires the resolution revision to be on the proposal's branch lineage with version > base_revision_id's version and returns a typed workflow error otherwise; every acceptance path either resolves the proposal in the revision-commit transaction or is reconciled on startup from the committed acceptance companion.",
+        "[Fable #18] X1.3 intake computes Jaccard novelty for Scenario subjects from the scenario name and the string leaves of given/when/then only (no JSON keys or scenario_kind), and excludes Scenario duplicate candidates whose only shared terms occur in every Scenario document, under a RETRIEVAL_INDEX_VERSION bump.",
+        "[Fable #20] Every importer normalises extracted text to Unicode NFC before building EvidenceFragments, so retrieval documents and Term keys never differ between NFC and NFD spellings of the same text.",
+        "[Fable #21] An IntakeReport subject_novelty entry has nearest_ref Some exactly when its similarity is greater than 0, and IntakeReport validation rejects any other combination.",
+        "[Fable #27] plumb_core::to_canonical_json and canonical_hash fail with CoreError::Canonicalization when any serialized object emits a duplicate member name, including stringified map keys, instead of keeping the first.",
+        "[Fable #28] Canonicalisation rejects with CoreError::Canonicalization any integer value or integer map key outside the I-JSON range ±(2^53−1), and no hashed payload field may carry an integer that can legitimately exceed it.",
+        "[Fable #29] plumb-core tests pin CoreError::Canonicalization for NaN/±Infinity, RawValue, non-string keys, duplicate keys and out-of-range integers, and the canonical property tests draw integers only from the I-JSON safe range and assert a parse round-trip.",
+        "[Fable #35] Graph::new and Graph::validate report every cycle of each acyclic relation kind (each disjoint cycle exactly once), pinned by a test with two disjoint cycles of the same relation.",
+        "[Fable #40] EvidenceLocator::validate rejects a TextRange whose start is greater than its end, so no evidence ID is minted for an inverted range.",
+        "[Fable #46] The DOCX importer flattens only mc:Choice content of an mc:AlternateContent element (mc:Fallback only when no Choice is present), so text-box text is extracted exactly once.",
+        "[Fable #47] The DOCX importer treats numPr with numId 0, or without numId, as removing numbering, including numbering inherited from the style chain, so such paragraphs are classified as Paragraph, not ListItem.",
+        "[Fable #48] The deterministic segmentation fallback does not end a sentence at a period that follows a purely numeric leading ordinal (^\\s*\\d+[.)]\\s+), and the HR DOCX fallback test asserts exactly one candidate per requirement fragment.",
+        "[Fable #49] The Markdown importer treats indented (>= 2 spaces or tab) non-blank lines immediately following a list item as that item's continuation (GFM semantics), and the S0.1 contract is amended accordingly.",
+        "[Fable #51] The Markdown and plain-text line classifiers accept an optional leading U+FEFF on the first line, so a BOM never changes its heading or list classification (offsets and text unchanged).",
+        "[Fable #52] A Markdown table block starts only at a line whose successor is a delimiter row with the same cell count, and lines before it never join the table block.",
+        "[Fable #53] The DOCX importer applies the same CRLF/CR-to-LF normalisation as Markdown and plain-text decoding before building records and fragments.",
+        "[Fable #54] A DOCX table with only a header row yields a Paragraph fragment of its text (or a typed W_DOCX warning with partial parse status), never a silent omission.",
+        "[Fable #55] The DOCX importer creates no EvidenceFragment for a record whose text is only whitespace; the text stays in the extracted artifact.",
+        "[Fable #77] compare_to_baseline rejects a report whose sentence_count differs from the baseline corpus_sentence_count with a typed benchmark error.",
+        "[Fable #85] compute_impact seeds edge endpoints only when the endpoint node is baseline-participating in the base or result graph, so DirtySet never contains a non-baseline node (test: demote + retarget in one patch).",
+        "[Fable #88] Proposal.confidence is represented so its wire form and its canonical identity bytes are identical (f64 or fixed-point), or it is excluded from the identity projection, with a cross-language ID reproduction test.",
+        "[Fable #94] prepare_turn performs every validation (context selection, budget, allowed refs, plan validation) before its first store write, so a rejected turn persists no artifact (test: store has no puts after ContextBudgetExceeded).",
+        "[Fable #96] stage-job governed commit recording reports a structurally invalid decision node as a distinct 'decision_node' mismatch, separate from 'decision_status', in both the single and batch recorders.",
+        "[Fable #97] planned and input artifact media types are validated with the require_text rule (non-empty, no surrounding whitespace or control characters) and a type/subtype shape.",
+        "[Fable #109] S2.6 calculation name grounding rejects ranges with surrounding whitespace/control characters exactly like the state and domain producers, and identity never uses a trimmed name that differs from the persisted range.",
+        "[Fable #139] The S1.2 EARS grounding catalog is built from an explicit per-payload-type allow-list of human-text fields (for example name, statement, definition, term, aliases, description) and never contains payload type tags, enum wire strings or Id values; a grounding to any other value is rejected.",
+        "[Fable #143] Requirement modality extraction ignores modal verbs inside relative clauses (who/which/that) and raises an issue instead of silently choosing when a statement contains more than one distinct main-clause modal.",
+        "[Fable #147] PlumbExpr date arithmetic whose result falls outside years 0000..=9999 fails with EvalError::DateOutOfRange in both directions, with a regression test for 0000-01-01 - 1 day.",
+        "[Fable #148] round_decimal returns RoundingError::Overflow whenever the rounded value cannot carry exactly the requested scale, with tests at scale 28 (10.5) and scale 2 (Decimal::MAX).",
+        "[Fable #149] PlumbExpr list type checking is order independent: an empty-list element without context is deferred and re-checked against the element type established by the other items, exactly as check_pair does.",
+        "[Fable #150] PlumbExpr evaluation distinguishes an absent path from a present path that navigates through a non-Ref value: the latter is ValueTypeMismatch in both identifier lookup and exists(), never MissingValue or false.",
+        "[Fable #156] The S2.5 numeric contract states that Decimal products and quotients are rounded to 28 fractional digits with the rust_decimal default strategy, and a test pins a product whose exact scale exceeds 28.",
+        "[Fable #162] Decision-table Decimal output and default-output literals are scale-checked after normalization (trailing zeros removed), and numeric input interval bounds are checked against their column scale the same way.",
+        "[Fable #195] Every gate evaluation persists its canonical GateReport bytes as an immutable content-addressed GateReport artifact; the (revision, gate) row is only the current index and never the sole record of an evaluation.",
+        "[Fable #196] Every reconciliation of an interrupted acceptance resolves the workflow proposal with the revision whose decision_refs contain its acceptance decision (found by walking the branch), never the current head.",
+        "[Fable #259] The s2-operation and s2-process inference output schemas use the same shared ID pattern as every other inference schema, and the affected request IDs and replay fixtures are regenerated under that change.",
+        "[Fable #298] Every F1 GateReport binds a hash of the effective lint rule registry (rule IDs with default and overridden severities), so a changed lint default changes the report's input binding and currency, and UI tests use only rule IDs present in the profile or lint registry.",
+        "[Fable #343] working_days semantics are frozen as the half-open period [start, end) when inclusive_end is false and [start, end] when true, and the architecture §calculation callables text and the plumb-expr table tests state exactly that.",
+        "[Fable #368] Import artifacts are persisted in the same store transaction as the revision commit, or an unreferenced-artifact sweep reclaims artifacts no revision, job, proposal or turn references, never deleting a referenced one."
+      ],
+      "tests": [
+        "cargo test -p plumb-artifacts --test store corrupted_artifact_is_typed_corruption",
+        "cargo test -p plumb-api --test http_stages plain_commit_crash_settles_to_committed_revision",
+        "cargo test -p plumb-api --test http_workflow recovered_turn_keeps_its_base_revision",
+        "cargo test -p plumb-store --test workflow identical_proposal_on_later_baseline_is_a_new_occurrence",
+        "cargo test -p plumb-sim --test incremental invariant_edit_marks_scenario_dirty",
+        "cargo test -p plumb-psg --test graph dangling_and_wrong_type_payload_refs_are_rejected",
+        "cargo test -p plumb-expr --test eval quantity_scale_is_enforced",
+        "cargo test -p plumb-expr --test eval date_outside_calendar_coverage_is_unavailable",
+        "cargo test -p plumb-patch --test patch supersede_rejects_non_baseline_predecessor",
+        "cargo test --workspace"
+      ],
+      "acceptance": [
+        "No corrupted artifact is ever returned as valid; no committed stage work is lost or re-committed after a crash.",
+        "Workflow history and proposal occurrences describe exactly what happened on which baseline.",
+        "Scenario, numeric, calendar and supersession semantics are fail-closed with typed errors.",
+        "Every Fable finding mapped to H0.10 in docs/plan/FABLE-AUDIT-DISPOSITION-v3.md is resolved by a test."
+      ],
+      "source_refs": [
+        "SRCREF-A00B19DA89",
+        "SRCREF-B696289B78",
+        "SRCREF-D32DB0990A"
+      ],
+      "forbidden": [
+        "Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan and fixtures/hr-leave).",
+        "Do not add an HTTP operation; the OpenAPI operation inventory stays 74.",
+        "Do not add a validation rule or registered rule ID; the validation-rule count stays 133.",
+        "Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.",
+        "Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.",
+        "Do not change deterministic Proposal identity to include time or base revision.",
+        "If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.10.md naming the exact missing path or contract."
+      ],
+      "commands": [
+        "cargo test -p plumb-artifacts",
+        "cargo test -p plumb-core",
+        "cargo test -p plumb-psg",
+        "cargo test -p plumb-patch",
+        "cargo test -p plumb-store",
+        "cargo test -p plumb-session",
+        "cargo test -p plumb-import",
+        "cargo test -p plumb-intake",
+        "cargo test -p plumb-expr",
+        "cargo test -p plumb-sim",
+        "cargo test -p plumb-functional",
+        "cargo test -p plumb-validation",
+        "cargo test -p plumb-api",
+        "cargo test --workspace",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings"
+      ],
+      "commit_message": "H0.10: Close semantic integrity and crash-recovery gaps"
+    },
+    {
+      "id": "H0.11",
+      "title": "Close product, API and audit-quality gaps",
+      "phase": "H0",
+      "scope": "NOW",
+      "depends_on": [
+        "H0.10"
+      ],
+      "files": [
+        "crates/plumb-api/src/error.rs",
+        "crates/plumb-api/src/error_catalogue.rs",
+        "crates/plumb-api/src/lib.rs",
+        "crates/plumb-api/src/routes/mod.rs",
+        "crates/plumb-api/src/routes/gates.rs",
+        "crates/plumb-api/src/routes/meta.rs",
+        "crates/plumb-api/src/routes/model.rs",
+        "crates/plumb-api/src/routes/proposals.rs",
+        "crates/plumb-api/src/routes/questions.rs",
+        "crates/plumb-api/src/routes/requirements.rs",
+        "crates/plumb-api/src/routes/scenarios.rs",
+        "crates/plumb-api/src/routes/sentences.rs",
+        "crates/plumb-api/src/routes/sessions.rs",
+        "crates/plumb-api/src/routes/sources.rs",
+        "crates/plumb-api/src/routes/stages.rs",
+        "crates/plumb-api/src/openapi.rs",
+        "crates/plumb-api/src/server.rs",
+        "crates/plumb-api/src/application.rs",
+        "crates/plumb-api/src/state.rs",
+        "crates/plumb-api/src/stage/gates.rs",
+        "crates/plumb-api/src/stage/mod.rs",
+        "api/modeller.openapi.json",
+        "crates/plumb-api/tests/http_core.rs",
+        "crates/plumb-api/tests/http_workflow.rs",
+        "crates/plumb-api/tests/http_stages.rs",
+        "crates/plumb-api/tests/openapi.rs",
+        "crates/plumb-intake/src/index.rs",
+        "crates/plumb-intake/tests/bm25.rs",
+        "crates/plumb-functional/src/report.rs",
+        "crates/plumb-functional/src/projections.rs",
+        "crates/plumb-functional/tests/projections.rs",
+        "crates/plumb-import/src/source.rs",
+        "crates/plumb-import/tests/md_text.rs",
+        "crates/plumb-cli/src/main.rs",
+        "crates/plumb-cli/src/commands.rs",
+        "crates/plumb-cli/tests/cli.rs",
+        "ui/package.json",
+        "ui/src/api/client.ts",
+        "ui/src/api/useEvents.ts",
+        "ui/src/api/useVersionedMutation.ts",
+        "ui/src/api/schema.d.ts",
+        "ui/src/app/router.tsx",
+        "ui/src/app/AppShell.tsx",
+        "ui/src/app/nav.ts",
+        "ui/src/i18n/index.ts",
+        "ui/src/i18n/en.json",
+        "ui/src/i18n/pl.json",
+        "ui/src/components/ProvenanceDrawer.tsx",
+        "ui/src/components/ConflictDialog.tsx",
+        "ui/src/components/ProposalReviewBar.tsx",
+        "ui/src/components/FindingsPanel.tsx",
+        "ui/src/components/shared.test.tsx",
+        "ui/src/features/requirements/RequirementsPage.tsx",
+        "ui/src/features/requirements/RequirementDetail.tsx",
+        "ui/src/features/requirements/requirements.test.tsx",
+        "ui/src/features/glossary/GlossaryPage.tsx",
+        "ui/src/features/glossary/glossary.test.tsx",
+        "ui/src/features/sentences/SentencesPage.tsx",
+        "ui/src/features/sentences/sentences.test.tsx",
+        "ui/src/features/questions/QuestionsPage.tsx",
+        "ui/src/features/questions/questions.test.tsx",
+        "ui/src/features/scenarios/ScenariosPage.tsx",
+        "ui/src/features/scenarios/scenarios.test.tsx",
+        "ui/src/features/gates/GatesPage.tsx",
+        "ui/src/features/gates/gates.test.tsx",
+        "ui/src/features/sessions/SessionPanel.tsx",
+        "ui/src/features/sessions/ProposalCard.tsx",
+        "ui/src/features/sessions/session.test.tsx",
+        "ui/src/features/home/HomePage.tsx",
+        "ui/src/features/home/HomePage.test.tsx",
+        "ui/src/features/analyst/analyst.test.tsx"
+      ],
+      "steps": [
+        "Implement architecture §33.12 (plan v3.2 hotfix).",
+        "Cursor recovery: a list query whose page-2+ cursor fails with E_CURSOR_BASELINE_CHANGED resets that list to its first page on the current baseline and refetches exactly once; a historical cursor is never retried.",
+        "Read errors: reads are retried automatically only on a network failure or HTTP 502, 503 or 504 (at most 2 retries with backoff); every other 4xx/5xx read fails immediately, and the UI shows the backend typed code and message.",
+        "Mutation transport failures: a network or non-HTTP failure during a write is shown to the user with a typed transport-failure message; no mutation ever fails silently.",
+        "WebSocket lifecycle: the DesignEvent stream reconnects after close or network loss with exponential backoff from 1 s doubling to a 30 s cap (with jitter); after a reconnect or a lag close it invalidates the current model queries exactly once; unmounting stops reconnection.",
+        "Preview/discard lifecycle: preview endpoints never persist a pending WorkflowProposal; a proposal becomes durable only when the user submits it; answer/question flows that persist proposals expose an explicit discard that moves the pending occurrence to the new terminal state abandoned; accepted, rejected and abandoned history is never deleted.",
+        "Locale reachability: the UI offers a supported locale selection (English, Polish) persisted per browser, defaulting to the browser language with English fallback for any missing key; a test renders a route in Polish.",
+        "HTTP error envelope: every framework/extractor failure on the supported API boundary (400 malformed JSON/query/path, 404 unknown route, 405 method, 413 body limit, 415 media type) returns the typed {code, message, details} envelope; crates/plumb-api/src/error_catalogue.rs is the authoritative code catalogue (code, HTTP status, meaning), a test proves every ApiError code used in the source is catalogued and documented in OpenAPI, and no raw SQLite or Rust debug text appears in a product error.",
+        "F3 API reachability: the HTTP product flow can evaluate F3 (through the existing gate evaluation route surface) and GET /api/gates reports for every gate one of not_evaluated, current or stale, so an unreachable gate never looks merely unevaluated.",
+        "Collection robustness: list endpoints for Scenarios, DecisionTables, Questions and Assumptions apply cheap filters first, then project each item independently; an item that fails projection appears with a typed health marker (code and element ID) and the remaining items are returned; the item's detail route fails strictly with its typed error; corruption is never hidden.",
+        "UI workflow completeness: EARS review, glossary confirmation and edit, proposal discovery and governance, search result dismissal and currentness, and provenance rendering work end to end against the real API; a control the backend deterministically rejects for the displayed lifecycle state is not offered (disabled with a reason or hidden).",
+        "[Fable #144] glossary.md and model-report.md escape line-start block markers ('-', '+', '>', ordered-list numerals and setext underlines) or render multi-line semantic strings in fenced blocks, so every semantic string renders unchanged.",
+        "[Fable #181] A run or rules recipe with no eligible targets either still evaluates its gate on the base revision or fails with a typed E_STAGE_SCOPE_EMPTY; it never reports success without evaluating its gate, and the CLI prints the outcome.",
+        "[Fable #182] Stage plan and evaluation failures carry a non-empty details.error naming the typed error (never derived from the Debug form of a string), with a test asserting it for a phase plan failure.",
+        "[Fable #187] The CLI provider-option check names the actually offending flag for every conflicting combination (e.g. --provider replay with --anthropic-api-key-file reports --anthropic-api-key-file), and cli tests assert each exact message.",
+        "[Fable #202] plumb serve emits a tracing record per request (method, route, status, latency) and logs the underlying cause at every ApiError::internal site; ui/package.json gains dev and build scripts and the supported way to run the UI against plumb serve is documented and used by E0.3.",
+        "[Fable #205] Every API error message or detail that echoes client-supplied text truncates it to at most 64 characters followed by an ellipsis through one shared helper.",
+        "[Fable #207] A turn request for a session that already has a turn in flight is rejected with 409 E_SESSION_TURN_IN_FLIGHT before any workflow write or provider call, and a test with a blocking provider proves it.",
+        "[Fable #218] Write controls that require a role the current identity lacks (per GET /api/me roles) are hidden or disabled with an explanation, and a test proves a non-analyst is not offered analyst actions.",
+        "[Fable #221] Edit forms seeded from server data (e.g. SentenceReview slots) reset or show a conflict when the underlying server value changes, so a submitted patch always equals the visible change against the reviewed version.",
+        "[Fable #224] Positional UI lists (scenario given/then rows, trace diffs, spans, lint findings, smells) are keyed by index or a stable unique ID, never by display text, with a test rendering two identical rows.",
+        "[Fable #225] The router defines catalogue-backed not-found and error components, nested routes mark their nav section aria-current, and data tables have a caption and scoped headers.",
+        "[Fable #226] Each H0.11 UI behaviour (cursor reset, transport failure, discard/abandon, socket close and reconnect, search dismissal, not-found) has a Vitest regression test that fails on the pre-fix behaviour.",
+        "[Fable #235] HTTP tests cover a concurrent turn on one session with a blocking provider and each of E_SOURCE_CONFLICT, E_ROUND_INCONSISTENT, E_GATE_REPORT_INCOHERENT, E_SCENARIO_PROJECTION_INVALID and E_QUESTION_PROJECTION_INVALID from persisted data.",
+        "[Fable #237] The /api/events forwarder reads the socket concurrently (answering Ping, detecting Close promptly) and closes a lagged subscriber with a distinct close code and reason meaning events were missed.",
+        "[Fable #269] GET /api/search declares q as a required query parameter in OpenAPI and the generated client, matching the handler's 400 on an absent or blank q.",
+        "[Fable #307] Every artifact written by report --out (including scenarios.yaml and gate-report.json) is exportable via export --format and GET /api/model/export, or the CLI help and OpenAPI ExportFormat state the restriction explicitly.",
+        "[Fable #314] create_source returns 409 E_SOURCE_EXISTS when the existing SourceArtifact node's payload and extensions equal the freshly imported node's (audit metadata ignored) and E_SOURCE_CONFLICT only when they differ, with a regression test under two different clock instants.",
+        "[Fable #321] Every closed-enum wire field in the OpenAPI contract (including ClassifyRequest.class and RequirementSummary.class) references its closed enum schema, and every importer rejects a source yielding zero EvidenceFragments with a typed error (HTTP 400 / CLI non-zero) before any artifact or revision is written.",
+        "[Fable #350] GET /api/search either includes Proposed Requirement and Term nodes as hits labelled with their lifecycle status or the contract and UI state explicitly that only Accepted elements are searchable, with a test pinning the chosen behaviour.",
+        "[Fable #352] The UI router renders a shell-integrated typed not-found page for unknown routes, and every routed page including /sessions has exactly one h1.",
+        "[Fable #355] A failed session turn shows a turn-specific message carrying the backend typed code and message, and session creation is refused with a typed error (and the UI Start control disabled) when the configured provider mode is null."
+      ],
+      "tests": [
+        "cargo test -p plumb-api --test http_core framework_errors_use_typed_envelope",
+        "cargo test -p plumb-api --test http_core every_error_code_is_catalogued",
+        "cargo test -p plumb-api --test http_stages gates_report_not_evaluated_current_or_stale",
+        "cargo test -p plumb-api --test http_workflow corrupt_item_degrades_list_not_detail",
+        "cargo test -p plumb-api --test openapi",
+        "cd ui && npm run test",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint",
+        "cd ui && npm run api:check"
+      ],
+      "acceptance": [
+        "The UI recovers from stale cursors, transport failures and socket loss without manual reloads and never hides typed errors.",
+        "Every supported API failure uses the typed envelope and a catalogued code; OpenAPI still has 74 operations.",
+        "Every product workflow the backend exposes is operable from the UI or CLI, and no offered control is deterministically rejected.",
+        "Every Fable finding mapped to H0.11 in docs/plan/FABLE-AUDIT-DISPOSITION-v3.md is resolved by a test."
+      ],
+      "source_refs": [
+        "SRCREF-9987861F30",
+        "SRCREF-D32DB0990A"
+      ],
+      "forbidden": [
+        "Do not modify any checksummed authority listed in docs/plan/SUPPORTING-DOCS.sha256 (including the rulebook, rule YAML, metamodel, architecture, plan and fixtures/hr-leave).",
+        "Do not add an HTTP operation; the OpenAPI operation inventory stays 74.",
+        "Do not add a validation rule or registered rule ID; the validation-rule count stays 133.",
+        "Do not read ANTHROPIC_API_KEY or any environment credential; no network access or live LLM in tests.",
+        "Do not rebase, rewrite or re-identify a Proposal; every semantic write remains SemanticPatch + intake + CAS commit.",
+        "Do not delete accepted, rejected or abandoned workflow history.",
+        "If the frozen contract cannot be met inside this allowlist, stop with BLOCKED-IMPLEMENTATION-CONTRACT in docs/blockers/H0.11.md naming the exact missing path or contract."
+      ],
+      "commands": [
+        "cargo test -p plumb-api",
+        "cargo test -p plumb-cli --test cli",
+        "cargo test --workspace",
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets -- -D warnings",
+        "cd ui && npm run typecheck",
+        "cd ui && npm run lint",
+        "cd ui && npm run test",
+        "cd ui && npm run api:check"
+      ],
+      "commit_message": "H0.11: Close product, API and audit-quality gaps"
+    },
+    {
       "id": "R0.7",
       "title": "Add a customer-zero horizontal regression flow",
       "phase": "R0",
       "scope": "NOW",
       "depends_on": [
-        "H0.9"
+        "H0.11"
       ],
       "files": [
         "fixtures/customer-zero/README.md",
@@ -5396,7 +5863,8 @@
         "Update crates/plumb-cli/tests/cli.rs for the lint output change only.",
         "Expanded flow (plan v3.2): on a fresh project through the CLI and application services only, with deterministic replay fixtures for inference: init -> import -> required stage execution -> proposals (discovery) -> accept-set of compatible siblings -> individual confirmation where required -> rerun at least one semantic stage after downstream enrichment -> current gate evaluation -> ask (question materialization) -> answer the three HR-style calculation ambiguities (half day, inclusive end, holiday inside period) -> findings materialize and the governed finding/waiver lifecycle where applicable -> scenario execution including expected business failures -> ready -> export and report -> restart/reopen -> a second full deterministic replay.",
         "Proofs (plan v3.2): no hidden or manual database mutation; no direct test-only promotion of Proposed nodes; no startup-injected semantic gate truth; no stale-sibling failure when compatible siblings are accepted as a set; no rerun collision with accepted or enriched deterministic nodes; expected negative business scenarios PASS; no essential product operation exists only in test helpers; restart creates no extra semantic revision; repeated replay produces the frozen deterministic semantic result.",
-        "R0.7 is the gate that proves R0.1-R0.6 and H0.1-H0.9 work together."
+        "R0.7 is the gate that proves R0.1-R0.6 and H0.1-H0.9 work together.",
+        "Customer-zero oracle (plan v3.2 hotfix): the customer-zero flow asserts its production output against every section of its own frozen expected-results contract in fixtures/customer-zero, in the same manner as the HR semantic oracle of E0.2."
       ],
       "tests": [
         "cargo test -p plumb-cli --test customer_zero",
@@ -5407,7 +5875,8 @@
         "A first customer workflow runs end to end through product operations only, from an empty directory to an exported model, with no test helper, direct graph construction or startup gate-input restatement.",
         "Replay is exact and network-free, and two runs differing only in time produce identical final semantic_hash.",
         "Lint warnings are visible in the CLI and remain non-blocking.",
-        "The expanded customer-zero flow passes end to end with every listed proof, confirming the H0 tranche horizontally."
+        "The expanded customer-zero flow passes end to end with every listed proof, confirming the H0 tranche horizontally.",
+        "Customer-zero output is asserted section by section against its frozen expected results."
       ],
       "source_refs": [
         "SRCREF-509798A4E2",
@@ -5460,7 +5929,9 @@
         "Reference generator (Hotfix 083). The E0.1 target contains the ignored exact generator test regenerate_hr_reference_artifacts, which writes fixtures/hr-leave/reference-psg.yaml, reference-functional.yaml and inference-fixtures.jsonl from the same fixture builder (cargo test -p plumb-api --test hr_fixture regenerate_hr_reference_artifacts -- --ignored --exact); normal tests (cargo test -p plumb-api --test hr_fixture) compare generated bytes/content with the committed reference artifacts and never mutate repository files.",
         "HR gap findings (Hotfix 083). The helper derives exactly three deterministic current GeneratedFindings, as explicit upstream analysis material for S3.1 (not new registered validation rules; rule count stays 133): half day = code PLUMB.F2.CALC.TYPECHECK, semantic_condition_key CALCULATION_FRACTION_CONDITION_PREFIX + exact Calculation ID, affected refs including the target Calculation and the exact fractional Attribute (and optionally relevant Requirement source refs); inclusive end = PLUMB.F2.CALC.TYPECHECK with CALCULATION_INCLUSIVE_END_CONDITION_PREFIX + Calculation ID; holiday = PLUMB.F2.TIME.CALENDAR_DEFINED with CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX + Calculation ID. The prefixes are the public plumb-functional constants, not duplicated strings.",
         "Governed HR semantics (Hotfix 083). The three answers reach the generic S3.3 calculation families unchanged: half_day {decimal '0.5', unit working_day} adds the canonical CalculationExampleV1 keyed by calculation_fraction_semantic_key(calculation, attribute) (reused for the CalculationSemantic scenario boundary); inclusive_end {inclusive_end: true} sets the third working_days argument to the boolean literal by AST transformation; holiday_inside_period {holiday_consumes_working_day: false, calendar_ref: cal:PL-Office} confirms the fixed non-working-holiday policy and binds the Accepted Calendar. E0.1 never creates Question or ResolutionDecision nodes directly, never hand-builds a SemanticPatch for these semantics, never mutates the post-answer graph directly and never drops or rewrites any part of expert-answers.yaml.",
-        "Repaired contracts (plan v3.1). E0.1 runs only after the R0 tranche: the reference revisions it records use the R0.5 replay-stable ResolutionDecision identity and semantic projection, every Proposed compiler or directory element it relies on reaches Accepted through R0.6 governed confirmation or a dedicated confirmation, and the derived reference artifacts are regenerated under those contracts. E0.1 never relies on a restated startup gate input."
+        "Repaired contracts (plan v3.1). E0.1 runs only after the R0 tranche: the reference revisions it records use the R0.5 replay-stable ResolutionDecision identity and semantic projection, every Proposed compiler or directory element it relies on reaches Accepted through R0.6 governed confirmation or a dedicated confirmation, and the derived reference artifacts are regenerated under those contracts. E0.1 never relies on a restated startup gate input.",
+        "[Fable #118] fixture scenarios whose then asserts attribute values S4.2 does not write (SCN-019, SCN-025, SCN-034) have a frozen expected verdict consistent with the interpreter contract, or the contract gains human-confirmed effect semantics before the pilot run.",
+        "[Fable #309] E0.1 names exactly one of requirements.md or requirements.docx as the pilot import input, keys inference-fixtures.jsonl to that file's request hashes, and documents that importing both into one project is unsupported."
       ],
       "tests": [
         "cargo test -p plumb-api --test hr_fixture"
@@ -5509,7 +5980,8 @@
         "Verify replay with stored artifacts reproduces identical final semantic_hash without live LLM calls.",
         "E2E test host (Hotfix 083). The test is crates/plumb-api/tests/e2e_hr.rs in the existing plumb-api package (no root tests/ path, no new package, no dependency change), run with cargo test -p plumb-api --test e2e_hr. It may read and reuse crates/plumb-api/tests/support/hr_fixture.rs but must not modify it.",
         "Pre-/post-answer proof (Hotfix 083). Using the support module's pre-answer and post-answer graph/revision semantics, E0.2 proves the half-day, holiday and inclusive-end semantics are unresolved/Undecidable before the governed answers and resolved only afterwards, by exercising the actual answer path (materialize_questions, rounds, Question answers, proposal acceptance); it never imports a post-answer reference graph to hide the answer path.",
-        "Repaired v3.1 contracts (plan v3.1). The backend run starts from a database created by the R0.1 bootstrap service (no direct initializer or SQL); compatible same-base stage outputs are accepted through the R0.3 proposal set acceptance service and never rebased; every I0, F1, F2, F3 and F4 evaluation uses the R0.4 assembled gate inputs with no startup restatement and no restart after the graph changes; and the replay proof runs the complete flow twice under two different FixedClock instants and asserts the identical final semantic_hash required by R0.5."
+        "Repaired v3.1 contracts (plan v3.1). The backend run starts from a database created by the R0.1 bootstrap service (no direct initializer or SQL); compatible same-base stage outputs are accepted through the R0.3 proposal set acceptance service and never rebased; every I0, F1, F2, F3 and F4 evaluation uses the R0.4 assembled gate inputs with no startup restatement and no restart after the graph changes; and the replay proof runs the complete flow twice under two different FixedClock instants and asserts the identical final semantic_hash required by R0.5.",
+        "HR semantic oracle: production pipeline output (not fixture data compared with itself, not hard-coded or empty artifacts) is asserted against every in-scope section of fixtures/hr-leave/fixture-contract.yaml — requirements, entities and entity specs, relationships, states and lifecycle, operations, processes, roles and authorization, invariants, rules, events, calendar behaviour, calculations, scenarios, critical relations and expected counts; a section superseded by a later ratified contract is recorded in the oracle with that contract's reference, never silently skipped. (plan v3.2 hotfix)"
       ],
       "tests": [
         "cargo test -p plumb-api --test e2e_hr"
@@ -5517,7 +5989,8 @@
       "acceptance": [
         "The complete backend pilot reaches F4 and deterministic replay final semantic_hash matches original.",
         "The three HR ambiguities are resolved only through the production question answer path, reusing the unmodified E0.1 support module.",
-        "The run uses R0.1 bootstrap, R0.3 set acceptance and R0.4 gate assembly, and two runs under different clocks produce the identical final semantic_hash."
+        "The run uses R0.1 bootstrap, R0.3 set acceptance and R0.4 gate assembly, and two runs under different clocks produce the identical final semantic_hash.",
+        "Every in-scope fixture-contract section is asserted against real pipeline output."
       ],
       "source_refs": [
         "SRCREF-509798A4E2",
@@ -5582,7 +6055,31 @@
       "files": [
         "Makefile",
         ".github/workflows/ci.yml",
-        "scripts/check-placeholders.sh"
+        "scripts/check-placeholders.sh",
+        "Cargo.toml",
+        "Cargo.lock",
+        "deny.toml",
+        "REPO-SHA256SUMS.txt",
+        "ui/.npmrc",
+        "ui/package.json",
+        "scripts/benchmark-representative-scale.sh",
+        "crates/plumb-api/Cargo.toml",
+        "crates/plumb-artifacts/Cargo.toml",
+        "crates/plumb-cli/Cargo.toml",
+        "crates/plumb-compiler/Cargo.toml",
+        "crates/plumb-core/Cargo.toml",
+        "crates/plumb-expr/Cargo.toml",
+        "crates/plumb-functional/Cargo.toml",
+        "crates/plumb-import/Cargo.toml",
+        "crates/plumb-inference/Cargo.toml",
+        "crates/plumb-intake/Cargo.toml",
+        "crates/plumb-lint/Cargo.toml",
+        "crates/plumb-patch/Cargo.toml",
+        "crates/plumb-psg/Cargo.toml",
+        "crates/plumb-session/Cargo.toml",
+        "crates/plumb-sim/Cargo.toml",
+        "crates/plumb-store/Cargo.toml",
+        "crates/plumb-validation/Cargo.toml"
       ],
       "steps": [
         "Configure cargo llvm-cov thresholds: >=85% for plumb-psg, plumb-patch, plumb-validation, plumb-expr, plumb-sim, plumb-intake; >=70% other Rust crates.",
@@ -5593,14 +6090,21 @@
         "Repaired v3.1 contracts (plan v3.1). make all runs the R0.7 customer-zero flow (cargo test -p plumb-cli --test customer_zero) and the E0.2 backend pilot, so bootstrap, absence policy, set acceptance, gate assembly and replay-stable identity stay covered by CI; coverage thresholds apply to the R0 code in its crates unchanged.",
         "CI quality gate (plan v3.2): the CI quality job executes (not merely installs): cargo fmt --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace; cargo test -p plumb-inference --features anthropic; cargo build -p plumb-cli --features llm; a Rust dependency vulnerability check (cargo audit) and npm audit --audit-level=high; cd ui && npm run typecheck; cd ui && npm run lint; cd ui && npm run test; cd ui && npm run api:check (generated API drift); the R0.7 customer-zero test and the E0.2 backend E2E; and the E0.3 Playwright E2E.",
         "Release checks (plan v3.2): make e2e and make openapi execute their real checks (E0.3 Playwright run; OpenAPI generation compared with api/modeller.openapi.json and the generated client) and are never file-existence-only.",
-        "Tooling policy (plan v3.2): cargo-llvm-cov and cargo-mutants run under the frozen thresholds of this task inside the CI quality gate; any tool CI installs is executed by the gate, otherwise it is removed from CI setup."
+        "Tooling policy (plan v3.2): cargo-llvm-cov and cargo-mutants run under the frozen thresholds of this task inside the CI quality gate; any tool CI installs is executed by the gate, otherwise it is removed from CI setup.",
+        "CI quality gate (plan v3.2 hotfix): CI executes cargo fmt --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace; cargo test -p plumb-inference --features anthropic and cargo build -p plumb-cli --features llm; the real OpenAPI drift check (generation compared with api/modeller.openapi.json and cd ui && npm run api:check); the real backend E2E (E0.2) and customer-zero (R0.7); the real Playwright E2E (E0.3); cargo audit and cargo deny check against a committed deny.toml (advisories, bans, licences, sources); and sha256sum -c REPO-SHA256SUMS.txt against a regenerated, current manifest (or its authoritative successor named in the README).",
+        "Dependency remediation (plan v3.2 hotfix): every advisory is fixed by upgrade or replacement, or listed in deny.toml with a justification and an expiry date no later than the pilot release; this explicitly covers serde_yaml/unsafe-libyaml (unmaintained), the yanked yoke-derive, the rustls advisories reachable under the llm feature and quick-xml (H0.1); unused dependencies whose removal reduces attack or build surface are removed (checked with cargo-machete or an equivalent committed check).",
+        "Performance release gate (plan v3.2 hotfix): scripts/benchmark-representative-scale.sh reproduces the audit's measured shapes (a 50,000-paragraph Markdown import, a 10,000-node graph, 8 concurrent GET /api/model/version requests) and customer-zero; within the CI job budget each CLI command completes in at most 120 s, peak RSS stays at or below 4 GiB, the 8 concurrent version reads complete in at most 4 s in total, and nothing OOMs or times out; if the benchmark fails, the corresponding POST.0 optimization becomes a pre-release blocker instead of accepted performance debt.",
+        "HR semantic oracle: production pipeline output (not fixture data compared with itself, not hard-coded or empty artifacts) is asserted against every in-scope section of fixtures/hr-leave/fixture-contract.yaml — requirements, entities and entity specs, relationships, states and lifecycle, operations, processes, roles and authorization, invariants, rules, events, calendar behaviour, calculations, scenarios, critical relations and expected counts; a section superseded by a later ratified contract is recorded in the oracle with that contract's reference, never silently skipped. (plan v3.2 hotfix): CI fails when any in-scope section is not asserted.",
+        "[Fable #208] plumb-api has table-driven tests for every RuntimeConfigError/CalendarConfig rejection and paginate_ordered edge case, at least one test per reachable E_* code in the error catalogue, and a serve_blocking smoke test on 127.0.0.1:0.",
+        "[Fable #250] The UI toolchain pin is enforced: ui/.npmrc sets engine-strict=true so npm install/ci fails on a Node version other than the pinned engines.node, or the pin is documented as CI-only advisory in the README."
       ],
       "tests": [
         "make all"
       ],
       "acceptance": [
         "All thresholds pass and production source contains no unapproved placeholder implementation.",
-        "CI runs every listed command and fails on any failure; no installed quality tool is left unused."
+        "CI runs every listed command and fails on any failure; no installed quality tool is left unused.",
+        "CI enforces formatting, linting, tests, feature builds, API drift, real E2E, dependency policy, integrity manifest and the performance release gate."
       ],
       "source_refs": [
         "SRCREF-C1A6FDDD20"
@@ -5662,7 +6166,8 @@
       "steps": [
         "Create a document that points to compiler stages S5-S12 and gates Q1-C1 as post-pilot work.",
         "Do not implement architecture generation, contract compilation, delivery slicing, code binding or C1 in pilot-v3-foundation scope.",
-        "Record the deferred performance architecture of architecture §33.10 (plan v3.2): immutable revision cache keyed by RevisionId; no full graph deserialize/recanonicalize/rehash per request; content-addressed node/edge storage reuse; touched-element-only revision finalization; no duplicate head verification under the write lock (CAS preserved); cached inverted BM25 index; pagination that limits before building a projection; large-document profiling and resource budgets. These are not H0 blockers and never permit unbounded inputs."
+        "Record the deferred performance architecture of architecture §33.10 (plan v3.2): immutable revision cache keyed by RevisionId; no full graph deserialize/recanonicalize/rehash per request; content-addressed node/edge storage reuse; touched-element-only revision finalization; no duplicate head verification under the write lock (CAS preserved); cached inverted BM25 index; pagination that limits before building a projection; large-document profiling and resource budgets. These are not H0 blockers and never permit unbounded inputs.",
+        "Pre-release trigger (plan v3.2 hotfix): each POST.0 performance item becomes a pre-release blocker if the E0.4 performance release gate fails."
       ],
       "tests": [
         "No code tests."

@@ -1484,3 +1484,17 @@ references:
     sections:
     - '33.10'
   display: docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.10
+- id: SRCREF-A00B19DA89
+  file: docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md
+  locator:
+    kind: sections
+    sections:
+    - '33.11'
+  display: docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.11
+- id: SRCREF-9987861F30
+  file: docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md
+  locator:
+    kind: sections
+    sections:
+    - '33.12'
+  display: docs/architecture/PLUMB-COMPILER-ARCHITECTURE-v3.md §33.12
