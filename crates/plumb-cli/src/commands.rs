@@ -321,6 +321,125 @@ pub fn apply(
     Done::new(&result, text)
 }
 
+/// `directory` (R0.6): persists the configured directory as pending Semantic / HUMAN_CONFIRM
+/// proposals through the shared directory service; nothing is committed.
+pub fn directory(state: &ApiState) -> Result<Done, CliError> {
+    let loaded = state.head()?;
+    let elements = state.persist_directory(&loaded)?;
+    let text = elements
+        .iter()
+        .map(|e| match &e.proposal_id {
+            Some(proposal) => format!(
+                "{} {}: proposed {} ({})",
+                e.node_type,
+                e.element_ref,
+                proposal,
+                e.action.as_deref().unwrap_or_default()
+            ),
+            None => format!("{} {}: existing", e.node_type, e.element_ref),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Done::new(&elements, text)
+}
+
+/// `confirm <ELEMENT_ID>... [--reason]` (R0.6): the shared generic governed confirmation.
+pub fn confirm(
+    state: &ApiState,
+    elements: &[String],
+    reason: Option<String>,
+) -> Result<Done, CliError> {
+    let loaded = state.head()?;
+    let result = state.confirm_elements(&loaded, elements, reason)?;
+    let text = format!(
+        "confirmed {}: revision {}",
+        elements.join(" "),
+        result.revision
+    );
+    Done::new(&result, text)
+}
+
+/// `ask` (R0.6): materializes questions from the current F2 report findings with the
+/// configured question routing through the shared materialization service.
+pub fn ask(state: &ApiState) -> Result<Done, CliError> {
+    let loaded = state.head()?;
+    let materialized = state.ask(&loaded)?;
+    let questions: Vec<Value> = materialized
+        .generation
+        .questions
+        .iter()
+        .map(|q| {
+            json!({
+                "question_ref": q.question_ref,
+                "template_id": q.template_id,
+                "finding_ref": q.finding_ref,
+                "stakeholder_ref": q.payload.stakeholder_ref,
+                "priority": q.priority,
+                "materialization": q.materialization,
+            })
+        })
+        .collect();
+    let value = json!({
+        "questions": questions,
+        "unmapped": materialized.generation.unmapped,
+        "write": materialized.write,
+    });
+    let mut text = match &materialized.write {
+        Some(write) => format!("revision {}", write.revision),
+        None => "no change".to_owned(),
+    };
+    for q in &materialized.generation.questions {
+        text.push_str(&format!("\n{} {}", q.question_ref, q.template_id));
+    }
+    Done::new(&value, text)
+}
+
+/// `answer <QUESTION_ID> --answer <JSON>` (R0.6): the shared S3.3 answer service; the result
+/// is a pending governed proposal, never a commit.
+pub fn answer(state: &ApiState, question: &str, answer: &str) -> Result<Done, CliError> {
+    let value: Value = serde_json::from_str(answer)
+        .map_err(|e| CliError::Usage(format!("--answer is not JSON: {e}")))?;
+    if !value.is_object() {
+        return Err(CliError::Api(ApiError::invalid(
+            "answer must be a JSON object",
+        )));
+    }
+    let loaded = state.head()?;
+    let response = state.answer_question(&loaded, question, value, None, None)?;
+    let action = serde_json::to_value(response.action)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let text = format!(
+        "proposal {} ({action}) on revision {}",
+        response.proposal_id, response.revision
+    );
+    Done::new(&response, text)
+}
+
+/// `proposals` (R0.6): every pending proposal sorted by ID, read-only.
+pub fn proposals(state: &ApiState) -> Result<Done, CliError> {
+    let pending = state.pending_proposals()?;
+    let text = pending
+        .iter()
+        .map(|p| {
+            let origin = match (&p.recipe_job_id, &p.stage_job_id, &p.origin_ref) {
+                (Some(recipe), Some(stage), _) => {
+                    format!("{} recipe_job={recipe} stage_job={stage}", p.origin)
+                }
+                (_, _, Some(reference)) => format!("{} {reference}", p.origin),
+                _ => p.origin.clone(),
+            };
+            format!(
+                "{} {} origin={} base={} requires_reason={}",
+                p.proposal_id, p.action, origin, p.base_revision, p.requires_reason
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Done::new(&pending, text)
+}
+
 /// The five positive set actions (R0.3); `reject` is not a set action.
 const SET_ACTIONS: [(&str, ProposalAction); 5] = [
     ("accept", ProposalAction::Accept),

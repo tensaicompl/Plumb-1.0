@@ -34,7 +34,7 @@ mod cli {
         b"# Leave\n\nEmployees shall submit leave requests.\n\nManagers shall approve leave requests.\n";
 
     /// The 22 commands with their minimal required arguments.
-    const COMMANDS: [&[&str]; 22] = [
+    const COMMANDS: [&[&str]; 27] = [
         &["init", "--project", "project:pilot"],
         &[
             "import",
@@ -75,6 +75,12 @@ mod cli {
         &["tags"],
         &["ready"],
         &["export", "--format", "functional"],
+        // R0.6.
+        &["directory"],
+        &["confirm", "req:a", "actor:b", "--reason", "Reviewed."],
+        &["ask"],
+        &["answer", "q:0000000000000001", "--answer", "{}"],
+        &["proposals"],
         &["report", "--out", "out"],
         &["serve", "--listen", "127.0.0.1:0"],
         &[
@@ -433,6 +439,12 @@ mod cli {
             scenario_derivation: None,
             verification_applicability: Some(VerificationApplicabilityInputs::default()),
             gates: serde_json::from_value(config["gates"].clone()).unwrap(),
+            directory: config
+                .get("directory")
+                .map(|d| serde_json::from_value(d.clone()).unwrap()),
+            question_routing: config
+                .get("question_routing")
+                .map(|r| serde_json::from_value(r.clone()).unwrap()),
         }
     }
 
@@ -458,7 +470,7 @@ mod cli {
     // ------------------------------------------------------------------ parsing
 
     #[test]
-    fn cli_parses_all_twenty_two_commands() {
+    fn cli_parses_all_twenty_seven_commands() {
         // Without --config every parsed command stops at configuration: exit 1, not a clap
         // error, so each argument tree parses.
         for args in COMMANDS {
@@ -500,6 +512,11 @@ mod cli {
                 "export",
                 "report",
                 "serve",
+                "directory",
+                "confirm",
+                "ask",
+                "answer",
+                "proposals",
                 "log-effort"
             ]
         );
@@ -1484,6 +1501,354 @@ mod cli {
             "{out}"
         );
         assert!(!out.contains(": fail"), "{out}");
+    }
+
+    // ------------------------------------------------------------------ R0.6 product surfaces
+
+    /// A six-family directory (no grounding: the fixture has no Accepted Requirement) and a
+    /// question routing to stakeholder:hr.
+    fn directory_config() -> Value {
+        use plumb_validation::decision_table_analysis::{
+            DecisionColumn, DecisionInputCell, DecisionOutputCell, DecisionRow, DecisionTableSpec,
+            DecisionType,
+        };
+        let column = |name: &str| DecisionColumn {
+            name: name.into(),
+            ty: DecisionType::Bool,
+            domain: None,
+        };
+        let spec = DecisionTableSpec {
+            hit_policy: "UNIQUE".into(),
+            inputs: vec![column("eligible")],
+            outputs: vec![column("approve")],
+            rows: [true, false]
+                .into_iter()
+                .map(|v| DecisionRow {
+                    inputs: vec![DecisionInputCell::Bool { value: v }],
+                    outputs: vec![DecisionOutputCell::Bool { value: v }],
+                })
+                .collect(),
+            default_output: None,
+        };
+        let mut c = config(all_gates());
+        c["directory"] = json!({
+            "stakeholders": [{"id": "stakeholder:hr", "payload": {
+                "name": "HR", "stakeholder_kind": "internal", "organization": null,
+                "responsibilities": null, "contact_ref": null}}],
+            "actors": [{"id": "actor:clerk", "payload": {"name": "Clerk", "actor_kind": "human"}}],
+            "business_roles": [{"id": "brole:approver", "payload": {"name": "Approver"}}],
+            "calendars": [{"id": "cal:office", "calendar_ref": "cal:office",
+                           "time_zone": "Europe/Amsterdam", "region": "NL", "holiday_source": null}],
+            "rules": [{"id": "rule:balance", "payload": {"name": "Balance", "rule_kind": "business",
+                       "condition_expr": null, "action_expr": null}}],
+            "decision_tables": [{"id": "dt:approval", "name": "Approval", "spec": spec}]
+        });
+        c["question_routing"] = json!({
+            "stakeholders": [{"id": "stakeholder:hr", "name": "HR", "roles": ["analyst"]}],
+            "routing": {"default": ["stakeholder:hr"]}
+        });
+        c
+    }
+
+    /// The head revision of `db`.
+    fn head_graph(db: &Path) -> plumb_store::LoadedRevision {
+        let store = SqliteRevisionStore::open(db).unwrap();
+        let head = store.head(&BranchName::main()).unwrap().unwrap();
+        store.load_revision(&head).unwrap()
+    }
+
+    fn status_of(db: &Path, element: &str) -> String {
+        let g = head_graph(db).graph;
+        serde_json::to_value(g.node(&id(element)).unwrap().status)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn cli_r06_configuration_fields_are_optional_and_strict() {
+        // A configuration without the two optional fields stays valid (env() above).
+        let plain = env();
+        let (code, _, err) = plain.run(&["vocab"]);
+        assert_eq!(code, 0, "{err}");
+        // Complete values parse.
+        let full = env_with(directory_config());
+        let (code, _, err) = full.run(&["vocab"]);
+        assert_eq!(code, 0, "{err}");
+        // Present but null, incomplete or invalid values fail; nothing is defaulted.
+        let mut cases = Vec::new();
+        let mut c = directory_config();
+        c["directory"] = Value::Null;
+        cases.push(("null directory", c));
+        let mut c = directory_config();
+        c["directory"].as_object_mut().unwrap().remove("rules");
+        cases.push(("incomplete directory", c));
+        let mut c = directory_config();
+        c["directory"]["actors"][0]["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("actor_kind");
+        cases.push(("incomplete actor", c));
+        let mut c = directory_config();
+        c["directory"]["calendars"][0]["calendar_ref"] = json!("cal:unknown");
+        cases.push(("unknown calendar", c));
+        let mut c = directory_config();
+        c["directory"]["rules"][0]["id"] = json!("actor:clerk");
+        cases.push(("duplicate element", c));
+        let mut c = directory_config();
+        c["question_routing"]["routing"]["default"] = json!(["stakeholder:nobody"]);
+        cases.push(("invalid routing", c));
+        let mut c = directory_config();
+        c["question_routing"]
+            .as_object_mut()
+            .unwrap()
+            .remove("stakeholders");
+        cases.push(("incomplete routing", c));
+        let mut c = directory_config();
+        c["directory_extra"] = json!({});
+        cases.push(("unknown field", c));
+        for (name, c) in cases {
+            let bad = env_with(c);
+            let (code, _, err) = bad.run(&["vocab"]);
+            assert_eq!(code, 1, "{name}: {err}");
+            assert!(err.contains("configuration"), "{name}: {err}");
+        }
+        // Absent configuration is a clear typed error, never an empty success.
+        let plain = env();
+        for command in ["directory", "ask"] {
+            let (code, _, err) = plain.run(&[command, "--json"]);
+            assert_eq!(code, 1, "{command}: {err}");
+            assert!(err.contains("E_STAGE_CONFIG_MISSING"), "{command}: {err}");
+        }
+    }
+
+    #[test]
+    fn directory_confirm_ask_answer_round_trip() {
+        // R0.1 bootstrap: the configured human Agent decides every governed acceptance.
+        let env = bare_env_with(directory_config());
+        let (code, _, err) = env.run(&["init", "--project", PROJECT]);
+        assert_eq!(code, 0, "{err}");
+        env.import();
+        // An Accepted Operation without a performer: F2 PLUMB.F2.OPERATION.PERFORMER.
+        commit_node(
+            &env.db,
+            json!({
+                "id": "op:submit", "revision": 1, "status": "Accepted",
+                "payload": {"type": "Operation", "data": {
+                    "name": "op:submit", "operation_kind": "command", "input_schema_ref": null,
+                    "output_schema_ref": null, "preconditions": null, "postconditions": null,
+                    "idempotency": null, "transaction_semantics": null
+                }},
+                "evidence": [], "derivations": [], "standards": [], "tags": [], "extensions": {},
+                "audit": {"created_by": ACTOR, "created_at": T0, "updated_by": null, "updated_at": null}
+            }),
+        );
+        // directory: one pending HUMAN_CONFIRM create proposal per element; no commit.
+        let before = head_graph(&env.db).revision.semantic_hash;
+        let (code, elements) = env.json(&["directory"]);
+        assert_eq!(code, 0, "{elements}");
+        let elements = elements.as_array().unwrap().clone();
+        assert_eq!(
+            elements
+                .iter()
+                .map(|e| e["element_ref"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "actor:clerk",
+                "brole:approver",
+                "cal:office",
+                "dt:approval",
+                "rule:balance",
+                "stakeholder:hr"
+            ]
+        );
+        assert_eq!(head_graph(&env.db).revision.semantic_hash, before);
+        let proposal_of = |element: &str| -> String {
+            let e = elements
+                .iter()
+                .find(|e| e["element_ref"] == element)
+                .unwrap();
+            assert_eq!(e["disposition"], "proposed");
+            assert_eq!(e["action"], "create");
+            let proposal = e["proposal_id"].as_str().unwrap().to_owned();
+            assert_eq!(
+                proposal_state(&env.db, &proposal),
+                WorkflowProposalState::Pending
+            );
+            proposal
+        };
+        // Accept the sibling actor and stakeholder proposals together (R0.3 set acceptance on
+        // their shared base): the nodes become Proposed.
+        let (code, write) = env.json(&[
+            "accept-set",
+            &format!("{}=create", proposal_of("actor:clerk")),
+            &format!("{}=create", proposal_of("stakeholder:hr")),
+            "--reason",
+            "Directory reviewed.",
+        ]);
+        assert_eq!(code, 0, "{write}");
+        for element in ["actor:clerk", "stakeholder:hr"] {
+            assert_eq!(status_of(&env.db, element), "Proposed");
+        }
+        // confirm promotes them through the generic governed confirmation.
+        let (code, write) = env.json(&[
+            "confirm",
+            "stakeholder:hr",
+            "actor:clerk",
+            "--reason",
+            "Confirmed.",
+        ]);
+        assert_eq!(code, 0, "{write}");
+        assert_eq!(status_of(&env.db, "actor:clerk"), "Accepted");
+        assert_eq!(status_of(&env.db, "stakeholder:hr"), "Accepted");
+        // A current F2 report (ready persists it), then ask materializes its questions.
+        let (code, ready) = env.json(&["ready"]);
+        assert_eq!(code, 2, "{ready}");
+        let (code, asked) = env.json(&["ask"]);
+        assert_eq!(code, 0, "{asked}");
+        assert!(asked["write"].is_object(), "{asked}");
+        let performer = asked["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|q| q["template_id"] == "f2.operation.performer.v1")
+            .unwrap_or_else(|| panic!("{asked}"))
+            .clone();
+        assert_eq!(performer["stakeholder_ref"], "stakeholder:hr");
+        let question = performer["question_ref"].as_str().unwrap();
+        assert!(head_graph(&env.db).graph.node(&id(question)).is_some());
+        // answer: a pending Question-origin governed proposal through the shared service.
+        let (code, answered) = env.json(&[
+            "answer",
+            question,
+            "--answer",
+            r#"{"performer_ref": "actor:clerk"}"#,
+        ]);
+        assert_eq!(code, 0, "{answered}");
+        let proposal = answered["proposal_id"].as_str().unwrap();
+        let record = SqliteWorkflowStore::open(&env.db)
+            .unwrap()
+            .proposal(&id(proposal))
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.state, WorkflowProposalState::Pending);
+        assert_eq!(record.origin_kind.as_str(), "question");
+        assert_eq!(record.origin_ref, Some(id(question)));
+        assert_eq!(answered["action"], record.proposal_kind.as_str());
+        // A non-object answer is refused like HTTP.
+        let (code, _, err) = env.run(&["answer", question, "--answer", "[1]"]);
+        assert_eq!(code, 1);
+        assert!(err.contains("E_INVALID_REQUEST"), "{err}");
+    }
+
+    #[test]
+    fn proposals_lists_pending_with_class_origin_and_reason() {
+        let env = env_with(directory_config());
+        env.import();
+        // Stage-origin proposals (extract, replayed).
+        let fixtures = record(&env, "extract");
+        let f = fixtures.to_str().unwrap();
+        let (code, job) = env.json(&["--provider", "replay", "--replay-fixtures", f, "extract"]);
+        assert_eq!(code, 0, "{job}");
+        // Intake-origin proposals (directory) on the same base.
+        let (code, _) = env.json(&["directory"]);
+        assert_eq!(code, 0);
+        let first_base = SqliteRevisionStore::open(&env.db)
+            .unwrap()
+            .head(&BranchName::main())
+            .unwrap()
+            .unwrap();
+        // Accepting one stage proposal moves the head: every other pending proposal becomes
+        // stale but stays pending and listed.
+        let stage_links = SqliteStageStore::open(&env.db)
+            .unwrap()
+            .pending_proposal_links()
+            .unwrap();
+        let accepted = stage_links[0].proposal_id.to_string();
+        let (code, write) = env.json(&[
+            "apply",
+            &accepted,
+            "--action",
+            "create",
+            "--reason",
+            "Accepted.",
+        ]);
+        assert_eq!(code, 0, "{write}");
+        let (code, listed) = env.json(&["proposals"]);
+        assert_eq!(code, 0, "{listed}");
+        let listed = listed.as_array().unwrap().clone();
+        // Every pending workflow proposal, sorted by ID, and nothing else.
+        let wf = SqliteWorkflowStore::open(&env.db).unwrap();
+        let pending = wf.pending_proposals().unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|p| p["proposal_id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>(),
+            pending
+                .iter()
+                .map(|p| p.proposal_id.to_string())
+                .collect::<Vec<_>>()
+        );
+        let mut sorted: Vec<String> = listed
+            .iter()
+            .map(|p| p["proposal_id"].as_str().unwrap().to_owned())
+            .collect();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            listed
+                .iter()
+                .map(|p| p["proposal_id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        );
+        assert!(!listed.iter().any(|p| p["proposal_id"] == accepted.as_str()));
+        let stage = SqliteStageStore::open(&env.db).unwrap();
+        let mut origins = std::collections::BTreeSet::new();
+        for (view, record) in listed.iter().zip(&pending) {
+            let intake: Value = serde_json::from_str(&record.intake_json).unwrap();
+            assert_eq!(view["requires_reason"], intake["requires_reason"], "{view}");
+            assert_eq!(view["action"], record.proposal_kind.as_str());
+            assert_eq!(view["origin"], record.origin_kind.as_str());
+            assert_eq!(view["base_revision"], record.base_revision_id.to_string());
+            // Stale: built on the earlier head, still pending and listed.
+            assert_eq!(record.base_revision_id, first_base);
+            origins.insert(record.origin_kind.as_str());
+            match stage.proposal_link(&record.proposal_id).unwrap() {
+                Some(link) => {
+                    assert_eq!(view["origin"], "stage");
+                    assert_eq!(view["recipe_job_id"], link.recipe_job_id.to_string());
+                    assert_eq!(view["stage_job_id"], link.stage_job_id.to_string());
+                    assert_eq!(view["origin_ref"], Value::Null);
+                }
+                None => {
+                    assert_eq!(view["origin"], "intake");
+                    assert_eq!(view["recipe_job_id"], Value::Null);
+                    assert_eq!(view["stage_job_id"], Value::Null);
+                    assert_eq!(view["origin_ref"], Value::Null);
+                }
+            }
+        }
+        assert_eq!(
+            origins,
+            std::collections::BTreeSet::from(["intake", "stage"])
+        );
+        // The text form carries the same records; the listing changed nothing.
+        let (code, text, err) = env.run(&["proposals"]);
+        assert_eq!(code, 0, "{err}");
+        for view in &listed {
+            let line = text
+                .lines()
+                .find(|l| l.starts_with(view["proposal_id"].as_str().unwrap()))
+                .unwrap_or_else(|| panic!("{text}"));
+            assert!(line.contains(view["action"].as_str().unwrap()), "{line}");
+            assert!(
+                line.contains(&format!("requires_reason={}", view["requires_reason"])),
+                "{line}"
+            );
+        }
+        assert_eq!(wf.pending_proposals().unwrap(), pending);
     }
 
     #[test]

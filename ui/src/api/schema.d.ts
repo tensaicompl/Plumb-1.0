@@ -1827,6 +1827,15 @@ export interface components {
         RequirementDetail: {
             class: string;
             coverage: components["schemas"]["RequirementCoverage"];
+            /**
+             * @description The ID of that pending S1.2 EARS WorkflowProposal, accepted through the governed
+             *     proposal acceptance (R0.6); `null` exactly when `ears_suggestion` is `null`.
+             */
+            ears_proposal_ref?: string | null;
+            /**
+             * @description The normalized statement of the pending S1.2 EARS WorkflowProposal of this Requirement
+             *     on the current head (R0.6); `null` when there is none. Paired with `ears_proposal_ref`.
+             */
             ears_suggestion?: string | null;
             id: string;
             linked: components["schemas"]["RequirementLinks"];

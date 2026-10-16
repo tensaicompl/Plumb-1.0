@@ -418,6 +418,8 @@ mod http_stages {
                 f1: gates.f1.clone(),
                 f4: gates.f4.clone(),
             },
+            directory: None,
+            question_routing: None,
         }
     }
 

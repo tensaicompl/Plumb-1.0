@@ -930,9 +930,16 @@ mod openapi {
                 "spans",
                 "lint_findings",
                 "ears_suggestion",
+                "ears_proposal_ref",
                 "linked",
             ],
         );
+        // R0.6: the pending S1.2 EARS proposal reference is detail-only and nullable.
+        let detail = schema(&doc, "RequirementDetail");
+        assert!(detail["properties"]["ears_proposal_ref"]["type"]
+            .as_array()
+            .is_some_and(|t| t.contains(&json!("string")) && t.contains(&json!("null"))));
+        assert!(!properties(&doc, "RequirementSummary").contains("ears_proposal_ref"));
         has(
             "RequirementLinks",
             &["operations", "processes", "scenarios"],

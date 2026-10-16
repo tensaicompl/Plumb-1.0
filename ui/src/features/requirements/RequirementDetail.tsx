@@ -308,14 +308,20 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
   const [waiveReason, setWaiveReason] = useState("");
   const [duplicateOf, setDuplicateOf] = useState("");
   const [duplicateReason, setDuplicateReason] = useState("");
+  const [earsReason, setEarsReason] = useState("");
 
   const onWritten = { onSuccess: () => void queryClient.invalidateQueries() };
   const path = { id: requirementId };
   const classify = useVersionedMutation<WriteResult, string>((value, ifMatch) =>
     apiClient.POST("/api/requirements/{id}/classify", { params: { path, header: { "If-Match": ifMatch } }, body: { class: value } }),
   );
-  const acceptEars = useVersionedMutation<WriteResult, string>((text, ifMatch) =>
-    apiClient.POST("/api/requirements/{id}/accept-ears", { params: { path, header: { "If-Match": ifMatch } }, body: { text } }),
+  // R0.6: a surfaced S1.2 EARS suggestion is the pending WorkflowProposal `ears_proposal_ref`,
+  // accepted through the governed proposal acceptance (never as an analyst text edit).
+  const acceptEars = useVersionedMutation<WriteResult, { proposal: string; reason: string | null }>((body, ifMatch) =>
+    apiClient.POST("/api/proposals/{id}/accept", {
+      params: { path: { id: body.proposal }, header: { "If-Match": ifMatch } },
+      body: { reason: body.reason },
+    }),
   );
   const waive = useVersionedMutation<WriteResult, { finding_id: string; reason: string }>((body, ifMatch) =>
     apiClient.POST("/api/requirements/{id}/waive-finding", { params: { path, header: { "If-Match": ifMatch } }, body }),
@@ -333,6 +339,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
   const detail = requirement.data;
   // Absent and null both mean not calculated by the server; nothing is derived locally.
   const ears = detail.ears_suggestion ?? null;
+  const earsProposal = detail.ears_proposal_ref ?? null;
   const readiness = detail.readiness ?? null;
   const evidence: ProvenanceItem[] = detail.spans.map((ref) => ({ category: "evidence", ref }));
   const linked: readonly { key: "operations" | "processes" | "scenarios"; label: "requirement.linked.operations" | "requirement.linked.processes" | "requirement.linked.scenarios" }[] = [
@@ -364,18 +371,24 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
 
       <section aria-label={t("requirement.section.ears")} data-section="ears" className="rounded border p-3">
         <h2 className="font-semibold">{t("requirement.section.ears")}</h2>
-        {ears === null ? (
+        {ears === null || earsProposal === null ? (
           <p data-testid="ears-unavailable">{t("requirement.ears.notCalculated")}</p>
         ) : (
           <>
-            <p data-testid="ears-suggestion">{ears}</p>
+            <p data-testid="ears-suggestion" data-proposal={earsProposal}>
+              {ears}
+            </p>
+            <label className="mt-2 block text-sm">
+              {t("requirement.reason")}
+              <input className="ml-2 rounded border p-1" value={earsReason} data-testid="ears-reason" onChange={(event) => setEarsReason(event.target.value)} />
+            </label>
             <button
               type="button"
               className="mt-2 rounded border px-3 py-1"
               data-testid="ears-accept"
               disabled={acceptEars.isPending}
               onClick={() => {
-                acceptEars.mutate(ears, onWritten);
+                acceptEars.mutate({ proposal: earsProposal, reason: earsReason === "" ? null : earsReason }, onWritten);
               }}
             >
               {t("requirement.ears.accept")}

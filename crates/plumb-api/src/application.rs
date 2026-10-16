@@ -11,9 +11,9 @@ use std::sync::Arc;
 use plumb_artifacts::SqliteArtifactStore;
 use plumb_core::{Clock, Hash, Id, Timestamp};
 use plumb_functional::{
-    AuthorizationDraft, CalculationScope, CalendarProvider, DuplicatePolicy, OperationScope,
-    PredicateProvider, ProcessScope, ScenarioDerivationInputs, VerificationApplicabilityInputs,
-    VocabularyPolicy,
+    AuthorizationDraft, CalculationScope, CalendarProvider, DirectoryDraft, DuplicatePolicy,
+    OperationScope, PredicateProvider, ProcessScope, ScenarioDerivationInputs,
+    StakeholderRoutingConfig, VerificationApplicabilityInputs, VocabularyPolicy,
 };
 use plumb_inference::{InferenceProvider, ProviderPolicy};
 use plumb_psg::{Agent, AgentKind, AuditMeta, ElementStatus, Graph, Node, NodePayload};
@@ -78,6 +78,10 @@ pub struct ApplicationRuntime {
     pub scenario_derivation: Option<ScenarioDerivationInputs>,
     pub verification_applicability: Option<VerificationApplicabilityInputs>,
     pub gates: GateInputsConfig,
+    /// The configured semantic directory (R0.6); `None` when not configured.
+    pub directory: Option<DirectoryDraft>,
+    /// The S3.1 question routing (R0.6); `None` when not configured.
+    pub question_routing: Option<StakeholderRoutingConfig>,
 }
 
 /// Opens the revision, artifact, workflow and stage stores over `db` and builds the full A0.4
@@ -123,6 +127,8 @@ pub fn open_application(
         scenario_derivation: runtime.scenario_derivation,
         verification_applicability: runtime.verification_applicability,
         gates: runtime.gates,
+        directory: runtime.directory,
+        question_routing: runtime.question_routing,
     };
     Ok(ApiState::new_with_stage_runtime(
         branch,
@@ -319,33 +325,51 @@ pub fn bootstrap_project_database(
 mod services {
     use plumb_artifacts::ArtifactStore;
     use plumb_core::{GateId, Id, StageId};
+    use plumb_functional::resolution::{
+        resolve_question, ResolutionContext, ResolutionError, ResolutionInput,
+    };
     use plumb_functional::{
         compose_question_round_for_stakeholder, generate_questions, parse_priority,
         project_functional_pilot, round_id, FunctionalPilotOutputs, ProjectionArtifact,
         QuestionAudit, QuestionGenerationInput, QuestionGenerationResult, QuestionRoundConfig,
         QuestionRoundDisposition, RoundError, MAX_QUESTION_ROUND_SIZE,
     };
+    use plumb_functional::{
+        produce_directory, DirectoryAudit, DirectoryCalendarBinding, DirectoryDisposition,
+    };
     use plumb_import::{
         import_docx, import_markdown, import_plain_text, ImportAudit, ImportedSource,
     };
-    use plumb_patch::{AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch};
-    use plumb_psg::{ElementStatus, FindingSeverity, Graph, Node, NodePayload, NodeType};
-    use plumb_store::{LoadedRevision, StoreError, WorkflowProposal, WorkflowProposalState};
+    use plumb_patch::{
+        earliest_gate, AcceptancePolicy, ElementPrecondition, PatchSet, Proposal,
+        ProposalMateriality, SemanticPatch,
+    };
+    use plumb_psg::{
+        contributes_to_semantic_hash, edge_element_hash, is_baseline, node_element_hash,
+        ElementStatus, FindingSeverity, Graph, Node, NodePayload, NodeType,
+    };
+    use plumb_store::{
+        LoadedRevision, NewWorkflowProposal, StoreError, WorkflowInsert, WorkflowOrigin,
+        WorkflowProposal, WorkflowProposalState,
+    };
+    use serde::Serialize;
     use serde_json::{json, Value};
 
     use crate::error::ApiError;
     use crate::openapi::{
-        CreateRoundResponse, ExportFormat, GlossaryTerm, ProposalKind, Question, QuestionKind,
-        QuestionStatus, Round, SourceUploadResponse, WriteResult,
+        AnswerResponse, CreateRoundResponse, ExportFormat, GlossaryTerm, ProposalKind, Question,
+        QuestionKind, QuestionStatus, Round, SourceUploadResponse, WriteResult,
     };
     use crate::stage::acceptance as stage_acceptance;
+    use crate::stage::recipe::Phase;
     use crate::stage::scenario_execution::error_name;
     use crate::state::{
         companion_error, introduced_decisions, parse_id, parse_wire, reason_required,
         require_clean_reason, run_intake, wire, ApiState,
     };
     use crate::workflow::{
-        acceptance_decisions, classify, decode_proposal, require_kind, StoredProposal,
+        acceptance_decisions, classify, decode_proposal, intake_view, require_kind, store_kind,
+        stored_json, StoredProposal,
     };
 
     const MARKDOWN: &str = "text/markdown";
@@ -509,6 +533,130 @@ mod services {
             _ => Err(ApiError::workflow_corrupt(&format!(
                 "proposal {proposal_id}"
             ))),
+        }
+    }
+
+    /// One element of the configured directory service (R0.6).
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+    pub struct DirectoryElementView {
+        pub element_ref: String,
+        pub node_type: String,
+        /// `proposed` (a pending proposal was persisted) or `existing`.
+        pub disposition: String,
+        pub proposal_id: Option<String>,
+        /// The positive action the pending proposal requires.
+        pub action: Option<String>,
+        pub requires_reason: Option<bool>,
+    }
+
+    /// One pending workflow proposal of the proposal discovery (R0.6).
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+    pub struct PendingProposalView {
+        pub proposal_id: String,
+        /// The positive action it requires: accept, create, link, merge or supersede.
+        pub action: String,
+        /// The workflow origin: intake, question, session or stage.
+        pub origin: String,
+        pub origin_ref: Option<String>,
+        /// The stage recipe job and stage job of a stage-origin proposal.
+        pub recipe_job_id: Option<String>,
+        pub stage_job_id: Option<String>,
+        pub base_revision: String,
+        /// Whether its stored X1.3 intake requires a reason.
+        pub requires_reason: bool,
+    }
+
+    const GOVERNANCE: &str = "governance_type";
+    const PROVENANCE_OR_PROOF: &str = "provenance_or_proof_type";
+    const DEDICATED: &str = "dedicated_confirmation";
+
+    /// Why the generic confirmation refuses a node type (architecture §2): every type excluded
+    /// from `semantic_hash` (provenance, workflow and proof outputs), the governance types
+    /// ResolutionDecision and Assumption, and the dedicated Term, Calculation and Scenario
+    /// contracts. Requirement and every other semantic type are eligible.
+    fn confirmation_refusal(node_type: NodeType) -> Option<&'static str> {
+        if !contributes_to_semantic_hash(node_type) {
+            return Some(PROVENANCE_OR_PROOF);
+        }
+        match node_type {
+            NodeType::ResolutionDecision | NodeType::Assumption => Some(GOVERNANCE),
+            NodeType::Term | NodeType::Calculation | NodeType::Scenario => Some(DEDICATED),
+            _ => None,
+        }
+    }
+
+    /// The stage of a gate (architecture §2 stage table).
+    fn gate_stage(gate: GateId) -> StageId {
+        match gate {
+            GateId::I0 => StageId::S0,
+            GateId::F1 => StageId::S1,
+            GateId::F2 => StageId::S2,
+            GateId::F3 => StageId::S3,
+            GateId::F4 => StageId::S4,
+            GateId::Q1 => StageId::S5,
+            GateId::A1 => StageId::S6,
+            GateId::A2 => StageId::S7,
+            GateId::A3 => StageId::S8,
+            GateId::A4 => StageId::S9,
+            GateId::D1 => StageId::S10,
+            GateId::D2 => StageId::S11,
+            GateId::C1 => StageId::S12,
+        }
+    }
+
+    /// 409 `E_STAGE_CONFIG_MISSING` for an absent R0.6 runtime value.
+    fn config_missing(field: &str) -> ApiError {
+        ApiError::conflict(
+            "E_STAGE_CONFIG_MISSING",
+            format!("the {field} configuration is absent"),
+        )
+        .with_details(json!({ "missing": [field] }))
+    }
+
+    /// Persists `proposal` and its X1.3 `report` as a pending workflow proposal bound to the
+    /// loaded revision (the storage invariants of the intake route): an identical pending
+    /// proposal is idempotent, the same ID with different material is corrupt, and an
+    /// identical non-pending one is not pending.
+    fn persist_pending_proposal(
+        state: &ApiState,
+        loaded: &LoadedRevision,
+        proposal: &Proposal,
+        report: &plumb_intake::IntakeReport,
+        origin_kind: WorkflowOrigin,
+        origin_ref: Option<Id>,
+        created_at: plumb_core::Timestamp,
+    ) -> Result<StoredProposal, ApiError> {
+        let kind = classify(&loaded.graph, proposal)?;
+        let record = NewWorkflowProposal {
+            proposal_id: proposal.id.clone(),
+            base_revision_id: loaded.revision.id.clone(),
+            proposal_json: stored_json(proposal)?,
+            intake_json: stored_json(report)?,
+            proposal_kind: store_kind(kind),
+            origin_kind,
+            origin_ref,
+            created_at,
+        };
+        let inserted = state
+            .with_workflow_store(|store| {
+                store.insert_proposal(&record, WorkflowProposalState::Pending)
+            })?
+            .map_err(workflow_error)?;
+        match inserted {
+            WorkflowInsert::Inserted(stored) => decode_proposal(stored),
+            WorkflowInsert::Existing(stored) => {
+                let existing = decode_proposal(stored)?;
+                if existing.proposal != *proposal {
+                    return Err(ApiError::workflow_corrupt(&format!(
+                        "proposal {}",
+                        proposal.id
+                    )));
+                }
+                if existing.record.state != WorkflowProposalState::Pending {
+                    return Err(not_pending(&existing.record));
+                }
+                Ok(existing)
+            }
         }
     }
 
@@ -1190,6 +1338,476 @@ mod services {
             Ok(write)
         }
 
+        // ==================================================================== R0.6 services
+
+        /// The S3.3 answer service (R0.6): resolves `question_id` with `answer` on exactly
+        /// `loaded`, persists the content-addressed patch artifact, runs X1.3 intake and stores
+        /// the result as a pending Question-origin workflow proposal; nothing is committed. The
+        /// response carries the authoritative workflow class of that exact Proposal (Hotfix
+        /// 076), classified before any artifact, intake or workflow persistence. HTTP and CLI
+        /// share it; transport validation (body, If-Match) stays with the caller.
+        pub fn answer_question(
+            &self,
+            loaded: &LoadedRevision,
+            question_id: &str,
+            answer: Value,
+            rationale: Option<String>,
+            supersedes: Option<Id>,
+        ) -> Result<AnswerResponse, ApiError> {
+            let runtime = self.runtime("workflow_store")?;
+            let created_at = self.now();
+            let question_ref = parse_id(question_id)
+                .ok_or_else(|| ApiError::not_found(format!("question {question_id} not found")))?;
+            // Invariant bindings come only from injected scopes owned by Accepted Invariants.
+            let invariant_bindings: std::collections::BTreeMap<Id, Vec<_>> = runtime
+                .expression_scopes
+                .iter()
+                .filter(|scope| {
+                    loaded.graph.node(&scope.owner_ref).is_some_and(|n| {
+                        n.status == ElementStatus::Accepted
+                            && n.payload.node_type() == NodeType::Invariant
+                    })
+                })
+                .map(|scope| (scope.owner_ref.clone(), scope.bindings.clone()))
+                .collect();
+            let result = resolve_question(
+                &loaded.graph,
+                &ResolutionInput {
+                    question_ref: question_ref.clone(),
+                    answer,
+                    decided_by: self.actor_ref().clone(),
+                    decided_at: created_at,
+                    rationale,
+                    supersedes,
+                },
+                &ResolutionContext { invariant_bindings },
+            )
+            .map_err(|error| match error {
+                ResolutionError::QuestionMissing(id) | ResolutionError::NotAQuestion(id) => {
+                    ApiError::not_found(format!("question {id} not found"))
+                }
+                other => ApiError::semantic(&error_name(&other), other.to_string()),
+            })?;
+            let action = classify(&loaded.graph, &result.proposal)?;
+            let stored = self.with_artifact_store(|store| {
+                store.put(
+                    plumb_artifacts::ArtifactKind::Patch,
+                    "application/json",
+                    &result.patch_artifact_bytes,
+                    created_at,
+                )
+            })?;
+            match stored {
+                Ok(hash) if hash == result.decision.patch_ref => {}
+                _ => return Err(ApiError::internal("artifact_store")),
+            }
+            let report = run_intake(loaded, &result.proposal)?;
+            let persisted = persist_pending_proposal(
+                self,
+                loaded,
+                &result.proposal,
+                &report,
+                WorkflowOrigin::Question,
+                Some(question_ref),
+                created_at,
+            )?;
+            let revision = loaded.revision.id.to_string();
+            Ok(AnswerResponse {
+                version: revision.clone(),
+                revision,
+                semantic_hash: loaded.revision.semantic_hash.to_string(),
+                events: Vec::new(),
+                proposal_id: persisted.proposal.id.to_string(),
+                action,
+                intake: intake_view(&persisted.intake, self.profile())?,
+                patch_preview: serde_json::to_value(&persisted.proposal.patch_set.patch)
+                    .map_err(|_| ApiError::internal("patch_preview"))?,
+            })
+        }
+
+        /// The configured directory service (R0.6, architecture §2): produces the configured
+        /// directory on exactly `loaded` (one clock read, the stage actor as audit) and
+        /// persists every generated Semantic / HUMAN_CONFIRM proposal as a pending
+        /// Intake-origin workflow proposal after X1.3 intake. Nothing is committed, accepted or
+        /// promoted; the outcomes are in element-ID order.
+        pub fn persist_directory(
+            &self,
+            loaded: &LoadedRevision,
+        ) -> Result<Vec<DirectoryElementView>, ApiError> {
+            self.runtime("workflow_store")?;
+            let a04 = self.stage_runtime("directory")?;
+            let draft = a04
+                .directory
+                .as_ref()
+                .ok_or_else(|| config_missing("directory"))?;
+            let created_at = self.now();
+            let bindings: Vec<DirectoryCalendarBinding> = a04
+                .calendars
+                .iter()
+                .map(|c| DirectoryCalendarBinding {
+                    calendar_ref: c.calendar_ref.clone(),
+                    weekend: c.weekend.clone(),
+                })
+                .collect();
+            let result = produce_directory(
+                &loaded.graph,
+                draft,
+                &bindings,
+                &DirectoryAudit {
+                    created_by: a04.stage_actor_ref.clone(),
+                    created_at,
+                },
+            )
+            .map_err(|error| {
+                ApiError::unprocessable(
+                    "E_SEMANTIC_INVARIANT",
+                    "the configured directory cannot be produced",
+                )
+                .with_details(json!({ "error": error_name(&error), "reason": error.to_string() }))
+            })?;
+            let mut views = Vec::with_capacity(result.outcomes.len());
+            for outcome in result.outcomes {
+                let node_type = outcome.node_type.as_str().to_owned();
+                let element_ref = outcome.element_ref.to_string();
+                match outcome.disposition {
+                    DirectoryDisposition::Existing => views.push(DirectoryElementView {
+                        element_ref,
+                        node_type,
+                        disposition: "existing".into(),
+                        proposal_id: None,
+                        action: None,
+                        requires_reason: None,
+                    }),
+                    DirectoryDisposition::Proposed { proposal } => {
+                        let report = run_intake(loaded, &proposal)?;
+                        let stored = persist_pending_proposal(
+                            self,
+                            loaded,
+                            &proposal,
+                            &report,
+                            WorkflowOrigin::Intake,
+                            None,
+                            created_at,
+                        )?;
+                        views.push(DirectoryElementView {
+                            element_ref,
+                            node_type,
+                            disposition: "proposed".into(),
+                            proposal_id: Some(stored.proposal.id.to_string()),
+                            action: Some(stored.record.proposal_kind.as_str().to_owned()),
+                            requires_reason: Some(stored.intake.requires_reason),
+                        });
+                    }
+                }
+            }
+            Ok(views)
+        }
+
+        /// The generic governed confirmation (R0.6, architecture §2): one Semantic /
+        /// HUMAN_CONFIRM proposal of sequential `SetStatus Proposed -> Accepted` leaves under
+        /// exact element-hash preconditions for the explicitly listed existing elements (nodes
+        /// by ID, then edges by ID), committed through the governed acceptance path (X1.3
+        /// intake, acceptance companion, one CAS on `loaded`). It never creates or edits
+        /// content. It refuses governance, provenance and proof types, the dedicated Term,
+        /// Calculation and Scenario contracts, non-Proposed elements and Proposed edges whose
+        /// endpoints would not both be baseline-participating after the same proposal.
+        /// Requirement is eligible.
+        pub fn confirm_elements(
+            &self,
+            loaded: &LoadedRevision,
+            element_ids: &[String],
+            reason: Option<String>,
+        ) -> Result<WriteResult, ApiError> {
+            if let Some(reason) = &reason {
+                require_clean_reason(reason)?;
+            }
+            if element_ids.is_empty() {
+                return Err(ApiError::invalid(
+                    "confirmation needs at least one element ID",
+                ));
+            }
+            let mut ids = std::collections::BTreeSet::new();
+            for text in element_ids {
+                let id = parse_id(text)
+                    .ok_or_else(|| ApiError::invalid(format!("{text} is not an ID")))?;
+                if !ids.insert(id.clone()) {
+                    return Err(ApiError::invalid("an element is listed twice")
+                        .with_details(json!({ "element": id })));
+                }
+            }
+            let created_at = self.now();
+            let graph = &loaded.graph;
+            let refuse = |element: &Id, node_type: &str, reason: &str| {
+                ApiError::unprocessable(
+                    "E_SEMANTIC_INVARIANT",
+                    "the element cannot be confirmed by the generic confirmation",
+                )
+                .with_details(json!({
+                    "element": element,
+                    "node_type": node_type,
+                    "reason": reason,
+                }))
+            };
+            let mut nodes = Vec::new();
+            let mut edges = Vec::new();
+            for id in &ids {
+                if let Some(node) = graph.node(id) {
+                    let t = node.payload.node_type();
+                    if let Some(why) = confirmation_refusal(t) {
+                        return Err(refuse(id, t.as_str(), why));
+                    }
+                    if node.status != ElementStatus::Proposed {
+                        return Err(refuse(id, t.as_str(), "not_proposed"));
+                    }
+                    nodes.push(node);
+                } else if let Some(edge) = graph.edge(id) {
+                    if edge.status != ElementStatus::Proposed {
+                        return Err(refuse(id, edge.kind.as_str(), "not_proposed"));
+                    }
+                    edges.push(edge);
+                } else {
+                    return Err(ApiError::not_found(format!("element {id} not found")));
+                }
+            }
+            // Edge endpoints: no governance, provenance or proof endpoint, and each endpoint
+            // baseline-participating after this proposal (already, or confirmed here).
+            let promoted: std::collections::BTreeSet<&Id> = nodes.iter().map(|n| &n.id).collect();
+            for edge in &edges {
+                for end in [&edge.from, &edge.to] {
+                    let Some(node) = graph.node(end) else {
+                        return Err(refuse(&edge.id, edge.kind.as_str(), "endpoint_missing"));
+                    };
+                    if matches!(
+                        confirmation_refusal(node.payload.node_type()),
+                        Some(GOVERNANCE) | Some(PROVENANCE_OR_PROOF)
+                    ) {
+                        return Err(refuse(
+                            &edge.id,
+                            edge.kind.as_str(),
+                            "governance_or_provenance_endpoint",
+                        ));
+                    }
+                    if !(is_baseline(node.status) || promoted.contains(end)) {
+                        return Err(refuse(
+                            &edge.id,
+                            edge.kind.as_str(),
+                            "endpoint_not_baseline_participating",
+                        ));
+                    }
+                }
+            }
+            // The proposal stage: the earliest stage owning a confirmed element.
+            let stage = nodes
+                .iter()
+                .map(|n| n.payload.node_type())
+                .chain(
+                    edges
+                        .iter()
+                        .flat_map(|e| [&e.from, &e.to])
+                        .filter_map(|end| graph.node(end))
+                        .map(|n| n.payload.node_type()),
+                )
+                .map(|t| gate_stage(earliest_gate(t)))
+                .min()
+                .unwrap_or(StageId::S1);
+            let mut leaves = Vec::with_capacity(nodes.len() + edges.len());
+            for node in &nodes {
+                leaves.push(SemanticPatch::SetStatus {
+                    target: ElementPrecondition {
+                        id: node.id.clone(),
+                        expected_hash: node_element_hash(node)
+                            .map_err(|_| ApiError::internal("element_hash"))?,
+                    },
+                    from: ElementStatus::Proposed,
+                    to: ElementStatus::Accepted,
+                });
+            }
+            for edge in &edges {
+                leaves.push(SemanticPatch::SetStatus {
+                    target: ElementPrecondition {
+                        id: edge.id.clone(),
+                        expected_hash: edge_element_hash(edge)
+                            .map_err(|_| ApiError::internal("element_hash"))?,
+                    },
+                    from: ElementStatus::Proposed,
+                    to: ElementStatus::Accepted,
+                });
+            }
+            let patch = if leaves.len() == 1 {
+                leaves.remove(0)
+            } else {
+                SemanticPatch::Compound { patches: leaves }
+            };
+            let proposal = Proposal::new(
+                stage,
+                PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch,
+                },
+                Vec::new(),
+                Vec::new(),
+                ProposalMateriality::Semantic,
+                AcceptancePolicy::HumanConfirm,
+                None,
+            )
+            .map_err(|_| ApiError::internal("proposal"))?;
+            self.write(
+                loaded,
+                &proposal,
+                true,
+                reason.as_deref(),
+                created_at,
+                "confirm_elements",
+            )
+        }
+
+        /// `ask` (R0.6): materializes Questions from the findings of the current persisted F2
+        /// report of `loaded` with the configured `question_routing`, through the shared
+        /// [`ApiState::materialize_questions`] service.
+        pub fn ask(&self, loaded: &LoadedRevision) -> Result<MaterializedQuestions, ApiError> {
+            let routing = self
+                .stage_runtime("ask")?
+                .question_routing
+                .clone()
+                .ok_or_else(|| config_missing("question_routing"))?;
+            let f2 = self.current_gate_report(loaded, GateId::F2)?;
+            self.materialize_questions(
+                loaded,
+                &QuestionGenerationInput {
+                    findings: f2.findings,
+                    routing,
+                },
+            )
+        }
+
+        /// Every pending workflow proposal (R0.6 proposal discovery), sorted by proposal ID,
+        /// with the information needed to act on it. Read-only: stale pending proposals are
+        /// listed as they are (their cleanup is H0.10). A stage-origin proposal carries its
+        /// recipe and stage job from its durable stage link; a missing link is corrupt state.
+        pub fn pending_proposals(&self) -> Result<Vec<PendingProposalView>, ApiError> {
+            self.runtime("workflow_store")?;
+            let records = self
+                .with_workflow_store(|store| store.pending_proposals())?
+                .map_err(workflow_error)?;
+            let mut views = Vec::with_capacity(records.len());
+            for record in records {
+                let stored = decode_proposal(record)?;
+                let record = &stored.record;
+                let (recipe_job_id, stage_job_id) = match record.origin_kind {
+                    WorkflowOrigin::Stage => {
+                        let link = stage_acceptance::link_of(self, &record.proposal_id)?
+                            .ok_or_else(|| {
+                                ApiError::workflow_corrupt(&format!(
+                                    "stage link of proposal {}",
+                                    record.proposal_id
+                                ))
+                            })?;
+                        (
+                            Some(link.recipe_job_id.to_string()),
+                            Some(link.stage_job_id.to_string()),
+                        )
+                    }
+                    _ => (None, None),
+                };
+                views.push(PendingProposalView {
+                    proposal_id: record.proposal_id.to_string(),
+                    action: record.proposal_kind.as_str().to_owned(),
+                    origin: record.origin_kind.as_str().to_owned(),
+                    origin_ref: record.origin_ref.as_ref().map(Id::to_string),
+                    recipe_job_id,
+                    stage_job_id,
+                    base_revision: record.base_revision_id.to_string(),
+                    requires_reason: stored.intake.requires_reason,
+                });
+            }
+            views.sort_by(|a, b| a.proposal_id.cmp(&b.proposal_id));
+            Ok(views)
+        }
+
+        /// The pending S1.2 EARS proposal of `requirement` on `loaded` (R0.6): a pending
+        /// stage-origin workflow proposal built on exactly this head, linked to a consolidate
+        /// (S1) child job, whose S1 patch is one `ReplacePayload` of that Requirement under its
+        /// current element hash changing only its statement. Returns the normalized statement
+        /// and the proposal ID; nothing is regenerated. Without a workflow or stage runtime
+        /// there is none; several distinct matches are corrupt state.
+        pub fn pending_ears_proposal(
+            &self,
+            loaded: &LoadedRevision,
+            requirement: &Id,
+        ) -> Result<Option<(String, Id)>, ApiError> {
+            if self.runtime("workflow_store").is_err() || self.stage_runtime("ears").is_err() {
+                return Ok(None);
+            }
+            let Some(node) = loaded.graph.node(requirement) else {
+                return Ok(None);
+            };
+            let NodePayload::Requirement(current) = &node.payload else {
+                return Ok(None);
+            };
+            let current_hash =
+                node_element_hash(node).map_err(|_| ApiError::internal("element_hash"))?;
+            let records = self
+                .with_workflow_store(|store| store.pending_proposals())?
+                .map_err(workflow_error)?;
+            let mut found: Vec<(String, Id)> = Vec::new();
+            for record in records {
+                if record.origin_kind != WorkflowOrigin::Stage
+                    || record.base_revision_id != loaded.revision.id
+                {
+                    continue;
+                }
+                let stored = decode_proposal(record)?;
+                let proposal = &stored.proposal;
+                if proposal.stage != StageId::S1
+                    || proposal.patch_set.base_semantic_hash != loaded.revision.semantic_hash
+                {
+                    continue;
+                }
+                let SemanticPatch::ReplacePayload { target, payload } = &proposal.patch_set.patch
+                else {
+                    continue;
+                };
+                let NodePayload::Requirement(updated) = payload else {
+                    continue;
+                };
+                if &target.id != requirement || target.expected_hash != current_hash {
+                    continue;
+                }
+                // Only the statement changes: the S1.2 normalization effect.
+                let normalized = plumb_psg::Requirement {
+                    statement: current.statement.clone(),
+                    ..updated.clone()
+                };
+                if &normalized != current || updated.statement == current.statement {
+                    continue;
+                }
+                let Some(link) = stage_acceptance::link_of(self, &proposal.id)? else {
+                    return Err(ApiError::workflow_corrupt(&format!(
+                        "stage link of proposal {}",
+                        proposal.id
+                    )));
+                };
+                let steps = self
+                    .with_stage_store(|store| store.steps(&link.recipe_job_id))?
+                    .map_err(|_| ApiError::workflow_corrupt("stage steps"))?;
+                let consolidate = steps.iter().any(|step| {
+                    step.stage_job_id.as_ref() == Some(&link.stage_job_id)
+                        && step.phase == Phase::Consolidate.as_str()
+                        && step.compiler_stage == StageId::S1.as_str()
+                });
+                if consolidate {
+                    found.push((updated.statement.clone(), proposal.id.clone()));
+                }
+            }
+            match found.len() {
+                0 => Ok(None),
+                1 => Ok(found.pop()),
+                _ => Err(ApiError::workflow_corrupt(&format!(
+                    "pending EARS proposals of {requirement}"
+                ))),
+            }
+        }
+
         /// The pilot projection of `loaded` over the active profile and the current F4 report:
         /// `project_functional_pilot` called once for HTTP export and CLI export and report.
         pub fn pilot_projection(
@@ -1207,5 +1825,6 @@ mod services {
 
 pub(crate) use services::{baseline_changed, not_pending, workflow_error};
 pub use services::{
-    export_artifact, require_importable, round_size, MaterializedQuestions, ProposalAction,
+    export_artifact, require_importable, round_size, DirectoryElementView, MaterializedQuestions,
+    PendingProposalView, ProposalAction,
 };

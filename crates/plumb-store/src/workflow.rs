@@ -238,6 +238,27 @@ impl SqliteWorkflowStore {
         proposal_on(&self.conn, id)
     }
 
+    /// Every and only `pending` proposal, as the complete stored record, sorted by proposal ID
+    /// ascending (R0.6). Rows are decoded exactly as [`Self::proposal`] decodes them, so a
+    /// malformed row is a typed corruption error and is never skipped. Read-only: no state
+    /// transition, reconciliation, rejection or rebase; no pagination and no origin filter.
+    pub fn pending_proposals(&self) -> Result<Vec<WorkflowProposal>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {PROPOSAL_COLUMNS} FROM workflow_proposals WHERE state = ?1 \
+             ORDER BY proposal_id"
+        ))?;
+        let raws = stmt
+            .query_map([WorkflowProposalState::Pending.as_str()], raw_proposal)?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut proposals = raws
+            .into_iter()
+            .map(RawProposal::decode)
+            .collect::<Result<Vec<_>, _>>()?;
+        // The contract is ID order of the typed IDs, independent of SQLite collation.
+        proposals.sort_by(|a, b| a.proposal_id.cmp(&b.proposal_id));
+        Ok(proposals)
+    }
+
     /// Moves a `pending` proposal to `accepted` or `rejected` with its resolution revision and
     /// time. Any other current state is [`StoreError::WorkflowStateConflict`].
     pub fn resolve_proposal(

@@ -1029,6 +1029,8 @@ pub(crate) mod test_support {
             scenario_derivation: None,
             verification_applicability: None,
             gates: GateInputsConfig { f1: None, f4: None },
+            directory: None,
+            question_routing: None,
         };
         open_application(
             &db,

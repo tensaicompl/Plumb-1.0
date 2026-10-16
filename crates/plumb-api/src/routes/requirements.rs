@@ -246,6 +246,8 @@ async fn get_requirement(
     let (node, payload) = requirement(&loaded.graph, &id)?;
     let f1 = current_f1(&state, &loaded)?;
     let summary = summary(&loaded.graph, f1.as_ref(), node, payload)?;
+    // R0.6: the persisted pending S1.2 EARS proposal, never a regenerated suggestion.
+    let ears = state.pending_ears_proposal(&loaded, &node.id)?;
     let mut spans: Vec<String> = node
         .evidence
         .iter()
@@ -265,7 +267,8 @@ async fn get_requirement(
             .as_ref()
             .map(|r| lint_findings(r, &node.id))
             .unwrap_or_default(),
-        ears_suggestion: None,
+        ears_suggestion: ears.as_ref().map(|(text, _)| text.clone()),
+        ears_proposal_ref: ears.as_ref().map(|(_, id)| id.to_string()),
         linked: RequirementLinks {
             operations: summary.coverage.operations,
             processes: specified_by(&loaded.graph, &node.id, NodeType::Process),

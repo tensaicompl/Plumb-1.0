@@ -17,9 +17,9 @@ use plumb_api::runtime::{
 use plumb_api::ApiIdentity;
 use plumb_core::{to_canonical_json, Hash, Id};
 use plumb_functional::{
-    AuthorizationDraft, CalculationScope, DuplicatePolicy, ExprCalendarDefinition,
+    AuthorizationDraft, CalculationScope, DirectoryDraft, DuplicatePolicy, ExprCalendarDefinition,
     ExprStaticCalendarProvider, OperationScope, ProcessScope, ScenarioDerivationInputs,
-    VerificationApplicabilityInputs, VocabularyPolicy,
+    StakeholderRoutingConfig, VerificationApplicabilityInputs, VocabularyPolicy,
 };
 use plumb_inference::{
     InferenceProvider, MockProvider, NullProvider, ProviderExecution, ProviderPolicy,
@@ -58,6 +58,10 @@ const FIELDS: [&str; 21] = [
     "verification_applicability",
     "gates",
 ];
+
+/// The optional top-level fields (R0.6): absent means not configured; when present each is a
+/// complete typed object (never `null`, never defaulted).
+const OPTIONAL_FIELDS: [&str; 2] = ["directory", "question_routing"];
 
 /// The exact fields of `gates`: only the genuinely external F1 and F4 inputs (R0.4). F2 and
 /// every graph-derived restatement are assembled from the PSG and rejected as unknown fields.
@@ -114,16 +118,36 @@ pub struct CliConfig {
     pub scenario_derivation: Option<ScenarioDerivationInputs>,
     pub verification_applicability: Option<VerificationApplicabilityInputs>,
     pub gates: GateInputsConfig,
+    /// The configured semantic directory (R0.6); absent means not configured.
+    #[serde(default)]
+    pub directory: Option<DirectoryDraft>,
+    /// The S3.1 stakeholder routing of `ask` (R0.6); absent means not configured.
+    #[serde(default)]
+    pub question_routing: Option<StakeholderRoutingConfig>,
 }
 
 /// Requires `value` to be an object with exactly `fields` (nullable values must be present).
 fn exact_fields(value: &Value, fields: &[&str], what: &str) -> Result<(), ConfigError> {
+    exact_fields_with(value, fields, &[], what)
+}
+
+/// [`exact_fields`] that also admits the `optional` fields, which may be absent.
+fn exact_fields_with(
+    value: &Value,
+    fields: &[&str],
+    optional: &[&str],
+    what: &str,
+) -> Result<(), ConfigError> {
     let Value::Object(map) = value else {
         return Err(ConfigError::Invalid(format!(
             "{what} must be a JSON object"
         )));
     };
-    let present: BTreeSet<&str> = map.keys().map(String::as_str).collect();
+    let present: BTreeSet<&str> = map
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !optional.contains(k))
+        .collect();
     let expected: BTreeSet<&str> = fields.iter().copied().collect();
     if let Some(unknown) = present.difference(&expected).next() {
         return Err(ConfigError::Invalid(format!(
@@ -151,8 +175,15 @@ impl CliConfig {
     pub fn parse(bytes: &[u8]) -> Result<CliConfig, ConfigError> {
         let value: Value = serde_json::from_slice(bytes)
             .map_err(|e| ConfigError::Invalid(format!("not JSON: {e}")))?;
-        exact_fields(&value, &FIELDS, "the configuration")?;
+        exact_fields_with(&value, &FIELDS, &OPTIONAL_FIELDS, "the configuration")?;
         exact_fields(&value["gates"], &GATE_FIELDS, "gates")?;
+        for field in OPTIONAL_FIELDS {
+            if value.get(field).is_some_and(|v| !v.is_object()) {
+                return Err(ConfigError::Invalid(format!(
+                    "{field} must be a JSON object when present"
+                )));
+            }
+        }
         let config: CliConfig =
             serde_json::from_value(value).map_err(|e| ConfigError::Invalid(e.to_string()))?;
         if config.version != 1 {
@@ -160,6 +191,28 @@ impl CliConfig {
                 "version must be 1, not {}",
                 config.version
             )));
+        }
+        if let Some(routing) = &config.question_routing {
+            routing
+                .validate()
+                .map_err(|e| ConfigError::Invalid(format!("question_routing: {e}")))?;
+        }
+        if let Some(directory) = &config.directory {
+            directory
+                .validate()
+                .map_err(|e| ConfigError::Invalid(format!("directory: {e}")))?;
+            for calendar in &directory.calendars {
+                if !config
+                    .calendars
+                    .iter()
+                    .any(|c| c.calendar_ref == calendar.calendar_ref)
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "directory: calendar {} names unknown calendar {}",
+                        calendar.id, calendar.calendar_ref
+                    )));
+                }
+            }
         }
         Ok(config)
     }
@@ -230,6 +283,8 @@ impl CliConfig {
             scenario_derivation: self.scenario_derivation.clone(),
             verification_applicability: self.verification_applicability.clone(),
             gates: self.gates.clone(),
+            directory: self.directory.clone(),
+            question_routing: self.question_routing.clone(),
         })
     }
 }

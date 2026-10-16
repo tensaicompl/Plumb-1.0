@@ -119,6 +119,7 @@ const DETAIL_A: RequirementDetail = {
   spans: ["frag:requirements.docx#p12", "frag:requirements.docx#p13"],
   lint_findings: ["fnd:compound-a"],
   ears_suggestion: "When an employee submits a leave request, the system shall record it.",
+  ears_proposal_ref: "prop:ears-a",
   linked: { operations: ["op:submit"], processes: ["proc:leave"], scenarios: ["scn:submit"] },
   lint_current: true,
 };
@@ -134,6 +135,7 @@ const DETAIL_B: RequirementDetail = {
   spans: [],
   lint_findings: [],
   ears_suggestion: null,
+  ears_proposal_ref: null,
   linked: { operations: [], processes: [], scenarios: [] },
   lint_current: true,
 };
@@ -221,6 +223,7 @@ function handlers(calls: Call[], overrides: { create?: () => Response } = {}) {
       return overrides.create === undefined ? HttpResponse.json(WRITE) : overrides.create();
     }),
     http.post("*/api/proposals/:id/supersede", write()),
+    http.post("*/api/proposals/:id/accept", write()),
   ];
 }
 
@@ -399,7 +402,7 @@ describe("RequirementDetail", () => {
     expect(within(screen.getByRole("region", { name: "Source evidence" })).getByText("No evidence references.")).toBeTruthy();
   });
 
-  it("sends classify, accept-EARS, waive and mark-duplicate through the versioned client with If-Match", async () => {
+  it("sends classify, EARS proposal acceptance, waive and mark-duplicate through the versioned client with If-Match", async () => {
     const calls: Call[] = [];
     server.use(...handlers(calls));
     renderAt("/requirements/req:a");
@@ -410,8 +413,9 @@ describe("RequirementDetail", () => {
     await user.click(screen.getByRole("button", { name: "Reclassify" }));
     await waitFor(() => expect(posts(calls, "/classify")).toHaveLength(1));
 
+    await user.type(screen.getByTestId("ears-reason"), "EARS form reviewed.");
     await user.click(screen.getByTestId("ears-accept"));
-    await waitFor(() => expect(posts(calls, "/accept-ears")).toHaveLength(1));
+    await waitFor(() => expect(posts(calls, "/accept")).toHaveLength(1));
 
     await user.selectOptions(screen.getByTestId("waive-finding"), "fnd:compound-a");
     await user.type(screen.getByTestId("waive-reason"), "Accepted risk.");
@@ -426,10 +430,41 @@ describe("RequirementDetail", () => {
     const writes = calls.filter((c) => c.method === "POST");
     expect(writes.map((c) => [decoded(c.path), c.ifMatch, c.body])).toEqual([
       ["/api/requirements/req:a/classify", CURRENT, { class: "quality" }],
-      ["/api/requirements/req:a/accept-ears", CURRENT, { text: DETAIL_A.ears_suggestion }],
+      ["/api/proposals/prop:ears-a/accept", CURRENT, { reason: "EARS form reviewed." }],
       ["/api/requirements/req:a/waive-finding", CURRENT, { finding_id: "fnd:compound-a", reason: "Accepted risk." }],
       ["/api/requirements/req:a/mark-duplicate", CURRENT, { of: "req:b", reason: "Same intent." }],
     ]);
+  });
+});
+
+describe("RequirementDetail EARS review (R0.6)", () => {
+  it("accepts the surfaced S1.2 proposal by its ID, never as an analyst text edit, and refetches", async () => {
+    const calls: Call[] = [];
+    server.use(...handlers(calls));
+    renderAt("/requirements/req:a");
+    const user = userEvent.setup();
+    const ears = await screen.findByRole("region", { name: "EARS suggestion" });
+    const suggestion = within(ears).getByTestId("ears-suggestion");
+    expect(suggestion.textContent).toBe(DETAIL_A.ears_suggestion);
+    expect(suggestion.getAttribute("data-proposal")).toBe("prop:ears-a");
+    const reads = () => calls.filter((c) => c.method === "GET" && decoded(c.path) === "/api/requirements/req:a").length;
+    const before = reads();
+    const accepts = () => calls.filter((c) => c.method === "POST" && decoded(c.path) === "/api/proposals/prop:ears-a/accept");
+    await user.click(within(ears).getByTestId("ears-accept"));
+    await waitFor(() => expect(accepts()).toHaveLength(1));
+    // No reason typed: null, never an invented text.
+    expect(accepts()[0]?.body).toEqual({ reason: null });
+    expect(posts(calls, "/accept-ears")).toHaveLength(0);
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+  });
+
+  it("shows the suggestion as unavailable when the server pairs no proposal reference", async () => {
+    const unpaired: RequirementDetail = { ...DETAIL_A, ears_proposal_ref: null };
+    server.use(http.get("*/api/requirements/:id", () => HttpResponse.json(unpaired)), ...handlers([]));
+    renderAt("/requirements/req:a");
+    const ears = await screen.findByRole("region", { name: "EARS suggestion" });
+    expect(within(ears).getByTestId("ears-unavailable").textContent).toBe("Not calculated: no EARS suggestion is available.");
+    expect(within(ears).queryByTestId("ears-accept")).toBeNull();
   });
 });
 

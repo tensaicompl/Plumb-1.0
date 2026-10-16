@@ -128,6 +128,8 @@ pub(crate) struct A04Runtime {
     pub(crate) scenario_derivation: Option<ScenarioDerivationInputs>,
     pub(crate) verification_applicability: Option<VerificationApplicabilityInputs>,
     pub(crate) gates: GateInputsConfig,
+    pub(crate) directory: Option<plumb_functional::DirectoryDraft>,
+    pub(crate) question_routing: Option<plumb_functional::StakeholderRoutingConfig>,
     /// The FIFO queue of the recipe worker of this instance.
     queue: Mutex<Option<mpsc::Sender<Hash>>>,
 }
@@ -153,6 +155,8 @@ impl A04Runtime {
             scenario_derivation: config.scenario_derivation,
             verification_applicability: config.verification_applicability,
             gates: config.gates,
+            directory: config.directory,
+            question_routing: config.question_routing,
             queue: Mutex::new(None),
         })
     }

@@ -2346,7 +2346,15 @@
           "coverage": {
             "$ref": "#/components/schemas/RequirementCoverage"
           },
+          "ears_proposal_ref": {
+            "description": "The ID of that pending S1.2 EARS WorkflowProposal, accepted through the governed\nproposal acceptance (R0.6); `null` exactly when `ears_suggestion` is `null`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "ears_suggestion": {
+            "description": "The normalized statement of the pending S1.2 EARS WorkflowProposal of this Requirement\non the current head (R0.6); `null` when there is none. Paired with `ears_proposal_ref`.",
             "type": [
               "string",
               "null"

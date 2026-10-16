@@ -4,34 +4,21 @@
 //! S3.2 kernel and is a projection over `Question.round_ref`. U2.2 (Hotfix 076) returns the
 //! authoritative workflow class of the answer's pending Proposal.
 
-use std::collections::BTreeMap;
-
 use axum::body::Bytes;
 use axum::extract::{Path, RawQuery, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use plumb_artifacts::{ArtifactKind, ArtifactStore};
 use plumb_core::Id;
-use plumb_functional::resolution::{
-    resolve_question, ResolutionContext, ResolutionError, ResolutionInput,
-};
-use plumb_psg::{ElementStatus, NodeType};
-use plumb_store::WorkflowOrigin;
 
 use crate::application::round_size;
 use crate::error::ApiError;
-use crate::openapi::{
-    AnswerRequest, AnswerResponse, CreateRoundRequest, QuestionPage, QuestionStatus,
-};
+use crate::openapi::{AnswerRequest, CreateRoundRequest, QuestionPage, QuestionStatus};
 use crate::state::{
-    check_if_match, paginate, parse_body, parse_id, parse_wire, read_json, run_intake, ApiState,
-    PageRequest, QueryParams,
+    check_if_match, paginate, parse_body, parse_id, parse_wire, read_json, ApiState, PageRequest,
+    QueryParams,
 };
-use crate::workflow::{classify, intake_view};
-
-use super::proposals::{persist_pending, Origin};
 
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
@@ -110,79 +97,13 @@ async fn answer_question(
         .as_deref()
         .map(|s| parse_id(s).ok_or_else(|| ApiError::invalid("supersedes is not an ID")))
         .transpose()?;
-    let runtime = state.runtime("workflow_store")?;
+    state.runtime("workflow_store")?;
     let loaded = state.load_head()?;
     check_if_match(&headers, &loaded)?;
-    let created_at = state.now();
-    let question_ref =
-        parse_id(&id).ok_or_else(|| ApiError::not_found(format!("question {id} not found")))?;
-    // Invariant bindings come only from injected scopes owned by Accepted Invariants.
-    let invariant_bindings: BTreeMap<Id, Vec<_>> = runtime
-        .expression_scopes
-        .iter()
-        .filter(|scope| {
-            loaded.graph.node(&scope.owner_ref).is_some_and(|n| {
-                n.status == ElementStatus::Accepted && n.payload.node_type() == NodeType::Invariant
-            })
-        })
-        .map(|scope| (scope.owner_ref.clone(), scope.bindings.clone()))
-        .collect();
-    let result = resolve_question(
-        &loaded.graph,
-        &ResolutionInput {
-            question_ref: question_ref.clone(),
-            answer: request.answer,
-            decided_by: state.actor_ref().clone(),
-            decided_at: created_at,
-            rationale: request.rationale,
-            supersedes,
-        },
-        &ResolutionContext { invariant_bindings },
-    )
-    .map_err(|error| match error {
-        ResolutionError::QuestionMissing(id) | ResolutionError::NotAQuestion(id) => {
-            ApiError::not_found(format!("question {id} not found"))
-        }
-        other => ApiError::semantic(&error_name(&other), other.to_string()),
-    })?;
-    let action = classify(&loaded.graph, &result.proposal)?;
-    let stored = state.with_artifact_store(|store| {
-        store.put(
-            ArtifactKind::Patch,
-            "application/json",
-            &result.patch_artifact_bytes,
-            created_at,
-        )
-    })?;
-    match stored {
-        Ok(hash) if hash == result.decision.patch_ref => {}
-        _ => return Err(ApiError::internal("artifact_store")),
-    }
-    let report = run_intake(&loaded, &result.proposal)?;
-    let persisted = persist_pending(
-        &state,
-        &loaded,
-        &result.proposal,
-        &report,
-        Origin {
-            kind: WorkflowOrigin::Question,
-            reference: Some(question_ref),
-        },
-        created_at,
-    )?;
-    let revision = loaded.revision.id.to_string();
-    Ok(Json(AnswerResponse {
-        version: revision.clone(),
-        revision,
-        semantic_hash: loaded.revision.semantic_hash.to_string(),
-        events: Vec::new(),
-        proposal_id: persisted.proposal.id.to_string(),
-        action,
-        intake: intake_view(&persisted.intake, state.profile())?,
-        patch_preview: serde_json::to_value(&persisted.proposal.patch_set.patch)
-            .map_err(|_| ApiError::internal("patch_preview"))?,
-    })
-    .into_response())
+    // R0.6: the answer logic is the shared application service (HTTP and CLI).
+    let response =
+        state.answer_question(&loaded, &id, request.answer, request.rationale, supersedes)?;
+    Ok(Json(response).into_response())
 }
 
 /// `create_round`: the transport of the shared round service (stakeholder and size are

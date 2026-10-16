@@ -1135,7 +1135,12 @@ pub struct RequirementDetail {
     /// IDs of the current F1 gate report's findings whose affected refs include this
     /// requirement. Always `[]` when `lint_current` is false.
     pub lint_findings: Vec<String>,
+    /// The normalized statement of the pending S1.2 EARS WorkflowProposal of this Requirement
+    /// on the current head (R0.6); `null` when there is none. Paired with `ears_proposal_ref`.
     pub ears_suggestion: Option<String>,
+    /// The ID of that pending S1.2 EARS WorkflowProposal, accepted through the governed
+    /// proposal acceptance (R0.6); `null` exactly when `ears_suggestion` is `null`.
+    pub ears_proposal_ref: Option<String>,
     pub linked: RequirementLinks,
     /// Whether a current F1 gate report exists for the branch head (R0.4). When false,
     /// `smells` and `lint_findings` are `[]`, `readiness` is `null` and lint is unavailable.

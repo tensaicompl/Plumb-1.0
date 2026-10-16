@@ -41,6 +41,7 @@ pub mod authorization;
 pub mod calculation;
 pub mod data_class;
 pub mod decision_table;
+pub mod directory;
 pub mod domain;
 pub mod duplicates;
 pub mod ears;
@@ -113,6 +114,11 @@ pub use decision_table::{
     analyze_decision_table, decode_decision_table, encode_decision_table, set_output_cell,
     DecisionCellError, DecisionCoverage, DecisionTableAnalysis, DecisionTableEncodingError,
     DecisionTableSpec, MAX_COVERAGE_WITNESSES, MAX_FINITE_DECISION_POINTS,
+};
+pub use directory::{
+    produce_directory, DirectoryAudit, DirectoryCalendarBinding, DirectoryCalendarDraft,
+    DirectoryDecisionTableDraft, DirectoryDisposition, DirectoryDraft, DirectoryElement,
+    DirectoryError, DirectoryOutcome, DirectoryResult,
 };
 pub use domain::{
     analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,

@@ -3077,6 +3077,16 @@ mod http_workflow {
 
     /// [`application_app`] whose injected FixedClock reads `at` (R0.5 two-clock replay).
     fn application_app_at(graph: Graph, at: &str) -> App {
+        application_app_with(graph, at, None)
+    }
+
+    /// [`application_app_at`] whose inference runs on `inference` in the replay role instead of
+    /// the null provider (R0.6 consolidate fixtures).
+    fn application_app_with(
+        graph: Graph,
+        at: &str,
+        inference: Option<Arc<dyn InferenceProvider + Send + Sync>>,
+    ) -> App {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plumb.sqlite");
         let profile = profile();
@@ -3102,8 +3112,15 @@ mod http_workflow {
             probed: Mutex::new(None),
         });
         let runtime = plumb_api::application::ApplicationRuntime {
-            inference_provider: provider.clone(),
-            provider_mode: plumb_api::ProviderMode::Null,
+            inference_provider: inference
+                .clone()
+                .unwrap_or_else(|| provider.clone() as Arc<dyn InferenceProvider + Send + Sync>),
+            provider_mode: match &inference {
+                None => plumb_api::ProviderMode::Null,
+                Some(_) => plumb_api::ProviderMode::Replay {
+                    fixtures_hash: Hash::content_sha256(b"http_workflow consolidate provider"),
+                },
+            },
             provider_policy: ProviderPolicy {
                 provider: "test".into(),
                 config: CanonicalJson::new(json!({})),
@@ -3145,6 +3162,8 @@ mod http_workflow {
             scenario_derivation: None,
             verification_applicability: Some(Default::default()),
             gates: plumb_api::GateInputsConfig { f1: None, f4: None },
+            directory: None,
+            question_routing: None,
         };
         let state = plumb_api::application::open_application(
             &path,
@@ -3757,6 +3776,538 @@ mod http_workflow {
             )
             .unwrap();
         assert_eq!(third.write, None);
+    }
+
+    // ------------------------------------------------------------------ R0.6 generic confirmation
+
+    /// The base fixture plus Proposed directory-like nodes and edges.
+    fn confirmation_graph() -> Graph {
+        let (mut nodes, mut edges) = base_parts();
+        nodes.extend([
+            node(
+                "actor:new",
+                "Proposed",
+                "Actor",
+                json!({"name": "New", "actor_kind": "human"}),
+            ),
+            node(
+                "brole:new",
+                "Proposed",
+                "BusinessRole",
+                json!({"name": "Approver"}),
+            ),
+            node(
+                "brole:other",
+                "Proposed",
+                "BusinessRole",
+                json!({"name": "Other"}),
+            ),
+            node(
+                "calc:proposed",
+                "Proposed",
+                "Calculation",
+                json!({
+                    "name": "proposed", "expression": "days", "result_type": "Int",
+                    "unit": null, "rounding": null, "calendar_ref": null, "examples": null
+                }),
+            ),
+        ]);
+        let mut performed = edge(
+            "rel:performed-new",
+            "performed_by",
+            "op:approve",
+            "actor:new",
+        );
+        performed.status = ElementStatus::Proposed;
+        let mut dangling = edge(
+            "rel:performed-other",
+            "performed_by",
+            "op:cancel",
+            "brole:other",
+        );
+        dangling.status = ElementStatus::Proposed;
+        edges.extend([performed, dangling]);
+        Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap()
+    }
+
+    fn confirm(
+        app: &App,
+        ids: &[&str],
+    ) -> Result<plumb_api::openapi::WriteResult, plumb_api::error::ApiError> {
+        let ids: Vec<String> = ids.iter().map(|s| (*s).to_owned()).collect();
+        app.state.confirm_elements(
+            &app.state.head().unwrap(),
+            &ids,
+            Some("Confirmed by the analyst.".into()),
+        )
+    }
+
+    #[tokio::test]
+    async fn generic_confirmation_promotes_listed_proposed_elements() {
+        let app = application_app(confirmation_graph());
+        let before = head(&app);
+        let write = confirm(&app, &["rel:performed-new", "brole:new", "actor:new"]).unwrap();
+        let after = head(&app);
+        // One atomic revision with exactly the listed status changes.
+        assert_eq!(write.revision, after.revision.id.to_string());
+        assert_eq!(
+            after.revision.id.version(),
+            before.revision.id.version() + 1
+        );
+        for element in ["actor:new", "brole:new"] {
+            let old = before.graph.node(&id(element)).unwrap();
+            let new = after.graph.node(&id(element)).unwrap();
+            assert_eq!(new.status, ElementStatus::Accepted, "{element}");
+            assert_eq!(new.payload, old.payload, "no content edit");
+            assert_eq!(new.evidence, old.evidence);
+        }
+        let edge = after.graph.edge(&id("rel:performed-new")).unwrap();
+        assert_eq!(edge.status, ElementStatus::Accepted);
+        // Untouched Proposed elements stay Proposed.
+        assert_eq!(
+            after.graph.node(&id("brole:other")).unwrap().status,
+            ElementStatus::Proposed
+        );
+        // The governed acceptance recorded its companion with the given rationale.
+        let companions = acceptance_decisions(&after.graph);
+        assert_eq!(companions.len(), 1);
+        assert_eq!(
+            companions[0].1.rationale.as_deref(),
+            Some("Confirmed by the analyst.")
+        );
+        // The committed effect is exactly the sequential SetStatus leaves: nodes, then edges.
+        let committed = SqliteArtifactStore::open(&app.path)
+            .unwrap()
+            .get(&companions[0].1.patch_ref)
+            .unwrap();
+        let patch_set: PatchSet = serde_json::from_slice(&committed.bytes).unwrap();
+        assert_eq!(patch_set.base_semantic_hash, before.revision.semantic_hash);
+        let SemanticPatch::Compound { patches } = &patch_set.patch else {
+            panic!("expected sequential leaves");
+        };
+        let targets: Vec<String> = patches
+            .iter()
+            .map(|p| match p {
+                SemanticPatch::SetStatus { target, from, to } => {
+                    assert_eq!(
+                        (*from, *to),
+                        (ElementStatus::Proposed, ElementStatus::Accepted)
+                    );
+                    target.id.to_string()
+                }
+                other => panic!("not a SetStatus leaf: {other:?}"),
+            })
+            .collect();
+        assert_eq!(targets, ["actor:new", "brole:new", "rel:performed-new"]);
+        // An edge whose endpoint stays Proposed is refused, as is a non-Proposed element.
+        let err = confirm(&app, &["rel:performed-other"]).unwrap_err();
+        assert_eq!(err.body().code, "E_SEMANTIC_INVARIANT");
+        let err = confirm(&app, &["actor:new"]).unwrap_err();
+        assert_eq!(err.body().code, "E_SEMANTIC_INVARIANT");
+        // The edge and its endpoint together are accepted.
+        confirm(&app, &["rel:performed-other", "brole:other"]).unwrap();
+        // Input is an explicit non-empty set of existing elements.
+        assert_eq!(
+            confirm(&app, &[]).unwrap_err().body().code,
+            "E_INVALID_REQUEST"
+        );
+        assert_eq!(
+            confirm(&app, &["actor:clerk", "actor:clerk"])
+                .unwrap_err()
+                .body()
+                .code,
+            "E_INVALID_REQUEST"
+        );
+        assert_eq!(
+            confirm(&app, &["actor:missing"]).unwrap_err().body().code,
+            "E_NOT_FOUND"
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_confirmation_refuses_dedicated_and_governance_types() {
+        let app = application_app(confirmation_graph());
+        let before = head(&app);
+        for (element, reason) in [
+            ("term:vacation", "dedicated_confirmation"),
+            ("calc:proposed", "dedicated_confirmation"),
+            ("scn:derived-a", "dedicated_confirmation"),
+            ("assumption:active", "governance_type"),
+            ("agent:compiler", "provenance_or_proof_type"),
+            ("stakeholder:hr", "not_proposed"),
+        ] {
+            let err = confirm(&app, &[element]).unwrap_err();
+            let body = err.body();
+            assert_eq!(body.code, "E_SEMANTIC_INVARIANT", "{element}");
+            let details = serde_json::to_value(&body.details).unwrap();
+            assert_eq!(details["reason"], reason, "{element}");
+            assert_eq!(details["element"], element);
+        }
+        // A refused member refuses the whole set: nothing is partially confirmed.
+        let err = confirm(&app, &["actor:new", "term:vacation"]).unwrap_err();
+        assert_eq!(err.body().code, "E_SEMANTIC_INVARIANT");
+        let after = head(&app);
+        assert_eq!(after.revision.id, before.revision.id);
+        assert_eq!(
+            after.graph.node(&id("actor:new")).unwrap().status,
+            ElementStatus::Proposed
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_confirmation_promotes_proposed_requirement() {
+        // Fable #301: an S1.x Proposed Requirement reaches Accepted through the same generic
+        // governed confirmation as every other eligible element.
+        let app = application_app(confirmation_graph());
+        let before = head(&app);
+        assert_eq!(
+            before.graph.node(&id("req:p")).unwrap().status,
+            ElementStatus::Proposed
+        );
+        let write = confirm(&app, &["req:p"]).unwrap();
+        let after = head(&app);
+        assert_eq!(write.revision, after.revision.id.to_string());
+        let node = after.graph.node(&id("req:p")).unwrap();
+        assert_eq!(node.status, ElementStatus::Accepted);
+        assert_eq!(
+            node.payload,
+            before.graph.node(&id("req:p")).unwrap().payload
+        );
+        assert_eq!(acceptance_decisions(&after.graph).len(), 1);
+        assert_ne!(after.revision.semantic_hash, before.revision.semantic_hash);
+    }
+
+    // ------------------------------------------------------------------ R0.6 answer service
+
+    #[tokio::test]
+    async fn answer_route_uses_answer_service_unchanged() {
+        let app = application_app(calculation_answer_graph());
+        let materialized = app
+            .state
+            .materialize_questions(
+                &app.state.head().unwrap(),
+                &QuestionGenerationInput {
+                    findings: calculation_gaps(),
+                    routing: owner_routing(),
+                },
+            )
+            .unwrap();
+        let question = materialized
+            .generation
+            .questions
+            .iter()
+            .find(|q| q.template_id == "f2.calculation.inclusive-end.v1")
+            .unwrap()
+            .question_ref
+            .clone();
+        let loaded = head(&app);
+        // The pre-R0.6 route logic, computed independently: S3.3 on the loaded head with the
+        // request actor and the injected clock instant.
+        let expected = plumb_functional::resolution::resolve_question(
+            &loaded.graph,
+            &plumb_functional::resolution::ResolutionInput {
+                question_ref: question.clone(),
+                answer: json!({"inclusive_end": true}),
+                decided_by: id(ACTOR),
+                decided_at: ts(NOW),
+                rationale: Some("The policy says so.".into()),
+                supersedes: None,
+            },
+            &plumb_functional::resolution::ResolutionContext {
+                invariant_bindings: Default::default(),
+            },
+        )
+        .unwrap();
+        let tag = semantic(&app).await;
+        let r = post(
+            &app,
+            &format!("/api/questions/{question}/answer"),
+            Some(&tag),
+            Some(
+                json!({"answer": {"inclusive_end": true}, "rationale": "The policy says so.",
+                        "supersedes": null}),
+            ),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let body = r.json();
+        // The response contract is unchanged: exact keys and exact values.
+        assert_eq!(
+            body.as_object().unwrap().keys().collect::<Vec<_>>(),
+            [
+                "action",
+                "events",
+                "intake",
+                "patch_preview",
+                "proposal_id",
+                "revision",
+                "semantic_hash",
+                "version"
+            ]
+        );
+        assert_eq!(body["proposal_id"], expected.proposal.id.to_string());
+        assert_eq!(
+            body["patch_preview"],
+            serde_json::to_value(&expected.proposal.patch_set.patch).unwrap()
+        );
+        assert_eq!(body["action"], "accept");
+        assert_eq!(body["revision"], loaded.revision.id.to_string());
+        assert_eq!(body["version"], loaded.revision.id.to_string());
+        assert_eq!(
+            body["semantic_hash"],
+            loaded.revision.semantic_hash.to_string()
+        );
+        assert_eq!(body["events"], json!([]));
+        // Nothing committed; the pending Question-origin proposal and its artifact persist.
+        assert_eq!(head(&app).revision.id, loaded.revision.id);
+        let stored = workflow(&app)
+            .proposal(&expected.proposal.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, WorkflowProposalState::Pending);
+        assert_eq!(stored.origin_kind, WorkflowOrigin::Question);
+        assert_eq!(stored.origin_ref, Some(question.clone()));
+        assert_eq!(stored.base_revision_id, loaded.revision.id);
+        assert_eq!(stored.proposal_kind, WorkflowProposalKind::Accept);
+        let persisted: Proposal = serde_json::from_str(&stored.proposal_json).unwrap();
+        assert_eq!(persisted, expected.proposal);
+        let artifact = SqliteArtifactStore::open(&app.path)
+            .unwrap()
+            .get(&expected.decision.patch_ref)
+            .unwrap();
+        assert_eq!(artifact.bytes, expected.patch_artifact_bytes);
+        assert_eq!(artifact.kind, ArtifactKind::Patch);
+        // The service is the same for a direct (CLI) caller: an identical answer is the same
+        // idempotent pending proposal.
+        let direct = app
+            .state
+            .answer_question(
+                &head(&app),
+                question.as_str(),
+                json!({"inclusive_end": true}),
+                Some("The policy says so.".into()),
+                None,
+            )
+            .unwrap();
+        assert_eq!(serde_json::to_value(&direct).unwrap(), body);
+        // Errors keep their codes and order: body validation, then If-Match, then lookup.
+        let uri = format!("/api/questions/{question}/answer");
+        assert_error(
+            &post(
+                &app,
+                &uri,
+                Some(&tag),
+                Some(json!({"answer": [1], "rationale": null, "supersedes": null})),
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        assert_error(
+            &post(
+                &app,
+                &uri,
+                Some(&tag),
+                Some(json!({"answer": {}, "rationale": null, "supersedes": "not an id"})),
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        assert_error(
+            &post(
+                &app,
+                "/api/questions/q:0000000000000000/answer",
+                Some(&tag),
+                Some(json!({"answer": {}, "rationale": null, "supersedes": null})),
+            )
+            .await,
+            StatusCode::NOT_FOUND,
+            "E_NOT_FOUND",
+        );
+    }
+
+    // ------------------------------------------------------------------ R0.6 EARS projection
+
+    /// Answers consolidate deterministically: no vocabulary mention and, for every target, a
+    /// ubiquitous EARS suggestion grounded in its source statement.
+    struct ConsolidateProvider {
+        calls: Mutex<usize>,
+    }
+
+    impl InferenceProvider for ConsolidateProvider {
+        fn execute(
+            &self,
+            request: &InferenceRequest,
+            material: &InferenceRequestMaterial,
+        ) -> Result<ProviderExecution, ProviderError> {
+            validate_binding(request, material)?;
+            *self.calls.lock().unwrap() += 1;
+            let context: Value = serde_json::from_slice(&material.context_json).unwrap();
+            let output = match request.task_kind.as_str() {
+                "vocabulary_analysis" => json!({"version": 1, "mentions": []}),
+                "ears_normalization" => {
+                    let entries: Vec<Value> = context["requirements"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|r| {
+                            let source = r["source_statement"].as_str().unwrap();
+                            let range = |part: &str| {
+                                let start = source.find(part).unwrap();
+                                json!({"kind": "source_range", "start": start, "end": start + part.len()})
+                            };
+                            json!({"requirement_ref": r["requirement_ref"], "suggestion": {
+                                "pattern": "ubiquitous", "actor": range("the clerk"),
+                                "trigger": null, "condition": null,
+                                "response": range("pack the order")
+                            }})
+                        })
+                        .collect();
+                    json!({"version": 1, "requirements": entries})
+                }
+                other => panic!("unexpected task kind {other}"),
+            };
+            Ok(execution(request, output))
+        }
+    }
+
+    /// The base fixture plus one S1.1-origin Accepted Requirement `req:ears`.
+    fn ears_graph() -> Graph {
+        let (mut nodes, edges) = base_parts();
+        let statement = "Always, the clerk shall pack the order.";
+        let source = plumb_import::import_markdown(
+            "requirements.md",
+            format!("{statement}\n").as_bytes(),
+            &plumb_import::ImportAudit {
+                created_by: id(ACTOR),
+                created_at: ts(T0),
+            },
+        )
+        .unwrap();
+        let fragment = source
+            .fragments
+            .iter()
+            .find(|f| {
+                matches!(&f.payload, NodePayload::EvidenceFragment(e)
+                    if e.extracted_text.as_deref() == Some(statement))
+            })
+            .unwrap()
+            .clone();
+        let mut value =
+            serde_json::to_value(requirement("req:ears", "Accepted", statement)).unwrap();
+        value["evidence"] = json!([fragment.id]);
+        value["extensions"] = json!({"plumb_functional:segment_origin": {
+            "candidate_ref": "seg:0000000000000001", "fragment_ref": fragment.id,
+            "start": 0, "end": statement.len()
+        }});
+        nodes.push(source.source.clone());
+        nodes.extend(source.fragments.clone());
+        nodes.push(serde_json::from_value(value).unwrap());
+        Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap()
+    }
+
+    #[tokio::test]
+    async fn requirement_detail_surfaces_pending_ears_proposal() {
+        let provider = Arc::new(ConsolidateProvider {
+            calls: Mutex::new(0),
+        });
+        let app = application_app_with(ears_graph(), NOW, Some(provider.clone()));
+        let detail_uri = "/api/requirements/req:ears";
+        // Before consolidate: no pending EARS proposal, both fields null.
+        let detail = get(&app, detail_uri).await.json();
+        assert_eq!(detail["ears_suggestion"], Value::Null);
+        assert_eq!(detail["ears_proposal_ref"], Value::Null);
+        // An unrelated intake-origin ReplacePayload of the same Requirement is never EARS.
+        let loaded = head(&app);
+        let current = loaded.graph.node(&id("req:ears")).unwrap();
+        let NodePayload::Requirement(mut edited) = current.payload.clone() else {
+            unreachable!()
+        };
+        edited.statement = "The clerk shall pack every order.".into();
+        let unrelated = Proposal::new(
+            plumb_core::StageId::S1,
+            PatchSet {
+                base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                patch: SemanticPatch::ReplacePayload {
+                    target: pre(&loaded.graph, "req:ears"),
+                    payload: NodePayload::Requirement(edited),
+                },
+            },
+            current.evidence.clone(),
+            vec![],
+            ProposalMateriality::Semantic,
+            AcceptancePolicy::HumanConfirm,
+            None,
+        )
+        .unwrap();
+        let r = write(
+            &app,
+            "/api/proposals/intake",
+            Some(json!({"payload": unrelated, "kind": "accept",
+                        "evidence": unrelated.evidence_refs})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let detail = get(&app, detail_uri).await.json();
+        assert_eq!(detail["ears_proposal_ref"], Value::Null);
+        // The real consolidate recipe (scoped to the S1.1-origin Requirement) persists the
+        // stage-linked S1.2 EARS proposal pending.
+        let run = app
+            .state
+            .run_stage(
+                plumb_api::Recipe::Consolidate,
+                Some(vec!["req:ears".into()]),
+                None,
+            )
+            .unwrap();
+        app.state.execute_recipe_job(&run.job_id).unwrap();
+        let links = plumb_store::SqliteStageStore::open(&app.path)
+            .unwrap()
+            .pending_proposal_links()
+            .unwrap();
+        assert_eq!(links.len(), 1, "one EARS proposal");
+        let ears_ref = links[0].proposal_id.clone();
+        let calls = *provider.calls.lock().unwrap();
+        let detail = get(&app, detail_uri).await.json();
+        assert_eq!(detail["ears_suggestion"], "the clerk shall pack the order.");
+        assert_eq!(detail["ears_proposal_ref"], ears_ref.to_string());
+        // The stored proposal is the authority; reading regenerates nothing.
+        let stored: Proposal = serde_json::from_str(
+            &workflow(&app)
+                .proposal(&ears_ref)
+                .unwrap()
+                .unwrap()
+                .proposal_json,
+        )
+        .unwrap();
+        let SemanticPatch::ReplacePayload {
+            payload: NodePayload::Requirement(r),
+            ..
+        } = &stored.patch_set.patch
+        else {
+            panic!("not an EARS ReplacePayload");
+        };
+        assert_eq!(detail["ears_suggestion"], r.statement.as_str());
+        assert_eq!(*provider.calls.lock().unwrap(), calls);
+        assert_eq!(links.len(), 1);
+        // Other requirements have none.
+        let other = get(&app, "/api/requirements/req:a").await.json();
+        assert_eq!(other["ears_suggestion"], Value::Null);
+        assert_eq!(other["ears_proposal_ref"], Value::Null);
+        // Accepting it through the governed proposal acceptance applies the statement; the
+        // detail then has no pending EARS proposal.
+        let r = write(
+            &app,
+            &format!("/api/proposals/{ears_ref}/accept"),
+            Some(json!({"reason": "EARS form reviewed."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let detail = get(&app, detail_uri).await.json();
+        assert_eq!(detail["text"], "the clerk shall pack the order.");
+        assert_eq!(detail["ears_suggestion"], Value::Null);
+        assert_eq!(detail["ears_proposal_ref"], Value::Null);
     }
 
     /// Hotfix 081: an actual intake response projects each validation finding through the

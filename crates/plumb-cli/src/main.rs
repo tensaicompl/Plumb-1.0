@@ -181,6 +181,27 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
     },
+    /// Persist the configured directory proposals (pending; nothing is committed).
+    Directory,
+    /// Promote Proposed elements to Accepted through the generic governed confirmation.
+    Confirm {
+        /// The element IDs to confirm (at least one).
+        #[arg(required = true, value_name = "ELEMENT_ID")]
+        elements: Vec<String>,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Materialize questions from the current F2 report with the configured question routing.
+    Ask,
+    /// Answer a question (a pending governed proposal).
+    Answer {
+        question: String,
+        /// The answer as a JSON object.
+        #[arg(long)]
+        answer: String,
+    },
+    /// List every pending proposal with the information needed to act on it.
+    Proposals,
     /// Append one pilot effort record.
     LogEffort {
         #[arg(long)]
@@ -316,6 +337,11 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
         Command::Export { format } => commands::export(&state, &format),
         Command::Report { out } => commands::report(&state, &out),
         Command::Serve { listen } => commands::serve(state, listen),
+        Command::Directory => commands::directory(&state),
+        Command::Confirm { elements, reason } => commands::confirm(&state, &elements, reason),
+        Command::Ask => commands::ask(&state),
+        Command::Answer { question, answer } => commands::answer(&state, &question, &answer),
+        Command::Proposals => commands::proposals(&state),
         _ => Err(CliError::Usage("unsupported command".into())),
     }
 }

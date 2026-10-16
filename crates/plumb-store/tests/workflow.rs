@@ -432,6 +432,116 @@ mod workflow {
         ));
     }
 
+    /// R0.6: the pending-proposal enumeration returns every and only pending record, complete,
+    /// in proposal-ID order whatever the insertion order, and changes nothing.
+    #[test]
+    fn pending_proposals_are_sorted_and_pending_only() {
+        let db = Db::new();
+        let (r1, r2) = db.with_revisions();
+        let mut wf = db.workflow();
+        session(&mut wf);
+        let mut stage = new_proposal("prop:00000000000000c3", &r2, WorkflowOrigin::Stage);
+        stage.origin_ref = None;
+        let mut question = new_proposal("prop:00000000000000a1", &r1, WorkflowOrigin::Question);
+        question.origin_ref = Some(id("q:0123456789abcdef"));
+        question.proposal_kind = WorkflowProposalKind::Accept;
+        let session_origin = new_proposal("prop:00000000000000b2", &r2, WorkflowOrigin::Session);
+        // Deliberately unsorted insertion order; pending and non-pending rows interleaved.
+        let pending = [
+            (stage, WorkflowProposalState::Pending),
+            (
+                new_proposal("prop:00000000000000d4", &r1, WorkflowOrigin::Intake),
+                WorkflowProposalState::Pending,
+            ),
+            (question, WorkflowProposalState::Pending),
+            (session_origin, WorkflowProposalState::Pending),
+        ];
+        let others = [
+            (
+                new_proposal("prop:0000000000000099", &r1, WorkflowOrigin::Intake),
+                WorkflowProposalState::Prepared,
+            ),
+            (
+                new_proposal("prop:00000000000000a0", &r1, WorkflowOrigin::Intake),
+                WorkflowProposalState::Pending,
+            ),
+            (
+                new_proposal("prop:00000000000000e5", &r1, WorkflowOrigin::Intake),
+                WorkflowProposalState::Pending,
+            ),
+        ];
+        let mut expected = Vec::new();
+        for (record, state) in pending.iter().chain(others.iter()) {
+            let WorkflowInsert::Inserted(stored) = wf.insert_proposal(record, *state).unwrap()
+            else {
+                panic!("fresh insert");
+            };
+            if pending
+                .iter()
+                .any(|(p, _)| p.proposal_id == record.proposal_id)
+            {
+                expected.push(stored);
+            }
+        }
+        // Resolve two of the "others": one accepted, one rejected.
+        wf.resolve_proposal(
+            &id("prop:00000000000000a0"),
+            WorkflowProposalState::Accepted,
+            &r2,
+            ts(T2),
+        )
+        .unwrap();
+        wf.resolve_proposal(
+            &id("prop:00000000000000e5"),
+            WorkflowProposalState::Rejected,
+            &r2,
+            ts(T2),
+        )
+        .unwrap();
+        expected.sort_by(|a, b| a.proposal_id.cmp(&b.proposal_id));
+
+        let before = db.rows("SELECT * FROM workflow_proposals ORDER BY proposal_id");
+        let schema = db.schema();
+        let listed = wf.pending_proposals().unwrap();
+        // Only pending, ID ascending, complete records equal to what proposal(id) returns.
+        assert_eq!(
+            listed
+                .iter()
+                .map(|p| p.proposal_id.to_string())
+                .collect::<Vec<_>>(),
+            [
+                "prop:00000000000000a1",
+                "prop:00000000000000b2",
+                "prop:00000000000000c3",
+                "prop:00000000000000d4"
+            ]
+        );
+        assert_eq!(listed, expected);
+        for p in &listed {
+            assert_eq!(p.state, WorkflowProposalState::Pending);
+            assert_eq!(&wf.proposal(&p.proposal_id).unwrap().unwrap(), p);
+        }
+        let origins: BTreeSet<&str> = listed.iter().map(|p| p.origin_kind.as_str()).collect();
+        assert_eq!(
+            origins,
+            BTreeSet::from(["intake", "question", "session", "stage"])
+        );
+        let q = listed
+            .iter()
+            .find(|p| p.origin_kind == WorkflowOrigin::Question)
+            .unwrap();
+        assert_eq!(q.origin_ref, Some(id("q:0123456789abcdef")));
+        assert_eq!(q.base_revision_id, r1);
+        assert_eq!(q.proposal_kind, WorkflowProposalKind::Accept);
+        // Read-only: a repeated read is identical and no row or schema changed.
+        assert_eq!(wf.pending_proposals().unwrap(), listed);
+        assert_eq!(
+            db.rows("SELECT * FROM workflow_proposals ORDER BY proposal_id"),
+            before
+        );
+        assert_eq!(db.schema(), schema);
+    }
+
     #[test]
     fn workflow_failed_migration_rolls_back_completely() {
         let db = Db::new();

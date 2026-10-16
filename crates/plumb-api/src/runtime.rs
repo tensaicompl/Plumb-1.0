@@ -10,9 +10,9 @@ use std::collections::BTreeSet;
 
 use plumb_core::{Hash, Id};
 use plumb_functional::{
-    AuthorizationDraft, CalculationScope, DuplicatePolicy, ExprPredicateError, ExprRefValue,
-    OperationScope, PredicateProvider, ProcessScope, ScenarioDerivationInputs,
-    VerificationApplicabilityInputs, VocabularyPolicy,
+    AuthorizationDraft, CalculationScope, DirectoryDraft, DuplicatePolicy, ExprPredicateError,
+    ExprRefValue, OperationScope, PredicateProvider, ProcessScope, ScenarioDerivationInputs,
+    StakeholderRoutingConfig, VerificationApplicabilityInputs, VocabularyPolicy,
 };
 use plumb_store::SqliteStageStore;
 use plumb_validation::{F1ValidationInputs, F4ExecutableCoverageInput, ValidationPolicy};
@@ -32,6 +32,10 @@ pub enum RuntimeConfigError {
     DuplicateCalendar(Id),
     #[error("calendar {calendar}: {reason}")]
     InvalidCalendar { calendar: Id, reason: String },
+    #[error("directory: {0}")]
+    InvalidDirectory(String),
+    #[error("question_routing: {0}")]
+    InvalidQuestionRouting(String),
 }
 
 /// One explicit pilot direct-manager fact (`manager_ref` directly manages `employee_ref`).
@@ -261,6 +265,11 @@ pub struct A04RuntimeConfig {
     pub scenario_derivation: Option<ScenarioDerivationInputs>,
     pub verification_applicability: Option<VerificationApplicabilityInputs>,
     pub gates: GateInputsConfig,
+    /// The configured semantic directory (R0.6); absent means not configured.
+    pub directory: Option<DirectoryDraft>,
+    /// The S3.1 stakeholder routing of question materialization (R0.6); absent means not
+    /// configured.
+    pub question_routing: Option<StakeholderRoutingConfig>,
 }
 
 impl A04RuntimeConfig {
@@ -276,6 +285,25 @@ impl A04RuntimeConfig {
             }
         }
         DirectManagerPredicates::new(&self.direct_managers)?;
+        if let Some(directory) = &self.directory {
+            directory
+                .validate()
+                .map_err(|e| RuntimeConfigError::InvalidDirectory(e.to_string()))?;
+            // Every directory calendar describes a configured runtime calendar.
+            for calendar in &directory.calendars {
+                if !ids.contains(&calendar.calendar_ref) {
+                    return Err(RuntimeConfigError::InvalidDirectory(format!(
+                        "calendar {} names unknown runtime calendar {}",
+                        calendar.id, calendar.calendar_ref
+                    )));
+                }
+            }
+        }
+        if let Some(routing) = &self.question_routing {
+            routing
+                .validate()
+                .map_err(|e| RuntimeConfigError::InvalidQuestionRouting(e.to_string()))?;
+        }
         Ok(())
     }
 }
