@@ -2358,8 +2358,12 @@
           "linked": {
             "$ref": "#/components/schemas/RequirementLinks"
           },
+          "lint_current": {
+            "description": "Whether a current F1 gate report exists for the branch head (R0.4). When false,\n`smells` and `lint_findings` are `[]`, `readiness` is `null` and lint is unavailable.",
+            "type": "boolean"
+          },
           "lint_findings": {
-            "description": "IDs of the current F1 gate report's findings whose affected refs include this\nrequirement.",
+            "description": "IDs of the current F1 gate report's findings whose affected refs include this\nrequirement. Always `[]` when `lint_current` is false.",
             "items": {
               "type": "string"
             },
@@ -2400,7 +2404,8 @@
           "coverage",
           "spans",
           "lint_findings",
-          "linked"
+          "linked",
+          "lint_current"
         ],
         "type": "object"
       },
@@ -2467,8 +2472,12 @@
           "id": {
             "type": "string"
           },
+          "lint_current": {
+            "description": "Whether a current F1 gate report exists for the branch head (R0.4). When false, lint\nresults are unavailable (not \"no findings\").",
+            "type": "boolean"
+          },
           "readiness": {
-            "description": "Advisory readiness; `null` means not calculated by the current pilot runtime.",
+            "description": "Advisory readiness; `null` means not calculated by the current pilot runtime. Always\n`null` when `lint_current` is false.",
             "format": "double",
             "type": [
               "number",
@@ -2476,7 +2485,7 @@
             ]
           },
           "smells": {
-            "description": "Error-severity lint rule IDs recorded for this requirement by the current F1 gate report\n(F1 evaluates Accepted Requirements only).",
+            "description": "Error-severity lint rule IDs recorded for this requirement by the current F1 gate report\n(F1 evaluates Accepted Requirements only). Always `[]` when `lint_current` is false.",
             "items": {
               "type": "string"
             },
@@ -2495,7 +2504,8 @@
           "class",
           "status",
           "smells",
-          "coverage"
+          "coverage",
+          "lint_current"
         ],
         "type": "object"
       },
@@ -7546,6 +7556,7 @@
                         ]
                       },
                       "id": "HR-001",
+                      "lint_current": true,
                       "smells": [
                         "example"
                       ],
@@ -7632,6 +7643,7 @@
                       "example"
                     ]
                   },
+                  "lint_current": true,
                   "lint_findings": [
                     "example"
                   ],

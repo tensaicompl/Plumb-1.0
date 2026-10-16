@@ -15,9 +15,7 @@ use plumb_functional::{
     VerificationApplicabilityInputs, VocabularyPolicy,
 };
 use plumb_store::SqliteStageStore;
-use plumb_validation::{
-    F1ValidationInputs, F2ValidationInputs, F4ApplicabilityInput, ValidationPolicy,
-};
+use plumb_validation::{F1ValidationInputs, F4ExecutableCoverageInput, ValidationPolicy};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -148,20 +146,66 @@ impl CalendarConfig {
     }
 }
 
-/// The configured F4 material: explicit applicability and visible assumptions.
+/// The genuinely external F1 material (R0.4, architecture §21 gate input assembly): only the
+/// organization lint policy. Requirements, lint inputs, vocabulary dependencies and analysis
+/// findings are assembled from the loaded revision and durable stage artifacts.
+///
+/// The policy is kept as its validated JSON form: it is checked when the configuration is
+/// decoded by strictly decoding it as the `lint_policy` of [`F1ValidationInputs`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "F1GateConfigFields")]
+pub struct F1GateConfig {
+    lint_policy: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct F1GateConfigFields {
+    lint_policy: serde_json::Value,
+}
+
+impl TryFrom<F1GateConfigFields> for F1GateConfig {
+    type Error = String;
+
+    fn try_from(f: F1GateConfigFields) -> Result<Self, Self::Error> {
+        let config = F1GateConfig {
+            lint_policy: f.lint_policy,
+        };
+        config.inputs_template()?;
+        Ok(config)
+    }
+}
+
+impl F1GateConfig {
+    /// Empty F1 inputs carrying exactly this lint policy (strict decode); the assembled
+    /// requirements and findings are added by the gate input assembly.
+    pub fn inputs_template(&self) -> Result<F1ValidationInputs, String> {
+        serde_json::from_value(serde_json::json!({
+            "requirements": [],
+            "analysis_findings": [],
+            "lint_policy": self.lint_policy,
+        }))
+        .map_err(|e| format!("invalid lint_policy: {e}"))
+    }
+}
+
+/// The genuinely external F4 material (R0.4): the explicit in-scope Scenarios, the required
+/// Scenario kinds per executable source and the visible Assumptions. Sources, executable
+/// sources and blocking Scenarios come from the S4.5 verification applicability and the graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct F4GateConfig {
-    pub applicability: F4ApplicabilityInput,
+    pub in_scope_scenario_refs: Vec<Id>,
+    pub required_scenario_kinds: Vec<F4ExecutableCoverageInput>,
     pub visible_assumption_refs: Vec<Id>,
 }
 
-/// The configured gate supplemental inputs.
+/// The configured external gate inputs (R0.4). F2 has no gate configuration: its external
+/// material is the runtime `calculation_scope_overrides` and `expression_scopes`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateInputsConfig {
-    pub f1: Option<F1ValidationInputs>,
-    pub f2: Option<F2ValidationInputs>,
+    pub f1: Option<F1GateConfig>,
     pub f4: Option<F4GateConfig>,
 }
 

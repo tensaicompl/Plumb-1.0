@@ -1922,6 +1922,69 @@ mod http_workflow {
         report.clone()
     }
 
+    /// R0.4: requirement list and detail never require a current F1 report; `lint_current`
+    /// states whether the lint projection is current, so an unavailable lint is never read as
+    /// a clean one.
+    #[tokio::test]
+    async fn requirements_read_without_current_f1_report() {
+        let g = fixture_graph();
+        let report = f1_report(&g);
+        // The requirement the current report has lint findings for.
+        let affected = report
+            .findings
+            .iter()
+            .flat_map(|f| f.payload.affected_refs.iter())
+            .find(|r| {
+                matches!(
+                    g.node(r).map(|n| &n.payload),
+                    Some(NodePayload::Requirement(_))
+                )
+            })
+            .cloned()
+            .expect("the fixture F1 report has a requirement finding");
+        let mut expected: Vec<String> = report
+            .findings
+            .iter()
+            .filter(|f| f.payload.affected_refs.contains(&affected))
+            .map(|f| f.id.to_string())
+            .collect();
+        expected.sort();
+        let detail_uri = format!("/api/requirements/{affected}");
+
+        // Without a current F1 report: 200, lint_current false, lint unavailable.
+        let g_findings = with_findings(&g, &report);
+        let bare = app_with(g_findings.clone(), |_| Vec::new());
+        let list = get(&bare, "/api/requirements").await;
+        assert_eq!(list.status, StatusCode::OK);
+        let list = list.json();
+        let items = list["items"].as_array().unwrap();
+        assert!(!items.is_empty());
+        for item in items {
+            assert_eq!(item["lint_current"], json!(false), "{item}");
+            assert_eq!(item["smells"], json!([]), "{item}");
+            assert_eq!(item["readiness"], Value::Null, "{item}");
+        }
+        let detail = get(&bare, &detail_uri).await;
+        assert_eq!(detail.status, StatusCode::OK);
+        let detail = detail.json();
+        assert_eq!(detail["lint_current"], json!(false));
+        assert_eq!(detail["smells"], json!([]));
+        assert_eq!(detail["lint_findings"], json!([]));
+        assert_eq!(detail["readiness"], Value::Null);
+
+        // With a current F1 report over the same head: lint_current true and the normal
+        // projection of that report is restored.
+        let current = app_with(g_findings, |head| vec![f1_report_for(head, &report)]);
+        let list = get(&current, "/api/requirements").await.json();
+        for item in list["items"].as_array().unwrap() {
+            assert_eq!(item["lint_current"], json!(true), "{item}");
+        }
+        let detail = get(&current, &detail_uri).await.json();
+        assert_eq!(detail["lint_current"], json!(true));
+        assert_eq!(detail["lint_findings"], json!(expected));
+        assert!(!expected.is_empty());
+    }
+
     #[tokio::test]
     async fn http_workflow_waivers_come_from_current_reports() {
         let app = waiver_app();
@@ -3075,11 +3138,7 @@ mod http_workflow {
             authorization_draft: None,
             scenario_derivation: None,
             verification_applicability: Some(Default::default()),
-            gates: plumb_api::GateInputsConfig {
-                f1: None,
-                f2: None,
-                f4: None,
-            },
+            gates: plumb_api::GateInputsConfig { f1: None, f4: None },
         };
         let state = plumb_api::application::open_application(
             &path,

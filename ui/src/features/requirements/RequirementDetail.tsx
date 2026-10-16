@@ -404,27 +404,41 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
         <ProvenanceDrawer open={evidenceOpen} onOpenChange={setEvidenceOpen} subjectRef={detail.id} items={evidence} />
       </section>
 
-      <section aria-label={t("requirement.section.lint")} data-section="lint" className="rounded border p-3">
+      <section
+        aria-label={t("requirement.section.lint")}
+        data-section="lint"
+        data-lint={detail.lint_current ? "current" : "unavailable"}
+        className="rounded border p-3"
+      >
         <h2 className="font-semibold">{t("requirement.section.lint")}</h2>
-        <h3 className="text-sm font-semibold">{t("requirement.lint.findings")}</h3>
-        {detail.lint_findings.length === 0 ? (
-          <p className="text-sm">{t("requirement.lint.none")}</p>
+        {/* R0.4: without a current F1 report lint is unavailable, never "no findings". */}
+        {!detail.lint_current ? (
+          <p className="text-sm" data-testid="lint-unavailable">
+            {t("readiness.notCalculated")}
+          </p>
         ) : (
-          <ul className="font-mono text-sm" data-testid="lint-findings">
-            {detail.lint_findings.map((finding) => (
-              <li key={finding}>{finding}</li>
-            ))}
-          </ul>
-        )}
-        <h3 className="text-sm font-semibold">{t("requirement.lint.smells")}</h3>
-        {detail.smells.length === 0 ? (
-          <p className="text-sm">{t("requirement.lint.none")}</p>
-        ) : (
-          <ul className="font-mono text-sm" data-testid="lint-smells">
-            {detail.smells.map((smell) => (
-              <li key={smell}>{smell}</li>
-            ))}
-          </ul>
+          <>
+            <h3 className="text-sm font-semibold">{t("requirement.lint.findings")}</h3>
+            {detail.lint_findings.length === 0 ? (
+              <p className="text-sm">{t("requirement.lint.none")}</p>
+            ) : (
+              <ul className="font-mono text-sm" data-testid="lint-findings">
+                {detail.lint_findings.map((finding) => (
+                  <li key={finding}>{finding}</li>
+                ))}
+              </ul>
+            )}
+            <h3 className="text-sm font-semibold">{t("requirement.lint.smells")}</h3>
+            {detail.smells.length === 0 ? (
+              <p className="text-sm">{t("requirement.lint.none")}</p>
+            ) : (
+              <ul className="font-mono text-sm" data-testid="lint-smells">
+                {detail.smells.map((smell) => (
+                  <li key={smell}>{smell}</li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </section>
 

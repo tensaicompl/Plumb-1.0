@@ -124,7 +124,9 @@ export function RequirementsPage() {
                     <td>{item.text}</td>
                     <td className="font-mono">{item.class}</td>
                     <td className="font-mono">{item.status}</td>
-                    <td>{item.smells.length}</td>
+                    <td data-lint={item.lint_current ? "current" : "unavailable"}>
+                      {item.lint_current ? item.smells.length : t("readiness.notCalculated")}
+                    </td>
                     <td data-readiness={(item.readiness ?? null) === null ? "null" : "value"}>
                       {item.readiness === undefined || item.readiness === null ? t("readiness.notCalculated") : String(item.readiness)}
                     </td>

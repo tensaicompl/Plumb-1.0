@@ -1101,11 +1101,15 @@ pub struct RequirementSummary {
     pub class: String,
     pub status: String,
     /// Error-severity lint rule IDs recorded for this requirement by the current F1 gate report
-    /// (F1 evaluates Accepted Requirements only).
+    /// (F1 evaluates Accepted Requirements only). Always `[]` when `lint_current` is false.
     pub smells: Vec<String>,
     pub coverage: RequirementCoverage,
-    /// Advisory readiness; `null` means not calculated by the current pilot runtime.
+    /// Advisory readiness; `null` means not calculated by the current pilot runtime. Always
+    /// `null` when `lint_current` is false.
     pub readiness: Option<f64>,
+    /// Whether a current F1 gate report exists for the branch head (R0.4). When false, lint
+    /// results are unavailable (not "no findings").
+    pub lint_current: bool,
 }
 page!(RequirementPage, RequirementSummary);
 
@@ -1129,10 +1133,13 @@ pub struct RequirementDetail {
     pub readiness: Option<f64>,
     pub spans: Vec<String>,
     /// IDs of the current F1 gate report's findings whose affected refs include this
-    /// requirement.
+    /// requirement. Always `[]` when `lint_current` is false.
     pub lint_findings: Vec<String>,
     pub ears_suggestion: Option<String>,
     pub linked: RequirementLinks,
+    /// Whether a current F1 gate report exists for the branch head (R0.4). When false,
+    /// `smells` and `lint_findings` are `[]`, `readiness` is `null` and lint is unavailable.
+    pub lint_current: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]

@@ -145,9 +145,18 @@ fn lint_findings(report: &GateReport, requirement: &Id) -> Vec<String> {
     ids
 }
 
+/// The current F1 gate report of the branch head, if any. Requirement reads never require one
+/// (R0.4): without it, lint results are reported as unavailable through `lint_current`.
+fn current_f1(state: &ApiState, loaded: &LoadedRevision) -> Result<Option<GateReport>, ApiError> {
+    Ok(state
+        .current_gate_reports(loaded)?
+        .into_iter()
+        .find(|r| r.gate == GateId::F1))
+}
+
 fn summary(
     graph: &Graph,
-    f1: &GateReport,
+    f1: Option<&GateReport>,
     node: &Node,
     requirement: &Requirement,
 ) -> Result<RequirementSummary, ApiError> {
@@ -156,12 +165,13 @@ fn summary(
         text: requirement.statement.clone(),
         class: wire(&requirement.requirement_kind)?,
         status: wire(&node.status)?,
-        smells: smells(f1, &node.id),
+        smells: f1.map(|r| smells(r, &node.id)).unwrap_or_default(),
         coverage: RequirementCoverage {
             operations: specified_by(graph, &node.id, NodeType::Operation),
             scenarios: scenarios(graph, &node.id),
         },
         readiness: None,
+        lint_current: f1.is_some(),
     })
 }
 
@@ -185,7 +195,7 @@ async fn list_requirements(
         None => None,
     };
     let loaded = state.load_head()?;
-    let f1 = state.current_gate_report(&loaded, GateId::F1)?;
+    let f1 = current_f1(&state, &loaded)?;
     let mut items = Vec::new();
     for id in loaded.graph.node_ids_by_type(NodeType::Requirement) {
         let Some(node) = loaded.graph.node(id) else {
@@ -204,7 +214,7 @@ async fn list_requirements(
         }
         items.push((
             node.id.to_string(),
-            summary(&loaded.graph, &f1, node, requirement)?,
+            summary(&loaded.graph, f1.as_ref(), node, requirement)?,
         ));
     }
     let request = PageRequest {
@@ -234,8 +244,8 @@ async fn get_requirement(
 ) -> Result<Response, ApiError> {
     let loaded = state.load_head()?;
     let (node, payload) = requirement(&loaded.graph, &id)?;
-    let f1 = state.current_gate_report(&loaded, GateId::F1)?;
-    let summary = summary(&loaded.graph, &f1, node, payload)?;
+    let f1 = current_f1(&state, &loaded)?;
+    let summary = summary(&loaded.graph, f1.as_ref(), node, payload)?;
     let mut spans: Vec<String> = node
         .evidence
         .iter()
@@ -251,13 +261,17 @@ async fn get_requirement(
         coverage: summary.coverage.clone(),
         readiness: None,
         spans,
-        lint_findings: lint_findings(&f1, &node.id),
+        lint_findings: f1
+            .as_ref()
+            .map(|r| lint_findings(r, &node.id))
+            .unwrap_or_default(),
         ears_suggestion: None,
         linked: RequirementLinks {
             operations: summary.coverage.operations,
             processes: specified_by(&loaded.graph, &node.id, NodeType::Process),
             scenarios: summary.coverage.scenarios,
         },
+        lint_current: summary.lint_current,
     };
     Ok(read_json(&loaded, body))
 }

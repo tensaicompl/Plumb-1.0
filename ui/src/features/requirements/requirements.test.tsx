@@ -76,6 +76,7 @@ const PAGE_1: RequirementPage = {
       smells: ["PLUMB.LINT.COMPOUND"],
       coverage: { operations: [], scenarios: [] },
       readiness: 0.42,
+      lint_current: true,
     },
     {
       id: "req:b",
@@ -85,6 +86,7 @@ const PAGE_1: RequirementPage = {
       smells: [],
       coverage: { operations: [], scenarios: [] },
       readiness: null,
+      lint_current: true,
     },
   ],
   next_cursor: "cursor-page-2",
@@ -100,6 +102,7 @@ const PAGE_2: RequirementPage = {
       smells: [],
       coverage: { operations: [], scenarios: [] },
       readiness: null,
+      lint_current: true,
     },
   ],
   next_cursor: null,
@@ -117,6 +120,7 @@ const DETAIL_A: RequirementDetail = {
   lint_findings: ["fnd:compound-a"],
   ears_suggestion: "When an employee submits a leave request, the system shall record it.",
   linked: { operations: ["op:submit"], processes: ["proc:leave"], scenarios: ["scn:submit"] },
+  lint_current: true,
 };
 
 const DETAIL_B: RequirementDetail = {
@@ -131,6 +135,7 @@ const DETAIL_B: RequirementDetail = {
   lint_findings: [],
   ears_suggestion: null,
   linked: { operations: [], processes: [], scenarios: [] },
+  lint_current: true,
 };
 
 /** A server preview whose lists are deliberately not in sorted order: the UI must not reorder. */
@@ -284,6 +289,39 @@ describe("RequirementsPage", () => {
     expect(screen.queryByText(/PASS|FAIL/)).toBeNull();
   });
 
+  it("shows lint smells only when the F1 report is current, never unavailable lint as zero", async () => {
+    // R0.4: a requirement read without a current F1 report carries lint_current false.
+    const unavailable: RequirementPage = {
+      items: [
+        {
+          id: "req:u",
+          text: "The system shall record approvals.",
+          class: "quality",
+          status: "Accepted",
+          smells: [],
+          coverage: { operations: [], scenarios: [] },
+          readiness: null,
+          lint_current: false,
+        },
+      ],
+      next_cursor: null,
+    };
+    server.use(http.get("*/api/requirements", () => HttpResponse.json(unavailable)), ...handlers([]));
+    renderAt("/requirements");
+    const row = (await screen.findByText("req:u")).closest("tr");
+    const cell = row?.querySelector("[data-lint]");
+    expect(cell?.getAttribute("data-lint")).toBe("unavailable");
+    expect(cell?.textContent).toBe("Not calculated");
+    expect(cell?.textContent).not.toBe("0");
+    cleanup();
+
+    server.use(...handlers([]));
+    renderAt("/requirements");
+    const current = (await screen.findByText("req:a")).closest("tr")?.querySelector("[data-lint]");
+    expect(current?.getAttribute("data-lint")).toBe("current");
+    expect(current?.textContent).toBe("1");
+  });
+
   it("navigates to the requirement detail route", async () => {
     server.use(...handlers([]));
     const { router } = renderAt("/requirements");
@@ -328,6 +366,27 @@ describe("RequirementDetail", () => {
     expect(linked.querySelector("[data-linked=scenarios]")?.textContent).toBe("scn:submit");
     // Reading performs no write.
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+  });
+
+  it("shows lint as unavailable without a current F1 report and as findings when current", async () => {
+    // R0.4: lint_current false is unavailable lint, never "no findings".
+    const unavailable: RequirementDetail = { ...DETAIL_A, smells: [], lint_findings: [], readiness: null, lint_current: false };
+    server.use(http.get("*/api/requirements/:id", () => HttpResponse.json(unavailable)), ...handlers([]));
+    renderAt("/requirements/req:a");
+    const lint = await screen.findByRole("region", { name: "Lint findings" });
+    expect(lint.getAttribute("data-lint")).toBe("unavailable");
+    expect(within(lint).getByTestId("lint-unavailable").textContent).toBe("Not calculated");
+    expect(within(lint).queryByText("None")).toBeNull();
+    expect(within(lint).queryByTestId("lint-findings")).toBeNull();
+    expect(within(lint).queryByTestId("lint-smells")).toBeNull();
+    cleanup();
+
+    server.use(...handlers([]));
+    renderAt("/requirements/req:b");
+    const current = await screen.findByRole("region", { name: "Lint findings" });
+    expect(current.getAttribute("data-lint")).toBe("current");
+    expect(within(current).queryByTestId("lint-unavailable")).toBeNull();
+    expect(within(current).getAllByText("None")).toHaveLength(2);
   });
 
   it("shows a null EARS suggestion and null readiness as not calculated, with no accept action", async () => {

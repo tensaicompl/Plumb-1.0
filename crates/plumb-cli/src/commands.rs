@@ -389,7 +389,8 @@ pub fn accept_set(
     Done::new(&result, text)
 }
 
-/// `ready`: I0, F1, F2, F3 and F4 on one head; any failed gate is exit 2.
+/// `ready`: I0, F1, F2, F3 and F4 on one head; any failed gate or unmet product precondition
+/// (R0.4) is exit 2.
 pub fn ready(state: &ApiState) -> Result<Done, CliError> {
     let outcome = state.ready()?;
     let mut text = format!(
@@ -404,6 +405,9 @@ pub fn ready(state: &ApiState) -> Result<Done, CliError> {
     );
     for gate in &outcome.gates {
         text.push_str(&format!("\n{}: {}", gate.gate, gate.result));
+    }
+    for precondition in &outcome.preconditions {
+        text.push_str(&format!("\nprecondition: {precondition}"));
     }
     let mut done = Done::new(&outcome, text)?;
     done.gate_failed = !outcome.passed();

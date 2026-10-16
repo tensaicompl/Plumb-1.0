@@ -1401,21 +1401,32 @@ mod http_core {
 
     #[tokio::test]
     async fn http_core_gate_report_freshness() {
-        // No current reports: no gates, and the F1/F4-dependent reads conflict.
+        // No current reports: no gates, and the gate-report-dependent export conflicts.
         let bare = app_with(fixture_graph(), &[], fixed());
         assert_eq!(get(&bare, "/api/gates").await.json(), json!([]));
-        for uri in [
-            "/api/requirements",
-            "/api/requirements/req:a",
-            "/api/model/export?format=report",
-        ] {
-            let r = get(&bare, uri).await;
-            assert_eq!(
-                (r.status, r.code().as_str()),
-                (StatusCode::CONFLICT, "E_GATE_REPORT_UNAVAILABLE"),
-                "{uri}"
-            );
+        let r = get(&bare, "/api/model/export?format=report").await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_GATE_REPORT_UNAVAILABLE")
+        );
+        // R0.4: requirement reads never require a current F1 report; they state explicitly
+        // that lint is not current, so the empty lint projection is not a clean lint result.
+        let list = get(&bare, "/api/requirements").await;
+        assert_eq!(list.status, StatusCode::OK);
+        let list = list.json();
+        assert!(!list["items"].as_array().unwrap().is_empty());
+        for item in list["items"].as_array().unwrap() {
+            assert_eq!(item["lint_current"], json!(false), "{item}");
+            assert_eq!(item["smells"], json!([]), "{item}");
+            assert_eq!(item["readiness"], Value::Null, "{item}");
         }
+        let detail = get(&bare, "/api/requirements/req:a").await;
+        assert_eq!(detail.status, StatusCode::OK);
+        let detail = detail.json();
+        assert_eq!(detail["lint_current"], json!(false));
+        assert_eq!(detail["smells"], json!([]));
+        assert_eq!(detail["lint_findings"], json!([]));
+        assert_eq!(detail["readiness"], Value::Null);
         // Stale and mismatched reports are never presented.
         let graph = fixture_graph();
         let current = gate_report(&graph, GateId::I0);
@@ -1535,7 +1546,8 @@ mod http_core {
                 "status": "Accepted", "smells": ["PLUMB.LINT.REQ.OPEN_LIST"],
                 "coverage": {"operations": ["op:submit"], "scenarios": ["scn:a"]},
                 "readiness": null, "spans": [], "lint_findings": lint, "ears_suggestion": null,
-                "linked": {"operations": ["op:submit"], "processes": ["proc:leave"], "scenarios": ["scn:a"]}
+                "linked": {"operations": ["op:submit"], "processes": ["proc:leave"], "scenarios": ["scn:a"]},
+                "lint_current": true
             })
         );
         let list = get(&app, "/api/requirements").await.json();

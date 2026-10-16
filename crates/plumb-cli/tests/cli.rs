@@ -22,9 +22,7 @@ mod cli {
         BranchName, SqliteRevisionStore, SqliteStageStore, SqliteWorkflowStore,
         WorkflowProposalState,
     };
-    use plumb_validation::{
-        finding_id, finding_key, load_builtin_software_profile, ValidationPolicy,
-    };
+    use plumb_validation::{load_builtin_software_profile, ValidationPolicy};
     use serde_json::{json, Value};
 
     const PROJECT: &str = "project:pilot";
@@ -196,54 +194,47 @@ mod cli {
         })
     }
 
+    /// The external F1 configuration: the lint policy only (R0.4).
     fn f1_inputs() -> Value {
-        json!({"requirements": [], "analysis_findings": [], "lint_policy": {"severity_overrides": {}}})
+        json!({"lint_policy": {"severity_overrides": {}}})
     }
 
-    fn f2_inputs(findings: Vec<Value>) -> Value {
-        json!({
-            "analysis_findings": findings, "calculation_scope_overrides": [],
-            "decision_tables": [], "invariants": []
-        })
-    }
-
+    /// The external F4 configuration (R0.4): in-scope Scenarios, required kinds per executable
+    /// source and visible assumptions; applicability itself comes from S4.5 and the graph.
     fn f4_inputs() -> Value {
         json!({
-            "applicability": {
-                "source_refs": [], "executable_source_refs": [], "in_scope_scenario_refs": [],
-                "blocking_scenario_refs": [], "executable_coverage": []
-            },
+            "in_scope_scenario_refs": [], "required_scenario_kinds": [],
             "visible_assumption_refs": []
         })
     }
 
     fn all_gates() -> Value {
-        json!({"f1": f1_inputs(), "f2": f2_inputs(vec![]), "f4": f4_inputs()})
+        json!({"f1": f1_inputs(), "f4": f4_inputs()})
     }
 
-    /// A blocker analysis finding with its frozen identity (`finding_key`, `finding_id`).
-    fn blocker(code: &str, family: &str, condition: &str, target: &str) -> Value {
-        let key = finding_key(code, &[id(target)], condition).unwrap();
-        let finding = finding_id(&key).unwrap();
-        json!({
-            "key": key, "id": finding, "semantic_condition_key": condition,
-            "payload": {
-                "code": code, "family": family, "severity": "blocker", "status": "open",
-                "message": "configured analysis finding",
-                "affected_refs": [target], "suggested_resolution": null,
-                "standard_rule_ref": null, "waiver_ref": null
-            }
-        })
-    }
-
-    /// A blocker F2 analysis finding over `target` (makes F2 fail).
-    fn f2_blocker(target: &str) -> Value {
-        blocker(
-            "PLUMB.F2.DOMAIN.RELATION_TYPED",
-            "F2",
-            &format!("domain_relationship_cardinality_unresolved:{target}"),
-            target,
-        )
+    /// Commits one Accepted node on the head of `db` through the revision store's CAS commit
+    /// (test setup for graph content no CLI command creates yet).
+    fn commit_node(db: &Path, node: Value) {
+        let mut store = SqliteRevisionStore::open(db).unwrap();
+        let head = store.head(&BranchName::main()).unwrap().unwrap();
+        let loaded = store.load_revision(&head).unwrap();
+        let patch_set = serde_json::from_value(json!({
+            "base_semantic_hash": loaded.revision.semantic_hash,
+            "patch": {"op": "AddNode", "node": node}
+        }))
+        .unwrap();
+        store
+            .commit(
+                &BranchName::main(),
+                &head,
+                &patch_set,
+                plumb_store::RevisionWriteMeta {
+                    decision_refs: vec![],
+                    created_by: id(ACTOR),
+                    created_at: ts(T0),
+                },
+            )
+            .unwrap();
     }
 
     /// A fresh initialized database and a configuration file.
@@ -1058,6 +1049,16 @@ mod cli {
         missing.as_object_mut().unwrap().remove("process_scope");
         let mut gate_unknown = config(all_gates());
         gate_unknown["gates"]["f3"] = Value::Null;
+        // R0.4: graph-derived gate truth is never configuration.
+        let mut f2_restated = config(all_gates());
+        f2_restated["gates"]["f2"] = json!({
+            "analysis_findings": [], "calculation_scope_overrides": [],
+            "decision_tables": [], "invariants": []
+        });
+        let mut f1_restated = config(all_gates());
+        f1_restated["gates"]["f1"]["requirements"] = json!([]);
+        let mut f4_restated = config(all_gates());
+        f4_restated["gates"]["f4"]["blocking_scenario_refs"] = json!([]);
         let mut version = config(all_gates());
         version["version"] = json!(2);
         let mut calendar = config(all_gates());
@@ -1071,6 +1072,9 @@ mod cli {
             ("unknown", unknown),
             ("missing", missing),
             ("gate_unknown", gate_unknown),
+            ("f2_restated", f2_restated),
+            ("f1_restated", f1_restated),
+            ("f4_restated", f4_restated),
             ("version", version),
             ("calendar", calendar),
             ("managers", managers),
@@ -1415,14 +1419,23 @@ mod cli {
 
     #[test]
     fn cli_gate_failure_is_exit_two() {
-        // A configured blocker F2 finding over the imported source fails F2.
-        let probe = env();
-        let source = probe.import();
-        drop(probe);
-        let env = env_with(config(json!({
-            "f1": f1_inputs(), "f2": f2_inputs(vec![f2_blocker(&source)]), "f4": f4_inputs()
-        })));
-        assert_eq!(env.import(), source);
+        // R0.4: F2 fails on genuine graph content (an Accepted Operation without a performer
+        // violates PLUMB.F2.OPERATION.PERFORMER), never on configured findings.
+        let env = env();
+        env.import();
+        commit_node(
+            &env.db,
+            json!({
+                "id": "op:submit", "revision": 1, "status": "Accepted",
+                "payload": {"type": "Operation", "data": {
+                    "name": "op:submit", "operation_kind": "command", "input_schema_ref": null,
+                    "output_schema_ref": null, "preconditions": null, "postconditions": null,
+                    "idempotency": null, "transaction_semantics": null
+                }},
+                "evidence": [], "derivations": [], "standards": [], "tags": [], "extensions": {},
+                "audit": {"created_by": ACTOR, "created_at": T0, "updated_by": null, "updated_at": null}
+            }),
+        );
         // analyse completes (replayed domain and lifecycle inference) and its failed F2 gate is
         // exit 2, never a failed job.
         let fixtures = record(&env, "analyse");
@@ -1444,6 +1457,33 @@ mod cli {
             .find(|g| g["gate"] == "F2")
             .unwrap();
         assert_eq!(f2["result"], "fail");
+    }
+
+    #[test]
+    fn ready_fails_without_accepted_requirements() {
+        // R0.4: zero Accepted Requirements is a product precondition. Every gate is evaluated
+        // and reported as it is (no fabricated gate failure); ready still exits 2.
+        let env = env();
+        env.import();
+        let (code, ready) = env.json(&["ready"]);
+        assert_eq!(code, 2, "{ready}");
+        assert_eq!(ready["preconditions"], json!(["no_accepted_requirements"]));
+        assert!(
+            ready["gates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|g| g["result"] == "pass"),
+            "{ready}"
+        );
+        let (code, out, err) = env.run(&["ready"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            out.lines()
+                .any(|l| l == "precondition: no_accepted_requirements"),
+            "{out}"
+        );
+        assert!(!out.contains(": fail"), "{out}");
     }
 
     #[test]
@@ -1475,7 +1515,10 @@ mod cli {
             .unwrap()
             .iter()
             .all(|g| g["result"] == "pass");
-        assert_eq!(code == 0, all_pass);
+        // R0.4: success also needs every product precondition (none fails here only when
+        // Accepted Requirements exist).
+        let preconditions_hold = ready["preconditions"].as_array().unwrap().is_empty();
+        assert_eq!(code == 0, all_pass && preconditions_hold);
         let out = env.path("report");
         let (code, report) = env.json(&["report", "--out", out.to_str().unwrap()]);
         assert_eq!(code, 0, "{report}");

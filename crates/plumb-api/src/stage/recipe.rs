@@ -230,6 +230,8 @@ impl Recipe {
             Recipe::Lint => json!({
                 "validation_policy": v(&a04.validation_policy)?,
                 "f1": v(&a04.gates.f1)?,
+                "vocabulary_policy": v(&a04.vocabulary_policy)?,
+                "duplicate_policy": v(&a04.duplicate_policy)?,
             }),
             Recipe::Extract | Recipe::Rules | Recipe::Tags => json!({}),
             Recipe::Consolidate => json!({
@@ -239,7 +241,8 @@ impl Recipe {
             Recipe::Calc => json!({ "calculation_scope": v(&a04.calculation_scope)? }),
             Recipe::Analyse => json!({
                 "validation_policy": v(&a04.validation_policy)?,
-                "f2": v(&a04.gates.f2)?,
+                "expression_scopes": v(&a03.expression_scopes)?,
+                "calculation_scope_overrides": v(&a03.calculation_scope_overrides)?,
             }),
             Recipe::Flows => json!({
                 "operation_scope": v(&a04.operation_scope)?,

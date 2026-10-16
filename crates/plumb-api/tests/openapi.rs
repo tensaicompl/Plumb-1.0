@@ -937,6 +937,19 @@ mod openapi {
             "RequirementLinks",
             &["operations", "processes", "scenarios"],
         );
+        // R0.4: lint_current is a required boolean of both requirement read schemas.
+        for name in ["RequirementSummary", "RequirementDetail"] {
+            let s = schema(&doc, name);
+            assert_eq!(s["properties"]["lint_current"]["type"], "boolean", "{name}");
+            assert!(
+                s["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("lint_current")),
+                "{name} must require lint_current"
+            );
+        }
+        assert_eq!(operations(&doc).len(), 74);
         has(
             "Sentence",
             &["id", "text", "slots", "status", "evidence", "unknowns"],

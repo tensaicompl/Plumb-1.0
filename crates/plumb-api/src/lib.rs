@@ -20,8 +20,8 @@ pub use openapi::{
 };
 pub use routes::router;
 pub use runtime::{
-    A04RuntimeConfig, CalendarConfig, DirectManagerFact, DirectManagerPredicates, F4GateConfig,
-    GateInputsConfig, ProviderMode, RuntimeConfigError,
+    A04RuntimeConfig, CalendarConfig, DirectManagerFact, DirectManagerPredicates, F1GateConfig,
+    F4GateConfig, GateInputsConfig, ProviderMode, RuntimeConfigError,
 };
 pub use server::{serve_blocking, ServeError};
 pub use stage::{ReadyGate, ReadyOutcome, Recipe, StageRun};

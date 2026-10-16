@@ -59,8 +59,9 @@ const FIELDS: [&str; 21] = [
     "gates",
 ];
 
-/// The exact fields of `gates`.
-const GATE_FIELDS: [&str; 3] = ["f1", "f2", "f4"];
+/// The exact fields of `gates`: only the genuinely external F1 and F4 inputs (R0.4). F2 and
+/// every graph-derived restatement are assembled from the PSG and rejected as unknown fields.
+const GATE_FIELDS: [&str; 2] = ["f1", "f4"];
 
 /// Why the configuration, the provider or the key file cannot be used.
 #[derive(Debug, Error)]

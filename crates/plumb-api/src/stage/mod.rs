@@ -856,9 +856,9 @@ fn execute(run: &mut Run<'_>) -> Result<(), StepEnd> {
         }
         Recipe::Analyse => {
             run.child_step(stage(Phase::Analyse, scope_of, targets, at))?;
-            if a04.gates.f2.is_some() {
-                run.gate_step(Phase::F2, GateId::F2)?;
-            }
+            // Fable #190 (R0.4): F2 is always evaluated; its inputs are assembled from the
+            // graph, so an absent external input fails it explicitly instead of skipping it.
+            run.gate_step(Phase::F2, GateId::F2)?;
         }
         Recipe::Flows => {
             run.child_step(stage(Phase::Flows, scope_of, targets, at))?;
@@ -1028,11 +1028,7 @@ pub(crate) mod test_support {
             authorization_draft: None,
             scenario_derivation: None,
             verification_applicability: None,
-            gates: GateInputsConfig {
-                f1: None,
-                f2: None,
-                f4: None,
-            },
+            gates: GateInputsConfig { f1: None, f4: None },
         };
         open_application(
             &db,

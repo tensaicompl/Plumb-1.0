@@ -1831,8 +1831,13 @@ export interface components {
             id: string;
             linked: components["schemas"]["RequirementLinks"];
             /**
+             * @description Whether a current F1 gate report exists for the branch head (R0.4). When false,
+             *     `smells` and `lint_findings` are `[]`, `readiness` is `null` and lint is unavailable.
+             */
+            lint_current: boolean;
+            /**
              * @description IDs of the current F1 gate report's findings whose affected refs include this
-             *     requirement.
+             *     requirement. Always `[]` when `lint_current` is false.
              */
             lint_findings: string[];
             /** Format: double */
@@ -1857,13 +1862,19 @@ export interface components {
             coverage: components["schemas"]["RequirementCoverage"];
             id: string;
             /**
+             * @description Whether a current F1 gate report exists for the branch head (R0.4). When false, lint
+             *     results are unavailable (not "no findings").
+             */
+            lint_current: boolean;
+            /**
              * Format: double
-             * @description Advisory readiness; `null` means not calculated by the current pilot runtime.
+             * @description Advisory readiness; `null` means not calculated by the current pilot runtime. Always
+             *     `null` when `lint_current` is false.
              */
             readiness?: number | null;
             /**
              * @description Error-severity lint rule IDs recorded for this requirement by the current F1 gate report
-             *     (F1 evaluates Accepted Requirements only).
+             *     (F1 evaluates Accepted Requirements only). Always `[]` when `lint_current` is false.
              */
             smells: string[];
             status: string;
@@ -5577,6 +5588,7 @@ export interface operations {
                      *             ]
                      *           },
                      *           "id": "HR-001",
+                     *           "lint_current": true,
                      *           "smells": [
                      *             "example"
                      *           ],
@@ -5656,6 +5668,7 @@ export interface operations {
                      *           "example"
                      *         ]
                      *       },
+                     *       "lint_current": true,
                      *       "lint_findings": [
                      *         "example"
                      *       ],

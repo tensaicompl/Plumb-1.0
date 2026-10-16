@@ -16,7 +16,7 @@ mod http_stages {
     use plumb_api::application::{open_application, ApplicationRuntime};
     use plumb_api::{
         router, ApiIdentity, ApiState, CalendarConfig, DirectManagerFact, DirectManagerPredicates,
-        F4GateConfig, GateInputsConfig, ProviderMode, Recipe,
+        F1GateConfig, F4GateConfig, GateInputsConfig, ProviderMode, Recipe,
     };
     use plumb_artifacts::{ArtifactKind, ArtifactStore, SqliteArtifactStore};
     use plumb_core::{to_canonical_json, CanonicalJson, Clock, Hash, Id, Timestamp};
@@ -36,7 +36,7 @@ mod http_stages {
         BranchName, RevisionWriteMeta, SqliteRevisionStore, SqliteStageStore, SqliteWorkflowStore,
         StageStatus, WorkflowProposalState,
     };
-    use plumb_validation::{load_builtin_software_profile, F4ApplicabilityInput, ValidationPolicy};
+    use plumb_validation::{load_builtin_software_profile, ValidationPolicy};
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
@@ -107,6 +107,46 @@ mod http_stages {
                 "stakeholder_refs": null
             }),
         )
+    }
+
+    /// S1.1-origin Requirements (R0.4: consolidate recovers each source statement): one
+    /// imported Markdown paragraph per statement, its EvidenceFragment as the only evidence and
+    /// the `plumb_functional:segment_origin` covering the whole paragraph. Returns the source,
+    /// fragments and Requirements.
+    fn sourced_requirements(requirements: &[(&str, &str, &str)]) -> Vec<Node> {
+        let markdown: String = requirements
+            .iter()
+            .map(|(_, _, statement)| format!("{statement}\n\n"))
+            .collect();
+        let source = plumb_import::import_markdown(
+            "requirements.md",
+            markdown.as_bytes(),
+            &plumb_import::ImportAudit {
+                created_by: id(ACTOR),
+                created_at: ts(T0),
+            },
+        )
+        .unwrap();
+        let mut nodes = vec![source.source.clone()];
+        nodes.extend(source.fragments.clone());
+        for (i, (node_id, status, statement)) in requirements.iter().enumerate() {
+            let fragment = source
+                .fragments
+                .iter()
+                .find(|f| {
+                    matches!(&f.payload, NodePayload::EvidenceFragment(e)
+                        if e.extracted_text.as_deref() == Some(*statement))
+                })
+                .unwrap_or_else(|| panic!("no fragment for {statement:?}"));
+            let mut value = serde_json::to_value(requirement(node_id, status, statement)).unwrap();
+            value["evidence"] = json!([fragment.id]);
+            value["extensions"] = json!({"plumb_functional:segment_origin": {
+                "candidate_ref": format!("seg:{:016x}", i + 1),
+                "fragment_ref": fragment.id, "start": 0, "end": statement.len()
+            }});
+            nodes.push(serde_json::from_value(value).unwrap());
+        }
+        nodes
     }
 
     /// The base agents every fixture graph carries.
@@ -230,6 +270,23 @@ mod http_stages {
                         .collect();
                     json!({"version": 1, "classifications": classes, "intents": []})
                 }
+                // R0.4: consolidate and analyse answer with empty, schema-valid analyses.
+                "vocabulary_analysis" => json!({"version": 1, "mentions": []}),
+                "ears_normalization" => {
+                    let entries: Vec<Value> = context["requirements"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|r| json!({"requirement_ref": r["requirement_ref"], "suggestion": null}))
+                        .collect();
+                    json!({"version": 1, "requirements": entries})
+                }
+                "domain_extraction" => {
+                    json!({"version": 1, "entities": [], "attributes": [], "relationships": []})
+                }
+                "lifecycle_extraction" => {
+                    json!({"version": 1, "states": [], "transitions": [], "invariants": []})
+                }
                 "data_classification" => {
                     let classes: Vec<Value> = self
                         .classes
@@ -284,9 +341,11 @@ mod http_stages {
     #[derive(Clone, Default)]
     struct Gates {
         f4: Option<F4GateConfig>,
-        f1: Option<plumb_validation::F1ValidationInputs>,
+        f1: Option<F1GateConfig>,
         null_provider: bool,
         scenario_derivation: Option<plumb_functional::ScenarioDerivationInputs>,
+        /// The S4.5 verification applicability (default: no sources).
+        verification: Option<plumb_functional::VerificationApplicabilityInputs>,
     }
 
     /// The replay mode of the test provider (R0.2: only `null` declares absence).
@@ -354,10 +413,9 @@ mod http_stages {
             process_scope: None,
             authorization_draft: None,
             scenario_derivation: gates.scenario_derivation.clone(),
-            verification_applicability: Some(Default::default()),
+            verification_applicability: Some(gates.verification.clone().unwrap_or_default()),
             gates: GateInputsConfig {
                 f1: gates.f1.clone(),
-                f2: None,
                 f4: gates.f4.clone(),
             },
         }
@@ -1213,38 +1271,8 @@ mod http_stages {
 
     #[tokio::test]
     async fn http_stages_ready_evaluates_the_chain_and_persists_reports() {
-        let graph = data_graph(&["Email"]);
-        let gates = Gates {
-            null_provider: false,
-                scenario_derivation: None,
-            f1: Some(serde_json::from_value(json!({
-                "requirements": [], "analysis_findings": [], "lint_policy": {"severity_overrides": {}}
-            })).unwrap()),
-            f4: Some(F4GateConfig {
-                applicability: F4ApplicabilityInput::default(),
-                visible_assumption_refs: vec![],
-            }),
-        };
-        let app = app_with(graph, &[], gates.clone());
-        // F2 is required by ready as well.
-        assert_eq!(
-            app.state.ready().unwrap_err().body().code,
-            "E_GATE_INPUTS_MISSING"
-        );
-        let mut rt = runtime(app.provider.clone(), &gates);
-        rt.gates.f2 = Some(serde_json::from_value(json!({
-            "analysis_findings": [], "calculation_scope_overrides": [], "decision_tables": [], "invariants": []
-        })).unwrap());
-        let state = open_application(
-            &app.path,
-            BranchName::main(),
-            identity(),
-            fixed(),
-            load_builtin_software_profile().unwrap(),
-            rt,
-        )
-        .unwrap();
-        let outcome = state.ready().unwrap();
+        let app = app_with(data_graph(&["Email"]), &[], chain_gates());
+        let outcome = app.state.ready().unwrap();
         assert_eq!(outcome.evaluation_at, ts(NOW));
         assert_eq!(
             outcome
@@ -1254,6 +1282,10 @@ mod http_stages {
                 .collect::<Vec<_>>(),
             ["I0", "F1", "F2", "F3", "F4"]
         );
+        // R0.4: zero Accepted Requirements is a product precondition, not a gate result.
+        assert!(outcome.gates.iter().all(|g| g.result == "pass"));
+        assert_eq!(outcome.preconditions, ["no_accepted_requirements"]);
+        assert!(!outcome.passed());
         let reports = stage_store(&app).gate_reports().unwrap();
         assert_eq!(reports.len(), 5);
         let f3 = reports.iter().find(|r| r.gate == "F3").unwrap();
@@ -1264,13 +1296,7 @@ mod http_stages {
             .all(|r| r.evaluation_at.is_none()));
         // The durable reports are current for every gate read immediately.
         let r = send(
-            &App {
-                _dir: tempfile::tempdir().unwrap(),
-                path: app.path.clone(),
-                router: router(state.clone()),
-                state: state.clone(),
-                provider: app.provider.clone(),
-            },
+            &app,
             Request::get("/api/gates").body(Body::empty()).unwrap(),
         )
         .await;
@@ -1301,12 +1327,12 @@ mod http_stages {
 
     fn run_graph() -> Graph {
         let mut nodes = agents();
+        nodes.extend(sourced_requirements(&[(
+            "req:a",
+            "Accepted",
+            "Employees shall submit leave requests.",
+        )]));
         nodes.extend([
-            requirement(
-                "req:a",
-                "Accepted",
-                "Employees shall submit leave requests.",
-            ),
             node(
                 "entity:request",
                 "Accepted",
@@ -1358,21 +1384,25 @@ mod http_stages {
 
     #[tokio::test]
     async fn http_stages_run_commits_runs_then_evaluates_f4_on_the_committed_revision() {
-        let applicability: F4ApplicabilityInput = serde_json::from_value(json!({
-            "source_refs": [], "executable_source_refs": [],
-            "in_scope_scenario_refs": ["scn:fail", "scn:pass"],
-            "blocking_scenario_refs": ["scn:fail"],
-            "executable_coverage": []
-        }))
-        .unwrap();
+        // R0.4: the blocking Scenarios come from the S4.5 applicability over the graph (both
+        // Scenarios cover the blocking executable op:submit); only the in-scope Scenarios and
+        // the required kinds are external.
         let gates = Gates {
-            null_provider: false,
-            scenario_derivation: None,
             f4: Some(F4GateConfig {
-                applicability,
+                in_scope_scenario_refs: vec![id("scn:fail"), id("scn:pass")],
+                required_scenario_kinds: vec![serde_json::from_value(json!({
+                    "source_ref": "op:submit", "required_scenario_kinds": []
+                }))
+                .unwrap()],
                 visible_assumption_refs: vec![],
             }),
-            f1: None,
+            verification: Some(
+                serde_json::from_value(json!({"sources": [
+                    {"source_ref": "op:submit", "mode": "executable_scenario", "blocking": true}
+                ]}))
+                .unwrap(),
+            ),
+            ..Gates::default()
         };
         let app = app_with(run_graph(), &[], gates);
         let before = head(&app);
@@ -1426,22 +1456,22 @@ mod http_stages {
     }
 
     #[tokio::test]
-    async fn http_stages_f4_needs_valid_explicit_applicability() {
-        let applicability: F4ApplicabilityInput = serde_json::from_value(json!({
-            "source_refs": [], "executable_source_refs": [],
-            "in_scope_scenario_refs": ["scn:ghost"],
-            "blocking_scenario_refs": [],
-            "executable_coverage": []
-        }))
-        .unwrap();
+    async fn http_stages_f4_needs_valid_explicit_external_inputs() {
+        // R0.4: an executable source without explicit required kinds is a missing external
+        // input naming the source; a configured Scenario in a forbidden state is stale.
+        let verification: plumb_functional::VerificationApplicabilityInputs =
+            serde_json::from_value(json!({"sources": [
+                {"source_ref": "op:submit", "mode": "executable_scenario", "blocking": false}
+            ]}))
+            .unwrap();
         let gates = Gates {
-            null_provider: false,
-            scenario_derivation: None,
             f4: Some(F4GateConfig {
-                applicability,
+                in_scope_scenario_refs: vec![id("scn:pass")],
+                required_scenario_kinds: vec![],
                 visible_assumption_refs: vec![],
             }),
-            f1: None,
+            verification: Some(verification.clone()),
+            ..Gates::default()
         };
         let app = app_with(run_graph(), &[], gates);
         let job_id = run_inline(&app, Recipe::Run, Some(vec!["scn:pass".into()]));
@@ -1450,38 +1480,69 @@ mod http_stages {
         assert!(view["error"]
             .as_str()
             .unwrap()
-            .starts_with("E_STAGE_EVALUATION_FAILED: "));
+            .starts_with("E_GATE_INPUTS_MISSING: "));
+        let details = failure_details(&view);
+        assert_eq!(details["field"], "required_scenario_kinds");
+        assert_eq!(details["elements"], json!(["op:submit"]));
+
+        let mut graph = run_graph();
+        graph = Graph::new(
+            id(PROJECT),
+            id(PROFILE),
+            graph
+                .nodes()
+                .values()
+                .cloned()
+                .map(|mut n| {
+                    if n.id == id("scn:fail") {
+                        n.status = plumb_psg::ElementStatus::Deprecated;
+                    }
+                    n
+                })
+                .collect(),
+            graph.edges().values().cloned().collect(),
+        )
+        .unwrap();
+        let gates = Gates {
+            f4: Some(F4GateConfig {
+                in_scope_scenario_refs: vec![id("scn:fail")],
+                required_scenario_kinds: vec![],
+                visible_assumption_refs: vec![],
+            }),
+            ..Gates::default()
+        };
+        let app = app_with(graph, &[], gates);
+        let job_id = run_inline(&app, Recipe::Run, Some(vec!["scn:pass".into()]));
+        let view = job(&app, &job_id);
+        assert_eq!(view["status"], "failed", "{view}");
+        assert!(view["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("E_GATE_INPUTS_STALE: "));
+        assert_eq!(failure_details(&view)["elements"], json!(["scn:fail"]));
+    }
+
+    /// The external F1 configuration: the lint policy only (R0.4).
+    fn f1_config() -> F1GateConfig {
+        serde_json::from_value(json!({"lint_policy": {"severity_overrides": {}}})).unwrap()
     }
 
     fn chain_gates() -> Gates {
         Gates {
-            null_provider: false,
-            scenario_derivation: None,
-            f1: Some(
-                serde_json::from_value(json!({
-                    "requirements": [], "analysis_findings": [],
-                    "lint_policy": {"severity_overrides": {}}
-                }))
-                .unwrap(),
-            ),
+            f1: Some(f1_config()),
             f4: Some(F4GateConfig {
-                applicability: F4ApplicabilityInput::default(),
+                in_scope_scenario_refs: vec![],
+                required_scenario_kinds: vec![],
                 visible_assumption_refs: vec![],
             }),
+            ..Gates::default()
         }
     }
 
     /// A state over `path` with the full ready-chain configuration.
     fn ready_state(app: &App) -> ApiState {
         let gates = chain_gates();
-        let mut rt = runtime(app.provider.clone(), &gates);
-        rt.gates.f2 = Some(
-            serde_json::from_value(json!({
-                "analysis_findings": [], "calculation_scope_overrides": [],
-                "decision_tables": [], "invariants": []
-            }))
-            .unwrap(),
-        );
+        let rt = runtime(app.provider.clone(), &gates);
         open_application(
             &app.path,
             BranchName::main(),
@@ -1531,25 +1592,34 @@ mod http_stages {
 
     #[tokio::test]
     async fn http_stages_broken_trace_link_is_an_f4_context_error() {
-        let applicability: F4ApplicabilityInput = serde_json::from_value(json!({
-            "source_refs": [], "executable_source_refs": [],
-            "in_scope_scenario_refs": ["scn:pass"],
-            "blocking_scenario_refs": [],
-            "executable_coverage": []
-        }))
-        .unwrap();
-        let gates = Gates {
-            null_provider: false,
-            scenario_derivation: None,
-            f4: Some(F4GateConfig {
-                applicability,
-                visible_assumption_refs: vec![],
-            }),
-            f1: None,
+        let f4 = F4GateConfig {
+            in_scope_scenario_refs: vec![id("scn:pass")],
+            required_scenario_kinds: vec![],
+            visible_assumption_refs: vec![],
         };
-        let app = app_with(run_graph(), &[], gates);
+        let gates = Gates {
+            f1: Some(f1_config()),
+            f4: Some(f4),
+            ..Gates::default()
+        };
+        let app = app_with(run_graph(), &[], gates.clone());
         let job_id = run_inline(&app, Recipe::Run, Some(vec!["scn:pass".into()]));
         assert_eq!(job(&app, &job_id)["status"], "committed");
+        // The durable F1/F2 analyses of the Accepted Requirement exist (R0.4).
+        let consolidate = run_inline(&app, Recipe::Consolidate, None);
+        assert_eq!(
+            job(&app, &consolidate)["status"],
+            "ready",
+            "{}",
+            job(&app, &consolidate)
+        );
+        let analyse = run_inline(&app, Recipe::Analyse, None);
+        assert_eq!(
+            job(&app, &analyse)["status"],
+            "ready",
+            "{}",
+            job(&app, &analyse)
+        );
         // Point the run at a trace that does not exist.
         let loaded = head(&app);
         let run_node = loaded
@@ -1583,26 +1653,7 @@ mod http_stages {
                 },
             )
             .unwrap();
-        let mut rt = runtime(app.provider.clone(), &Gates::default());
-        rt.gates = GateInputsConfig {
-            f1: chain_gates().f1,
-            f2: Some(
-                serde_json::from_value(json!({
-                    "analysis_findings": [], "calculation_scope_overrides": [],
-                    "decision_tables": [], "invariants": []
-                }))
-                .unwrap(),
-            ),
-            f4: Some(F4GateConfig {
-                applicability: serde_json::from_value(json!({
-                    "source_refs": [], "executable_source_refs": [],
-                    "in_scope_scenario_refs": ["scn:pass"],
-                    "blocking_scenario_refs": [], "executable_coverage": []
-                }))
-                .unwrap(),
-                visible_assumption_refs: vec![],
-            }),
-        };
+        let rt = runtime(app.provider.clone(), &gates);
         let state = open_application(
             &app.path,
             BranchName::main(),
@@ -1617,7 +1668,7 @@ mod http_stages {
     }
 
     #[tokio::test]
-    async fn http_stages_lint_evaluates_configured_f1_only() {
+    async fn http_stages_lint_evaluates_assembled_f1_only() {
         let gates = chain_gates();
         let app = app_with(data_graph(&["Email"]), &[], gates);
         let job_id = run_inline(&app, Recipe::Lint, None);
@@ -1630,9 +1681,344 @@ mod http_stages {
             .into_iter()
             .find(|r| r.gate == "F1")
             .unwrap();
-        let expected =
-            Hash::content_sha256(&to_canonical_json(&chain_gates().f1.unwrap()).unwrap());
+        // R0.4: the hash binds the assembled inputs (no Accepted Requirement here).
+        let assembled: plumb_validation::F1ValidationInputs = serde_json::from_value(json!({
+            "requirements": [], "analysis_findings": [],
+            "lint_policy": {"severity_overrides": {}}
+        }))
+        .unwrap();
+        let expected = Hash::content_sha256(&to_canonical_json(&assembled).unwrap());
         assert_eq!(report.supplemental_input_hash, Some(expected));
+    }
+
+    // ------------------------------------------------------------------ R0.4 gate input assembly
+
+    const REQ_A: &str = "Employees shall submit leave requests.";
+    const REQ_B: &str = "Managers shall approve leave requests.";
+
+    /// req:a Accepted and req:b Proposed, both S1.1-origin.
+    fn assembly_graph() -> Graph {
+        let mut nodes = agents();
+        nodes.extend(sourced_requirements(&[
+            ("req:a", "Accepted", REQ_A),
+            ("req:b", "Proposed", REQ_B),
+        ]));
+        Graph::new(id(PROJECT), id(PROFILE), nodes, vec![]).unwrap()
+    }
+
+    /// Commits `patch` directly on the head (a concurrent writer; no restart of the state).
+    fn commit_patch(app: &App, patch: impl FnOnce(&plumb_store::LoadedRevision) -> SemanticPatch) {
+        let loaded = head(app);
+        SqliteRevisionStore::open(&app.path)
+            .unwrap()
+            .commit(
+                &BranchName::main(),
+                &loaded.revision.id,
+                &PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch: patch(&loaded),
+                },
+                RevisionWriteMeta {
+                    decision_refs: vec![],
+                    created_by: id(ACTOR),
+                    created_at: ts(NOW),
+                },
+            )
+            .unwrap();
+    }
+
+    /// Accepts the Proposed Requirement `node_id` on the head.
+    fn accept_requirement(app: &App, node_id: &str) {
+        commit_patch(app, |loaded| {
+            let node = loaded.graph.node(&id(node_id)).unwrap();
+            SemanticPatch::SetStatus {
+                target: plumb_patch::ElementPrecondition {
+                    id: node.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(node).unwrap(),
+                },
+                from: plumb_psg::ElementStatus::Proposed,
+                to: plumb_psg::ElementStatus::Accepted,
+            }
+        });
+    }
+
+    /// The exact F1 inputs assembled for the Accepted Requirements of the head: no vocabulary
+    /// mention (the test provider returns none), no finding and the configured lint policy.
+    fn expected_f1_hash(app: &App) -> Hash {
+        let loaded = head(app);
+        let mut requirements = Vec::new();
+        for node in loaded.graph.nodes().values() {
+            let NodePayload::Requirement(r) = &node.payload else {
+                continue;
+            };
+            if node.status != plumb_psg::ElementStatus::Accepted {
+                continue;
+            }
+            requirements.push(json!({
+                "requirement_ref": node.id, "vocabulary_dependencies": [],
+                "lint_input": {
+                    "requirement_ref": node.id, "statement": r.statement,
+                    "evidence_refs": node.evidence, "source_anchor": null, "term_context": null
+                }
+            }));
+        }
+        let inputs: plumb_validation::F1ValidationInputs = serde_json::from_value(json!({
+            "requirements": requirements, "analysis_findings": [],
+            "lint_policy": {"severity_overrides": {}}
+        }))
+        .unwrap();
+        Hash::content_sha256(&to_canonical_json(&inputs).unwrap())
+    }
+
+    /// The F1 report of the lint job `job_id`.
+    fn f1_report(app: &App, job_id: &Hash) -> plumb_store::GateReportRecord {
+        stage_store(app)
+            .gate_reports()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.gate == "F1" && r.recipe_job_id.as_ref() == Some(job_id))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn gate_inputs_follow_new_accepted_requirement_without_restart() {
+        let app = app_with(assembly_graph(), &[], chain_gates());
+        assert_eq!(
+            job(&app, &run_inline(&app, Recipe::Consolidate, None))["status"],
+            "ready"
+        );
+        let first = run_inline(&app, Recipe::Lint, None);
+        assert_eq!(
+            job(&app, &first)["status"],
+            "ready",
+            "{}",
+            job(&app, &first)
+        );
+        let before = expected_f1_hash(&app);
+        assert_eq!(
+            f1_report(&app, &first).supplemental_input_hash,
+            Some(before.clone())
+        );
+
+        // A newly Accepted Requirement is assembled by the same running state: the frozen
+        // pre-R0.4 configuration would have stayed at {req:a} and failed exact coverage.
+        accept_requirement(&app, "req:b");
+        assert_eq!(
+            job(&app, &run_inline(&app, Recipe::Consolidate, None))["status"],
+            "ready"
+        );
+        let second = run_inline(&app, Recipe::Lint, None);
+        assert_eq!(
+            job(&app, &second)["status"],
+            "ready",
+            "{}",
+            job(&app, &second)
+        );
+        assert_eq!(
+            app.state.recipe_gate_results(&second).unwrap(),
+            vec![("F1".to_owned(), "pass".to_owned())]
+        );
+        let after = expected_f1_hash(&app);
+        assert_ne!(after, before);
+        assert_eq!(
+            f1_report(&app, &second).supplemental_input_hash,
+            Some(after)
+        );
+    }
+
+    #[tokio::test]
+    async fn gate_inputs_stale_until_consolidate_rerun() {
+        let app = app_with(assembly_graph(), &[], chain_gates());
+        let stale = |job_id: &Hash, reason: &str| {
+            let view = job(&app, job_id);
+            assert_eq!(view["status"], "failed", "{view}");
+            assert!(
+                view["error"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("E_GATE_INPUTS_STALE: "),
+                "{view}"
+            );
+            let details = failure_details(&view);
+            assert_eq!(details["gate"], "F1");
+            assert_eq!(details["recipe"], "consolidate");
+            assert_eq!(details["reason"], reason);
+        };
+        let ready_stale = |reason: &str| {
+            let err = app.state.ready().unwrap_err();
+            let body = err.body();
+            assert_eq!(body.code, "E_GATE_INPUTS_STALE");
+            let details = serde_json::to_value(&body.details).unwrap();
+            assert_eq!(details["gate"], "F1");
+            assert_eq!(details["recipe"], "consolidate");
+            assert_eq!(details["reason"], reason);
+        };
+        // No consolidate run yet: ready and lint both name consolidate. (A failed recipe job
+        // is identified by its capture, so lint is re-run below only on a moved head.)
+        ready_stale("no_completed_run");
+        stale(&run_inline(&app, Recipe::Lint, None), "no_completed_run");
+        assert_eq!(
+            job(&app, &run_inline(&app, Recipe::Consolidate, None))["status"],
+            "ready"
+        );
+        // ready now gets past F1 (F2 then names its own analyse recipe).
+        let err = app.state.ready().unwrap_err();
+        let details = serde_json::to_value(&err.body().details).unwrap();
+        assert_eq!(
+            (details["gate"].as_str(), details["recipe"].as_str()),
+            (Some("F2"), Some("analyse"))
+        );
+        // The graph moves: the latest consolidate artifact no longer answers the current request.
+        accept_requirement(&app, "req:b");
+        ready_stale("inference_request_changed");
+        stale(
+            &run_inline(&app, Recipe::Lint, None),
+            "inference_request_changed",
+        );
+        // Re-running consolidate (the ordinary product operation) repairs it on the next head.
+        assert_eq!(
+            job(&app, &run_inline(&app, Recipe::Consolidate, None))["status"],
+            "ready"
+        );
+        let err = app.state.ready().unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&err.body().details).unwrap()["gate"],
+            "F2"
+        );
+    }
+
+    /// An Accepted Invariant over the Employee entity (its bindings are external).
+    fn invariant(node_id: &str, scope: &str) -> Node {
+        node(
+            node_id,
+            "Accepted",
+            "Invariant",
+            json!({"scope_ref": scope, "expression": "true"}),
+        )
+    }
+
+    #[tokio::test]
+    async fn gate_inputs_missing_names_external_element() {
+        let mut graph = data_graph(&["Email"]);
+        graph = Graph::new(
+            id(PROJECT),
+            id(PROFILE),
+            graph
+                .nodes()
+                .values()
+                .cloned()
+                .chain([
+                    invariant("inv:b", "entity:employee"),
+                    invariant("inv:a", "entity:employee"),
+                ])
+                .collect(),
+            graph.edges().values().cloned().collect(),
+        )
+        .unwrap();
+        let app = app_with(graph, &[], chain_gates());
+        let err = app.state.ready().unwrap_err();
+        let body = err.body();
+        assert_eq!(body.code, "E_GATE_INPUTS_MISSING");
+        let details = serde_json::to_value(&body.details).unwrap();
+        assert_eq!(details["gate"], "F2");
+        assert_eq!(details["field"], "expression_scopes");
+        assert_eq!(details["elements"], json!(["inv:a", "inv:b"]));
+    }
+
+    #[test]
+    fn gate_config_rejects_graph_derived_restatement() {
+        let lint_policy = json!({"severity_overrides": {}});
+        let f4 = json!({
+            "in_scope_scenario_refs": [], "required_scenario_kinds": [],
+            "visible_assumption_refs": []
+        });
+        let valid = json!({"f1": {"lint_policy": lint_policy}, "f4": f4});
+        serde_json::from_value::<GateInputsConfig>(valid).unwrap();
+        let restated = [
+            json!({"f1": {"lint_policy": lint_policy, "requirements": []}}),
+            json!({"f1": {"lint_policy": lint_policy, "analysis_findings": []}}),
+            json!({"f2": {"analysis_findings": [], "calculation_scope_overrides": [],
+                          "decision_tables": [], "invariants": []}}),
+            json!({"f4": {"applicability": {}, "visible_assumption_refs": []}}),
+            json!({"f4": {
+                "in_scope_scenario_refs": [], "required_scenario_kinds": [],
+                "visible_assumption_refs": [], "blocking_scenario_refs": []
+            }}),
+            json!({"f4": {
+                "in_scope_scenario_refs": [], "required_scenario_kinds": [],
+                "visible_assumption_refs": [], "source_refs": []
+            }}),
+        ];
+        for config in restated {
+            let err = serde_json::from_value::<GateInputsConfig>(config.clone()).unwrap_err();
+            assert!(err.to_string().contains("unknown field"), "{config}: {err}");
+        }
+        // The F1 policy itself stays strict.
+        let err = serde_json::from_value::<GateInputsConfig>(
+            json!({"f1": {"lint_policy": {"severity_overrides": {}, "extra": 1}}}),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("lint_policy"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn analyse_always_evaluates_assembled_f2_and_reports_genuinely_missing_inputs() {
+        // Fable #190: no F2 configuration exists any more, yet Analyse evaluates F2 from the
+        // assembled inputs (here the durable S2.1/S2.2 analyses of the Accepted Requirement).
+        let app = app_with(assembly_graph(), &[], Gates::default());
+        let job_id = run_inline(&app, Recipe::Analyse, None);
+        let view = job(&app, &job_id);
+        assert_eq!(view["status"], "ready", "{view}");
+        assert_eq!(
+            stage_store(&app)
+                .steps(&job_id)
+                .unwrap()
+                .iter()
+                .map(|s| s.phase.as_str())
+                .collect::<Vec<_>>(),
+            ["analyse", "f2"]
+        );
+        assert_eq!(
+            app.state.recipe_gate_results(&job_id).unwrap(),
+            vec![("F2".to_owned(), "pass".to_owned())]
+        );
+
+        // A genuine missing external input (an Accepted Invariant without explicit bindings)
+        // fails the same recipe explicitly instead of skipping F2.
+        let base = assembly_graph();
+        let graph = Graph::new(
+            id(PROJECT),
+            id(PROFILE),
+            base.nodes()
+                .values()
+                .cloned()
+                .chain([
+                    node(
+                        "entity:request",
+                        "Accepted",
+                        "Entity",
+                        json!({"name": "LeaveRequest", "description": null, "aggregate_root": null}),
+                    ),
+                    invariant("inv:request", "entity:request"),
+                ])
+                .collect(),
+            vec![],
+        )
+        .unwrap();
+        let app = app_with(graph, &[], Gates::default());
+        let job_id = run_inline(&app, Recipe::Analyse, None);
+        let view = job(&app, &job_id);
+        assert_eq!(view["status"], "failed", "{view}");
+        assert!(
+            view["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("E_GATE_INPUTS_MISSING: "),
+            "{view}"
+        );
+        let details = failure_details(&view);
+        assert_eq!(details["gate"], "F2");
+        assert_eq!(details["elements"], json!(["inv:request"]));
     }
 
     // ------------------------------------------------------------------ rules
