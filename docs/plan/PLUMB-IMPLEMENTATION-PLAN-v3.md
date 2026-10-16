@@ -1,7 +1,7 @@
 # Plumb 1.0 — Implementation Plan v3.2
 
 **Status:** Claude Code CLI build contract  
-**Plan version:** `3.2-draft.6`\
+**Plan version:** `3.2-draft.7`\
 **Default execution scope:** `pilot-v3-foundation`  
 **Canonical semantic model:** Plumb Specification Graph (PSG)  
 **Default active profile:** `profile:plumb-software-2026.1`
@@ -6449,6 +6449,7 @@ cd ui && npm run api:check
 - `crates/plumb-cli/src/commands.rs`
 - `crates/plumb-cli/tests/cli.rs`
 - `crates/plumb-core/src/id.rs`
+- `crates/plumb-api/src/state.rs`
 
 **Required actions**
 
@@ -6462,6 +6463,7 @@ cd ui && npm run api:check
 8. In crates/plumb-api/src/routes/mod.rs and routes/sources.rs install PLUMB-owned body limits (129 MiB on POST /api/sources, 4 MiB elsewhere) with axum's built-in DefaultBodyLimit; an oversized body is 413 E_PAYLOAD_TOO_LARGE (crates/plumb-api/src/error.rs) in the typed JSON envelope with details.limit_bytes. No OpenAPI change.
 9. Add adversarial regression fixtures built in the tests: deep XML nesting, a w:gridSpan of 18446744073709551615 and of 65, a 10001-row table, a source producing 20001 fragments, a 16 MiB + 1 text, an expression of 4097 bytes, 65 nested parentheses, 65 prefix operators and 1025 AST nodes, and oversized HTTP bodies.
 10. [Fable #367] validate_display_name rejects '/', '\\', '.', '..', Unicode bidi and format control characters and names longer than 255 characters with a typed import error, and the core Id grammar rejects IDs longer than a frozen maximum length.
+11. Limited state.rs ownership (plan v3.2 hotfix): H0.1 owns crates/plumb-api/src/state.rs only to add, inside the shared run_intake translation of plumb_intake::IntakeError to ApiError, the branch for the new typed expression-limit intake error: HTTP 422 UNPROCESSABLE_ENTITY with stable code E_EXPRESSION_LIMIT in the ordinary typed API envelope, a stable high-level message that the proposal contains an expression exceeding a safety limit, and structured details limit, actual and max carrying the exact values of the underlying expression limit error; no expression source text, proposal body, path or debug output is echoed. IntakeError::Patch keeps its existing 422 E_PATCH_REJECTED mapping and every other existing intake error keeps its existing mapping; no other error handling is refactored. The expression error may keep ParseError and export ExprError as an alias (or the reverse) provided both names address LimitExceeded {limit, actual, max} and existing ParseError users compile unchanged.
 
 **Commands**
 
@@ -6484,6 +6486,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `cargo test -p plumb-intake --test intake`
 - `cargo test -p plumb-api --test http_core`
 - `cargo test -p plumb-cli --test cli`
+- `cargo test -p plumb-api --test http_core intake_expression_limit_is_422`
 
 **Acceptance**
 
