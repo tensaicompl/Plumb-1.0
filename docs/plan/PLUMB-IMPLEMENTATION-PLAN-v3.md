@@ -1,7 +1,7 @@
 # Plumb 1.0 — Implementation Plan v3.2
 
 **Status:** Claude Code CLI build contract  
-**Plan version:** `3.2-draft.2`\
+**Plan version:** `3.2-draft.3`\
 **Default execution scope:** `pilot-v3-foundation`  
 **Canonical semantic model:** Plumb Specification Graph (PSG)  
 **Default active profile:** `profile:plumb-software-2026.1`
@@ -6209,7 +6209,8 @@ cd ui && npm run api:check
 
 **Task-specific prohibitions**
 
-- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json, ui/, Makefile or .github/workflows/ci.yml.
+- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, Makefile or .github/workflows/ci.yml.
+- Modify OpenAPI and UI paths only where this task's files allowlist lists them explicitly (crates/plumb-api/src/openapi.rs, api/modeller.openapi.json, crates/plumb-api/tests/openapi.rs, ui/src/api/schema.d.ts, ui/src/features/requirements/RequirementsPage.tsx, ui/src/features/requirements/RequirementDetail.tsx, ui/src/features/requirements/requirements.test.tsx); do not modify any other OpenAPI or UI path.
 - Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
 - Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
 - Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
@@ -6388,7 +6389,8 @@ cd ui && npm run api:check
 
 **Task-specific prohibitions**
 
-- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json, ui/, Makefile or .github/workflows/ci.yml.
+- Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, Makefile or .github/workflows/ci.yml.
+- Modify OpenAPI and UI paths only where this task's files allowlist lists them explicitly (crates/plumb-api/src/openapi.rs, api/modeller.openapi.json, crates/plumb-api/tests/openapi.rs, ui/src/api/schema.d.ts, ui/src/features/requirements/RequirementDetail.tsx, ui/src/features/requirements/requirements.test.tsx); do not modify any other OpenAPI or UI path.
 - Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
 - Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
 - Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
@@ -7597,7 +7599,7 @@ cd ui && npm run api:check
 5. Update crates/plumb-cli/tests/cli.rs for the lint output change only.
 6. Expanded flow (plan v3.2): on a fresh project through the CLI and application services only, with deterministic replay fixtures for inference: init -> import -> required stage execution -> proposals (discovery) -> accept-set of compatible siblings -> individual confirmation where required -> rerun at least one semantic stage after downstream enrichment -> current gate evaluation -> ask (question materialization) -> answer the three HR-style calculation ambiguities (half day, inclusive end, holiday inside period) -> findings materialize and the governed finding/waiver lifecycle where applicable -> scenario execution including expected business failures -> ready -> export and report -> restart/reopen -> a second full deterministic replay.
 7. Proofs (plan v3.2): no hidden or manual database mutation; no direct test-only promotion of Proposed nodes; no startup-injected semantic gate truth; no stale-sibling failure when compatible siblings are accepted as a set; no rerun collision with accepted or enriched deterministic nodes; expected negative business scenarios PASS; no essential product operation exists only in test helpers; restart creates no extra semantic revision; repeated replay produces the frozen deterministic semantic result.
-8. R0.7 is the gate that proves R0.1-R0.6 and H0.1-H0.9 work together.
+8. R0.7 is the gate that proves R0.1-R0.6 and H0.1-H0.11 work together.
 9. Customer-zero oracle (plan v3.2 hotfix): the customer-zero flow asserts its production output against every section of its own frozen expected-results contract in fixtures/customer-zero, in the same manner as the HR semantic oracle of E0.2.
 
 **Commands**

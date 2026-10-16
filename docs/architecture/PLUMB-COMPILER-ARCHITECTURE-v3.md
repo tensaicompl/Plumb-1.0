@@ -2745,7 +2745,7 @@ The purpose of the v3 refactor is to make those later features additive rather t
 
 ## 33. Pilot hardening contracts (plan v3.2)
 
-An independent audit after plan v3.1 was checked against the repository; only the confirmed defects below are contracted. Each subsection is the frozen contract of one H0 task; tasks run in order H0.1 to H0.9 after R0.6 and before R0.7.
+An independent audit after plan v3.1 was checked against the repository; only the confirmed defects below are contracted. Each subsection is the frozen contract of one H0 task; tasks run in order H0.1 through H0.11 after R0.6 and before R0.7.
 
 ### 33.1 Bounded untrusted input (H0.1)
 

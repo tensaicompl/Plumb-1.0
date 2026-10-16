@@ -1,4 +1,4 @@
-plan_version: 3.2-draft.2
+plan_version: 3.2-draft.3
 release: pilot-v3-foundation
 execution_rule: Execute exactly one ready task at a time in listed order. Only tasks whose scope is allowed by EXECUTION-SCOPE.yaml may execute.
 tasks:
@@ -10450,8 +10450,11 @@ tasks:
   - SRCREF-0E7CBD4996
   - SRCREF-441E1C9F5A
   forbidden:
-  - Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json,
-    ui/, Makefile or .github/workflows/ci.yml.
+  - Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, Makefile
+    or .github/workflows/ci.yml.
+  - Modify OpenAPI and UI paths only where this task's files allowlist lists them explicitly (crates/plumb-api/src/openapi.rs, api/modeller.openapi.json,
+    crates/plumb-api/tests/openapi.rs, ui/src/api/schema.d.ts, ui/src/features/requirements/RequirementsPage.tsx, ui/src/features/requirements/RequirementDetail.tsx,
+    ui/src/features/requirements/requirements.test.tsx); do not modify any other OpenAPI or UI path.
   - Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
   - Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
   - Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
@@ -10625,8 +10628,11 @@ tasks:
   - SRCREF-7EC2A38F66
   - SRCREF-9175A495B9
   forbidden:
-  - Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, api/modeller.openapi.json,
-    ui/, Makefile or .github/workflows/ci.yml.
+  - Do not modify any checksummed authority in docs/plan/SUPPORTING-DOCS.sha256, any fixtures/hr-leave path, any Cargo manifest or Cargo.lock, Makefile
+    or .github/workflows/ci.yml.
+  - Modify OpenAPI and UI paths only where this task's files allowlist lists them explicitly (crates/plumb-api/src/openapi.rs, api/modeller.openapi.json,
+    crates/plumb-api/tests/openapi.rs, ui/src/api/schema.d.ts, ui/src/features/requirements/RequirementDetail.tsx, ui/src/features/requirements/requirements.test.tsx);
+    do not modify any other OpenAPI or UI path.
   - Do not add a dependency, an HTTP operation, a validation rule or a registered rule ID; the validation-rule count stays 133.
   - Do not read ANTHROPIC_API_KEY or any environment credential, and do not perform network access or live LLM calls in tests.
   - Do not rebase, rewrite or mutate an original proposal, its PatchSet or its identity; every semantic write remains SemanticPatch + intake + CAS commit.
@@ -11911,7 +11917,7 @@ tasks:
     no stale-sibling failure when compatible siblings are accepted as a set; no rerun collision with accepted or enriched deterministic nodes; expected
     negative business scenarios PASS; no essential product operation exists only in test helpers; restart creates no extra semantic revision; repeated replay
     produces the frozen deterministic semantic result.'
-  - R0.7 is the gate that proves R0.1-R0.6 and H0.1-H0.9 work together.
+  - R0.7 is the gate that proves R0.1-R0.6 and H0.1-H0.11 work together.
   - 'Customer-zero oracle (plan v3.2 hotfix): the customer-zero flow asserts its production output against every section of its own frozen expected-results
     contract in fixtures/customer-zero, in the same manner as the HR semantic oracle of E0.2.'
   tests:
