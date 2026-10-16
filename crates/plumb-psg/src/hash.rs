@@ -3,6 +3,11 @@
 //! Each hash is SHA-256 over the RFC 8785 canonical JSON of exactly one projection object,
 //! built only from baseline-participating elements. Payload arrays keep their persisted order;
 //! only the envelope `evidence` and `standards` collections are normalized.
+//!
+//! R0.5 (plan §6.2, architecture §4.8): a participating `ResolutionDecision` contributes without
+//! its operational provenance (`decided_at`, `patch_ref`), and a proposal-acceptance companion
+//! does not contribute at all, nor does any edge with such an endpoint. The element projection
+//! (metamodel §20.1) keeps the complete record.
 
 use plumb_core::{canonical_hash, to_canonical_json, CoreError, Hash, HashKind};
 use serde_json::{json, Map, Value};
@@ -36,20 +41,40 @@ pub fn contributes_to_semantic_hash(node_type: NodeType) -> bool {
     !SEMANTIC_HASH_EXCLUDED_NODE_TYPES.contains(&node_type)
 }
 
-/// Whether `node` is part of the `semantic_hash` projection: baseline-participating and of a
-/// contributing node type. This is the exact rule `semantic_projection` uses.
+/// The `ResolutionDecision` answer kind of a proposal-acceptance companion (metamodel §6.3).
+const PROPOSAL_ACCEPTANCE_KIND: &str = "proposal_acceptance";
+
+/// The `ResolutionDecision` payload fields that are operational provenance (architecture §4.8):
+/// omitted from the semantic projection, kept by the element projection.
+const DECISION_PROVENANCE_FIELDS: [&str; 2] = ["decided_at", "patch_ref"];
+
+/// Whether `node` is a proposal-acceptance companion: a `ResolutionDecision` with no
+/// `question_ref` whose `answer.kind` is `proposal_acceptance` (metamodel §6.3).
+pub fn is_proposal_acceptance_companion(node: &Node) -> bool {
+    matches!(&node.payload, NodePayload::ResolutionDecision(d)
+        if d.question_ref.is_none()
+            && d.answer.get("kind").and_then(Value::as_str) == Some(PROPOSAL_ACCEPTANCE_KIND))
+}
+
+/// Whether `node` is part of the `semantic_hash` projection: baseline-participating, of a
+/// contributing node type and not a proposal-acceptance companion (R0.5). This is the exact
+/// rule `semantic_projection` uses.
 pub fn node_contributes_to_semantic_hash(node: &Node) -> bool {
-    is_baseline(node.status) && contributes_to_semantic_hash(node.payload.node_type())
+    is_baseline(node.status)
+        && contributes_to_semantic_hash(node.payload.node_type())
+        && !is_proposal_acceptance_companion(node)
 }
 
 /// Whether `edge` is part of the `semantic_hash` projection of `graph`: baseline-participating
-/// with both endpoint node types contributing (no separate relation-exclusion list). This is
-/// the exact rule `semantic_projection` uses.
+/// with both endpoint node types contributing (no separate relation-exclusion list) and no
+/// proposal-acceptance companion endpoint (R0.5). This is the exact rule `semantic_projection`
+/// uses.
 pub fn edge_contributes_to_semantic_hash(graph: &Graph, edge: &Edge) -> bool {
     let endpoint_contributes = |id| {
-        graph
-            .node(id)
-            .is_some_and(|n| contributes_to_semantic_hash(n.payload.node_type()))
+        graph.node(id).is_some_and(|n| {
+            contributes_to_semantic_hash(n.payload.node_type())
+                && !is_proposal_acceptance_companion(n)
+        })
     };
     is_baseline(edge.status) && endpoint_contributes(&edge.from) && endpoint_contributes(&edge.to)
 }
@@ -92,11 +117,30 @@ fn payload_projection(payload: &NodePayload) -> Value {
     value
 }
 
+/// The semantic payload projection: [`payload_projection`] with the operational provenance of a
+/// `ResolutionDecision` omitted (absent, not `null`; R0.5).
+fn semantic_payload_projection(payload: &NodePayload) -> Value {
+    let mut value = payload_projection(payload);
+    if matches!(payload, NodePayload::ResolutionDecision(_)) {
+        if let Some(data) = value.get_mut("data").and_then(Value::as_object_mut) {
+            for field in DECISION_PROVENANCE_FIELDS {
+                data.remove(field);
+            }
+        }
+    }
+    value
+}
+
+/// The semantic node projection.
 fn node_projection(node: &Node) -> Value {
+    node_projection_with(node, semantic_payload_projection(&node.payload))
+}
+
+fn node_projection_with(node: &Node, payload: Value) -> Value {
     json!({
         "id": node.id,
         "status": node.status,
-        "payload": payload_projection(&node.payload),
+        "payload": payload,
         "evidence": evidence_projection(&node.evidence),
         "standards": standards_projection(&node.standards),
         "tags": node.tags,
@@ -117,10 +161,14 @@ fn edge_projection(edge: &Edge) -> Value {
     })
 }
 
-/// The element projection of a node (metamodel §20.1): the semantic node projection plus
+/// The element projection of a node (metamodel §20.1): the node projection over the complete
+/// payload (a `ResolutionDecision` keeps `decided_at` and `patch_ref`) plus
 /// `"element_kind": "node"`, for every status and node type.
 pub fn node_element_projection(node: &Node) -> Value {
-    with_element_kind(node_projection(node), "node")
+    with_element_kind(
+        node_projection_with(node, payload_projection(&node.payload)),
+        "node",
+    )
 }
 
 /// The element projection of an edge (metamodel §20.1): the semantic edge projection plus

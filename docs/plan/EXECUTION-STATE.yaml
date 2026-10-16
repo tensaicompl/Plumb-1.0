@@ -144,7 +144,7 @@ tasks:
 - id: R0.4
   status: done
 - id: R0.5
-  status: pending
+  status: done
 - id: R0.6
   status: pending
 - id: H0.1

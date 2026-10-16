@@ -35,8 +35,8 @@ mod waiver_contract {
 
     // Independently computed goldens (Python hashlib, RFC 8785).
     const GOLDEN_SUBJECT: &str = "waiver-subject:14a0d2dcf9b40037";
-    const GOLDEN_DECISION: &str = "dec:88f9b1296cd3e92f";
-    const GOLDEN_EDGE: &str = "rel:ba25526636af08f7";
+    const GOLDEN_DECISION: &str = "dec:21c4d1034cb34dbc";
+    const GOLDEN_EDGE: &str = "rel:6a76afd87bef419b";
 
     fn id(s: &str) -> Id {
         s.parse().unwrap()
@@ -487,18 +487,14 @@ mod waiver_contract {
         assert!(!text.contains(m.decision_ref.as_str()));
         // Decision ID.
         assert_eq!(m.decision_ref.to_string(), GOLDEN_DECISION);
-        let base = |subject: &Id, answer: &serde_json::Value, by: &Id, at: &str, patch: &Hash| {
-            waiver_decision_id(&id("project:pilot"), subject, answer, by, &ts(at), patch).unwrap()
+        // R0.5: {project_id, waiver_subject_ref, answer, decided_by}; decided_at and patch_ref
+        // are operational provenance (waiver_decision_id_is_time_independent).
+        let base = |subject: &Id, answer: &serde_json::Value, by: &Id| {
+            waiver_decision_id(&id("project:pilot"), subject, answer, by).unwrap()
         };
         let human = id(HUMAN);
         assert_eq!(
-            base(
-                &m.waiver_subject_ref,
-                &expected_marker,
-                &human,
-                DECIDED_AT,
-                &m.decision.patch_ref
-            ),
+            base(&m.waiver_subject_ref, &expected_marker, &human),
             m.decision_ref
         );
         let mut other_marker = expected_marker.clone();
@@ -508,37 +504,9 @@ mod waiver_contract {
                 &id("waiver-subject:0000000000000001"),
                 &expected_marker,
                 &human,
-                DECIDED_AT,
-                &m.decision.patch_ref,
             ),
-            base(
-                &m.waiver_subject_ref,
-                &other_marker,
-                &human,
-                DECIDED_AT,
-                &m.decision.patch_ref,
-            ),
-            base(
-                &m.waiver_subject_ref,
-                &expected_marker,
-                &id("agent:other"),
-                DECIDED_AT,
-                &m.decision.patch_ref,
-            ),
-            base(
-                &m.waiver_subject_ref,
-                &expected_marker,
-                &human,
-                AT,
-                &m.decision.patch_ref,
-            ),
-            base(
-                &m.waiver_subject_ref,
-                &expected_marker,
-                &human,
-                DECIDED_AT,
-                &Hash::content_sha256(b"x"),
-            ),
+            base(&m.waiver_subject_ref, &other_marker, &human),
+            base(&m.waiver_subject_ref, &expected_marker, &id("agent:other")),
         ] {
             assert_ne!(other, m.decision_ref);
         }
@@ -553,6 +521,62 @@ mod waiver_contract {
             m.decision_ref
         );
         assert_eq!(m.resolves_edge.id.to_string(), GOLDEN_EDGE);
+    }
+
+    /// R0.5: identical governed waiver material has one decision ID across decision instants and
+    /// patch artifact hashes, while the persisted decision keeps its complete provenance.
+    #[test]
+    fn waiver_decision_id_is_time_independent() {
+        let r = rule(DECISION_REQUIRED);
+        let g = graph(&[DECISION_REQUIRED]);
+        let t = targets();
+        let first = prepare_waiver_material(&g, &request(&r, &t), &policy(&[])).unwrap();
+        let later = WaiverRequest {
+            decided_at: ts(AT),
+            ..request(&r, &t)
+        };
+        let second = prepare_waiver_material(&g, &later, &policy(&[])).unwrap();
+        // Different decision instants: same identity, complete distinct records.
+        assert_ne!(first.decision.decided_at, second.decision.decided_at);
+        assert_eq!(first.decision_ref, second.decision_ref);
+        // A different patch artifact hash (another artifact under the same governed material)
+        // recomputes to the same identity; the identity formula takes no patch_ref at all.
+        let mut repatched = first.decision.clone();
+        repatched.patch_ref = Hash::content_sha256(b"another artifact");
+        assert_ne!(repatched.patch_ref, first.decision.patch_ref);
+        let recomputed = waiver_decision_id(
+            &id("project:pilot"),
+            repatched.proposal_ref.as_ref().unwrap(),
+            &repatched.answer,
+            &repatched.decided_by,
+        )
+        .unwrap();
+        assert_eq!(recomputed, first.decision_ref);
+        // Governed material is still identity: subject, answer and actor.
+        let mut other_answer = first.decision.answer.clone();
+        other_answer["rule_id"] = json!(FORBIDDEN);
+        for (subject, answer, by) in [
+            (
+                id("waiver-subject:0000000000000001"),
+                first.decision.answer.clone(),
+                first.decision.decided_by.clone(),
+            ),
+            (
+                first.waiver_subject_ref.clone(),
+                other_answer,
+                first.decision.decided_by.clone(),
+            ),
+            (
+                first.waiver_subject_ref.clone(),
+                first.decision.answer.clone(),
+                id("agent:other"),
+            ),
+        ] {
+            assert_ne!(
+                waiver_decision_id(&id("project:pilot"), &subject, &answer, &by).unwrap(),
+                first.decision_ref
+            );
+        }
     }
 
     #[test]

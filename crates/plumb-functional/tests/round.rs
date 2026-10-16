@@ -1179,13 +1179,13 @@ mod round_contract {
         assert_eq!(
             strings(&round.question_refs),
             [
-                "q:5871379a4480cf38",
-                "q:6204ae40674353cc",
-                "q:c028a0b06ecc6d87",
-                "q:0bb549ba61718eff",
-                "q:6f249ab4436ceb55",
-                "q:2a414cddc59ff77f",
-                "q:8b4dc01ee3454b93",
+                "q:271c650bae04f1b1",
+                "q:30fba4f6e49606c1",
+                "q:cb93a1e53009d48e",
+                "q:518cd91950ce875b",
+                "q:e8bf553063576640",
+                "q:c9ee2014e2b0ded2",
+                "q:d2af42ddc3229f29",
             ]
         );
         assert!(result

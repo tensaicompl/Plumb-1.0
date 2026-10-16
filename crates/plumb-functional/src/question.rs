@@ -13,11 +13,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use plumb_core::{to_canonical_json, CoreError, Hash, HashKind, Id, StageId, Timestamp};
 use plumb_patch::{
-    apply_patch, impact_reachable_nodes, AcceptancePolicy, ImpactError, PatchSet, Proposal,
-    ProposalMateriality, SemanticPatch,
+    apply_patch, impact_reachable_nodes, AcceptancePolicy, ElementPrecondition, ImpactError,
+    PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
 use plumb_psg::{
-    AuditMeta, ElementStatus, FindingSeverity, Graph, Node, NodePayload, NodeType, Question,
+    node_element_hash, AuditMeta, ElementStatus, FindingSeverity, Graph, Node, NodePayload,
+    NodeType, Question,
 };
 use plumb_validation::{finding_id, finding_key, GeneratedFinding};
 use serde::{Deserialize, Serialize};
@@ -163,12 +164,16 @@ pub enum RouteDisposition {
     AnalystRoleUnassigned,
 }
 
-/// Whether a generated Question is new or already persisted identically.
+/// Whether a generated Question is new, already persisted identically, or persisted at the
+/// same semantic identity with only its scheduling/routing changed (R0.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QuestionMaterialization {
     New,
     Existing,
+    /// Same Question ID; `priority` and/or `stakeholder_ref` refreshed through one non-semantic
+    /// `ReplacePayload` (status and `round_ref` are kept).
+    Updated,
 }
 
 /// One deterministic Question.
@@ -177,7 +182,8 @@ pub struct GeneratedQuestion {
     pub question_ref: Id,
     pub template_id: String,
     pub finding_ref: Id,
-    /// The canonical slot object the ID is derived from.
+    /// The complete canonical slot object: the template base slots plus the current `priority`
+    /// and `stakeholder_ref`. The ID is derived from `finding_ref` and the semantic subject only.
     pub slots: JsonValue,
     pub payload: Question,
     pub priority: u64,
@@ -199,7 +205,7 @@ pub enum QuestionDisposition {
     },
     /// The identical Question is already persisted; no patch.
     ExistingQuestion { question_ref: Id },
-    /// Another candidate with the same template and canonical slots was kept.
+    /// Another candidate with the same template, finding and canonical subject was kept.
     SuppressedDuplicate {
         question_ref: Id,
         template_id: String,
@@ -266,16 +272,33 @@ pub fn severity_weight(severity: FindingSeverity) -> u64 {
     }
 }
 
-/// `q:<16 hex of SHA-256(RFC 8785 {project_id, template_id, slots})>`.
-pub fn question_id(project_id: &Id, template_id: &str, slots: &JsonValue) -> Result<Id, CoreError> {
+/// `q:<16 hex of SHA-256(RFC 8785 {project_id, template_id, finding_ref, subject})>` (R0.5,
+/// architecture §4.8): the semantic unresolved question, never its scheduling or routing.
+/// `subject` is [`question_subject`] of the template base slots.
+pub fn question_id(
+    project_id: &Id,
+    template_id: &str,
+    finding_ref: &Id,
+    subject: &JsonValue,
+) -> Result<Id, CoreError> {
     let body = serde_json::json!({
         "project_id": project_id.to_string(),
         "template_id": template_id,
-        "slots": slots,
+        "finding_ref": finding_ref.to_string(),
+        "subject": subject,
     });
     let digest = Hash::content_sha256(&to_canonical_json(&body)?);
     let hex = &digest.as_str()["sha256:".len()..];
     format!("q:{}", &hex[..16]).parse()
+}
+
+/// The semantic subject of a Question: exactly `QuestionTemplate::base_slots` minus its
+/// `finding_ref` key (R0.5). Priority, routing, round, prompt, status and answer schema are
+/// never part of it.
+pub fn question_subject(base_slots: &Map<String, JsonValue>) -> JsonValue {
+    let mut subject = base_slots.clone();
+    subject.remove("finding_ref");
+    JsonValue::Object(subject)
 }
 
 /// One Question before suppression and reconciliation.
@@ -284,6 +307,8 @@ pub struct QuestionCandidate {
     pub question_ref: Id,
     pub template_id: String,
     pub finding_ref: Id,
+    /// The semantic subject the ID is derived from ([`question_subject`]).
+    pub subject: JsonValue,
     pub slots: JsonValue,
     pub payload: Question,
     pub priority: u64,
@@ -292,9 +317,14 @@ pub struct QuestionCandidate {
 }
 
 impl QuestionCandidate {
-    /// The exact suppression key: template ID and RFC 8785 canonical slots.
-    pub fn suppression_key(&self) -> Result<(String, Vec<u8>), CoreError> {
-        Ok((self.template_id.clone(), to_canonical_json(&self.slots)?))
+    /// The exact suppression key, the same basis as the Question ID (R0.5): template ID,
+    /// finding and the RFC 8785 canonical subject. Priority and routing never take part.
+    pub fn suppression_key(&self) -> Result<(String, Id, Vec<u8>), CoreError> {
+        Ok((
+            self.template_id.clone(),
+            self.finding_ref.clone(),
+            to_canonical_json(&self.subject)?,
+        ))
     }
 }
 
@@ -314,7 +344,7 @@ pub fn suppress_duplicates(
     });
     let mut kept: Vec<QuestionCandidate> = Vec::new();
     let mut suppressed = Vec::new();
-    let mut last: Option<(String, Vec<u8>)> = None;
+    let mut last: Option<(String, Id, Vec<u8>)> = None;
     for (key, c) in keyed {
         if last.as_ref() == Some(&key) {
             suppressed.push(QuestionDisposition::SuppressedDuplicate {
@@ -438,12 +468,16 @@ fn question_node(id: &Id, payload: &Question, audit: &AuditMeta) -> Node {
 /// Whether two Questions agree on every generated field; `status` and `round_ref` are
 /// lifecycle-managed and ignored.
 fn same_generated_fields(a: &Question, b: &Question) -> bool {
+    same_semantic_fields(a, b) && a.stakeholder_ref == b.stakeholder_ref && a.priority == b.priority
+}
+
+/// Whether two Questions agree on every generated field except the scheduling/routing fields
+/// `priority` and `stakeholder_ref` (R0.5); `status` and `round_ref` are ignored as above.
+fn same_semantic_fields(a: &Question, b: &Question) -> bool {
     a.finding_ref == b.finding_ref
         && a.question_kind == b.question_kind
         && a.prompt == b.prompt
         && a.answer_schema == b.answer_schema
-        && a.stakeholder_ref == b.stakeholder_ref
-        && a.priority == b.priority
         && a.context_refs == b.context_refs
 }
 
@@ -545,6 +579,7 @@ fn expand(
     for subject in subjects {
         let mut slots: Map<String, JsonValue> =
             template.base_slots(&finding.id, affected, &subject, &choices);
+        let question_subject = question_subject(&slots);
         slots.insert("priority".into(), JsonValue::String(priority.to_string()));
         slots.insert(
             "stakeholder_ref".into(),
@@ -553,11 +588,17 @@ fn expand(
                 .map_or(JsonValue::Null, |s| JsonValue::String(s.to_string())),
         );
         let slots = JsonValue::Object(slots);
-        let question_ref = question_id(graph.project_id(), template.template_id, &slots)?;
+        let question_ref = question_id(
+            graph.project_id(),
+            template.template_id,
+            &finding.id,
+            &question_subject,
+        )?;
         candidates.push(QuestionCandidate {
             question_ref,
             template_id: template.template_id.to_owned(),
             finding_ref: finding.id.clone(),
+            subject: question_subject,
             slots,
             payload: Question {
                 finding_ref: finding.id.clone(),
@@ -578,8 +619,17 @@ fn expand(
     Ok(())
 }
 
+/// The target Question ID of a refresh patch.
+fn refreshed_id(patch: &SemanticPatch) -> &Id {
+    match patch {
+        SemanticPatch::ReplacePayload { target, .. } => &target.id,
+        _ => unreachable!("question refreshes are ReplacePayload patches"),
+    }
+}
+
 /// Generates the deterministic Questions of the current findings and at most one non-semantic
-/// proposal materializing the missing Findings and the new Questions.
+/// proposal materializing the missing Findings and the new Questions and refreshing the
+/// scheduling/routing of existing ones (R0.5).
 pub fn generate_questions(
     graph: &Graph,
     input: &QuestionGenerationInput,
@@ -679,6 +729,7 @@ pub fn generate_questions(
     // Question reconciliation.
     let mut questions = Vec::new();
     let mut new_questions = Vec::new();
+    let mut refreshed: Vec<SemanticPatch> = Vec::new();
     for c in candidates {
         if conflicted.contains(&c.finding_ref) {
             continue;
@@ -694,7 +745,7 @@ pub fn generate_questions(
                         Some(format!("persisted Question is {:?}", node.status))
                     }
                     NodePayload::Question(existing)
-                        if !same_generated_fields(existing, &c.payload) =>
+                        if !same_semantic_fields(existing, &c.payload) =>
                     {
                         Some("persisted Question differs in generated fields".into())
                     }
@@ -711,10 +762,30 @@ pub fn generate_questions(
                     });
                     continue;
                 }
-                dispositions.push(QuestionDisposition::ExistingQuestion {
-                    question_ref: c.question_ref.clone(),
-                });
-                QuestionMaterialization::Existing
+                let NodePayload::Question(existing) = &node.payload else {
+                    unreachable!("non-Question payloads are conflicts above")
+                };
+                if same_generated_fields(existing, &c.payload) {
+                    dispositions.push(QuestionDisposition::ExistingQuestion {
+                        question_ref: c.question_ref.clone(),
+                    });
+                    QuestionMaterialization::Existing
+                } else {
+                    // R0.5: the same semantic Question with refreshed scheduling/routing. Only
+                    // `priority` and `stakeholder_ref` change; the lifecycle-managed `status`
+                    // and `round_ref` of the persisted Question are kept.
+                    let mut payload = existing.clone();
+                    payload.priority = c.payload.priority.clone();
+                    payload.stakeholder_ref = c.payload.stakeholder_ref.clone();
+                    refreshed.push(SemanticPatch::ReplacePayload {
+                        target: ElementPrecondition {
+                            id: node.id.clone(),
+                            expected_hash: node_element_hash(node)?,
+                        },
+                        payload: NodePayload::Question(payload),
+                    });
+                    QuestionMaterialization::Updated
+                }
             }
         };
         questions.push(GeneratedQuestion {
@@ -733,13 +804,16 @@ pub fn generate_questions(
     let surviving: BTreeSet<&Id> = questions.iter().map(|q| &q.finding_ref).collect();
     new_findings.retain(|n| surviving.contains(&n.id));
 
-    // One atomic non-semantic proposal: Findings by ID, then Questions by ID.
+    // One atomic non-semantic proposal: new Findings by ID, then new Questions by ID, then the
+    // scheduling/routing refreshes of existing Questions by ID (R0.5).
     new_findings.sort_by(|a, b| a.id.cmp(&b.id));
     new_questions.sort_by(|a, b| a.id.cmp(&b.id));
+    refreshed.sort_by(|a, b| refreshed_id(a).cmp(refreshed_id(b)));
     let mut patches: Vec<SemanticPatch> = new_findings
         .into_iter()
         .chain(new_questions)
         .map(|node| SemanticPatch::AddNode { node })
+        .chain(refreshed)
         .collect();
     let proposal = if patches.is_empty() {
         None

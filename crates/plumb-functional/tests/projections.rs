@@ -56,7 +56,7 @@ A \[period\] of \*approved\* absence.
 Paid or unpaid.
 "##;
     const GOLDEN_SCENARIOS: &str = r##"version: 1
-model_hash: psg:sha256:67b8f0827d4e8cbaf84649e1db17c9213fc4423d1d0d0edafbd9804a2248befa
+model_hash: psg:sha256:1f19f090dc900ea2826ce851492cc43fb7088ed85fc945fc397964b1b8908531
 scenarios:
 - id: scenario:a-derived
   name: Scenario scenario:a-derived
@@ -110,7 +110,7 @@ scenarios:
 
 - Project ID: `project:pilot`
 - Profile ID: `profile:plumb-software-2026.1`
-- Semantic hash: `psg:sha256:67b8f0827d4e8cbaf84649e1db17c9213fc4423d1d0d0edafbd9804a2248befa`
+- Semantic hash: `psg:sha256:1f19f090dc900ea2826ce851492cc43fb7088ed85fc945fc397964b1b8908531`
 - Evidence hash: `ev:sha256:9eef75643b0d6c5593a7c70e41d5833530ca17796cbc1465e6a62b9578548558`
 - Profile hash: `sha256:e6dc73ec3f1847e5e7fc5d71aef64b71c15a3e93838e64c7f246f275c65af055`
 - Rule-pack hash: `sha256:b3a48aa0d0dc47b612697bbf35fa778499509343f74de43459fbcc145e21d33e`
@@ -118,7 +118,7 @@ scenarios:
 ## F4 Gate
 
 - Result: `PASS`
-- Gate-report content hash: `sha256:4c34780619bce4e484beb013182fef32f7d3e4d654cbf1f8ac5352054395f67c`
+- Gate-report content hash: `sha256:620b88fc8d959977eb09cc7fae747fec649ade8a35e9816e4b8902f8cfd18aa5`
 - Blocker failures: 0
 - Blocker waivers: 0
 - Warnings: 0
@@ -145,7 +145,7 @@ scenarios:
 
 ## Functional Compatibility Projection
 
-- functional.yaml content hash: `sha256:98f8b22a88a71542e7156893ad0e13c1dfc35855f046ad5954f540da939ac89a`
+- functional.yaml content hash: `sha256:5aef6d5b2631a1b832537c925c55b729eeb1a1faa7bc75a32c7f177b345ec0c6`
 - Projection version: 2
 - Warnings: 4
 - Lossy mappings: 1
@@ -180,7 +180,7 @@ Readiness is advisory only and is not calculated by S4.7. It does not alter the 
     const GOLDEN_HASHES: [(&str, &str); 6] = [
         (
             "functional.yaml",
-            "sha256:98f8b22a88a71542e7156893ad0e13c1dfc35855f046ad5954f540da939ac89a",
+            "sha256:5aef6d5b2631a1b832537c925c55b729eeb1a1faa7bc75a32c7f177b345ec0c6",
         ),
         (
             "glossary.md",
@@ -188,7 +188,7 @@ Readiness is advisory only and is not calculated by S4.7. It does not alter the 
         ),
         (
             "scenarios.yaml",
-            "sha256:fd6149fa588c8ee6b6a2df985ee03b8fc172470c331e4312e445ce237ecf9606",
+            "sha256:2b399f5fcbe60fdce220e5459f2e61c11abee0163b07b90e98327d06e8e5cde9",
         ),
         (
             "decisions.jsonl",
@@ -196,11 +196,11 @@ Readiness is advisory only and is not calculated by S4.7. It does not alter the 
         ),
         (
             "model-report.md",
-            "sha256:8a2e9287d62baa19f96c8b48855c428aa62efcdfb0894eaf5483076c9c7caed1",
+            "sha256:0389ad7e8ac977aa5908b5da5cae3203b26af8740a777e4f88d90f675612ca3a",
         ),
         (
             "gate-report.json",
-            "sha256:4c34780619bce4e484beb013182fef32f7d3e4d654cbf1f8ac5352054395f67c",
+            "sha256:620b88fc8d959977eb09cc7fae747fec649ade8a35e9816e4b8902f8cfd18aa5",
         ),
     ];
 

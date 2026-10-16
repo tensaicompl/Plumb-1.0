@@ -1452,8 +1452,9 @@ mod http_workflow {
         let stored = workflow(&app).proposal(&proposal.id).unwrap().unwrap();
         assert_eq!(stored.state, WorkflowProposalState::Accepted);
         // Governance adds the acceptance ResolutionDecision on top of the previewed effect: the
-        // decision is not part of the preview diff, and the committed semantic hash is the
-        // final revision's, not the candidate's.
+        // decision is not part of the preview diff, and (R0.5) as a proposal-acceptance
+        // companion it is excluded from semantic_hash, so the committed semantic hash is exactly
+        // the previewed candidate's.
         let decisions = acceptance_decisions(g);
         assert_eq!(decisions.len(), 1);
         let decision = decisions[0].0.to_string();
@@ -1463,9 +1464,9 @@ mod http_workflow {
             committed["semantic_hash"].as_str().unwrap(),
             loaded.revision.semantic_hash.to_string()
         );
-        assert_ne!(
+        assert_eq!(
             committed["semantic_hash"], preview["diff"]["candidate_semantic_hash"],
-            "the Accepted ResolutionDecision participates in semantic_hash"
+            "the proposal-acceptance companion does not participate in semantic_hash"
         );
         // Every previewed semantic effect is present in the committed revision.
         for added in preview["diff"]["added"].as_array().unwrap() {
@@ -3071,6 +3072,11 @@ mod http_workflow {
 
     /// The full A0.3 + A0.4 application over a database initialized with `graph`.
     fn application_app(graph: Graph) -> App {
+        application_app_at(graph, NOW)
+    }
+
+    /// [`application_app`] whose injected FixedClock reads `at` (R0.5 two-clock replay).
+    fn application_app_at(graph: Graph, at: &str) -> App {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plumb.sqlite");
         let profile = profile();
@@ -3144,7 +3150,7 @@ mod http_workflow {
             &path,
             BranchName::main(),
             identity(ACTOR),
-            fixed(),
+            Arc::new(plumb_core::FixedClock::new(ts(at))),
             profile,
             runtime,
         )
@@ -3471,6 +3477,286 @@ mod http_workflow {
             assert_eq!(q.status, "Answered");
         }
         assert_eq!(decisions.len(), 3);
+    }
+
+    /// The governed HR calculation workflow on `app`: materialize the three calculation
+    /// Questions, answer each through the HTTP answer path and accept each proposal with a reason
+    /// (which records a proposal-acceptance companion). Returns the final head.
+    async fn governed_calculation_run(app: &App) -> plumb_store::LoadedRevision {
+        let materialized = app
+            .state
+            .materialize_questions(
+                &app.state.head().unwrap(),
+                &QuestionGenerationInput {
+                    findings: calculation_gaps(),
+                    routing: owner_routing(),
+                },
+            )
+            .unwrap();
+        let question_of = |template_id: &str| {
+            materialized
+                .generation
+                .questions
+                .iter()
+                .find(|q| q.template_id == template_id)
+                .unwrap()
+                .question_ref
+                .clone()
+        };
+        for (question, value) in [
+            (
+                question_of("f2.calculation.fraction.v1"),
+                json!({"decimal": "0.5", "unit": "working_day"}),
+            ),
+            (
+                question_of("f2.calculation.inclusive-end.v1"),
+                json!({"inclusive_end": true}),
+            ),
+            (
+                question_of("f2.calculation.holiday-policy.v1"),
+                json!({"holiday_consumes_working_day": false, "calendar_ref": "cal:test"}),
+            ),
+        ] {
+            let r = answer(app, &question, value).await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+            let proposal_id = r.json()["proposal_id"].as_str().unwrap().to_owned();
+            let r = write(
+                app,
+                &format!("/api/proposals/{proposal_id}/accept"),
+                Some(json!({"reason": "Confirmed by the owner."})),
+            )
+            .await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        }
+        head(app)
+    }
+
+    /// The Accepted question-bound (S3.3) decisions of `graph` by question.
+    fn s3_decisions(
+        graph: &Graph,
+    ) -> std::collections::BTreeMap<Id, (Id, plumb_psg::ResolutionDecision)> {
+        graph
+            .nodes()
+            .values()
+            .filter(|n| n.status == ElementStatus::Accepted)
+            .filter_map(|n| match &n.payload {
+                NodePayload::ResolutionDecision(d) if d.question_ref.is_some() => {
+                    Some((d.question_ref.clone().unwrap(), (n.id.clone(), d.clone())))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// R0.5: the same source, answers, actors, policy and acceptances under two FixedClock
+    /// instants end with the identical semantic_hash, although the operational provenance
+    /// (decision instants, companion identities and revision times) differs.
+    #[tokio::test]
+    async fn two_clock_runs_have_identical_final_semantic_hash() {
+        let early =
+            application_app_at(calculation_answer_graph(), "2026-05-01T12:00:00.000000000Z");
+        let late = application_app_at(calculation_answer_graph(), "2027-02-14T08:30:00.000000000Z");
+        let a = governed_calculation_run(&early).await;
+        let b = governed_calculation_run(&late).await;
+
+        // The governed outcome is identical: same Questions, same S3.3 decision IDs, answers,
+        // actors and rationale.
+        let (da, db) = (s3_decisions(&a.graph), s3_decisions(&b.graph));
+        assert_eq!(da.len(), 3);
+        assert_eq!(da.keys().collect::<Vec<_>>(), db.keys().collect::<Vec<_>>());
+        for (question, (id_a, dec_a)) in &da {
+            let (id_b, dec_b) = &db[question];
+            assert_eq!(id_a, id_b, "{question}");
+            assert_eq!(
+                (
+                    &dec_a.answer,
+                    &dec_a.decided_by,
+                    &dec_a.rationale,
+                    &dec_a.supersedes
+                ),
+                (
+                    &dec_b.answer,
+                    &dec_b.decided_by,
+                    &dec_b.rationale,
+                    &dec_b.supersedes
+                )
+            );
+            // Operational provenance differs and stays persisted in the complete record.
+            assert_ne!(dec_a.decided_at, dec_b.decided_at);
+            assert_ne!(
+                plumb_psg::node_element_hash(a.graph.node(id_a).unwrap()).unwrap(),
+                plumb_psg::node_element_hash(b.graph.node(id_b).unwrap()).unwrap()
+            );
+        }
+        // Proposal-acceptance companions: recorded in both, with clock-dependent identities.
+        let (ca, cb) = (
+            acceptance_decisions(&a.graph),
+            acceptance_decisions(&b.graph),
+        );
+        assert_eq!(ca.len(), 3);
+        assert_eq!(cb.len(), 3);
+        let ids_a: std::collections::BTreeSet<&Id> = ca.iter().map(|(i, _)| i).collect();
+        let ids_b: std::collections::BTreeSet<&Id> = cb.iter().map(|(i, _)| i).collect();
+        assert!(ids_a.is_disjoint(&ids_b));
+        // Different revision times.
+        assert_ne!(a.revision.created_at, b.revision.created_at);
+
+        // The final semantic identity is the same.
+        assert_eq!(a.revision.semantic_hash, b.revision.semantic_hash);
+        assert_eq!(
+            a.graph.semantic_hash().unwrap(),
+            b.graph.semantic_hash().unwrap()
+        );
+        // ... and the governed answers did change it from the source baseline.
+        assert_ne!(
+            a.revision.semantic_hash,
+            calculation_answer_graph().semantic_hash().unwrap()
+        );
+    }
+
+    /// R0.5: rematerializing a Question whose routing changed keeps its ID and refreshes it in
+    /// place through one non-semantic ReplacePayload; no second Question appears.
+    #[tokio::test]
+    async fn rematerialization_updates_routing_without_new_question() {
+        let base = calculation_answer_graph();
+        let graph = Graph::new(
+            base.project_id().clone(),
+            base.profile_id().clone(),
+            base.nodes()
+                .values()
+                .cloned()
+                .chain([stakeholder("stakeholder:deputy")])
+                .collect(),
+            base.edges().values().cloned().collect(),
+        )
+        .unwrap();
+        let app = application_app(graph);
+        let findings = calculation_gaps();
+        let first = app
+            .state
+            .materialize_questions(
+                &app.state.head().unwrap(),
+                &QuestionGenerationInput {
+                    findings: findings.clone(),
+                    routing: owner_routing(),
+                },
+            )
+            .unwrap();
+        assert!(first.write.is_some());
+        let materialized = head(&app);
+        let before: std::collections::BTreeMap<Id, plumb_psg::Question> =
+            questions_of(&materialized.graph).into_iter().collect();
+        assert_eq!(before.len(), 3);
+        assert!(before
+            .values()
+            .all(|q| q.stakeholder_ref == Some(id("stakeholder:owner"))));
+
+        // The routing changes: calendar questions now go to the deputy first.
+        let mut rerouted = owner_routing();
+        rerouted
+            .stakeholders
+            .push(plumb_functional::RoutingStakeholder {
+                id: id("stakeholder:deputy"),
+                name: "Deputy".into(),
+                roles: vec!["analyst".into()],
+            });
+        rerouted.routing.insert(
+            "calendar".to_owned(),
+            vec![id("stakeholder:deputy"), id("stakeholder:owner")],
+        );
+        let second = app
+            .state
+            .materialize_questions(
+                &app.state.head().unwrap(),
+                &QuestionGenerationInput {
+                    findings,
+                    routing: rerouted,
+                },
+            )
+            .unwrap();
+        assert!(
+            second.generation.issues.is_empty(),
+            "{:?}",
+            second.generation.issues
+        );
+        let updated: Vec<&Id> = second
+            .generation
+            .questions
+            .iter()
+            .filter(|q| q.materialization == plumb_functional::QuestionMaterialization::Updated)
+            .map(|q| &q.question_ref)
+            .collect();
+        assert!(!updated.is_empty());
+        // The proposal is non-semantic and refreshes existing Questions only.
+        let proposal = second.generation.proposal.clone().unwrap();
+        assert_eq!(proposal.materiality, ProposalMateriality::NonSemantic);
+        assert_eq!(
+            proposal.acceptance_policy,
+            AcceptancePolicy::AutoNonSemantic
+        );
+        let patches = match &proposal.patch_set.patch {
+            SemanticPatch::Compound { patches } => patches.clone(),
+            single => vec![single.clone()],
+        };
+        assert_eq!(patches.len(), updated.len());
+        for patch in &patches {
+            let SemanticPatch::ReplacePayload { target, .. } = patch else {
+                panic!("expected only ReplacePayload patches, got {patch:?}");
+            };
+            assert!(updated.contains(&&target.id));
+        }
+        // Committed through the ordinary write path: one new revision, same semantic_hash.
+        let write = second.write.clone().unwrap();
+        let after = head(&app);
+        assert_eq!(write.revision, after.revision.id.to_string());
+        assert_ne!(after.revision.id, materialized.revision.id);
+        assert_eq!(
+            after.revision.semantic_hash,
+            materialized.revision.semantic_hash
+        );
+        // Same Question IDs, no second Question, routing refreshed, everything else kept.
+        let now: std::collections::BTreeMap<Id, plumb_psg::Question> =
+            questions_of(&after.graph).into_iter().collect();
+        assert_eq!(
+            now.keys().collect::<Vec<_>>(),
+            before.keys().collect::<Vec<_>>()
+        );
+        for (question_ref, question) in &now {
+            let old = &before[question_ref];
+            if updated.contains(&question_ref) {
+                assert_eq!(question.stakeholder_ref, Some(id("stakeholder:deputy")));
+                let mut expected = old.clone();
+                expected.stakeholder_ref = question.stakeholder_ref.clone();
+                expected.priority = question.priority.clone();
+                assert_eq!(question, &expected);
+            } else {
+                assert_eq!(question, old);
+            }
+        }
+        // Rematerializing again is idempotent.
+        let third = app
+            .state
+            .materialize_questions(
+                &app.state.head().unwrap(),
+                &QuestionGenerationInput {
+                    findings: calculation_gaps(),
+                    routing: {
+                        let mut r = owner_routing();
+                        r.stakeholders.push(plumb_functional::RoutingStakeholder {
+                            id: id("stakeholder:deputy"),
+                            name: "Deputy".into(),
+                            roles: vec!["analyst".into()],
+                        });
+                        r.routing.insert(
+                            "calendar".to_owned(),
+                            vec![id("stakeholder:deputy"), id("stakeholder:owner")],
+                        );
+                        r
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(third.write, None);
     }
 
     /// Hotfix 081: an actual intake response projects each validation finding through the

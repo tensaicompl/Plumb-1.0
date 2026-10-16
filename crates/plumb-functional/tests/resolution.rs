@@ -39,10 +39,10 @@ mod resolution_contract {
     const TRIGGER_CANDIDATE: &str = "transition:approve";
 
     // Independently computed goldens (Python hashlib, RFC 8785).
-    const GOLDEN_FIXED_CARDINALITY_DECISION: &str = "dec:4beb342f87c87936";
-    const GOLDEN_FIXED_CALENDAR_DECISION: &str = "dec:bc3ea12a54014953";
-    const GOLDEN_CARDINALITY_DECISION: &str = "dec:f1c317b958ec3028";
-    const GOLDEN_CALENDAR_DECISION: &str = "dec:006bc21bba6e6598";
+    const GOLDEN_FIXED_CARDINALITY_DECISION: &str = "dec:60ef25afa45c07c9";
+    const GOLDEN_FIXED_CALENDAR_DECISION: &str = "dec:08ac968ee0f38b59";
+    const GOLDEN_CARDINALITY_DECISION: &str = "dec:a8da4bdff9b0dc66";
+    const GOLDEN_CALENDAR_DECISION: &str = "dec:e5eebca732b8190a";
     const GOLDEN_PERFORMER_EDGE: &str = "rel:097fef862fa377e2";
 
     // ------------------------------------------------------------------ builders
@@ -1565,92 +1565,37 @@ mod resolution_contract {
     #[test]
     fn decision_id_goldens_and_sensitivity() {
         let project = id("project:pilot");
-        let patch_ref = Hash::content_sha256(b"artifact");
         let marker = json!({"kind": "domain_relationship_cardinality", "candidate_ref": CARDINALITY_CANDIDATE,
                             "cardinality_from": "1", "cardinality_to": "0..*"});
         let q = id("q:00000000000000c1");
-        let base = decision_id(
-            &project,
-            &q,
-            &marker,
-            &id(HUMAN),
-            &ts(DECIDED_AT),
-            &patch_ref,
-            None,
-        )
-        .unwrap();
+        // R0.5: {project_id, question_ref, answer, decided_by, supersedes}.
+        let base = decision_id(&project, &q, &marker, &id(HUMAN), None).unwrap();
         assert_eq!(base.to_string(), GOLDEN_FIXED_CARDINALITY_DECISION);
         let calendar = json!({"kind": "calculation_calendar", "calculation_ref": "calculation:days", "calendar_ref": "calendar:nl"});
         assert_eq!(
-            decision_id(
-                &project,
-                &q,
-                &calendar,
-                &id(HUMAN),
-                &ts(DECIDED_AT),
-                &patch_ref,
-                None
-            )
-            .unwrap()
-            .to_string(),
+            decision_id(&project, &q, &calendar, &id(HUMAN), None)
+                .unwrap()
+                .to_string(),
             GOLDEN_FIXED_CALENDAR_DECISION
         );
         let variants = [
-            decision_id(
-                &project,
-                &q,
-                &calendar,
-                &id(HUMAN),
-                &ts(DECIDED_AT),
-                &patch_ref,
-                None,
-            ),
+            decision_id(&project, &q, &calendar, &id(HUMAN), None),
             decision_id(
                 &project,
                 &id("q:00000000000000c2"),
                 &marker,
                 &id(HUMAN),
-                &ts(DECIDED_AT),
-                &patch_ref,
                 None,
             ),
-            decision_id(
-                &project,
-                &q,
-                &marker,
-                &id("agent:other"),
-                &ts(DECIDED_AT),
-                &patch_ref,
-                None,
-            ),
-            decision_id(&project, &q, &marker, &id(HUMAN), &ts(AT), &patch_ref, None),
+            decision_id(&project, &q, &marker, &id("agent:other"), None),
             decision_id(
                 &project,
                 &q,
                 &marker,
                 &id(HUMAN),
-                &ts(DECIDED_AT),
-                &Hash::content_sha256(b"other"),
-                None,
-            ),
-            decision_id(
-                &project,
-                &q,
-                &marker,
-                &id(HUMAN),
-                &ts(DECIDED_AT),
-                &patch_ref,
                 Some(&id("dec:0000000000000001")),
             ),
-            decision_id(
-                &id("project:other"),
-                &q,
-                &marker,
-                &id(HUMAN),
-                &ts(DECIDED_AT),
-                &patch_ref,
-                None,
-            ),
+            decision_id(&id("project:other"), &q, &marker, &id(HUMAN), None),
         ];
         for v in variants {
             assert_ne!(v.unwrap(), base);
@@ -1673,6 +1618,91 @@ mod resolution_contract {
         );
         let cal = resolve(&g, &good(&g, ResolutionTemplate::CalculationCalendar)).unwrap();
         assert_eq!(cal.decision_ref.to_string(), GOLDEN_CALENDAR_DECISION);
+    }
+
+    /// R0.5: the S3.3 decision ID is independent of the decision instant and the patch artifact;
+    /// the complete record still carries both, and governed material stays identity.
+    #[test]
+    fn decision_id_is_time_and_patch_independent() {
+        let g = asked();
+        let first = resolve(
+            &g,
+            &good(&g, ResolutionTemplate::DomainRelationshipCardinality),
+        )
+        .unwrap();
+        // A later decision instant over the same governed material: same identity.
+        let later = ResolutionInput {
+            decided_at: ts(AT),
+            ..good(&g, ResolutionTemplate::DomainRelationshipCardinality)
+        };
+        let second = resolve(&g, &later).unwrap();
+        assert_ne!(first.decision.decided_at, second.decision.decided_at);
+        assert_eq!(first.decision_ref, second.decision_ref);
+        // A different patch artifact (another base graph, so other artifact bytes) for the same
+        // governed material: same identity, different persisted patch_ref.
+        let mut moved = g.clone();
+        let extra: Node = serde_json::from_value(json!({
+            "id": "req:unrelated", "revision": 1, "status": "Accepted",
+            "payload": {"type": "Requirement", "data": {
+                "statement": "An unrelated requirement shall exist.", "requirement_kind": "functional",
+                "level": "system", "modality": "shall", "title": null, "rationale": null,
+                "priority": null, "source_identifier": null, "verification_method": null,
+                "owner_refs": null, "stakeholder_refs": null
+            }},
+            "evidence": [], "derivations": [], "standards": [], "tags": [], "extensions": {},
+            "audit": {"created_by": HUMAN, "created_at": AT, "updated_by": null, "updated_at": null}
+        }))
+        .unwrap();
+        moved = Graph::new(
+            moved.project_id().clone(),
+            moved.profile_id().clone(),
+            moved.nodes().values().cloned().chain([extra]).collect(),
+            moved.edges().values().cloned().collect(),
+        )
+        .unwrap();
+        let third = resolve(
+            &moved,
+            &good(&moved, ResolutionTemplate::DomainRelationshipCardinality),
+        )
+        .unwrap();
+        assert_ne!(third.decision.patch_ref, first.decision.patch_ref);
+        assert_eq!(third.decision_ref, first.decision_ref);
+        // The rationale is not identity either.
+        let reworded = ResolutionInput {
+            rationale: Some("Another reason.".into()),
+            ..good(&g, ResolutionTemplate::DomainRelationshipCardinality)
+        };
+        assert_eq!(
+            resolve(&g, &reworded).unwrap().decision_ref,
+            first.decision_ref
+        );
+        // Governed material is identity: answer, actor, question and supersession.
+        let d = &first.decision;
+        let q = d.question_ref.clone().unwrap();
+        let same = decision_id(g.project_id(), &q, &d.answer, &d.decided_by, None).unwrap();
+        assert_eq!(same, first.decision_ref);
+        let mut other_answer = d.answer.clone();
+        other_answer["cardinality_to"] = json!("1");
+        for other in [
+            decision_id(g.project_id(), &q, &other_answer, &d.decided_by, None),
+            decision_id(g.project_id(), &q, &d.answer, &id("agent:other"), None),
+            decision_id(
+                g.project_id(),
+                &id("q:00000000000000c2"),
+                &d.answer,
+                &d.decided_by,
+                None,
+            ),
+            decision_id(
+                g.project_id(),
+                &q,
+                &d.answer,
+                &d.decided_by,
+                Some(&id("dec:0000000000000001")),
+            ),
+        ] {
+            assert_ne!(other.unwrap(), first.decision_ref);
+        }
     }
 
     #[test]

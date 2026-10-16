@@ -1697,6 +1697,200 @@ mod graph_contract {
             .collect()
     }
 
+    // ------------------------------------------------------------------ R0.5 decision projection
+
+    /// A ResolutionDecision with every field present, edited by `edit` on its JSON data.
+    fn full_decision(node_id: &str, status: &str, edit: impl FnOnce(&mut Value)) -> Node {
+        let mut data = json!({
+            "question_ref": "q:a", "proposal_ref": null,
+            "answer": {"kind": "test", "value": "a"},
+            "decided_by": "actor:analyst", "decided_at": T1, "patch_ref": H1,
+            "rationale": "Because.", "supersedes": null
+        });
+        edit(&mut data);
+        node(node_id, status, "ResolutionDecision", data)
+    }
+
+    fn decision_graph(decision: Node) -> Graph {
+        graph(
+            vec![decision, question("q:a", "Accepted")],
+            vec![edge("rel:1", "Accepted", "resolves", "dec:a", "q:a")],
+        )
+        .unwrap()
+    }
+
+    fn element_hash_of(g: &Graph, node_id: &str) -> Hash {
+        node_element_hash(g.node(&id(node_id)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn resolution_decision_projection_omits_operational_provenance() {
+        let base = decision_graph(full_decision("dec:a", "Accepted", |_| {}));
+        // The semantic payload omits exactly decided_at and patch_ref (absent, not null).
+        let projection = semantic_projection(&base);
+        let projected = projection["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == "dec:a")
+            .unwrap();
+        let data = projected["payload"]["data"].as_object().unwrap();
+        let keys: BTreeSet<&str> = data.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "question_ref",
+                "proposal_ref",
+                "answer",
+                "decided_by",
+                "rationale",
+                "supersedes"
+            ])
+        );
+        assert_eq!(projected["status"], "Accepted");
+        // The element projection keeps the complete record.
+        let element = node_element_projection(base.node(&id("dec:a")).unwrap());
+        assert_eq!(element["payload"]["data"]["decided_at"], json!(T1));
+        assert_eq!(element["payload"]["data"]["patch_ref"], json!(H1));
+
+        let base_semantic = base.semantic_hash().unwrap();
+        let base_element = element_hash_of(&base, "dec:a");
+        let variant = |status: &str, edit: fn(&mut Value)| {
+            let g = decision_graph(full_decision("dec:a", status, edit));
+            (g.semantic_hash().unwrap(), element_hash_of(&g, "dec:a"))
+        };
+        // Operational provenance: same semantic_hash, different element hash.
+        for (what, edit) in [
+            (
+                "decided_at",
+                (|d: &mut Value| d["decided_at"] = json!("2027-01-01T00:00:00.000000000Z"))
+                    as fn(&mut Value),
+            ),
+            ("patch_ref", |d| {
+                d["patch_ref"] = json!(format!("sha256:{}", "b".repeat(64)))
+            }),
+        ] {
+            let (semantic, element) = variant("Accepted", edit);
+            assert_eq!(semantic, base_semantic, "{what}");
+            assert_ne!(element, base_element, "{what}");
+        }
+        // Governed material: semantic_hash and element hash both change.
+        for (what, status, edit) in [
+            (
+                "answer",
+                "Accepted",
+                (|d: &mut Value| d["answer"]["value"] = json!("b")) as fn(&mut Value),
+            ),
+            ("decided_by", "Accepted", |d| {
+                d["decided_by"] = json!("actor:other")
+            }),
+            ("rationale", "Accepted", |d| {
+                d["rationale"] = json!("Another reason.")
+            }),
+            ("supersedes", "Accepted", |d| {
+                d["supersedes"] = json!("dec:older")
+            }),
+            ("status", "Superseded", |_| {}),
+        ] {
+            let (semantic, element) = variant(status, edit);
+            assert_ne!(semantic, base_semantic, "{what}");
+            assert_ne!(element, base_element, "{what}");
+        }
+        // The evidence hash is untouched by decisions.
+        let moved = decision_graph(full_decision("dec:a", "Accepted", |d| {
+            d["decided_at"] = json!("2027-01-01T00:00:00.000000000Z")
+        }));
+        assert_eq!(
+            moved.evidence_hash().unwrap(),
+            base.evidence_hash().unwrap()
+        );
+    }
+
+    /// A proposal-acceptance companion (metamodel §6.3) edited by `edit` on its JSON data.
+    fn companion(node_id: &str, edit: impl FnOnce(&mut Value)) -> Node {
+        let mut data = json!({
+            "question_ref": null, "proposal_ref": "proposal:p",
+            "answer": {"kind": "proposal_acceptance", "reason_codes": ["human_decision"]},
+            "decided_by": "actor:analyst", "decided_at": T1, "patch_ref": H1,
+            "rationale": "Reviewed.", "supersedes": null
+        });
+        edit(&mut data);
+        node(node_id, "Accepted", "ResolutionDecision", data)
+    }
+
+    /// An ordinary proposal-only decision.
+    fn ordinary(node_id: &str) -> Node {
+        full_decision(node_id, "Accepted", |d| {
+            d["question_ref"] = Value::Null;
+            d["proposal_ref"] = json!("proposal:o");
+        })
+    }
+
+    #[test]
+    fn acceptance_companion_excluded_from_semantic_hash() {
+        // The type stays semantic; only the companion instance is excluded.
+        assert!(contributes_to_semantic_hash(NodeType::ResolutionDecision));
+        assert!(!SEMANTIC_HASH_EXCLUDED_NODE_TYPES.contains(&NodeType::ResolutionDecision));
+        let req = || requirement("req:a", "Accepted", "The system shall work.");
+        let base = graph(vec![req(), ordinary("dec:o")], vec![]).unwrap();
+        let with_companion =
+            |c: Node, edges: Vec<Edge>| graph(vec![req(), ordinary("dec:o"), c], edges).unwrap();
+        let g = with_companion(companion("dec:c", |_| {}), vec![]);
+        let c = g.node(&id("dec:c")).unwrap();
+        assert!(is_proposal_acceptance_companion(c));
+        assert!(!node_contributes_to_semantic_hash(c));
+        assert!(node_contributes_to_semantic_hash(
+            g.node(&id("dec:o")).unwrap()
+        ));
+        assert_eq!(g.semantic_hash().unwrap(), base.semantic_hash().unwrap());
+        assert!(semantic_projection(&g)["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["id"] != "dec:c"));
+        // Its acceptance time, artifact, rationale and reason codes never reach semantic_hash,
+        // while its element hash keeps the complete record.
+        for edit in [
+            (|d: &mut Value| d["decided_at"] = json!("2027-01-01T00:00:00.000000000Z"))
+                as fn(&mut Value),
+            |d| d["patch_ref"] = json!(format!("sha256:{}", "b".repeat(64))),
+            |d| d["rationale"] = json!("Other."),
+            |d| d["answer"]["reason_codes"] = json!([]),
+        ] {
+            let other = with_companion(companion("dec:c", edit), vec![]);
+            assert_eq!(
+                other.semantic_hash().unwrap(),
+                base.semantic_hash().unwrap()
+            );
+            assert_ne!(
+                element_hash_of(&other, "dec:c"),
+                element_hash_of(&g, "dec:c")
+            );
+        }
+        // An edge with a companion endpoint does not participate either.
+        let companion_edge = edge("rel:c", "Accepted", "supersedes", "dec:c", "dec:o");
+        let g = with_companion(companion("dec:c", |_| {}), vec![companion_edge.clone()]);
+        assert!(!edge_contributes_to_semantic_hash(&g, &companion_edge));
+        assert_eq!(g.semantic_hash().unwrap(), base.semantic_hash().unwrap());
+        // An ordinary decision edge still participates and changes semantic_hash.
+        let ordinary_edge = edge("rel:o", "Accepted", "supersedes", "dec:o2", "dec:o");
+        let g = graph(
+            vec![req(), ordinary("dec:o"), ordinary("dec:o2")],
+            vec![ordinary_edge.clone()],
+        )
+        .unwrap();
+        let without = graph(vec![req(), ordinary("dec:o"), ordinary("dec:o2")], vec![]).unwrap();
+        assert!(edge_contributes_to_semantic_hash(&g, &ordinary_edge));
+        assert_ne!(g.semantic_hash().unwrap(), without.semantic_hash().unwrap());
+        // Only the exact companion shape is excluded.
+        let question_bound = full_decision("dec:a", "Accepted", |d| {
+            d["answer"] = json!({"kind": "proposal_acceptance", "reason_codes": []})
+        });
+        assert!(!is_proposal_acceptance_companion(&question_bound));
+        assert!(node_contributes_to_semantic_hash(&question_bound));
+        assert!(!is_proposal_acceptance_companion(&ordinary("dec:o")));
+    }
+
     #[test]
     fn valid_resolution_decision_bindings() {
         // Proposal-only decision with zero resolves edges.

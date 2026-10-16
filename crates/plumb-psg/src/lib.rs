@@ -22,8 +22,8 @@ pub use graph::{evidence_fragment_id, is_baseline, source_artifact_id, Graph, Gr
 pub use hash::{
     contributes_to_semantic_hash, edge_contributes_to_semantic_hash, edge_element_hash,
     edge_element_projection, evidence_hash, evidence_projection_object,
-    node_contributes_to_semantic_hash, node_element_hash, node_element_projection, semantic_hash,
-    semantic_projection, SEMANTIC_HASH_EXCLUDED_NODE_TYPES,
+    is_proposal_acceptance_companion, node_contributes_to_semantic_hash, node_element_hash,
+    node_element_projection, semantic_hash, semantic_projection, SEMANTIC_HASH_EXCLUDED_NODE_TYPES,
 };
 pub use node::{Node, NodeError};
 pub use payload::*;

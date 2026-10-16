@@ -39,9 +39,9 @@ mod question_contract {
 
     // Independently computed goldens (Python hashlib, RFC 8785).
     const GOLDEN_CARDINALITY_FINDING: &str = "fnd:3593cbf36d315144";
-    const GOLDEN_CARDINALITY_QUESTION: &str = "q:2a414cddc59ff77f";
-    const GOLDEN_CALENDAR_QUESTION: &str = "q:6204ae40674353cc";
-    const GOLDEN_FALLBACK_QUESTION: &str = "q:3e64d480866528f3";
+    const GOLDEN_CARDINALITY_QUESTION: &str = "q:d2af42ddc3229f29";
+    const GOLDEN_CALENDAR_QUESTION: &str = "q:30fba4f6e49606c1";
+    const GOLDEN_FALLBACK_QUESTION: &str = "q:c9ee2014e2b0ded2";
 
     // ------------------------------------------------------------------ builders
 
@@ -1315,25 +1315,50 @@ mod question_contract {
     }
 
     #[test]
-    fn question_identity_follows_template_and_slots() {
+    fn question_identity_follows_template_finding_and_subject() {
+        // R0.5: {project_id, template_id, finding_ref, subject}.
         let project = id("project:pilot");
-        let slots = json!({"finding_ref": "fnd:0000000000000001", "affected_refs": ["req:r1"],
-                           "candidate_ref": "domainrel:x", "priority": "3", "stakeholder_ref": null});
-        let a = question_id(&project, CARDINALITY_TEMPLATE, &slots).unwrap();
+        let finding = id("fnd:0000000000000001");
+        let subject = json!({"affected_refs": ["req:r1"], "candidate_ref": "domainrel:x"});
+        let a = question_id(&project, CARDINALITY_TEMPLATE, &finding, &subject).unwrap();
         assert_eq!(
             a,
-            question_id(&project, CARDINALITY_TEMPLATE, &slots).unwrap()
+            question_id(&project, CARDINALITY_TEMPLATE, &finding, &subject).unwrap()
         );
-        assert_ne!(a, question_id(&project, TRIGGER_TEMPLATE, &slots).unwrap());
         assert_ne!(
             a,
-            question_id(&id("project:other"), CARDINALITY_TEMPLATE, &slots).unwrap()
+            question_id(&project, TRIGGER_TEMPLATE, &finding, &subject).unwrap()
+        );
+        assert_ne!(
+            a,
+            question_id(
+                &id("project:other"),
+                CARDINALITY_TEMPLATE,
+                &finding,
+                &subject
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            a,
+            question_id(
+                &project,
+                CARDINALITY_TEMPLATE,
+                &id("fnd:0000000000000002"),
+                &subject
+            )
+            .unwrap()
+        );
+        let other_subject = json!({"affected_refs": ["req:r1"], "candidate_ref": "domainrel:y"});
+        assert_ne!(
+            a,
+            question_id(&project, CARDINALITY_TEMPLATE, &finding, &other_subject).unwrap()
         );
         let base = run(&Fx::new(), vec![performer()]);
         let ids_of = |r: &QuestionGenerationResult| -> BTreeSet<Id> {
             r.questions.iter().map(|q| q.question_ref.clone()).collect()
         };
-        // Slot change (another target set).
+        // Subject change (another target set, so another finding and affected_refs).
         let fewer = run(
             &Fx::new(),
             vec![gf(
@@ -1344,13 +1369,56 @@ mod question_contract {
             )],
         );
         assert!(ids_of(&fewer).is_disjoint(&ids_of(&base)));
-        // Route change.
+        // Choice-set change (choice_refs are subject).
+        let more = run(
+            &Fx::new().with(business_role("brole:lead", Accepted)),
+            vec![performer()],
+        );
+        assert!(ids_of(&more).is_disjoint(&ids_of(&base)));
+    }
+
+    /// R0.5: priority (severity weight times blast radius), stakeholder routing and round
+    /// scheduling never enter the Question ID, and duplicate suppression follows the same key.
+    #[test]
+    fn question_id_ignores_priority_and_routing() {
+        let base = run(&Fx::new(), vec![performer()]);
+        let by_subject = |r: &QuestionGenerationResult| -> BTreeMap<String, GeneratedQuestion> {
+            r.questions
+                .iter()
+                .map(|q| {
+                    (
+                        q.slots["target_ref"].as_str().unwrap().to_owned(),
+                        q.clone(),
+                    )
+                })
+                .collect()
+        };
+        let base_q = by_subject(&base);
+        assert_eq!(base_q.len(), 2);
+        let same_ids = |other: &QuestionGenerationResult| {
+            let other = by_subject(other);
+            assert_eq!(
+                other.keys().collect::<Vec<_>>(),
+                base_q.keys().collect::<Vec<_>>()
+            );
+            for (subject, q) in &other {
+                assert_eq!(q.question_ref, base_q[subject].question_ref, "{subject}");
+            }
+            other
+        };
+        // Routing: the configured stakeholder is no longer Accepted, the analyst takes it.
         let rerouted = run(
             &Fx::new().status("stakeholder:hr", Proposed),
             vec![performer()],
         );
-        assert!(ids_of(&rerouted).is_disjoint(&ids_of(&base)));
-        // Priority change.
+        for (subject, q) in same_ids(&rerouted) {
+            assert_ne!(q.route, base_q[&subject].route);
+            assert_ne!(
+                q.payload.stakeholder_ref,
+                base_q[&subject].payload.stakeholder_ref
+            );
+        }
+        // Priority through the severity weight: the finding identity is severity-free.
         let warn = run(
             &Fx::new(),
             vec![gf(
@@ -1360,50 +1428,120 @@ mod question_contract {
                 FindingSeverity::Warn,
             )],
         );
-        assert!(ids_of(&warn).is_disjoint(&ids_of(&base)));
-        // Choice-set change.
-        let more = run(
-            &Fx::new().with(business_role("brole:lead", Accepted)),
+        for (subject, q) in same_ids(&warn) {
+            assert_ne!(q.priority, base_q[&subject].priority);
+            assert_ne!(q.payload.priority, base_q[&subject].payload.priority);
+        }
+        // Priority through the blast radius: a new Accepted element reachable from the
+        // affected operations.
+        let wider = run(
+            &Fx::new().with(operation("operation:extra", Accepted)).rel(
+                RelationKind::DerivedFrom,
+                "operation:extra",
+                "operation:approve",
+            ),
             vec![performer()],
         );
-        assert!(ids_of(&more).is_disjoint(&ids_of(&base)));
+        for (subject, q) in same_ids(&wider) {
+            assert_ne!(q.blast_radius, base_q[&subject].blast_radius);
+            assert_ne!(q.priority, base_q[&subject].priority);
+        }
+        // Round scheduling: a persisted Question assigned to a round keeps its ID.
+        let mut fx = Fx::new().with(persisted_finding(&performer(), Accepted));
+        for q in base_q.values() {
+            fx = fx.with(persisted_question(q, |p| {
+                p.round_ref = Some("round:1".parse().unwrap())
+            }));
+        }
+        for (_, q) in same_ids(&run(&fx, vec![performer()])) {
+            assert_eq!(q.materialization, QuestionMaterialization::Existing);
+        }
+        // Duplicate suppression uses the same basis: candidates that differ only in priority
+        // and routing are one Question.
+        let q = &base.questions[0];
+        let candidate = |priority: u64, stakeholder: Option<&str>| {
+            let mut payload = q.payload.clone();
+            payload.priority = Some(priority.to_string());
+            payload.stakeholder_ref = stakeholder.map(id);
+            QuestionCandidate {
+                question_ref: q.question_ref.clone(),
+                template_id: q.template_id.clone(),
+                finding_ref: q.finding_ref.clone(),
+                subject: question_subject(
+                    q.slots
+                        .as_object()
+                        .map(|m| {
+                            let mut m = m.clone();
+                            m.remove("priority");
+                            m.remove("stakeholder_ref");
+                            m
+                        })
+                        .as_ref()
+                        .unwrap(),
+                ),
+                slots: q.slots.clone(),
+                payload,
+                priority,
+                blast_radius: q.blast_radius,
+                route: q.route.clone(),
+            }
+        };
+        let (kept, suppressed) = suppress_duplicates(vec![
+            candidate(
+                q.priority,
+                q.payload.stakeholder_ref.as_ref().map(Id::as_str),
+            ),
+            candidate(q.priority + 5, Some("stakeholder:auditor")),
+        ])
+        .unwrap();
+        assert_eq!((kept.len(), suppressed.len()), (1, 1));
     }
 
     #[test]
-    fn duplicate_candidates_are_suppressed_by_template_and_slots() {
+    fn duplicate_candidates_are_suppressed_by_template_finding_and_subject() {
         let result = run(&Fx::new(), vec![invariant()]);
         let q = only(&result);
-        let candidate = |finding: &str| QuestionCandidate {
-            question_ref: q.question_ref.clone(),
+        let subject = json!({"affected_refs": ["inv:positive"], "target_ref": "inv:positive"});
+        let candidate = |question: &str| QuestionCandidate {
+            question_ref: id(question),
             template_id: q.template_id.clone(),
-            finding_ref: id(finding),
+            finding_ref: q.finding_ref.clone(),
+            subject: subject.clone(),
             slots: q.slots.clone(),
             payload: q.payload.clone(),
             priority: q.priority,
             blast_radius: q.blast_radius,
             route: q.route.clone(),
         };
+        // R0.5: the key is (template_id, finding_ref, canonical subject); the first candidate
+        // in (key, finding, question) order is kept.
         let (kept, suppressed) = suppress_duplicates(vec![
-            candidate("fnd:00000000000000b2"),
-            candidate("fnd:00000000000000b1"),
+            candidate("q:00000000000000b2"),
+            candidate("q:00000000000000b1"),
         ])
         .unwrap();
         assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].finding_ref, id("fnd:00000000000000b1"));
+        assert_eq!(kept[0].question_ref, id("q:00000000000000b1"));
         assert_eq!(
             suppressed,
             [QuestionDisposition::SuppressedDuplicate {
-                question_ref: q.question_ref.clone(),
+                question_ref: id("q:00000000000000b2"),
                 template_id: INVARIANT_TEMPLATE.into(),
-                finding_ref: id("fnd:00000000000000b2"),
+                finding_ref: q.finding_ref.clone(),
             }]
         );
-        // The same prompt under different slots is not a duplicate.
-        let mut other = candidate("fnd:00000000000000b3");
-        other.slots["priority"] = json!("4");
-        let (kept, suppressed) =
-            suppress_duplicates(vec![candidate("fnd:00000000000000b1"), other]).unwrap();
-        assert_eq!((kept.len(), suppressed.len()), (2, 0));
+        // The same prompt under a different subject or finding is not a duplicate.
+        let mut other_subject = candidate("q:00000000000000b3");
+        other_subject.subject["target_ref"] = json!("inv:other");
+        let mut other_finding = candidate("q:00000000000000b4");
+        other_finding.finding_ref = id("fnd:00000000000000b4");
+        let (kept, suppressed) = suppress_duplicates(vec![
+            candidate("q:00000000000000b1"),
+            other_subject,
+            other_finding,
+        ])
+        .unwrap();
+        assert_eq!((kept.len(), suppressed.len()), (3, 0));
     }
 
     // ------------------------------------------------------------------ finding validation
@@ -1642,7 +1780,6 @@ mod question_contract {
         let q = only(&run(&Fx::new(), vec![invariant()])).clone();
         let conflicts = [
             persisted_question(&q, |p| p.prompt = "Something else?".into()),
-            persisted_question(&q, |p| p.stakeholder_ref = None),
             persisted_question(&q, |p| p.context_refs = None),
             stakeholder(q.question_ref.as_str(), Accepted),
             {
@@ -1663,6 +1800,83 @@ mod question_contract {
                 [QuestionIssue::ExistingQuestionConflict { .. }]
             ));
         }
+    }
+
+    /// R0.5: a persisted Question at the same semantic identity whose priority and routing are
+    /// stale is refreshed in place by one non-semantic ReplacePayload; its lifecycle-managed
+    /// status and round are kept and no second Question appears.
+    #[test]
+    fn existing_question_routing_is_refreshed_in_place() {
+        let q = only(&run(&Fx::new(), vec![invariant()])).clone();
+        let stale = persisted_question(&q, |p| {
+            p.stakeholder_ref = None;
+            p.priority = Some("1".into());
+            p.round_ref = Some("round:1".parse().unwrap());
+            p.status = "Answered".into();
+        });
+        let fx = Fx::new()
+            .with(persisted_finding(&invariant(), Accepted))
+            .with(stale.clone());
+        let graph = fx.graph();
+        let result = run(&fx, vec![invariant()]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let again = only(&result);
+        assert_eq!(again.question_ref, q.question_ref);
+        assert_eq!(again.materialization, QuestionMaterialization::Updated);
+        let proposal = result.proposal.clone().unwrap();
+        assert_eq!(proposal.materiality, ProposalMateriality::NonSemantic);
+        assert_eq!(
+            proposal.acceptance_policy,
+            AcceptancePolicy::AutoNonSemantic
+        );
+        let SemanticPatch::ReplacePayload { target, payload } = &proposal.patch_set.patch else {
+            panic!(
+                "expected one ReplacePayload, got {:?}",
+                proposal.patch_set.patch
+            );
+        };
+        assert_eq!(target.id, q.question_ref);
+        assert_eq!(
+            target.expected_hash,
+            plumb_psg::node_element_hash(&stale).unwrap()
+        );
+        let NodePayload::Question(refreshed) = payload else {
+            panic!("expected a Question payload");
+        };
+        let NodePayload::Question(old) = &stale.payload else {
+            unreachable!()
+        };
+        assert_eq!(refreshed.priority, q.payload.priority);
+        assert_eq!(refreshed.stakeholder_ref, q.payload.stakeholder_ref);
+        assert_eq!(refreshed.round_ref, old.round_ref);
+        assert_eq!(refreshed.status, old.status);
+        let applied = apply_patch(&graph, &proposal.patch_set).unwrap();
+        assert_eq!(
+            applied.graph.semantic_hash().unwrap(),
+            graph.semantic_hash().unwrap()
+        );
+        let questions = applied
+            .graph
+            .nodes()
+            .values()
+            .filter(|n| matches!(n.payload, NodePayload::Question(_)))
+            .count();
+        assert_eq!(questions, 1);
+        // Refreshed: the next generation is idempotent.
+        let next = generate_questions(
+            &applied.graph,
+            &QuestionGenerationInput {
+                findings: vec![invariant()],
+                routing: hr_routing(),
+            },
+            &audit(),
+        )
+        .unwrap();
+        assert!(next.proposal.is_none());
+        assert_eq!(
+            only(&next).materialization,
+            QuestionMaterialization::Existing
+        );
     }
 
     // ------------------------------------------------------------------ proposal
@@ -1922,13 +2136,14 @@ mod question_contract {
         assert_eq!(
             order,
             [
-                ("q:5871379a4480cf38".to_owned(), PERFORMER_TEMPLATE, 8),
-                ("q:6204ae40674353cc".to_owned(), CALENDAR_TEMPLATE, 8),
-                ("q:c028a0b06ecc6d87".to_owned(), PERFORMER_TEMPLATE, 8),
-                ("q:0bb549ba61718eff".to_owned(), PERMISSION_TEMPLATE, 4),
-                ("q:6f249ab4436ceb55".to_owned(), TRIGGER_TEMPLATE, 4),
-                ("q:2a414cddc59ff77f".to_owned(), CARDINALITY_TEMPLATE, 3),
-                ("q:8b4dc01ee3454b93".to_owned(), INVARIANT_TEMPLATE, 3),
+                // R0.5 identity; equal priorities keep the frozen ascending-ID tie-break.
+                ("q:271c650bae04f1b1".to_owned(), PERFORMER_TEMPLATE, 8),
+                ("q:30fba4f6e49606c1".to_owned(), CALENDAR_TEMPLATE, 8),
+                ("q:cb93a1e53009d48e".to_owned(), PERFORMER_TEMPLATE, 8),
+                ("q:518cd91950ce875b".to_owned(), TRIGGER_TEMPLATE, 4),
+                ("q:e8bf553063576640".to_owned(), PERMISSION_TEMPLATE, 4),
+                ("q:c9ee2014e2b0ded2".to_owned(), INVARIANT_TEMPLATE, 3),
+                ("q:d2af42ddc3229f29".to_owned(), CARDINALITY_TEMPLATE, 3),
             ]
         );
         assert_eq!(

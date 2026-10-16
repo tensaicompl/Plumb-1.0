@@ -322,15 +322,14 @@ pub fn waiver_subject_ref(
     )
 }
 
-/// `dec:<16 hex of SHA-256(RFC 8785 {project_id, waiver_subject_ref, answer, decided_by,
-/// decided_at, patch_ref})>`; the rationale is not part of decision identity.
+/// `dec:<16 hex of SHA-256(RFC 8785 {project_id, waiver_subject_ref, answer, decided_by})>`
+/// (R0.5, architecture §4.8). The rationale is not part of decision identity, and `decided_at`
+/// and `patch_ref` are operational provenance: persisted on the decision, never identity.
 pub fn waiver_decision_id(
     project_id: &Id,
     waiver_subject_ref: &Id,
     answer: &serde_json::Value,
     decided_by: &Id,
-    decided_at: &Timestamp,
-    patch_ref: &Hash,
 ) -> Result<Id, CoreError> {
     short_id(
         "dec",
@@ -339,8 +338,6 @@ pub fn waiver_decision_id(
             "waiver_subject_ref": waiver_subject_ref.to_string(),
             "answer": answer,
             "decided_by": decided_by.to_string(),
-            "decided_at": decided_at.to_string(),
-            "patch_ref": patch_ref.as_str(),
         }),
     )
 }
@@ -472,8 +469,6 @@ pub fn prepare_waiver_material(
         &waiver_subject,
         &answer,
         request.decided_by,
-        &request.decided_at,
-        &patch_ref,
     )?;
     if graph.node(&decision_ref).is_some() || graph.edge(&decision_ref).is_some() {
         return Err(WaiverCreationError::WaiverDecisionIdCollision(decision_ref));

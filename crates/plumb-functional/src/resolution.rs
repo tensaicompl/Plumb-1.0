@@ -289,15 +289,15 @@ pub fn relation_id(kind: &RelationKind, from: &Id, to: &Id) -> Result<Id, CoreEr
     )
 }
 
-/// `dec:<16 hex of SHA-256(RFC 8785 {project_id, question_ref, answer, decided_by, decided_at,
-/// patch_ref, supersedes})>`; the rationale is not part of decision identity.
+/// `dec:<16 hex of SHA-256(RFC 8785 {project_id, question_ref, answer, decided_by,
+/// supersedes})>` (R0.5, architecture §4.8). The rationale is not part of decision identity, and
+/// `decided_at` and `patch_ref` are operational provenance: persisted on the decision, never
+/// identity.
 pub fn decision_id(
     project_id: &Id,
     question_ref: &Id,
     answer: &JsonValue,
     decided_by: &Id,
-    decided_at: &Timestamp,
-    patch_ref: &Hash,
     supersedes: Option<&Id>,
 ) -> Result<Id, CoreError> {
     short_id(
@@ -307,8 +307,6 @@ pub fn decision_id(
             "question_ref": question_ref.to_string(),
             "answer": answer,
             "decided_by": decided_by.to_string(),
-            "decided_at": serde_json::to_value(decided_at).map_err(|e| CoreError::Canonicalization(e.to_string()))?,
-            "patch_ref": patch_ref.as_str(),
             "supersedes": supersedes.map(Id::to_string),
         }),
     )
@@ -1309,8 +1307,6 @@ pub fn resolve_question(
         question_ref,
         &mapped.marker,
         &input.decided_by,
-        &input.decided_at,
-        &patch_ref,
         input.supersedes.as_ref(),
     )?;
     let decision = ResolutionDecision {
