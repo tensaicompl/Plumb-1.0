@@ -2776,7 +2776,7 @@ Untrusted input never reaches an unbounded allocation, unbounded recursion or an
 
 **Audit closure (plan v3.2 hotfix).** The following Fable audit findings are closed by this task (see `docs/plan/FABLE-AUDIT-DISPOSITION-v3.md`):
 
-- [Fable #367] validate_display_name rejects '/', '\\', '.', '..', Unicode bidi and format control characters and names longer than 255 characters with a typed import error, and the core Id grammar rejects IDs longer than a frozen maximum length.
+- [Fable #367] validate_display_name rejects '/', '\\', '.', '..', Unicode bidi and format control characters and names longer than 255 characters with a typed import error, and the core Id grammar rejects complete Id strings longer than ID_MAX_BYTES = 255 bytes (the whole serialized Id: namespace, colons and body segments); because the grammar is ASCII-only this is also 255 characters; 255 is accepted and 256 is rejected, with no normalization or truncation, the existing grammar unchanged and the existing CoreError::InvalidId error.
 
 
 ### 33.2 Revision-complete optimistic concurrency (H0.2)

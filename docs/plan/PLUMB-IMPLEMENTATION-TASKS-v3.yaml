@@ -1,4 +1,4 @@
-plan_version: 3.2-draft.7
+plan_version: 3.2-draft.8
 release: pilot-v3-foundation
 execution_rule: Execute exactly one ready task at a time in listed order. Only tasks whose scope is allowed by EXECUTION-SCOPE.yaml may execute.
 tasks:
@@ -10753,7 +10753,11 @@ tasks:
     producing 20001 fragments, a 16 MiB + 1 text, an expression of 4097 bytes, 65 nested parentheses, 65 prefix operators and 1025 AST nodes, and oversized
     HTTP bodies.'
   - '[Fable #367] validate_display_name rejects ''/'', ''\\'', ''.'', ''..'', Unicode bidi and format control characters and names longer than 255 characters
-    with a typed import error, and the core Id grammar rejects IDs longer than a frozen maximum length.'
+    with a typed import error, and the core Id grammar rejects complete Id strings longer than ID_MAX_BYTES = 255 bytes: crates/plumb-core/src/id.rs exports
+    pub const ID_MAX_BYTES: usize = 255 and checks the whole serialized Id (namespace, colons and body segments; ASCII, so bytes equal characters) before
+    accepting it, on parse and on serde deserialization alike; an otherwise-valid Id of exactly 255 bytes is accepted, one of 256 bytes or more is rejected
+    without truncation or repair as the existing CoreError::InvalidId(original string); the existing grammar is unchanged; the boundary regressions may
+    live in the existing unit-test module of id.rs.'
   - 'Limited state.rs ownership (plan v3.2 hotfix): H0.1 owns crates/plumb-api/src/state.rs only to add, inside the shared run_intake translation of plumb_intake::IntakeError
     to ApiError, the branch for the new typed expression-limit intake error: HTTP 422 UNPROCESSABLE_ENTITY with stable code E_EXPRESSION_LIMIT in the ordinary
     typed API envelope, a stable high-level message that the proposal contains an expression exceeding a safety limit, and structured details limit, actual
