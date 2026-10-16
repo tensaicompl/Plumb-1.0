@@ -1,7 +1,7 @@
 # Plumb 1.0 — Implementation Plan v3.2
 
 **Status:** Claude Code CLI build contract  
-**Plan version:** `3.2-draft.5`\
+**Plan version:** `3.2-draft.6`\
 **Default execution scope:** `pilot-v3-foundation`  
 **Canonical semantic model:** Plumb Specification Graph (PSG)  
 **Default active profile:** `profile:plumb-software-2026.1`
@@ -6336,11 +6336,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `ui/src/api/schema.d.ts`
 - `ui/src/features/requirements/RequirementDetail.tsx`
 - `ui/src/features/requirements/requirements.test.tsx`
+- `crates/plumb-store/src/workflow.rs`
+- `crates/plumb-store/tests/workflow.rs`
+- `crates/plumb-api/tests/http_stages.rs`
+- `crates/plumb-api/src/stage/mod.rs`
+- `crates/plumb-api/tests/http_core.rs`
 
 **Required actions**
 
 1. Add crates/plumb-functional/src/directory.rs (exported from lib.rs, which must not gain the text Proposal): a deterministic producer from a typed directory draft (stakeholders, actors, business_roles, calendars, rules, decision_tables, each with an explicit ID and optional grounding Requirement IDs) to one Proposed node per element in its own Semantic / HUMAN_CONFIRM proposal, exactly as architecture §2 'Configured semantic directory' states. Evidence is the sorted union of the evidence of the named Accepted Requirements. Calendar week_pattern is exactly {"weekend": configured weekend names in configured order} of the named runtime calendar_ref; DecisionTable content is encoded only through encode_decision_table. Unknown fields, missing required fields, duplicate IDs and non-Accepted grounding are errors.
-2. Add a generic governed confirmation service in crates/plumb-api/src/application.rs: one HUMAN_CONFIRM proposal of sequential SetStatus Proposed -> Accepted leaves with element preconditions for an explicitly listed set of existing elements, accepted through the ordinary proposal acceptance path. It refuses governance, provenance and proof types, types with a dedicated confirmation contract (Requirement, Term, Calculation, Scenario), non-Proposed elements and edges whose endpoints would not be baseline-participating.
+2. Add a generic governed confirmation service in crates/plumb-api/src/application.rs: one HUMAN_CONFIRM proposal of sequential SetStatus Proposed -> Accepted leaves with element preconditions for an explicitly listed set of existing elements, accepted through the ordinary proposal acceptance path. It refuses governance, provenance and proof types, types with a dedicated confirmation contract (Term, Calculation, Scenario), non-Proposed elements and edges whose endpoints would not be baseline-participating.
 3. Move the S3.3 answer logic from crates/plumb-api/src/routes/questions.rs into an application service that the route calls unchanged in behavior; HTTP responses are byte-identical.
 4. Add CLI commands in crates/plumb-cli/src/main.rs and commands.rs: directory (persist the configured directory proposals), confirm <ELEMENT_ID>... (generic confirmation), ask (materialize_questions from the current persisted F2 report findings with the configured question_routing) and answer <QUESTION_ID> --answer <JSON> (the answer service). crates/plumb-cli/src/config.rs adds exactly the directory and question_routing fields, both optional and never defaulted when present but incomplete; crates/plumb-api/src/runtime.rs and state.rs carry them.
 5. Update crates/plumb-cli/tests/cli.rs for the four new commands (registry pin, exact help list, --config-is-required loop).
@@ -6348,6 +6353,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 7. Proposal discovery (plan v3.2): add the CLI command proposals (read-only) listing every pending WorkflowProposal sorted by ID with ID, class/positive action, origin (recipe job and stage job IDs, or intake/session), base revision and whether its stored intake requires a reason; --json emits the same records.
 8. EARS review (plan v3.2): RequirementDetail.ears_suggestion carries the normalized text of the pending S1.2 EARS WorkflowProposal of that Requirement and a new ears_proposal_ref its proposal ID (update crates/plumb-api/src/openapi.rs, regenerate api/modeller.openapi.json and ui/src/api/schema.d.ts; operations stay 74); RequirementDetail.tsx accepts it through the existing governed proposal acceptance of ears_proposal_ref.
 9. General rule (plan v3.2): every pilot-generated Proposed semantic element requiring human confirmation is discoverable and actionable through the CLI or the pilot UI; no essential acceptance operation exists only as a hidden route or test helper; no second proposal lifecycle is introduced.
+10. Pending proposal enumeration (plan v3.2 hotfix): add to crates/plumb-store/src/workflow.rs the read-only SqliteWorkflowStore::pending_proposals() -> Result<Vec<WorkflowProposal>, StoreError>. It returns every and only proposal whose state is WorkflowProposalState::Pending as the existing complete WorkflowProposal record, sorted by proposal_id ascending, decoded under the same workflow-record decoding and integrity rules as proposal(id); a malformed row is a typed store corruption error and is never skipped. It performs no state transition, reconciliation, rejection or rebase, has no pagination and no origin filter, and changes neither the database schema, the WorkflowProposal shape, the stage proposal link schema, migrations nor STORE_SCHEMA_VERSION; no second persistence representation is added. If implementation shows a schema change is unavoidable, stop with BLOCKED-IMPLEMENTATION-CONTRACT.
+11. Proposal discovery enrichment (plan v3.2 hotfix): the proposals product view reads pending_proposals() and, for a stage-origin proposal, enriches it with recipe_job_id and stage_job_id from the existing SqliteStageStore::proposal_link(proposal_id); these are never duplicated into workflow_proposals. A non-stage proposal exposes its existing origin_kind and origin_ref without synthetic origin IDs. Output stays sorted by proposal ID. Stale-occurrence cleanup remains H0.10.
+12. Limited runtime-builder ownership (plan v3.2 hotfix): the directory and question_routing fields carried by ApplicationRuntime are initialized as absent (their frozen optional types' none value) at the existing ApplicationRuntime constructions in crates/plumb-api/tests/http_stages.rs (the test runtime fixture) and crates/plumb-api/src/stage/mod.rs (the existing test-support code only). No other change is made in either file: no stage-test semantics, fixture redesign, gate behavior, production stage orchestration or recipe behavior changes, and no R0.6 directory or question behavior is implemented there.
+13. Limited http_core ownership (plan v3.2 hotfix): R0.6 owns crates/plumb-api/tests/http_core.rs only to add "ears_proposal_ref": null to the exact expected RequirementDetail JSON of http_core_requirement_projection_and_filters (its fixture has no pending EARS proposal); the exact comparison is not weakened and no other http_core assertion changes. If another http_core assertion proves necessarily affected, stop with BLOCKED-IMPLEMENTATION-CONTRACT.
 
 **Commands**
 
@@ -6377,6 +6386,8 @@ cd ui && npm run api:check
 - `cargo test -p plumb-api --test http_workflow requirement_detail_surfaces_pending_ears_proposal`
 - `cd ui && npm run test`
 - `cd ui && npm run api:check`
+- `cargo test -p plumb-store --test workflow pending_proposals_are_sorted_and_pending_only`
+- `cargo test -p plumb-api --test http_core http_core_requirement_projection_and_filters`
 
 **Acceptance**
 
