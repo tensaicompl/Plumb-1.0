@@ -1021,6 +1021,39 @@ pub struct ReadyGate {
     pub gate: String,
     pub result: String,
     pub report_hash: Hash,
+    /// The rules of the report that did not pass, in report order (what to fix next).
+    pub failed_rules: Vec<ReadyRule>,
+}
+
+/// One non-passing rule of a `ready` gate report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReadyRule {
+    pub rule_id: String,
+    pub severity: Value,
+    pub state: Value,
+    pub targets: Vec<Id>,
+}
+
+impl ReadyRule {
+    /// The rules of `report` whose state is neither PASS nor NOT_APPLICABLE.
+    pub(crate) fn failed(report: &GateReport) -> Vec<ReadyRule> {
+        report
+            .rules
+            .iter()
+            .filter_map(|rule| {
+                let state = serde_json::to_value(rule.state).ok()?;
+                if matches!(state.as_str(), Some("PASS") | Some("NOT_APPLICABLE")) {
+                    return None;
+                }
+                Some(ReadyRule {
+                    rule_id: rule.rule_id.clone(),
+                    severity: serde_json::to_value(rule.effective_severity).ok()?,
+                    state,
+                    targets: rule.targets.clone(),
+                })
+            })
+            .collect()
+    }
 }
 
 /// The `ready` outcome: one loaded head, the captured `evaluation_at` and every gate.
@@ -1076,6 +1109,7 @@ impl ApiState {
                 gate: gate.to_string(),
                 result: result_wire(evaluated.report.result),
                 report_hash: record.report_hash,
+                failed_rules: ReadyRule::failed(&evaluated.report),
             });
         }
         let mut preconditions = Vec::new();

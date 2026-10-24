@@ -30,7 +30,7 @@ use crate::error::ApiError;
 use crate::openapi::{JobResponse, JobStatus, StageRunResponse};
 use crate::state::ApiState;
 
-pub use gates::{ReadyGate, ReadyOutcome};
+pub use gates::{ReadyGate, ReadyOutcome, ReadyRule};
 pub use phases::SegmentationIntermediate;
 pub use recipe::{Phase, Recipe, RecipeCapture};
 
@@ -749,6 +749,18 @@ impl ApiState {
 
     /// The gate results recorded by the steps of a recipe job: `(gate, "pass" | "fail")`.
     pub fn recipe_gate_results(&self, id: &Hash) -> Result<Vec<(String, String)>, ApiError> {
+        Ok(self
+            .recipe_gate_details(id)?
+            .into_iter()
+            .map(|(gate, result, _)| (gate, result))
+            .collect())
+    }
+
+    /// [`ApiState::recipe_gate_results`] with the non-passing rules of each report.
+    pub fn recipe_gate_details(
+        &self,
+        id: &Hash,
+    ) -> Result<Vec<(String, String, Vec<gates::ReadyRule>)>, ApiError> {
         let steps = self
             .with_stage_store(|store| store.steps(id))?
             .map_err(crate::stage::store_error)?;
@@ -765,7 +777,11 @@ impl ApiState {
                 .find(|r| &r.gate == gate && &r.revision_id == revision)
             {
                 let report = gates::decode_report(record)?;
-                out.push((gate.clone(), gates::result_wire(report.result)));
+                out.push((
+                    gate.clone(),
+                    gates::result_wire(report.result),
+                    gates::ReadyRule::failed(&report),
+                ));
             }
         }
         Ok(out)
