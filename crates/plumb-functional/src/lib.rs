@@ -69,8 +69,8 @@ pub mod waiver;
 // Hotfix 065: the existing PlumbExpr runtime provider types, re-exported without wrapper
 // semantics so callers inject providers without a direct plumb-expr dependency.
 pub use plumb_expr::{
-    CalendarDefinition as ExprCalendarDefinition, CalendarError as ExprCalendarError,
-    CalendarProvider, CalendarProvider as ExprCalendarProvider,
+    map_pilot_value_type, CalendarDefinition as ExprCalendarDefinition,
+    CalendarError as ExprCalendarError, CalendarProvider, CalendarProvider as ExprCalendarProvider,
     PredicateError as ExprPredicateError, PredicateProvider,
     PredicateProvider as ExprPredicateProvider, RefValue as ExprRefValue,
     StaticCalendarProvider as ExprStaticCalendarProvider, Value as ExprValue,

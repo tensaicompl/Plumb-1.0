@@ -35,8 +35,8 @@ use plumb_patch::{
 };
 use plumb_psg::{
     edge_contributes_to_semantic_hash, edge_element_hash, node_contributes_to_semantic_hash,
-    node_element_hash, ConceptKind, ElementStatus, Graph, Node, NodePayload, NodeType,
-    ProcessNodeKind, RelationKind,
+    node_element_hash, ElementStatus, Graph, Node, NodePayload, NodeType, ProcessNodeKind,
+    RelationKind,
 };
 use plumb_store::{LoadedRevision, RevisionId, WorkflowOrigin};
 use plumb_validation::waiver::WaiverRequest;
@@ -282,7 +282,6 @@ async fn edit_glossary(
 }
 
 enum AttributeChange {
-    Type(String),
     Unit(String),
     Class(PilotDataClass),
 }
@@ -304,26 +303,6 @@ async fn attribute_write(
     };
     let mut payload = attribute.clone();
     match change {
-        AttributeChange::Type(value_type) => {
-            let known = loaded
-                .graph
-                .node_ids_by_type(NodeType::Concept)
-                .iter()
-                .any(|id| {
-                    loaded.graph.node(id).is_some_and(|n| {
-                        n.status == ElementStatus::Accepted
-                            && matches!(&n.payload, NodePayload::Concept(c)
-                            if c.concept_kind == ConceptKind::ValueType && c.name == value_type)
-                    })
-                });
-            if !known {
-                return Err(ApiError::unprocessable(
-                    "E_SEMANTIC_INVARIANT",
-                    "type must name an Accepted value_type Concept",
-                ));
-            }
-            payload.value_type = value_type;
-        }
         AttributeChange::Unit(unit) => payload.unit = Some(unit),
         AttributeChange::Class(class) => {
             if let Some(existing) = &attribute.data_classification {
@@ -357,14 +336,9 @@ async fn set_attribute_type(
     if !is_clean_text(&request.value_type) {
         return Err(ApiError::invalid("type must be clean non-empty text"));
     }
-    attribute_write(
-        state,
-        id,
-        headers,
-        AttributeChange::Type(request.value_type),
-        "set_attribute_type",
-    )
-    .await
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    Ok(Json(state.set_attribute_type(&loaded, &id, &request.value_type)?).into_response())
 }
 
 /// `set_attribute_unit`.

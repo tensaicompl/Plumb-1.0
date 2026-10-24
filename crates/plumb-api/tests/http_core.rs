@@ -3336,8 +3336,9 @@ mod http_core {
                 );
             }
         }
-        // Writes reach the store only through the shared state pipeline; the three attribute
-        // writes share one call site.
+        // Writes reach the store only through the shared state pipeline; the unit and class
+        // attribute writes share one call site (the type write is the shared
+        // `set_attribute_type` application service, also used by the CLI).
         let model = ROUTE_SOURCES
             .iter()
             .find(|(n, _)| *n == "model.rs")
@@ -3345,8 +3346,8 @@ mod http_core {
             .1;
         assert_eq!(
             model.matches("attribute_write(").count(),
-            4,
-            "one definition, three callers"
+            3,
+            "one definition, two callers"
         );
         let lib = include_str!("../src/lib.rs");
         for token in ["fn main", "axum::serve", "TcpListener", "CorsLayer"] {

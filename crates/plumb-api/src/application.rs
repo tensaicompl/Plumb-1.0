@@ -347,7 +347,7 @@ mod services {
     };
     use plumb_psg::{
         contributes_to_semantic_hash, edge_element_hash, is_baseline, node_element_hash,
-        ElementStatus, FindingSeverity, Graph, Node, NodePayload, NodeType,
+        ConceptKind, ElementStatus, FindingSeverity, Graph, Node, NodePayload, NodeType,
     };
     use plumb_store::{
         LoadedRevision, NewWorkflowProposal, StoreError, WorkflowInsert, WorkflowOrigin,
@@ -1684,6 +1684,75 @@ mod services {
             )
         }
 
+        /// `set_attribute_type` (HTTP and CLI): replaces only `Attribute.value_type` with the
+        /// name of an Accepted value_type Concept or a canonical pilot primitive type (String,
+        /// Int, Bool, Date, DateTime, Decimal(n)). Domain extraction names Concepts, while
+        /// expressions and scenarios only type primitives, so without primitives no Attribute
+        /// could ever be used by a Calculation.
+        pub fn set_attribute_type(
+            &self,
+            loaded: &LoadedRevision,
+            id: &str,
+            value_type: &str,
+        ) -> Result<WriteResult, ApiError> {
+            let missing = || ApiError::not_found(format!("attribute {id} not found"));
+            let node = parse_id(id)
+                .and_then(|i| loaded.graph.node(&i))
+                .filter(|n| n.payload.node_type() == NodeType::Attribute)
+                .ok_or_else(missing)?;
+            let NodePayload::Attribute(attribute) = &node.payload else {
+                return Err(ApiError::internal("attribute"));
+            };
+            let primitive = value_type != "Enum"
+                && plumb_functional::map_pilot_value_type(value_type, None, None).is_ok();
+            let concept = loaded
+                .graph
+                .node_ids_by_type(NodeType::Concept)
+                .iter()
+                .any(|id| {
+                    loaded.graph.node(id).is_some_and(|n| {
+                        n.status == ElementStatus::Accepted
+                            && matches!(&n.payload, NodePayload::Concept(c)
+                            if c.concept_kind == ConceptKind::ValueType && c.name == value_type)
+                    })
+                });
+            if !primitive && !concept {
+                return Err(ApiError::unprocessable(
+                    "E_SEMANTIC_INVARIANT",
+                    "type must be a pilot primitive type or name an Accepted value_type Concept",
+                ));
+            }
+            if attribute.value_type == value_type {
+                return Err(ApiError::unprocessable(
+                    "E_NO_CHANGE",
+                    "the request changes nothing",
+                ));
+            }
+            let mut payload = attribute.clone();
+            payload.value_type = value_type.to_owned();
+            let proposal = Proposal::new(
+                StageId::S2,
+                PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch: SemanticPatch::ReplacePayload {
+                        target: ElementPrecondition {
+                            id: node.id.clone(),
+                            expected_hash: node_element_hash(node)
+                                .map_err(|_| ApiError::internal("element_hash"))?,
+                        },
+                        payload: NodePayload::Attribute(payload),
+                    },
+                },
+                Vec::new(),
+                Vec::new(),
+                ProposalMateriality::Semantic,
+                AcceptancePolicy::HumanConfirm,
+                None,
+            )
+            .map_err(|_| ApiError::internal("proposal"))?;
+            self.commit(loaded, &proposal, self.now(), "set_attribute_type")
+        }
+
         /// The dedicated confirmation of one Proposed Term (S1), Calculation (S2) or Scenario
         /// (S4, Proposed + Derived -> Accepted + Confirmed): the same proposals and commit paths
         /// as `confirm_glossary`, `confirm_calculation` and `confirm_scenario`, so the CLI
@@ -1760,7 +1829,7 @@ mod services {
                 .question_routing
                 .clone()
                 .ok_or_else(|| config_missing("question_routing"))?;
-            let f2 = self.current_gate_report(loaded, GateId::F2)?;
+            let f2 = self.current_or_evaluated_report(loaded, GateId::F2)?;
             self.materialize_questions(
                 loaded,
                 &QuestionGenerationInput {

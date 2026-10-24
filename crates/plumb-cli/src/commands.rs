@@ -425,6 +425,21 @@ pub fn confirm(
     Done::new(&result, text)
 }
 
+/// `set-attribute-type`: the shared `set_attribute_type` service on the head.
+pub fn set_attribute_type(
+    state: &ApiState,
+    attribute: &str,
+    value_type: &str,
+) -> Result<Done, CliError> {
+    let loaded = state.head()?;
+    let result = state.set_attribute_type(&loaded, attribute, value_type)?;
+    let text = format!(
+        "attribute {attribute} typed {value_type}: revision {}",
+        result.revision
+    );
+    Done::new(&result, text)
+}
+
 /// `ask` (R0.6): materializes questions from the current F2 report findings with the
 /// configured question routing through the shared materialization service.
 pub fn ask(state: &ApiState) -> Result<Done, CliError> {

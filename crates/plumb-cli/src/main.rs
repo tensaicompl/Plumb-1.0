@@ -191,6 +191,12 @@ enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Set an Attribute's value type (a pilot primitive type or an Accepted value_type Concept).
+    SetAttributeType {
+        attribute: String,
+        #[arg(long = "type")]
+        value_type: String,
+    },
     /// Materialize questions from the current F2 report with the configured question routing.
     Ask,
     /// Answer a question (a pending governed proposal).
@@ -339,6 +345,10 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
         Command::Serve { listen } => commands::serve(state, listen),
         Command::Directory => commands::directory(&state),
         Command::Confirm { elements, reason } => commands::confirm(&state, &elements, reason),
+        Command::SetAttributeType {
+            attribute,
+            value_type,
+        } => commands::set_attribute_type(&state, &attribute, &value_type),
         Command::Ask => commands::ask(&state),
         Command::Answer { question, answer } => commands::answer(&state, &question, &answer),
         Command::Proposals => commands::proposals(&state),
