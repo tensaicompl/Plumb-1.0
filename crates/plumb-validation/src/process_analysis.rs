@@ -487,10 +487,8 @@ pub fn analyze_process(
                         issue: TaskResolutionIssue::UnresolvedServiceTask,
                     });
                 }
-                no_relation(
-                    &mut shapes,
-                    &[(&performers, "performed_by"), (&produces, "produces")],
-                );
+                // A performed_by on an Operation task is its swimlane (Hotfix 079 lane move).
+                no_relation(&mut shapes, &[(&produces, "produces")]);
                 degree_check(&mut shapes, id, i, o, (1, Some(1)), (1, Some(1)));
             }
             ProcessNodeKind::HumanTask => {
@@ -502,10 +500,8 @@ pub fn analyze_process(
                             issue: TaskResolutionIssue::UnresolvedServiceTask,
                         });
                     }
-                    no_relation(
-                        &mut shapes,
-                        &[(&performers, "performed_by"), (&produces, "produces")],
-                    );
+                    // A performed_by on an Operation task is its swimlane (Hotfix 079).
+                    no_relation(&mut shapes, &[(&produces, "produces")]);
                 } else {
                     if !performers
                         .iter()

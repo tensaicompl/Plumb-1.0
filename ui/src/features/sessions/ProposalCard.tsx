@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import { apiClient } from "../../api/client";
 import type { components } from "../../api/schema";
-import { useVersionedMutation, WriteFailedError } from "../../api/useVersionedMutation";
+import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { ProposalReviewBar, type ProposalReviewAction } from "../../components/ProposalReviewBar";
 import { t } from "../../i18n";
 import { invalidateU22, isBaselineChanged, proposalActionRequest, writeErrorCode } from "../questions/QuestionsPage";
@@ -98,7 +98,7 @@ export function ProposalCard({ proposal }: { proposal: SessionProposalView }) {
       )}
       {decide.error instanceof WriteFailedError && state === "pending" && (
         <p role="alert" className="text-red-800" data-testid="card-failed">
-          {t("write.failed")} <span className="font-mono">{writeErrorCode(decide.error) ?? String(decide.error.status)}</span>
+          {t("write.failed")} <span className="font-mono">{writeErrorCode(decide.error) ?? String(decide.error.status)}</span> <span>{writeErrorMessage(decide.error)}</span>
         </p>
       )}
       <ProposalReviewBar

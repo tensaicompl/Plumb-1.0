@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import { apiClient } from "../../api/client";
 import type { components } from "../../api/schema";
-import { useVersionedMutation, WriteFailedError } from "../../api/useVersionedMutation";
+import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { DiffViewer, type ModelDiff } from "../../components/DiffViewer";
 import { ProvenanceDrawer, type ProvenanceItem } from "../../components/ProvenanceDrawer";
 import { t } from "../../i18n";
@@ -61,7 +61,7 @@ function WriteError({ error }: { error: Error | null }) {
   }
   return (
     <p role="alert" className="text-sm text-red-800">
-      {t("write.failed")} <span className="font-mono">{errorCode(error) ?? String(error.status)}</span>
+      {t("write.failed")} <span className="font-mono">{errorCode(error) ?? String(error.status)}</span> <span>{writeErrorMessage(error)}</span>
     </p>
   );
 }

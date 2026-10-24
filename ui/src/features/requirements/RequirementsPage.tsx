@@ -27,11 +27,14 @@ export function requirementsQueryKey(filters: RequirementFilters, cursor: string
 
 async function fetchRequirements(filters: RequirementFilters, cursor: string | null): Promise<RequirementPage> {
   const query: { status?: string; class?: string; q?: string; cursor?: string; limit: number } = { limit: REQUIREMENTS_PAGE_SIZE };
-  if (filters.status !== "") {
-    query.status = filters.status;
+  // Status values are capitalized (Accepted) and classes lowercase (functional) on the wire;
+  // typed filters are normalized so "accepted" or "Functional" do not fail.
+  const status = filters.status.trim();
+  if (status !== "") {
+    query.status = status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
   }
-  if (filters.class !== "") {
-    query.class = filters.class;
+  if (filters.class.trim() !== "") {
+    query.class = filters.class.trim().toLowerCase();
   }
   if (filters.q !== "") {
     query.q = filters.q;

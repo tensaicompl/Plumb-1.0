@@ -144,8 +144,8 @@ const ENTITIES: Entity[] = [
     id: "entity:request",
     name: "Leave request",
     attributes: [
-      { name: "days", type: "decimal", nullable: false, class: "quantity", unit: "day" },
-      { name: "note", type: "string", nullable: true, class: null, unit: null },
+      { id: "attr:days", name: "days", type: "decimal", nullable: false, class: "quantity", unit: "day" },
+      { id: "attr:note", name: "note", type: "string", nullable: true, class: null, unit: null },
     ],
     relationships: [{ id: "rel:requested-by", target: "entity:employee", kind: "references", cardinality: "many_to_one" }],
     states: ["state:submitted", "state:approved"],
@@ -325,9 +325,12 @@ describe("EntitiesPage", () => {
     expect(router.state.location.pathname).toBe("/model/entities");
     const request = item("data-entity-id", "entity:request");
     const days = request.querySelector("[data-attribute='days']") as HTMLElement;
-    expect([...days.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["days", "decimal", "No", "quantity", "day"]);
+    // The type cell shows the current type plus the type editor.
+    const cells = (row: HTMLElement) =>
+      [...row.querySelectorAll(":scope > td")].map((td, i) => (i === 1 ? td.querySelector(".font-mono")?.textContent : td.textContent));
+    expect(cells(days)).toEqual(["days", "decimal", "No", "quantity", "day"]);
     const note = request.querySelector("[data-attribute='note']") as HTMLElement;
-    expect([...note.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["note", "string", "Yes", "None", "None"]);
+    expect(cells(note)).toEqual(["note", "string", "Yes", "None", "None"]);
     const rel = request.querySelector("[data-relationship='rel:requested-by']") as HTMLElement;
     expect([...rel.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["rel:requested-by", "references", "entity:employee", "many_to_one"]);
     expect(within(request).getByTestId("entity-tags").textContent).toBe("Tags: hr");
@@ -355,7 +358,9 @@ describe("EntitiesPage", () => {
     // null and false never look alike.
     expect(flag("op:submit", "entity:request", "d").textContent).not.toBe(flag("op:approve", "entity:request", "d").textContent);
     expect(flag("op:approve", "entity:employee", "c")).toBeNull();
-    expect(document.querySelectorAll("main input, main textarea, main select, main form")).toHaveLength(0);
+    // The only controls are the attribute type editors; viewing writes nothing.
+    expect(document.querySelectorAll("main input, main textarea, main form")).toHaveLength(0);
+    expect(document.querySelectorAll("main select:not([data-testid='attribute-type-choice'])")).toHaveLength(0);
     expect(writes()).toEqual([]);
   });
 });
@@ -468,7 +473,7 @@ describe("CalculationsPage", () => {
     expect(example[0]?.search.has("inputs")).toBe(false);
   });
 
-  it("shows the unavailable state with the server error and offers no inputs, editor or write", async () => {
+  it("shows the unavailable state with the server error and offers an inputs field but no write", async () => {
     const { user } = await renderAt("/model/calculations");
     await screen.findByText("Balance");
     const balance = item("data-calculation-id", "calc:balance");
@@ -477,7 +482,9 @@ describe("CalculationsPage", () => {
     expect(unavailable.textContent).toContain("Worked example unavailable");
     expect(unavailable.textContent).toContain("E_CALCULATION_INPUT_REQUIRED");
     expect(unavailable.textContent).toContain("Root input taken is required.");
-    expect(document.querySelectorAll("main input, main textarea, main select, main form, main [contenteditable]")).toHaveLength(0);
+    // The only control is the read-only example inputs field; nothing is ever written.
+    expect(document.querySelectorAll("main input, main select, main form, main [contenteditable]")).toHaveLength(0);
+    expect(within(balance).getByTestId("example-inputs")).toBeTruthy();
     expect(writes()).toEqual([]);
   });
 });

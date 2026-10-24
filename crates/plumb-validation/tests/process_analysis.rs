@@ -519,14 +519,22 @@ mod process_analysis_contract {
             unresolved(&with(K::ServiceTask, |p| p.operation_ref = Some(id("event:e"))).analyze()),
             [TaskResolutionIssue::UnresolvedServiceTask]
         );
-        // Operation-backed human task; node-level performer/produces are not allowed there.
+        // Operation-backed human task: a node-level performer is its swimlane (Hotfix 079
+        // lane move) and allowed; a node-level produces is not.
         assert!(
             with(K::HumanTask, |p| p.operation_ref = Some(id("operation:a")))
                 .analyze()
                 .is_qualified()
         );
-        let extra = with(K::HumanTask, |p| p.operation_ref = Some(id("operation:a")))
+        let lane = with(K::HumanTask, |p| p.operation_ref = Some(id("operation:a")))
             .rel(RelationKind::PerformedBy, "pn:t", "brole:clerk")
+            .analyze();
+        assert!(!has_shape(&lane, "pn:t", |v| matches!(
+            v,
+            ShapeViolation::UnexpectedRelation { .. }
+        )));
+        let extra = with(K::HumanTask, |p| p.operation_ref = Some(id("operation:a")))
+            .rel(RelationKind::Produces, "pn:t", "outcome:done")
             .analyze();
         assert!(has_shape(&extra, "pn:t", |v| matches!(
             v,

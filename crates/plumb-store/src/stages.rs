@@ -326,6 +326,14 @@ impl SqliteStageStore {
 
     /// Fails every in-flight recipe job left by a previous process with `code` (A0.4 restart
     /// sweep); returns the failed IDs in order.
+    /// The database file of this store (`None` for an in-memory database).
+    pub fn database_path(&self) -> Option<std::path::PathBuf> {
+        self.conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from)
+    }
+
     pub fn interrupt_recipe_jobs(
         &mut self,
         code: &str,

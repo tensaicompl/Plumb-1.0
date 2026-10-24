@@ -20,7 +20,7 @@ use plumb_patch::{
 };
 use plumb_psg::{
     contributes_to_semantic_hash, node_element_hash, DerivationRef, ElementStatus, ExtensionKey,
-    Graph, Modality, Node, NodePayload, Requirement, RequirementKind, RequirementLevel,
+    Graph, Modality, Node, NodePayload, NodeType, Requirement, RequirementKind, RequirementLevel,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -442,8 +442,12 @@ fn accepted_semantics(
 ) -> Result<Vec<EarsAcceptedSemantic>, EarsError> {
     let mut catalog = Vec::new();
     for (id, node) in graph.nodes() {
+        // ResolutionDecisions are governance records whose values carry wall-clock
+        // timestamps and patch references; they are never EARS wording and would make the
+        // request (and its replay key) differ between otherwise identical runs.
         if node.status != ElementStatus::Accepted
             || !contributes_to_semantic_hash(node.payload.node_type())
+            || node.payload.node_type() == NodeType::ResolutionDecision
             || targets.contains(id)
         {
             continue;

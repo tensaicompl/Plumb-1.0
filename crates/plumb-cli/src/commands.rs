@@ -477,7 +477,12 @@ pub fn ask(state: &ApiState) -> Result<Done, CliError> {
 
 /// `answer <QUESTION_ID> --answer <JSON>` (R0.6): the shared S3.3 answer service; the result
 /// is a pending governed proposal, never a commit.
-pub fn answer(state: &ApiState, question: &str, answer: &str) -> Result<Done, CliError> {
+pub fn answer(
+    state: &ApiState,
+    question: &str,
+    answer: &str,
+    rationale: Option<String>,
+) -> Result<Done, CliError> {
     let value: Value = serde_json::from_str(answer)
         .map_err(|e| CliError::Usage(format!("--answer is not JSON: {e}")))?;
     if !value.is_object() {
@@ -486,7 +491,7 @@ pub fn answer(state: &ApiState, question: &str, answer: &str) -> Result<Done, Cl
         )));
     }
     let loaded = state.head()?;
-    let response = state.answer_question(&loaded, question, value, None, None)?;
+    let response = state.answer_question(&loaded, question, value, rationale, None)?;
     let action = serde_json::to_value(response.action)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))

@@ -422,6 +422,7 @@ fn entity(graph: &Graph, node: &Node) -> Result<Entity, ApiError> {
     for id in targets(graph, &node.id, RelationKind::HasAttribute) {
         if let Some(NodePayload::Attribute(a)) = graph.node(&id).map(|n| &n.payload) {
             attributes.push(EntityAttribute {
+                id: id.to_string(),
                 name: a.name.clone(),
                 value_type: a.value_type.clone(),
                 nullable: a.nullable,

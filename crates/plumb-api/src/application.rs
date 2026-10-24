@@ -50,6 +50,9 @@ pub enum ApplicationError {
     /// R0.1: the project cannot be bootstrapped (existing path or invalid configured actors).
     #[error("bootstrap: {0}")]
     Bootstrap(String),
+    /// The requested branch has no head in this database.
+    #[error("branch {0} does not exist in this database (only main exists; branches cannot be created yet)")]
+    UnknownBranch(String),
 }
 
 /// The typed runtime material of one application instance: the A0.3 runtime inputs and the
@@ -95,6 +98,9 @@ pub fn open_application(
     runtime: ApplicationRuntime,
 ) -> Result<ApiState, ApplicationError> {
     let revision_store = SqliteRevisionStore::open(db)?;
+    if revision_store.head(&branch)?.is_none() {
+        return Err(ApplicationError::UnknownBranch(branch.to_string()));
+    }
     let artifact_store =
         SqliteArtifactStore::open(db).map_err(|e| ApplicationError::Artifacts(e.to_string()))?;
     let workflow_store = SqliteWorkflowStore::open(db)?;
@@ -1830,13 +1836,13 @@ mod services {
                 .clone()
                 .ok_or_else(|| config_missing("question_routing"))?;
             let f2 = self.current_or_evaluated_report(loaded, GateId::F2)?;
-            self.materialize_questions(
-                loaded,
-                &QuestionGenerationInput {
-                    findings: f2.findings,
-                    routing,
-                },
-            )
+            let mut findings = f2.findings;
+            for finding in self.f2_analysis_findings(loaded)? {
+                if !findings.iter().any(|f| f.id == finding.id) {
+                    findings.push(finding);
+                }
+            }
+            self.materialize_questions(loaded, &QuestionGenerationInput { findings, routing })
         }
 
         /// Every pending workflow proposal (R0.6 proposal discovery), sorted by proposal ID,
@@ -1973,7 +1979,7 @@ mod services {
             &self,
             loaded: &LoadedRevision,
         ) -> Result<FunctionalPilotOutputs, ApiError> {
-            let f4 = self.current_gate_report(loaded, GateId::F4)?;
+            let f4 = self.current_or_evaluated_report(loaded, GateId::F4)?;
             project_functional_pilot(&loaded.graph, self.profile(), &f4).map_err(|e| {
                 ApiError::unprocessable("E_SEMANTIC_INVARIANT", "the model cannot be projected")
                     .with_details(json!({ "projection_error": e.to_string() }))

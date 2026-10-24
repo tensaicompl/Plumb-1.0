@@ -1632,8 +1632,8 @@ mod http_core {
             json!({
                 "id": "entity:request", "name": "LeaveRequest",
                 "attributes": [
-                    {"name": "days", "type": "Integer", "nullable": false, "unit": null, "class": null},
-                    {"name": "salary", "type": "Decimal", "nullable": false, "unit": null, "class": "financial"}
+                    {"id": "attr:days", "name": "days", "type": "Integer", "nullable": false, "unit": null, "class": null},
+                    {"id": "attr:salary", "name": "salary", "type": "Decimal", "nullable": false, "unit": null, "class": "financial"}
                 ],
                 "relationships": [{"id": "domainrel:req-emp", "target": "entity:employee", "kind": "association", "cardinality": "*:1"}],
                 "states": ["state:draft", "state:submitted"],

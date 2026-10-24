@@ -1,12 +1,19 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { apiClient } from "../../api/client";
 import type { components } from "../../api/schema";
+import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t, type MessageKey } from "../../i18n";
 
 type Entity = components["schemas"]["Entity"];
 type CrudMatrix = components["schemas"]["CrudMatrix"];
 type CrudCell = components["schemas"]["CrudCell"];
+type EntityAttribute = components["schemas"]["EntityAttribute"];
+type WriteResult = components["schemas"]["WriteResult"];
+
+/** The pilot primitive value types the server accepts besides value_type Concept names. */
+const PRIMITIVE_TYPES = ["String", "Int", "Bool", "Date", "DateTime", "Decimal(2)"] as const;
 
 /** The Entities list query root. */
 export const entitiesQueryKey = ["entities"] as const;
@@ -33,7 +40,54 @@ function Optional({ value }: { value: string | null | undefined }) {
   return value === undefined || value === null ? <span className="text-slate-500">{t("entities.none")}</span> : <span className="font-mono">{value}</span>;
 }
 
-/** Read-only attributes of one entity, exactly as the server projects them. */
+/** The attribute's value type with an editor for the pilot primitive types (set_attribute_type). */
+function AttributeType({ attribute }: { attribute: EntityAttribute }) {
+  const queryClient = useQueryClient();
+  const [choice, setChoice] = useState("");
+  const setType = useVersionedMutation<WriteResult, string>((type, ifMatch) =>
+    apiClient.POST("/api/model/attributes/{id}/type", {
+      params: { path: { id: attribute.id }, header: { "If-Match": ifMatch } },
+      body: { type },
+    }),
+  );
+  const error = setType.error;
+  return (
+    <span className="space-x-1">
+      <span className="font-mono">{attribute.type}</span>
+      <select className="rounded border" data-testid="attribute-type-choice" aria-label={t("entities.attribute.setType")} value={choice} onChange={(event) => setChoice(event.target.value)}>
+        <option value="">{t("entities.attribute.chooseType")}</option>
+        {PRIMITIVE_TYPES.filter((type) => type !== attribute.type).map((type) => (
+          <option key={type} value={type}>
+            {type}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        className="rounded border px-2 text-xs"
+        data-testid="attribute-type-save"
+        disabled={choice === "" || setType.isPending}
+        onClick={() =>
+          setType.mutate(choice, {
+            onSuccess: () => {
+              setChoice("");
+              void queryClient.invalidateQueries({ queryKey: entitiesQueryKey });
+            },
+          })
+        }
+      >
+        {t("entities.attribute.setType")}
+      </button>
+      {error instanceof WriteFailedError && (
+        <span role="alert" className="text-red-800">
+          {t("write.failed")} {writeErrorMessage(error)}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** The attributes of one entity as the server projects them; the value type is editable. */
 function Attributes({ entity }: { entity: Entity }) {
   if (entity.attributes.length === 0) {
     return <p className="text-sm">{t("entities.noAttributes")}</p>;
@@ -53,7 +107,9 @@ function Attributes({ entity }: { entity: Entity }) {
         {entity.attributes.map((attribute) => (
           <tr key={attribute.name} data-attribute={attribute.name}>
             <td className="pr-2 font-mono">{attribute.name}</td>
-            <td className="pr-2 font-mono">{attribute.type}</td>
+            <td className="pr-2">
+              <AttributeType attribute={attribute} />
+            </td>
             <td className="pr-2">{t(attribute.nullable ? "entities.yes" : "entities.no")}</td>
             <td className="pr-2">
               <Optional value={attribute.class} />

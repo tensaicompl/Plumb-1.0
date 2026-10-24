@@ -1369,28 +1369,63 @@ pub fn propose_term_merge(
     }
     let invalid = |reason: String| TermMergeError::InvalidProposal { reason };
     let base_semantic_hash = graph.semantic_hash()?;
-    let merge = SemanticPatch::MergeNodes {
+    let dry_apply = |patches: Vec<SemanticPatch>| {
+        plumb_patch::apply_patch(
+            graph,
+            &PatchSet {
+                base_semantic_hash: base_semantic_hash.clone(),
+                patch: SemanticPatch::Compound { patches },
+            },
+        )
+        .map_err(|e| TermMergeError::NotApplicable {
+            reason: e.to_string(),
+        })
+    };
+    // Provenance extensions (each stage-made Term has its own vocabulary_origin) would make
+    // MergeNodes reject the union; the source first takes the target's value, so the merged
+    // Term keeps the target's provenance and the source survives as an alias.
+    let mut patches = Vec::new();
+    for (key, value) in &source.extensions {
+        if let Some(kept) = target.extensions.get(key).filter(|kept| *kept != value) {
+            let source_now = match patches.is_empty() {
+                true => source.clone(),
+                false => dry_apply(patches.clone())?
+                    .graph
+                    .node(source_ref)
+                    .cloned()
+                    .ok_or_else(|| invalid("aligned source is missing".to_owned()))?,
+            };
+            patches.push(SemanticPatch::SetNodeExtension {
+                target: plumb_patch::ElementPrecondition {
+                    id: source.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(&source_now)?,
+                },
+                key: key.clone(),
+                value: kept.clone(),
+            });
+        }
+    }
+    let aligned_source = match patches.is_empty() {
+        true => source.clone(),
+        false => dry_apply(patches.clone())?
+            .graph
+            .node(source_ref)
+            .cloned()
+            .ok_or_else(|| invalid("aligned source is missing".to_owned()))?,
+    };
+    patches.push(SemanticPatch::MergeNodes {
         keep: plumb_patch::ElementPrecondition {
             id: target.id.clone(),
             expected_hash: plumb_psg::node_element_hash(target)?,
         },
         merge: vec![plumb_patch::ElementPrecondition {
             id: source.id.clone(),
-            expected_hash: plumb_psg::node_element_hash(source)?,
+            expected_hash: plumb_psg::node_element_hash(&aligned_source)?,
         }],
         field_policy: plumb_patch::MergePolicy::KeepPayloadUnionMetadata,
-    };
-    // The target's real intermediate element hash, never guessed: dry-apply the merge alone.
-    let merged = plumb_patch::apply_patch(
-        graph,
-        &PatchSet {
-            base_semantic_hash: base_semantic_hash.clone(),
-            patch: merge.clone(),
-        },
-    )
-    .map_err(|e| TermMergeError::NotApplicable {
-        reason: e.to_string(),
-    })?;
+    });
+    // The target's real intermediate element hash, never guessed: dry-apply the merge.
+    let merged = dry_apply(patches.clone())?;
     let intermediate = merged
         .graph
         .node(target_ref)
@@ -1417,7 +1452,7 @@ pub fn propose_term_merge(
         PatchSet {
             base_semantic_hash,
             patch: SemanticPatch::Compound {
-                patches: vec![merge, replace],
+                patches: patches.into_iter().chain([replace]).collect(),
             },
         },
         Vec::new(),

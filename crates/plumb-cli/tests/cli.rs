@@ -983,17 +983,9 @@ mod cli {
                 1,
                 "E_NOT_FOUND",
             ),
-            // The projection needs the existing F4 gate report (a domain result, not R0.1).
-            (
-                vec!["export", "--format", "functional"],
-                1,
-                "E_GATE_REPORT_UNAVAILABLE",
-            ),
-            (
-                vec!["report", "--out", out.to_str().unwrap()],
-                1,
-                "E_GATE_REPORT_UNAVAILABLE",
-            ),
+            // The projection evaluates the F4 gate report on demand when the head has none.
+            (vec!["export", "--format", "functional"], 0, ""),
+            (vec!["report", "--out", out.to_str().unwrap()], 0, ""),
             (
                 vec![
                     "import",
@@ -1965,9 +1957,9 @@ mod cli {
     fn cli_ready_export_and_report_share_one_projection() {
         let env = env();
         env.import();
-        // Without a current F4 report the projection is unavailable (exit 1).
-        let (code, _, _) = env.run(&["export", "--format", "functional"]);
-        assert_eq!(code, 1);
+        // Without a current F4 report the projection evaluates it on demand.
+        let (code, _, err) = env.run(&["export", "--format", "functional"]);
+        assert_eq!(code, 0, "{err}");
         let (code, ready) = env.json(&["ready"]);
         assert!(code == 0 || code == 2, "{ready}");
         assert_eq!(

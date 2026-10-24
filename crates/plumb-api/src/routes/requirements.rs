@@ -320,6 +320,15 @@ async fn classify_requirement(
     check_if_match(&headers, &loaded)?;
     let created_at = state.now();
     let (node, current) = requirement(&loaded.graph, &id)?;
+    if !matches!(
+        node.status,
+        ElementStatus::Proposed | ElementStatus::Accepted
+    ) {
+        return Err(ApiError::semantic(
+            "RequirementNotActive",
+            "the requirement is not Proposed or Accepted",
+        ));
+    }
     if current.requirement_kind == kind {
         return Err(ApiError::unprocessable(
             "E_NO_CHANGE",
@@ -350,6 +359,15 @@ async fn accept_requirement_ears(
     check_if_match(&headers, &loaded)?;
     let created_at = state.now();
     let (node, current) = requirement(&loaded.graph, &id)?;
+    if !matches!(
+        node.status,
+        ElementStatus::Proposed | ElementStatus::Accepted
+    ) {
+        return Err(ApiError::semantic(
+            "RequirementNotActive",
+            "the requirement is not Proposed or Accepted",
+        ));
+    }
     if current.statement == request.text {
         return Err(ApiError::unprocessable(
             "E_NO_CHANGE",

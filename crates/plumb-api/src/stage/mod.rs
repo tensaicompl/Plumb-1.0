@@ -137,6 +137,20 @@ fn failure_message(error: &ApiError) -> String {
 /// and in-flight parents with `E_JOB_INTERRUPTED`, reconciles interrupted stage acceptances and
 /// starts the recipe worker. Nothing resumes.
 pub(crate) fn start(state: &ApiState) -> Result<(), ApiError> {
+    let path = state
+        .with_stage_store(|store| store.database_path())?
+        .map(|db| {
+            let mut name = db.into_os_string();
+            name.push(".jobs.lock");
+            std::path::PathBuf::from(name)
+        });
+    if !sole_live_process(state, path.as_deref())? {
+        // Another live process has this database open and may be executing a job right now:
+        // nothing is interrupted (a later sole opener does that). Reconciling acceptances
+        // that already committed is idempotent and always safe.
+        acceptance::reconcile_pending(state)?;
+        return start_worker(state);
+    }
     let now = state.now();
     let children = state
         .with_stage_store(|store| store.in_flight_stage_jobs())?
@@ -157,6 +171,39 @@ pub(crate) fn start(state: &ApiState) -> Result<(), ApiError> {
         })?
         .map_err(crate::stage::store_error)?;
     acceptance::reconcile_pending(state)?;
+    start_worker(state)
+}
+
+/// Every process that opens a database holds a shared lock on `<db>.jobs.lock` for its
+/// lifetime (released by the OS even on a crash). Only a process that can first take the lock
+/// exclusively is the sole live opener, so in-flight jobs it finds were really interrupted.
+/// Without a database file (in memory) the opener is always sole.
+fn sole_live_process(
+    state: &ApiState,
+    lock_path: Option<&std::path::Path>,
+) -> Result<bool, ApiError> {
+    let Some(lock_path) = lock_path else {
+        return Ok(true);
+    };
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path)
+    else {
+        return Ok(true);
+    };
+    let sole = file.try_lock().is_ok();
+    if sole {
+        let _ = file.unlock();
+    }
+    let _ = file.lock_shared();
+    state.stage_runtime("stage_start")?.hold_jobs_lock(file);
+    Ok(sole)
+}
+
+/// Starts the recipe worker thread of `state`.
+fn start_worker(state: &ApiState) -> Result<(), ApiError> {
     let (sender, receiver) = mpsc::channel::<Hash>();
     let weak = state.downgrade();
     thread::Builder::new()

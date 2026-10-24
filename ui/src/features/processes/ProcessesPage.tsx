@@ -3,7 +3,7 @@ import { useState, type FormEvent } from "react";
 
 import { apiClient } from "../../api/client";
 import type { components } from "../../api/schema";
-import { useVersionedMutation, WriteFailedError } from "../../api/useVersionedMutation";
+import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { ProcessDiagram } from "./ProcessDiagram";
 
@@ -81,7 +81,7 @@ function SemanticEdits({ process }: { process: Process }) {
       <h2 className="font-semibold">{t("processes.edits")}</h2>
       {steps.error instanceof WriteFailedError && (
         <p role="alert" className="text-sm text-red-800" data-testid="process-write-error">
-          {t("processes.writeFailed")} <span className="font-mono">{errorCode(steps.error) ?? String(steps.error.status)}</span>
+          {t("processes.writeFailed")} <span className="font-mono">{errorCode(steps.error) ?? String(steps.error.status)}</span> <span>{writeErrorMessage(steps.error)}</span>
         </p>
       )}
 

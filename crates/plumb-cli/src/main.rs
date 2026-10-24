@@ -205,6 +205,9 @@ enum Command {
         /// The answer as a JSON object.
         #[arg(long)]
         answer: String,
+        /// Why this answer is right (required by governed semantic answers, e.g. triggers).
+        #[arg(long)]
+        rationale: Option<String>,
     },
     /// List every pending proposal with the information needed to act on it.
     Proposals,
@@ -350,7 +353,11 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
             value_type,
         } => commands::set_attribute_type(&state, &attribute, &value_type),
         Command::Ask => commands::ask(&state),
-        Command::Answer { question, answer } => commands::answer(&state, &question, &answer),
+        Command::Answer {
+            question,
+            answer,
+            rationale,
+        } => commands::answer(&state, &question, &answer, rationale),
         Command::Proposals => commands::proposals(&state),
         _ => Err(CliError::Usage("unsupported command".into())),
     }

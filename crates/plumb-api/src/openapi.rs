@@ -1262,6 +1262,8 @@ pub struct SentenceEditRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EntityAttribute {
+    /// The Attribute ID (the target of set_attribute_type, _unit and _class).
+    pub id: String,
     pub name: String,
     #[serde(rename = "type")]
     #[schema(rename = "type")]

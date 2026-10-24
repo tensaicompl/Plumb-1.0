@@ -98,6 +98,15 @@ fn run_view(
     let Some((node, payload)) = current else {
         return Ok(None);
     };
+    // A run of an earlier specification (e.g. before a Then correction) is not the current
+    // result: the scenario shows as not run until it is executed again (as F4 judges it).
+    if let Some(NodePayload::Scenario(spec)) = graph.node(scenario).map(|n| &n.payload) {
+        let current_hash = plumb_validation::scenario_specification_hash(scenario, spec)
+            .map_err(|_| ApiError::internal("scenario_specification_hash"))?;
+        if payload.specification_hash != current_hash {
+            return Ok(None);
+        }
+    }
     let link = node.extensions.get(&link_key()?).ok_or_else(|| {
         trace_conflict(
             "E_SCENARIO_RUN_TRACE_LINK_INVALID",

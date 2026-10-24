@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import { apiClient } from "../../api/client";
 import type { components } from "../../api/schema";
-import { useVersionedMutation, WriteFailedError } from "../../api/useVersionedMutation";
+import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { writeErrorCode } from "../questions/QuestionsPage";
 import { ScenarioTrace } from "./ScenarioTrace";
@@ -107,7 +107,7 @@ function WriteError({ error }: { error: Error | null }) {
   }
   return (
     <p role="alert" className="text-sm text-red-800" data-testid="scenario-write-error">
-      {t("scenarios.writeFailed")} <span className="font-mono">{writeErrorCode(error) ?? String(error.status)}</span>
+      {t("scenarios.writeFailed")} <span className="font-mono">{writeErrorCode(error) ?? String(error.status)}</span> <span>{writeErrorMessage(error)}</span>
     </p>
   );
 }

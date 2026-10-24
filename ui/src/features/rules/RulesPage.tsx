@@ -3,7 +3,7 @@ import { useState, type FormEvent } from "react";
 
 import { apiClient } from "../../api/client";
 import type { components } from "../../api/schema";
-import { useVersionedMutation, WriteFailedError } from "../../api/useVersionedMutation";
+import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t, type MessageKey } from "../../i18n";
 import { writeErrorCode } from "../questions/QuestionsPage";
 
@@ -109,7 +109,7 @@ function CellFill({ rule }: { rule: Rule }) {
       <h4 className="font-semibold">{t("rules.fill.title")}</h4>
       {fill.error instanceof WriteFailedError && (
         <p role="alert" className="text-sm text-red-800" data-testid="rule-write-error">
-          {t("rules.writeFailed")} <span className="font-mono">{writeErrorCode(fill.error) ?? String(fill.error.status)}</span>
+          {t("rules.writeFailed")} <span className="font-mono">{writeErrorCode(fill.error) ?? String(fill.error.status)}</span> <span>{writeErrorMessage(fill.error)}</span>
         </p>
       )}
       <label className="block text-sm">

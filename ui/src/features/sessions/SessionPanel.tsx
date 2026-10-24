@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 
 import { apiClient } from "../../api/client";
 import type { components } from "../../api/schema";
-import { useVersionedMutation, WriteFailedError } from "../../api/useVersionedMutation";
+import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { fetchQuestions, QuestionAnswerCard, questionsQueryKey, writeErrorCode } from "../questions/QuestionsPage";
 import { ProposalCard } from "./ProposalCard";
@@ -53,7 +53,7 @@ function WriteError({ error }: { error: Error | null }) {
   }
   return (
     <p role="alert" className="text-sm text-red-800">
-      {t("write.failed")} <span className="font-mono">{writeErrorCode(error) ?? String(error.status)}</span>
+      {t("write.failed")} <span className="font-mono">{writeErrorCode(error) ?? String(error.status)}</span> <span>{writeErrorMessage(error)}</span>
     </p>
   );
 }

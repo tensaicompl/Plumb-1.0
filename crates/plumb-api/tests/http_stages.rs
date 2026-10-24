@@ -1064,6 +1064,8 @@ mod http_stages {
             )
             .unwrap();
         // A restart reconciles: workflow accepted, child committed, parent committed.
+        // The first process has exited.
+        app.state.release_jobs_lock();
         let state = open(&app.path, app.provider.clone(), &Gates::default());
         let after = head(&app);
         assert_eq!(after.revision.id, commit.revision.id, "no second commit");
@@ -1245,6 +1247,8 @@ mod http_stages {
         let app = app(data_graph(&["Email"]));
         let queued = app.state.run_stage(Recipe::Intake, None, None).unwrap();
         assert_eq!(job(&app, &queued.job_id)["status"], "queued");
+        // The first process has exited.
+        app.state.release_jobs_lock();
         let state = open(&app.path, app.provider.clone(), &Gates::default());
         let (view, _) = state.get_job(queued.job_id.as_str()).unwrap();
         let view = serde_json::to_value(view).unwrap();
@@ -2867,6 +2871,7 @@ mod http_stages {
             )
             .unwrap();
         // Restart: startup reconciliation finishes everything from the companions.
+        f.app.state.release_jobs_lock();
         let restarted = open(
             &f.app.path,
             f.app.provider.clone(),

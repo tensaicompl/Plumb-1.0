@@ -132,6 +132,8 @@ pub(crate) struct A04Runtime {
     pub(crate) question_routing: Option<plumb_functional::StakeholderRoutingConfig>,
     /// The FIFO queue of the recipe worker of this instance.
     queue: Mutex<Option<mpsc::Sender<Hash>>>,
+    /// The shared `<db>.jobs.lock` held while this instance is open (see `stage::start`).
+    jobs_lock: Mutex<Option<std::fs::File>>,
 }
 
 impl A04Runtime {
@@ -158,7 +160,15 @@ impl A04Runtime {
             directory: config.directory,
             question_routing: config.question_routing,
             queue: Mutex::new(None),
+            jobs_lock: Mutex::new(None),
         })
+    }
+
+    /// Keeps this instance's shared jobs lock until the instance is dropped.
+    pub(crate) fn hold_jobs_lock(&self, file: std::fs::File) {
+        if let Ok(mut held) = self.jobs_lock.lock() {
+            *held = Some(file);
+        }
     }
 
     /// Installs the worker queue of this instance.
@@ -422,8 +432,9 @@ impl ApiState {
         Arc::get_mut(&mut state.inner)
             .ok_or_else(|| ApiStateError::StageRuntime("state is shared".into()))?
             .stage = Some(stage);
-        crate::stage::start(&state)
-            .map_err(|e| ApiStateError::StageRuntime(e.body().code.to_owned()))?;
+        crate::stage::start(&state).map_err(|e| {
+            ApiStateError::StageRuntime(format!("{}: {}", e.body().code, e.body().message))
+        })?;
         Ok(state)
     }
 
@@ -461,6 +472,16 @@ impl ApiState {
                 stage: None,
             }),
         })
+    }
+
+    /// Releases this instance's shared jobs lock: from now on the instance no longer counts as
+    /// a live opener of the database (a later opener may reconcile its in-flight jobs).
+    pub fn release_jobs_lock(&self) {
+        if let Some(a04) = self.inner.stage.as_ref() {
+            if let Ok(mut held) = a04.jobs_lock.lock() {
+                *held = None;
+            }
+        }
     }
 
     pub fn identity(&self) -> &ApiIdentity {

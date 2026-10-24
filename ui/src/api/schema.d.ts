@@ -1420,6 +1420,8 @@ export interface components {
         };
         EntityAttribute: {
             class?: string | null;
+            /** @description The Attribute ID (the target of set_attribute_type, _unit and _class). */
+            id: string;
             name: string;
             nullable: boolean;
             type: string;
@@ -3687,6 +3689,7 @@ export interface operations {
                      *         {
                      *           "attributes": [
                      *             {
+                     *               "id": "example",
                      *               "name": "example",
                      *               "nullable": true,
                      *               "type": "example"
@@ -3768,6 +3771,7 @@ export interface operations {
                      * @example {
                      *       "attributes": [
                      *         {
+                     *           "id": "example",
                      *           "name": "example",
                      *           "nullable": true,
                      *           "type": "example"

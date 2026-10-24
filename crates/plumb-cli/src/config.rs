@@ -256,7 +256,24 @@ impl CliConfig {
 
     /// The typed application runtime with the given provider.
     pub fn runtime(&self, provider: Provider) -> Result<ApplicationRuntime, ConfigError> {
-        let calendars = calendar_provider(&self.calendars)?;
+        // Calculations reference the PSG Calendar element (the directory ID), so each
+        // directory calendar is also registered under that ID with its runtime definition.
+        let mut runtime_calendars = self.calendars.clone();
+        for calendar in self.directory.iter().flat_map(|d| &d.calendars) {
+            if calendar.id == calendar.calendar_ref {
+                continue;
+            }
+            if let Some(runtime) = self
+                .calendars
+                .iter()
+                .find(|c| c.calendar_ref == calendar.calendar_ref)
+            {
+                let mut alias = runtime.clone();
+                alias.calendar_ref = calendar.id.clone();
+                runtime_calendars.push(alias);
+            }
+        }
+        let calendars = calendar_provider(&runtime_calendars)?;
         let predicates = DirectManagerPredicates::new(&self.direct_managers)
             .map_err(|e| ConfigError::Invalid(e.to_string()))?;
         Ok(ApplicationRuntime {

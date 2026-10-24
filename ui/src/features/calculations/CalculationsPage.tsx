@@ -39,9 +39,13 @@ function field(body: unknown, name: string): string | null {
   return null;
 }
 
-/** The read-only worked example: no inputs are sent and nothing is evaluated in the browser. */
-async function fetchExample(id: string): Promise<CalculationExample> {
-  const { data, error, response } = await apiClient.GET("/api/model/calculations/{id}/example", { params: { path: { id } } });
+/** The read-only worked example: the analyst's inputs (JSON text, when given) are sent as-is and
+ * nothing is evaluated in the browser. */
+async function fetchExample(id: string, inputs: string | null): Promise<CalculationExample> {
+  const query = inputs === null ? {} : { inputs };
+  const { data, error, response } = await apiClient.GET("/api/model/calculations/{id}/example", {
+    params: { path: { id }, query },
+  });
   if (data === undefined) {
     const body: unknown = error;
     throw new ExampleUnavailable(response.status, field(body, "code"), field(body, "message"));
@@ -68,8 +72,12 @@ function Value({ value }: { value: CalculationValue }) {
   );
 }
 
-function WorkedExample({ id }: { id: string }) {
-  const example = useQuery({ queryKey: [...calculationsQueryKey, "example", id], queryFn: () => fetchExample(id), retry: false });
+function WorkedExample({ id, inputs }: { id: string; inputs: string | null }) {
+  const example = useQuery({
+    queryKey: [...calculationsQueryKey, "example", id, inputs],
+    queryFn: () => fetchExample(id, inputs),
+    retry: false,
+  });
   if (example.isError) {
     const error = example.error;
     return (
@@ -107,6 +115,8 @@ function WorkedExample({ id }: { id: string }) {
 export function CalculationsPage() {
   const calculations = useQuery({ queryKey: [...calculationsQueryKey, "list"], queryFn: fetchCalculations });
   const [selected, setSelected] = useState("");
+  const [draft, setDraft] = useState("");
+  const [inputs, setInputs] = useState<string | null>(null);
 
   return (
     <div className="space-y-4">
@@ -124,10 +134,41 @@ export function CalculationsPage() {
               <p className="text-sm">
                 {t("calculations.expr")} <code data-testid="calculation-expr">{calculation.expr}</code>
               </p>
-              <button type="button" className="rounded border px-3 py-1 text-sm" data-testid="show-example" onClick={() => setSelected(calculation.id)}>
+              <button
+                type="button"
+                className="rounded border px-3 py-1 text-sm"
+                data-testid="show-example"
+                onClick={() => {
+                  setSelected(calculation.id);
+                  setInputs(null);
+                }}
+              >
                 {t("calculations.showExample")}
               </button>
-              {selected === calculation.id && <WorkedExample id={calculation.id} />}
+              {selected === calculation.id && (
+                <div className="space-y-1">
+                  <label className="block text-sm">
+                    {t("calculations.inputs")}
+                    <textarea
+                      className="ml-2 w-full rounded border font-mono text-xs"
+                      data-testid="example-inputs"
+                      placeholder={t("calculations.inputsExample")}
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="rounded border px-3 py-1 text-sm"
+                    data-testid="compute-example"
+                    disabled={draft.trim() === ""}
+                    onClick={() => setInputs(draft.trim())}
+                  >
+                    {t("calculations.compute")}
+                  </button>
+                  <WorkedExample id={calculation.id} inputs={inputs} />
+                </div>
+              )}
             </li>
           ))}
         </ul>

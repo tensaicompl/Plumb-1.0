@@ -1129,6 +1129,32 @@ impl ApiState {
 }
 
 impl ApiState {
+    /// The per-candidate F2 analysis findings of `loaded` (e.g. one
+    /// `state_transition_trigger_unresolved:<transition>` finding per transition), whose
+    /// targets are all Accepted. The F2 gate folds them into one aggregate rule finding; the
+    /// question templates match these per-candidate condition keys (architecture: "explicit
+    /// upstream analysis material supplied to the kernel").
+    pub(crate) fn f2_analysis_findings(
+        &self,
+        loaded: &LoadedRevision,
+    ) -> Result<Vec<GeneratedFinding>, ApiError> {
+        let a03 = self.runtime("stage_gates")?;
+        let a04 = self.stage_runtime("stage_gates")?;
+        let inputs = f2_inputs(self, loaded, a03, a04)?;
+        Ok(inputs
+            .analysis_findings
+            .into_iter()
+            .filter(|f| {
+                f.payload.affected_refs.iter().all(|r| {
+                    loaded
+                        .graph
+                        .node(r)
+                        .is_some_and(|n| n.status == ElementStatus::Accepted)
+                })
+            })
+            .collect())
+    }
+
     /// The current persisted report of `gate` on `loaded`, evaluating and persisting it first
     /// when the head has none yet (as `ready` does), e.g. after an evidence-only revision.
     pub(crate) fn current_or_evaluated_report(
@@ -1138,7 +1164,10 @@ impl ApiState {
     ) -> Result<GateReport, ApiError> {
         match self.current_gate_report(loaded, gate) {
             Err(e) if e.body().code == "E_GATE_REPORT_UNAVAILABLE" => {
-                let a04 = self.stage_runtime("gate_report")?;
+                // Without the stage runtime nothing can be evaluated: keep the 409.
+                let Ok(a04) = self.stage_runtime("gate_report") else {
+                    return Err(e);
+                };
                 let at = self.now();
                 let evaluated =
                     evaluate_gate(self, loaded, gate, &a04.validation_policy, Some(at))?;

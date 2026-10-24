@@ -443,7 +443,8 @@ fn lifecycle_output(context: &Value) -> Value {
             r(hr018, "change its status"),
             r(hr017, "Submitted"),
             r(hr018, "Withdrawn"),
-            "WithdrawLeaveRequest",
+            // No trigger on purpose: the expert supplies it through the question path.
+            "-",
         ),
         transition(
             r(hr021, "change its status"),
@@ -1072,7 +1073,8 @@ fn hr_pilot_simulation() {
         sim.settle(recipe);
     }
     sim.cli(&["ask"], &[]);
-    sim.cli(&["questions"], &[]);
+    let questions = sim.json(&["questions"]);
+    println!("questions: {questions:#}\n");
     sim.cli(
         &[
             "rounds",
@@ -1084,6 +1086,34 @@ fn hr_pilot_simulation() {
         ],
         &[],
     );
+    // The HR expert answers: WithdrawLeaveRequest triggers the Submitted -> Withdrawn transition.
+    let withdraw = sim
+        .nodes()
+        .into_iter()
+        .find(|n| n["payload"]["data"]["name"] == "WithdrawLeaveRequest")
+        .map(|n| n["id"].as_str().unwrap().to_owned())
+        .unwrap();
+    for q in questions.as_array().unwrap() {
+        let answer = json!({"trigger_ref": withdraw}).to_string();
+        let rationale = "HR-017 lets the employee withdraw a Submitted request.";
+        sim.cli(
+            &[
+                "answer",
+                q["id"].as_str().unwrap(),
+                "--answer",
+                &answer,
+                "--rationale",
+                rationale,
+            ],
+            &[],
+        );
+    }
+    sim.cli(&["proposals"], &[]);
+    sim.accept_all();
+    sim.confirm_all(&[]);
+    sim.settle("analyse");
+    sim.settle("scenarios");
+    sim.settle("run");
     sim.cli(&["vocab"], &[]);
     let out = sim.dir.join("report");
     sim.cli(&["report", "--out", out.to_str().unwrap()], &[]);

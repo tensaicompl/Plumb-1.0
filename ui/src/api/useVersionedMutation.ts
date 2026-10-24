@@ -80,6 +80,19 @@ export class WriteFailedError extends Error {
   }
 }
 
+/** The human-readable explanation of a failed write: the server `message`, or a plain
+ * explanation when the AI inference provider is unavailable. */
+export function writeErrorMessage(error: unknown): string | null {
+  if (!(error instanceof WriteFailedError) || typeof error.body !== "object" || error.body === null) {
+    return null;
+  }
+  const body = error.body as Record<string, unknown>;
+  if (body["code"] === "E_INFERENCE_FAILED" || body["code"] === "E_INFERENCE_REQUIRED") {
+    return "The AI model is not available: no inference provider is configured for this server.";
+  }
+  return typeof body["message"] === "string" ? body["message"] : null;
+}
+
 /** The result shape of a generated openapi-fetch call. */
 export interface WriteResponse<TData> {
   readonly data?: TData;
