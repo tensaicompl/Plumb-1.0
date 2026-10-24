@@ -62,7 +62,10 @@ fn config() -> Value {
         "operation_scope": null,
         "process_scope": null,
         "authorization_draft": null,
-        "scenario_derivation": null,
+        "scenario_derivation": {
+            "decision_tables": [{"decision_table_ref": "dt:annual-eligibility", "spec": eligibility_table()}],
+            "boundaries": [],
+        },
         "verification_applicability": {"sources": []},
         "directory": directory(),
         "question_routing": {
@@ -121,7 +124,27 @@ fn directory() -> Value {
             rule("rule:manager-decision-authorization", "ManagerDecisionAuthorization"),
             rule("rule:overlap", "OverlapRule"),
         ],
-        "decision_tables": [],
+        "decision_tables": [{
+            "id": "dt:annual-eligibility", "name": "AnnualLeaveEligibility",
+            "spec": eligibility_table(),
+        }],
+    })
+}
+
+/// AnnualLeaveEligibility (HR-014): an Employee contract is eligible, a Contractor is not.
+fn eligibility_table() -> Value {
+    json!({
+        "hit_policy": "UNIQUE",
+        "inputs": [{"name": "contract_type", "ty": {"type": "enum", "members": ["Contractor", "Employee"]},
+                    "domain": null}],
+        "outputs": [{"name": "eligible", "ty": {"type": "bool"}, "domain": null}],
+        "rows": [
+            {"inputs": [{"cell": "enum_set", "members": ["Employee"]}],
+             "outputs": [{"cell": "bool", "value": true}]},
+            {"inputs": [{"cell": "enum_set", "members": ["Contractor"]}],
+             "outputs": [{"cell": "bool", "value": false}]},
+        ],
+        "default_output": null,
     })
 }
 
@@ -579,6 +602,31 @@ fn operation_output(context: &Value) -> Value {
     json!({"version": 1, "operations": operations})
 }
 
+/// RequestedWorkingDays of HR-004/005/006, inclusive end left unresolved for the expert.
+fn calculation_output(context: &Value) -> Value {
+    let requirements = context["requirements"].as_array().unwrap().clone();
+    let r = |within: &str, needle: &str| at(&requirements, within, needle).unwrap();
+    let hr004 = "calculate the requested leave duration in working days";
+    let calendar = context["calendars"]
+        .as_array()
+        .and_then(|c| c.first())
+        .map_or(Value::Null, |c| c["calendar_ref"].clone());
+    json!({"version": 1, "calculations": [{
+        "name_range": r(hr004, "requested leave duration"),
+        // The unresolved `inclusive_end` form is rejected by qualification and no production
+        // analyzer raises the inclusive-end question (plan: E0.1 test helper injects it), so the
+        // scripted model uses the expert answer directly.
+        "expression": "working_days([start_date, end_date], calendar, true)",
+        "expression_evidence": [
+            r(hr004, "in working days from the start date to the end date"),
+            r("exclude Saturdays and Sundays", "exclude Saturdays and Sundays"),
+            r("exclude public holidays", "exclude public holidays"),
+        ],
+        "result_type": "Decimal(2)", "unit": "working_day", "rounding": null,
+        "calendar_ref": calendar,
+    }]})
+}
+
 impl InferenceProvider for Scripted {
     fn execute(
         &self,
@@ -668,6 +716,7 @@ impl InferenceProvider for Scripted {
             "lifecycle_extraction" => lifecycle_output(&context),
             "operation_analysis" => operation_output(&context),
             "process_analysis" => json!({"version": 1, "processes": []}),
+            "calculation_analysis" => calculation_output(&context),
             other => {
                 eprintln!("SCRIPTED: no script for task kind {other}");
                 return Err(ProviderError::ProviderDisabled);
@@ -989,8 +1038,60 @@ fn hr_pilot_simulation() {
                "outcome_refs": [], "transition_refs": []}),
     );
     sim.settle("flows");
+    let attribute = |name: &str| {
+        sim.nodes()
+            .into_iter()
+            .find(|n| n["payload"]["type"] == "Attribute" && n["payload"]["data"]["name"] == name)
+            .map(|n| n["id"].clone())
+            .unwrap()
+    };
+    for (name, value_type) in [
+        ("start date", "Date"),
+        ("end date", "Date"),
+        ("leave type", "String"),
+    ] {
+        let id = attribute(name);
+        sim.cli(
+            &[
+                "set-attribute-type",
+                id.as_str().unwrap(),
+                "--type",
+                value_type,
+            ],
+            &[],
+        );
+    }
+    sim.set(
+        "calculation_scope",
+        json!({"bindings": [
+                   {"node_ref": attribute("start date"), "symbol": "start_date", "exposure": {"kind": "root"}},
+                   {"node_ref": attribute("end date"), "symbol": "end_date", "exposure": {"kind": "root"}}],
+               "calendar_refs": sim.accepted("Calendar")}),
+    );
     for recipe in ["analyse", "calc", "rules", "scenarios", "tags", "run"] {
         sim.settle(recipe);
     }
-    sim.cli(&["ready"], &[]);
+    sim.cli(&["ask"], &[]);
+    sim.cli(&["questions"], &[]);
+    sim.cli(
+        &[
+            "rounds",
+            "create",
+            "--stakeholder",
+            "stakeholder:hr",
+            "--max",
+            "15",
+        ],
+        &[],
+    );
+    sim.cli(&["vocab"], &[]);
+    let out = sim.dir.join("report");
+    sim.cli(&["report", "--out", out.to_str().unwrap()], &[]);
+    let (code, functional) = sim.cli(&["export", "--format", "functional"], &[]);
+    assert_eq!(code, 0, "{functional}");
+    let (code, gates) = sim.cli(&["ready"], &[]);
+    assert_eq!(
+        code, 0,
+        "every NOW gate passes at the end of the pilot: {gates}"
+    );
 }
