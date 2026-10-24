@@ -1017,6 +1017,22 @@ enum Presence<'g> {
     Conflicted,
 }
 
+/// Whether `existing` matches `expected` on the payload fields S2.1 owns (architecture §33.5):
+/// Entity and Attribute `name`; DomainRelationship `from_entity`, `to_entity` and
+/// `relationship_kind`. Every other field is enrichable and never causes a conflict.
+fn same_owned_fields(existing: &NodePayload, expected: &NodePayload) -> bool {
+    match (existing, expected) {
+        (NodePayload::Entity(a), NodePayload::Entity(b)) => a.name == b.name,
+        (NodePayload::Attribute(a), NodePayload::Attribute(b)) => a.name == b.name,
+        (NodePayload::DomainRelationship(a), NodePayload::DomainRelationship(b)) => {
+            a.from_entity == b.from_entity
+                && a.to_entity == b.to_entity
+                && a.relationship_kind == b.relationship_kind
+        }
+        _ => existing == expected,
+    }
+}
+
 /// Checks the deterministic ID and the active same-origin nodes against the expected node
 /// (`expected_payload` is `None` when it cannot be built yet, as for an unresolved
 /// relationship); `owner` is the expected owner of an Attribute.
@@ -1035,7 +1051,7 @@ fn presence<'g>(
             Some(o) => &o.candidate_ref(project)? == candidate_ref,
             None => false,
         };
-        let same_payload = expected_payload.is_none_or(|p| &existing.payload == p);
+        let same_payload = expected_payload.is_none_or(|p| same_owned_fields(&existing.payload, p));
         if existing.payload.node_type() != expected_type || !same_identity || !same_payload {
             return Err(DomainError::ExistingCandidateConflict {
                 node_ref: candidate_ref.clone(),
@@ -1052,7 +1068,8 @@ fn presence<'g>(
             None => Presence::Absent,
         }),
         [only] => {
-            let same_payload = expected_payload.is_none_or(|p| &only.node.payload == p);
+            let same_payload =
+                expected_payload.is_none_or(|p| same_owned_fields(&only.node.payload, p));
             let same_owner =
                 owner.is_none_or(|o| owners(graph, &only.node.id) == BTreeSet::from([o]));
             Ok(if same_payload && same_owner {
