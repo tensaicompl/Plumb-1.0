@@ -858,28 +858,40 @@ pub fn compile_requirement_candidates(
                 owner_refs: None,
                 stakeholder_refs: None,
             };
-            proposals.push(propose_node(
-                &context,
-                r.candidate,
-                "requirement",
-                "req",
-                NodePayload::Requirement(requirement),
-            )?);
+            push_new(
+                graph,
+                &mut proposals,
+                propose_node(
+                    &context,
+                    r.candidate,
+                    "requirement",
+                    "req",
+                    NodePayload::Requirement(requirement),
+                )?,
+            );
         }
         unresolved.extend(issues);
         for (node_type, prefix, payload) in
             intent_payloads(&validated.intents, candidate_ref, &parsed.statement)
         {
-            proposals.push(propose_node(
-                &context,
-                r.candidate,
-                node_type,
-                prefix,
-                payload,
-            )?);
+            push_new(
+                graph,
+                &mut proposals,
+                propose_node(&context, r.candidate, node_type, prefix, payload)?,
+            );
         }
     }
     Ok(finish(proposals, unresolved))
+}
+
+/// Keeps `proposal` unless its deterministic node already exists: that candidate was compiled
+/// by an earlier run (whatever happened to the node since), so a rerun proposes nothing for
+/// it instead of an AddNode that can never apply.
+fn push_new(graph: &Graph, proposals: &mut Vec<Proposal>, proposal: Proposal) {
+    if proposed_node_id(&proposal).is_some_and(|id| graph.node(id).is_some()) {
+        return;
+    }
+    proposals.push(proposal);
 }
 
 fn finish(
