@@ -1128,6 +1128,28 @@ impl ApiState {
     }
 }
 
+impl ApiState {
+    /// The current persisted report of `gate` on `loaded`, evaluating and persisting it first
+    /// when the head has none yet (as `ready` does), e.g. after an evidence-only revision.
+    pub(crate) fn current_or_evaluated_report(
+        &self,
+        loaded: &LoadedRevision,
+        gate: GateId,
+    ) -> Result<GateReport, ApiError> {
+        match self.current_gate_report(loaded, gate) {
+            Err(e) if e.body().code == "E_GATE_REPORT_UNAVAILABLE" => {
+                let a04 = self.stage_runtime("gate_report")?;
+                let at = self.now();
+                let evaluated =
+                    evaluate_gate(self, loaded, gate, &a04.validation_policy, Some(at))?;
+                persist_report(self, loaded, &evaluated, None, at)?;
+                Ok(evaluated.report)
+            }
+            other => other,
+        }
+    }
+}
+
 /// The wire string of a gate result.
 pub(crate) fn result_wire(result: GateResult) -> String {
     match result {
