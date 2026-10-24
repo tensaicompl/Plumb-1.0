@@ -23,6 +23,36 @@ use crate::expression_scope::{
 /// The reserved root symbol bound only from `Calculation.calendar_ref`.
 pub const CALCULATION_CALENDAR_SYMBOL: &str = "calendar";
 
+/// The reserved unresolved third argument of `working_days` (S3 inclusive-end question): it
+/// type-checks as Bool, is never a binding, and evaluates as missing until a governed answer
+/// rewrites it to `true` or `false`.
+pub const UNRESOLVED_INCLUSIVE_END_SYMBOL: &str = "inclusive_end";
+
+/// Whether `ast` calls `working_days` with the bare unresolved `inclusive_end` argument.
+pub fn has_unresolved_inclusive_end(ast: &Ast) -> bool {
+    match ast {
+        Ast::Literal(_) | Ast::Identifier(_) => false,
+        Ast::Call { function, args } => {
+            (function.as_str() == WORKING_DAYS
+                && matches!(args.get(2), Some(Ast::Identifier(id))
+                    if id.to_string() == UNRESOLVED_INCLUSIVE_END_SYMBOL))
+                || args.iter().any(has_unresolved_inclusive_end)
+        }
+        Ast::List(items) => items.iter().any(has_unresolved_inclusive_end),
+        Ast::Unary { expr, .. } => has_unresolved_inclusive_end(expr),
+        Ast::Binary { left, right, .. } => {
+            has_unresolved_inclusive_end(left) || has_unresolved_inclusive_end(right)
+        }
+        Ast::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => [condition, then_expr, else_expr]
+            .iter()
+            .any(|a| has_unresolved_inclusive_end(a)),
+    }
+}
+
 /// Extension key of the provenance [`CalculationOrigin`].
 pub const CALCULATION_ORIGIN_EXTENSION: &str = "plumb_functional:calculation_origin";
 
@@ -444,7 +474,22 @@ pub fn qualify_calculation(
     } else if qualification.requires_calendar {
         issues.push(CalculationIssue::CalendarRequired);
     }
-    let (used, undefined) = used_bindings(graph, &ast, &scope, calendar_bound);
+    // The unresolved inclusive-end placeholder (when no explicit binding of that name exists).
+    let placeholder = has_unresolved_inclusive_end(&ast)
+        && !scope.roots.contains_key(UNRESOLVED_INCLUSIVE_END_SYMBOL);
+    if placeholder {
+        let symbol = Symbol::new(UNRESOLVED_INCLUSIVE_END_SYMBOL)
+            .unwrap_or_else(|_| unreachable!("inclusive_end is a valid symbol"));
+        if let Err(e) = scope.env.bind_root(symbol, Ty::Bool) {
+            issues.push(CalculationIssue::InvalidScope {
+                reason: e.to_string(),
+            });
+        }
+    }
+    let (used, mut undefined) = used_bindings(graph, &ast, &scope, calendar_bound);
+    if placeholder {
+        undefined.retain(|i| i != UNRESOLVED_INCLUSIVE_END_SYMBOL);
+    }
     qualification.dependencies = used
         .iter()
         .filter(|b| b.exposure == ExpressionBindingExposure::Root)

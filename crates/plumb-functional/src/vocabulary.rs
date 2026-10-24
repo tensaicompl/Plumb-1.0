@@ -1194,17 +1194,42 @@ pub fn analyze_vocabulary(
         }
 
         // Eligible only without an Accepted Concept (single or ambiguous), with exactly one
-        // kind and one grounded definition text (so no kind or definition conflict).
+        // kind and at most one grounded definition text (so no kind or definition conflict).
+        // Without an explicit definition the Concept is grounded in the exact statement of the
+        // first Requirement that uses the term: still exact Requirement text, never prose, so
+        // ordinary requirement documents (which rarely define terms) still yield Concepts.
+        let usage = entries.first().and_then(|(m, _)| {
+            match graph.node(&m.requirement_ref).map(|n| &n.payload) {
+                Some(NodePayload::Requirement(r)) => Some((
+                    r.statement.clone(),
+                    VocabularyGroundedRange {
+                        requirement_ref: m.requirement_ref.clone(),
+                        start: 0,
+                        end: r.statement.len() as u64,
+                    },
+                )),
+                _ => None,
+            }
+        });
         let consensus = match (concept_refs, kinds.len(), definitions.len()) {
-            (None, 1, 1) => kinds.first().copied().zip(definitions.first().copied()),
+            (None, 1, 1) => kinds
+                .first()
+                .copied()
+                .zip(definitions.first().map(|d| ((*d).clone(), None))),
+            (None, 1, 0) => kinds
+                .first()
+                .copied()
+                .zip(usage.map(|(text, range)| (text, Some(range)))),
             _ => None,
         };
-        if let Some((kind, definition)) = consensus {
-            let definition = definition.clone();
-            let grounding: BTreeSet<&VocabularyGroundedRange> = entries
+        if let Some((kind, (definition, usage_grounding))) = consensus {
+            let mut grounding: BTreeSet<&VocabularyGroundedRange> = entries
                 .iter()
                 .filter_map(|(m, _)| m.definition.as_ref())
                 .collect();
+            if let Some(range) = &usage_grounding {
+                grounding.insert(range);
+            }
             let mut evidence_requirements = mention_requirements.clone();
             evidence_requirements.extend(grounding.iter().map(|g| &g.requirement_ref));
             let origin = VocabularyOrigin {

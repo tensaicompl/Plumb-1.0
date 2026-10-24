@@ -36,6 +36,7 @@
 //! updates, the strict decision-table adapter, exact calculation examples, strict linear process
 //! editing and the proposal-acceptance companion decision.
 
+pub mod ambiguity;
 pub mod assumption;
 pub mod authorization;
 pub mod calculation;

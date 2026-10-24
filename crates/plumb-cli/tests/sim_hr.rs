@@ -252,9 +252,10 @@ fn hr_kind(text: &str) -> Option<&'static str> {
     None
 }
 
-/// The HR domain vocabulary: phrase, Concept kind and the statement whose text grounds its
-/// definition (longest phrases first).
-const VOCABULARY: [(&str, Option<&str>, &str); 16] = [
+/// The HR domain vocabulary: phrase, Concept kind and the statement that would ground a
+/// definition if the source had one (unused: the model returns no definitions; longest first).
+const VOCABULARY: [(&str, Option<&str>, &str); 17] = [
+    ("half-day", Some("value_type"), "The system shall support a half-day leave request."),
     ("annual-leave balance", Some("object_type"), "The employee's annual-leave balance shall never be negative."),
     ("leave request", Some("object_type"), "A leave request shall identify the employee, leave type, start date, and end date."),
     ("leave balance", Some("object_type"), "Rejecting a leave request shall not change the employee's leave balance."),
@@ -346,12 +347,20 @@ fn domain_output(context: &Value) -> Value {
     let hr002 = "shall identify the employee, leave type, start date, and end date";
     let mut attributes = Vec::new();
     if let Some(owner) = concept("leave request") {
-        for name in ["leave type", "start date", "end date"] {
+        // (Concept name, statement anchor, nullable wording): HR-002 fields and HR-007 half day.
+        let hr007 = "support a half-day leave request";
+        for (name, anchor, nullable) in [
+            ("leave type", hr002, "shall identify"),
+            ("start date", hr002, "shall identify"),
+            ("end date", hr002, "shall identify"),
+            ("half day", hr007, "shall support"),
+        ] {
+            let surface = if name == "half day" { "half-day" } else { name };
             let (Some(value), Some(g), Some(og), Some(ng)) = (
                 concept(name),
-                ground(&requirements, name, Some(hr002)),
-                ground(&requirements, "leave request", Some(hr002)),
-                ground(&requirements, "shall identify", Some(hr002)),
+                ground(&requirements, surface, Some(anchor)),
+                ground(&requirements, "leave request", Some(anchor)),
+                ground(&requirements, nullable, Some(anchor)),
             ) else {
                 continue;
             };
@@ -614,14 +623,13 @@ fn calculation_output(context: &Value) -> Value {
         .map_or(Value::Null, |c| c["calendar_ref"].clone());
     json!({"version": 1, "calculations": [{
         "name_range": r(hr004, "requested leave duration"),
-        // The unresolved `inclusive_end` form is rejected by qualification and no production
-        // analyzer raises the inclusive-end question (plan: E0.1 test helper injects it), so the
-        // scripted model uses the expert answer directly.
-        "expression": "working_days([start_date, end_date], calendar, true)",
+        // HR-004/007 leave the inclusive end and the half-day fraction open: the expert decides.
+        "expression": "working_days([start_date, end_date], calendar, inclusive_end) * day_fraction",
         "expression_evidence": [
             r(hr004, "in working days from the start date to the end date"),
             r("exclude Saturdays and Sundays", "exclude Saturdays and Sundays"),
             r("exclude public holidays", "exclude public holidays"),
+            r("support a half-day leave request", "half-day leave request"),
         ],
         "result_type": "Decimal(2)", "unit": "working_day", "rounding": null,
         "calendar_ref": calendar,
@@ -677,16 +685,8 @@ impl InferenceProvider for Scripted {
             }
             "vocabulary_analysis" => {
                 let requirements = context["requirements"].as_array().unwrap();
-                // The requirement whose whole statement grounds a definition.
-                let defining = |statement: &str| {
-                    requirements
-                        .iter()
-                        .find(|r| r["statement"] == statement)
-                        .map(|r| {
-                            json!({"requirement_ref": r["requirement_ref"], "start": 0,
-                                        "end": statement.len()})
-                        })
-                };
+                // Like a model following the prompt: HR requirements define nothing, so every
+                // definition is null and Concepts are grounded in their using statements.
                 let mentions: Vec<Value> = requirements
                     .iter()
                     .flat_map(|r| {
@@ -694,10 +694,10 @@ impl InferenceProvider for Scripted {
                         vocabulary_mentions(statement)
                             .into_iter()
                             .map(|(start, end, index)| {
-                                let (_, kind, definition) = VOCABULARY[index];
+                                let (_, kind, _) = VOCABULARY[index];
                                 json!({"requirement_ref": r["requirement_ref"], "start": start,
                                        "end": end, "concept_kind": kind,
-                                       "definition": defining(definition)})
+                                       "definition": null})
                             })
                             .collect::<Vec<_>>()
                     })
@@ -1050,6 +1050,7 @@ fn hr_pilot_simulation() {
         ("start date", "Date"),
         ("end date", "Date"),
         ("leave type", "String"),
+        ("half day", "Decimal(2)"),
     ] {
         let id = attribute(name);
         sim.cli(
@@ -1066,7 +1067,8 @@ fn hr_pilot_simulation() {
         "calculation_scope",
         json!({"bindings": [
                    {"node_ref": attribute("start date"), "symbol": "start_date", "exposure": {"kind": "root"}},
-                   {"node_ref": attribute("end date"), "symbol": "end_date", "exposure": {"kind": "root"}}],
+                   {"node_ref": attribute("end date"), "symbol": "end_date", "exposure": {"kind": "root"}},
+                   {"node_ref": attribute("half day"), "symbol": "day_fraction", "exposure": {"kind": "root"}}],
                "calendar_refs": sim.accepted("Calendar")}),
     );
     for recipe in ["analyse", "calc", "rules", "scenarios", "tags", "run"] {
@@ -1086,16 +1088,41 @@ fn hr_pilot_simulation() {
         ],
         &[],
     );
-    // The HR expert answers: WithdrawLeaveRequest triggers the Submitted -> Withdrawn transition.
+    // The HR expert answers every routed question (fixtures/hr-leave/expert-answers.yaml plus
+    // the missing Withdraw trigger), choosing the answer by the question's answer schema.
     let withdraw = sim
         .nodes()
         .into_iter()
         .find(|n| n["payload"]["data"]["name"] == "WithdrawLeaveRequest")
         .map(|n| n["id"].as_str().unwrap().to_owned())
         .unwrap();
+    let calendar = sim.accepted("Calendar")[0].clone();
     for q in questions.as_array().unwrap() {
-        let answer = json!({"trigger_ref": withdraw}).to_string();
-        let rationale = "HR-017 lets the employee withdraw a Submitted request.";
+        let props = &q["answer_schema"]["properties"];
+        let (answer, rationale) = if props.get("trigger_ref").is_some() {
+            (
+                json!({"trigger_ref": withdraw}),
+                "HR-017 lets the employee withdraw a Submitted request.",
+            )
+        } else if props.get("inclusive_end").is_some() {
+            (
+                json!({"inclusive_end": true}),
+                "Both start date and end date are included.",
+            )
+        } else if props.get("holiday_consumes_working_day").is_some() {
+            (
+                json!({"calendar_ref": calendar, "holiday_consumes_working_day": false}),
+                "A configured public holiday consumes 0 working days.",
+            )
+        } else if props.get("decimal").is_some() {
+            (
+                json!({"decimal": "0.5", "unit": "working_day"}),
+                "A half day consumes 0.5 working day.",
+            )
+        } else {
+            panic!("unexpected question {q}");
+        };
+        let answer = answer.to_string();
         sim.cli(
             &[
                 "answer",
@@ -1107,9 +1134,10 @@ fn hr_pilot_simulation() {
             ],
             &[],
         );
+        // Each answer is a proposal on the current head; several answers on one calculation are
+        // not compatible as a set, so each is accepted before the next is given.
+        sim.accept_all();
     }
-    sim.cli(&["proposals"], &[]);
-    sim.accept_all();
     sim.confirm_all(&[]);
     sim.settle("analyse");
     sim.settle("scenarios");

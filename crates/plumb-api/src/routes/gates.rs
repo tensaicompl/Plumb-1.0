@@ -5,7 +5,7 @@ use axum::extract::{Path, RawQuery, State};
 use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
-use plumb_core::Id;
+use plumb_core::{GateId, Id};
 use plumb_psg::NodeType;
 use plumb_validation::{
     Applicability, AppliedWaiver, EvaluatorFailure, GateResult, RuleResult, RuleResultState,
@@ -29,12 +29,19 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/readiness", get(get_readiness))
 }
 
-/// `get_gates`: the current registered reports in I0, F1, F2, F3, F4 order; a missing gate is
-/// unevaluated and omitted, never reported as failed.
+/// `get_gates`: the current reports in I0, F1, F2, F3, F4 order. A gate without a current
+/// report is evaluated on demand (and persisted, as `ready` does); a gate that cannot be
+/// evaluated (e.g. its analysis never ran) is unevaluated and omitted, never reported as failed.
 async fn get_gates(State(state): State<ApiState>) -> Result<Response, ApiError> {
     let loaded = state.load_head()?;
     let mut gates = Vec::new();
-    for report in state.current_gate_reports(&loaded)? {
+    let mut reports = Vec::new();
+    for gate in [GateId::I0, GateId::F1, GateId::F2, GateId::F3, GateId::F4] {
+        if let Ok(report) = state.current_or_evaluated_report(&loaded, gate) {
+            reports.push(report);
+        }
+    }
+    for report in reports {
         let Ok(gate) = parse_wire::<GateName>(&wire(&report.gate)?, "gate") else {
             continue; // Later gates are outside the NOW API.
         };

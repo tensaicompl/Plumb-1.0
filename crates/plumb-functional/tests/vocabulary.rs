@@ -880,15 +880,33 @@ mod vocabulary_contract {
             }
         );
         assert_eq!(terms(&result).len(), 1);
-        // Kind without definition and null kind: Term only, no fabricated definition.
-        for m in [
-            typed(&graph, &ids[0], "contractor", "object_type", Value::Null),
-            mention(&graph, &ids[0], "contractor"),
-        ] {
-            let result = analyze(&graph, &req, vec![m]).unwrap();
-            assert_eq!(terms(&result).len(), 1);
-            assert!(concepts(&result).is_empty());
-        }
+        // Kind without definition: the Concept is grounded in the exact statement of the
+        // using Requirement (exact Requirement text, never a fabricated definition).
+        let result = analyze(
+            &graph,
+            &req,
+            vec![typed(
+                &graph,
+                &ids[0],
+                "contractor",
+                "object_type",
+                Value::Null,
+            )],
+        )
+        .unwrap();
+        assert_eq!(terms(&result).len(), 1);
+        let c = concepts(&result);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].1.concept_kind, ObjectType);
+        let statement = match &graph.node(&ids[0]).unwrap().payload {
+            NodePayload::Requirement(r) => r.statement.clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(c[0].1.definition, statement);
+        // Null kind: Term only.
+        let result = analyze(&graph, &req, vec![mention(&graph, &ids[0], "contractor")]).unwrap();
+        assert_eq!(terms(&result).len(), 1);
+        assert!(concepts(&result).is_empty());
         // Padded or empty definition ranges are rejected, never trimmed.
         let padded = grounding(&graph, &ids[0], " a worker");
         assert!(matches!(

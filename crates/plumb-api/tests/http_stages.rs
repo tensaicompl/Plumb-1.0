@@ -1833,7 +1833,7 @@ mod http_stages {
     }
 
     #[tokio::test]
-    async fn gate_inputs_stale_until_consolidate_rerun() {
+    async fn gate_inputs_carried_forward_after_graph_change() {
         let app = app_with(assembly_graph(), &[], chain_gates());
         let stale = |job_id: &Hash, reason: &str| {
             let view = job(&app, job_id);
@@ -1874,23 +1874,18 @@ mod http_stages {
             (details["gate"].as_str(), details["recipe"].as_str()),
             (Some("F2"), Some("analyse"))
         );
-        // The graph moves: the latest consolidate artifact no longer answers the current request.
+        // The graph moves: the latest consolidate run no longer answers the current request,
+        // but its findings are carried forward from its input revision (no new inference), so
+        // F1 stays evaluable; only the never-run analyse recipe blocks ready.
         accept_requirement(&app, "req:b");
-        ready_stale("inference_request_changed");
-        stale(
-            &run_inline(&app, Recipe::Lint, None),
-            "inference_request_changed",
-        );
-        // Re-running consolidate (the ordinary product operation) repairs it on the next head.
-        assert_eq!(
-            job(&app, &run_inline(&app, Recipe::Consolidate, None))["status"],
-            "ready"
-        );
         let err = app.state.ready().unwrap_err();
+        let details = serde_json::to_value(&err.body().details).unwrap();
         assert_eq!(
-            serde_json::to_value(&err.body().details).unwrap()["gate"],
-            "F2"
+            (details["gate"].as_str(), details["recipe"].as_str()),
+            (Some("F2"), Some("analyse"))
         );
+        let lint = run_inline(&app, Recipe::Lint, None);
+        assert_ne!(job(&app, &lint)["status"], "failed", "{}", job(&app, &lint));
     }
 
     /// An Accepted Invariant over the Employee entity (its bindings are external).

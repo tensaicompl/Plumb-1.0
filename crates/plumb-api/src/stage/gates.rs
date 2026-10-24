@@ -255,22 +255,85 @@ fn accepted_nodes(graph: &Graph, node_type: NodeType) -> Vec<&Node> {
     nodes
 }
 
-/// The validated inference of `request` produced by the latest completed `phase` child of a
-/// `recipe` job on the current branch (latest by input revision version, then job update time).
-/// The artifact is usable exactly when its request hash equals the request the current graph
-/// produces; otherwise the durable material is stale. No inference is executed here.
-fn durable_inference(
+/// The analysis material of one inference phase for `loaded`.
+///
+/// Normally this is the artifact of the latest completed `phase` child of a `recipe` job whose
+/// request equals the request the current graph produces. When the graph changed since that
+/// run (for example a manual governed edit, an answer or a confirmation), the run's own artifact
+/// is used together with the graph of the run's input revision, so its findings are recomputed
+/// deterministically, with no new inference call; callers keep only findings that still apply
+/// to the current graph. Only a phase that never completed is stale. Nothing is executed here.
+struct Material<R> {
+    /// `None`: the material belongs to the current graph; `Some`: to this earlier graph.
+    earlier: Option<Graph>,
+    request: R,
+    artifact: InferenceArtifact,
+    input: ArtifactInput,
+}
+
+impl<R> Material<R> {
+    /// The graph the material belongs to.
+    fn graph<'g>(&'g self, current: &'g Graph) -> &'g Graph {
+        self.earlier.as_ref().unwrap_or(current)
+    }
+}
+
+fn material<R>(
     state: &ApiState,
     gate: GateId,
     recipe: Recipe,
     phase: Phase,
-    request: &InferenceRequest,
-) -> Result<(InferenceArtifact, ArtifactInput), ApiError> {
+    loaded: &LoadedRevision,
+    build: impl Fn(&Graph) -> Result<R, ApiError>,
+    request_of: impl Fn(&R) -> &InferenceRequest,
+) -> Result<Material<R>, ApiError> {
+    let current = build(&loaded.graph)?;
+    let Some((input_revision, run_ref)) = latest_run(state, recipe, phase)? else {
+        return Err(durable_stale(
+            gate,
+            recipe,
+            "no_completed_run",
+            &request_of(&current).id,
+        ));
+    };
+    if let Some((artifact, input)) = run_artifact(state, &run_ref, &request_of(&current).id)? {
+        return Ok(Material {
+            earlier: None,
+            request: current,
+            artifact,
+            input,
+        });
+    }
+    let earlier = state.load_revision(&input_revision)?;
+    let request = build(&earlier.graph)?;
+    match run_artifact(state, &run_ref, &request_of(&request).id)? {
+        Some((artifact, input)) => Ok(Material {
+            earlier: Some(earlier.graph),
+            request,
+            artifact,
+            input,
+        }),
+        None => Err(durable_stale(
+            gate,
+            recipe,
+            "inference_request_changed",
+            &request_of(&current).id,
+        )),
+    }
+}
+
+/// The input revision and compile run of the latest completed `phase` child of a `recipe` job
+/// on the current branch (latest by input revision version, then job update time).
+fn latest_run(
+    state: &ApiState,
+    recipe: Recipe,
+    phase: Phase,
+) -> Result<Option<(plumb_store::RevisionId, Hash)>, ApiError> {
     let branch = state.branch().clone();
     let jobs = state
         .with_stage_store(|store| store.recipe_jobs())?
         .map_err(crate::stage::store_error)?;
-    let mut latest: Option<(u64, Timestamp, Hash)> = None;
+    let mut latest: Option<(u64, Timestamp, Hash, plumb_store::RevisionId)> = None;
     for job in jobs
         .iter()
         .filter(|j| j.recipe == recipe.as_str() && j.branch == branch)
@@ -298,33 +361,48 @@ fn durable_inference(
                 step.input_revision_id.version(),
                 job.updated_at,
                 run_ref.clone(),
+                step.input_revision_id.clone(),
             );
-            if latest.as_ref().is_none_or(|l| key > *l) {
+            if latest
+                .as_ref()
+                .is_none_or(|l| (key.0, key.1, &key.2) > (l.0, l.1, &l.2))
+            {
                 latest = Some(key);
             }
         }
     }
-    let Some((_, _, run_ref)) = latest else {
-        return Err(durable_stale(gate, recipe, "no_completed_run", &request.id));
-    };
-    let run = load_run(state, &run_ref)?;
+    Ok(latest.map(|(_, _, run_ref, revision)| (revision, run_ref)))
+}
+
+/// The validated inference artifact of `request` stored by compile run `run_ref`, if any.
+fn run_artifact(
+    state: &ApiState,
+    run_ref: &Hash,
+    request: &Hash,
+) -> Result<Option<(InferenceArtifact, ArtifactInput)>, ApiError> {
+    let run = load_run(state, run_ref)?;
     for hash in &run.inference_artifacts {
         let stored = state
             .with_artifact_store(|store| store.get(hash))?
             .map_err(|_| ApiError::workflow_corrupt(&format!("stage run artifact {hash}")))?;
         let artifact: InferenceArtifact = serde_json::from_slice(&stored.bytes)
             .map_err(|_| ApiError::workflow_corrupt(&format!("stage run artifact {hash}")))?;
-        if artifact.request_hash == request.id {
+        if &artifact.request_hash == request {
             let input = ArtifactInput::from(&stored);
-            return Ok((artifact, input));
+            return Ok(Some((artifact, input)));
         }
     }
-    Err(durable_stale(
-        gate,
-        recipe,
-        "inference_request_changed",
-        &request.id,
-    ))
+    Ok(None)
+}
+
+/// Whether every affected element of `finding` is Accepted in `graph` (a finding carried
+/// forward from an earlier analysis still applies).
+fn still_applies(graph: &Graph, finding: &GeneratedFinding) -> bool {
+    finding.payload.affected_refs.iter().all(|r| {
+        graph
+            .node(r)
+            .is_some_and(|n| n.status == ElementStatus::Accepted)
+    })
 }
 
 /// Accepted English Terms and Accepted Concepts by normalized key, exactly as S1.5 indexes
@@ -425,34 +503,37 @@ fn f1_inputs(
     let mut findings: Vec<GeneratedFinding> = Vec::new();
     // Every S1.5 dependency and finding is grounded in an Accepted Requirement statement.
     if !accepted.is_empty() {
-        let targets = effective_targets(Recipe::Consolidate, graph, None);
-        let request = build_vocabulary_request(
-            graph,
-            &targets,
-            &a04.vocabulary_policy,
-            a03.provider_policy.clone(),
-        )
-        .map_err(|e| evaluation_failed(gate, e))?;
-        let (artifact, input) = durable_inference(
+        let material = material(
             state,
             gate,
             Recipe::Consolidate,
             Phase::Consolidate,
-            &request.request,
+            loaded,
+            |g| {
+                let targets = effective_targets(Recipe::Consolidate, g, None);
+                build_vocabulary_request(
+                    g,
+                    &targets,
+                    &a04.vocabulary_policy,
+                    a03.provider_policy.clone(),
+                )
+                .map_err(|e| evaluation_failed(gate, e))
+            },
+            |r| &r.request,
         )?;
         let derivation = derivation_ref(
-            &request.request,
-            &artifact,
-            &input,
+            &material.request.request,
+            &material.artifact,
+            &material.input,
             loaded.revision.created_at,
         )
         .map_err(|e| evaluation_failed(gate, e))?;
-        let analysis = analyze_vocabulary(
-            graph,
-            &request,
+        let mut analysis = analyze_vocabulary(
+            material.graph(graph),
+            &material.request,
             &a04.vocabulary_policy,
             Some(VocabularyInference {
-                artifact: &artifact,
+                artifact: &material.artifact,
                 derivation_ref: derivation,
             }),
             &VocabularyAudit {
@@ -461,6 +542,18 @@ fn f1_inputs(
             },
         )
         .map_err(|e| evaluation_failed(gate, e))?;
+        if let Some(earlier) = &material.earlier {
+            // Carried forward: only findings on current Accepted elements, and only mentions in
+            // statements that are unchanged since the analysed revision.
+            analysis.findings.retain(|f| still_applies(graph, f));
+            let unchanged = |r: &Id| match (graph.node(r), earlier.node(r)) {
+                (Some(now), Some(then)) => now.payload == then.payload,
+                _ => false,
+            };
+            for candidate in &mut analysis.candidates {
+                candidate.mentions.retain(|m| unchanged(&m.requirement_ref));
+            }
+        }
         findings.extend(analysis.findings);
         let accepted_ids: BTreeSet<&Id> = accepted.iter().map(|n| &n.id).collect();
         let (terms, concepts) = accepted_vocabulary(graph);
@@ -565,23 +658,31 @@ fn f2_inputs(
     if !accepted_nodes(graph, NodeType::Requirement).is_empty() {
         let audit_at = loaded.revision.created_at;
         let actor = a04.stage_actor_ref.clone();
-        let domain = build_domain_request(graph, a03.provider_policy.clone())
-            .map_err(|e| evaluation_failed(gate, e))?;
-        let (artifact, input) = durable_inference(
+        let domain = material(
             state,
             gate,
             Recipe::Analyse,
             Phase::Analyse,
-            &domain.request,
+            loaded,
+            |g| {
+                build_domain_request(g, a03.provider_policy.clone())
+                    .map_err(|e| evaluation_failed(gate, e))
+            },
+            |r| &r.request,
         )?;
-        let derivation = derivation_ref(&domain.request, &artifact, &input, audit_at)
-            .map_err(|e| evaluation_failed(gate, e))?;
+        let derivation = derivation_ref(
+            &domain.request.request,
+            &domain.artifact,
+            &domain.input,
+            audit_at,
+        )
+        .map_err(|e| evaluation_failed(gate, e))?;
         findings.extend(
             analyze_domain(
-                graph,
-                &domain,
+                domain.graph(graph),
+                &domain.request,
                 Some(DomainInference {
-                    artifact: &artifact,
+                    artifact: &domain.artifact,
                     derivation_ref: derivation,
                 }),
                 &DomainAudit {
@@ -590,25 +691,35 @@ fn f2_inputs(
                 },
             )
             .map_err(|e| evaluation_failed(gate, e))?
-            .findings,
+            .findings
+            .into_iter()
+            .filter(|f| domain.earlier.is_none() || still_applies(graph, f)),
         );
-        let lifecycle = build_lifecycle_request(graph, a03.provider_policy.clone())
-            .map_err(|e| evaluation_failed(gate, e))?;
-        let (artifact, input) = durable_inference(
+        let lifecycle = material(
             state,
             gate,
             Recipe::Analyse,
             Phase::Analyse,
-            &lifecycle.request,
+            loaded,
+            |g| {
+                build_lifecycle_request(g, a03.provider_policy.clone())
+                    .map_err(|e| evaluation_failed(gate, e))
+            },
+            |r| &r.request,
         )?;
-        let derivation = derivation_ref(&lifecycle.request, &artifact, &input, audit_at)
-            .map_err(|e| evaluation_failed(gate, e))?;
+        let derivation = derivation_ref(
+            &lifecycle.request.request,
+            &lifecycle.artifact,
+            &lifecycle.input,
+            audit_at,
+        )
+        .map_err(|e| evaluation_failed(gate, e))?;
         findings.extend(
             analyze_lifecycle(
-                graph,
-                &lifecycle,
+                lifecycle.graph(graph),
+                &lifecycle.request,
                 Some(LifecycleInference {
-                    artifact: &artifact,
+                    artifact: &lifecycle.artifact,
                     derivation_ref: derivation,
                 }),
                 &LifecycleAudit {
@@ -617,7 +728,9 @@ fn f2_inputs(
                 },
             )
             .map_err(|e| evaluation_failed(gate, e))?
-            .findings,
+            .findings
+            .into_iter()
+            .filter(|f| lifecycle.earlier.is_none() || still_applies(graph, f)),
         );
     }
     // Calculation scope overrides: required exactly for origin-less Accepted Calculations.
@@ -1129,7 +1242,8 @@ impl ApiState {
 }
 
 impl ApiState {
-    /// The per-candidate F2 analysis findings of `loaded` (e.g. one
+    /// The per-candidate F2 analysis findings of `loaded` plus the open calculation semantics
+    /// (e.g. one
     /// `state_transition_trigger_unresolved:<transition>` finding per transition), whose
     /// targets are all Accepted. The F2 gate folds them into one aggregate rule finding; the
     /// question templates match these per-candidate condition keys (architecture: "explicit
@@ -1141,9 +1255,15 @@ impl ApiState {
         let a03 = self.runtime("stage_gates")?;
         let a04 = self.stage_runtime("stage_gates")?;
         let inputs = f2_inputs(self, loaded, a03, a04)?;
+        // Open calculation semantics (inclusive end, holiday policy, fractional inputs): the
+        // deterministic upstream material of the S3 calculation questions (no gate rule).
+        let ambiguities =
+            plumb_functional::ambiguity::analyze_calculation_ambiguities(&loaded.graph)
+                .map_err(|e| evaluation_failed(GateId::F2, e))?;
         Ok(inputs
             .analysis_findings
             .into_iter()
+            .chain(ambiguities)
             .filter(|f| {
                 f.payload.affected_refs.iter().all(|r| {
                     loaded
