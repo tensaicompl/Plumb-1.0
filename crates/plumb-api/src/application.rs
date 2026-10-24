@@ -335,7 +335,8 @@ mod services {
         QuestionRoundDisposition, RoundError, MAX_QUESTION_ROUND_SIZE,
     };
     use plumb_functional::{
-        produce_directory, DirectoryAudit, DirectoryCalendarBinding, DirectoryDisposition,
+        produce_directory, propose_scenario_confirmation, DirectoryAudit, DirectoryCalendarBinding,
+        DirectoryDisposition,
     };
     use plumb_import::{
         import_docx, import_markdown, import_plain_text, ImportAudit, ImportedSource,
@@ -1572,6 +1573,28 @@ mod services {
             // Edge endpoints: no governance, provenance or proof endpoint, and each endpoint
             // baseline-participating after this proposal (already, or confirmed here).
             let promoted: std::collections::BTreeSet<&Id> = nodes.iter().map(|n| &n.id).collect();
+            // A confirmed node brings its own Proposed relations along when the other endpoint
+            // is (or becomes) baseline-participating: an Attribute cannot be Accepted without
+            // its has_attribute edge, and callers cannot be expected to know edge IDs.
+            let listed: std::collections::BTreeSet<&Id> = edges.iter().map(|e| &e.id).collect();
+            let implied: Vec<_> = graph
+                .edges()
+                .values()
+                .filter(|e| e.status == ElementStatus::Proposed && !listed.contains(&e.id))
+                .filter(|e| promoted.contains(&e.from) || promoted.contains(&e.to))
+                .filter(|e| {
+                    [&e.from, &e.to].iter().all(|end| {
+                        graph.node(end).is_some_and(|n| {
+                            (is_baseline(n.status) || promoted.contains(end))
+                                && !matches!(
+                                    confirmation_refusal(n.payload.node_type()),
+                                    Some(GOVERNANCE) | Some(PROVENANCE_OR_PROOF)
+                                )
+                        })
+                    })
+                })
+                .collect();
+            edges.extend(implied);
             for edge in &edges {
                 for end in [&edge.from, &edge.to] {
                     let Some(node) = graph.node(end) else {
@@ -1659,6 +1682,73 @@ mod services {
                 created_at,
                 "confirm_elements",
             )
+        }
+
+        /// The dedicated confirmation of one Proposed Term (S1), Calculation (S2) or Scenario
+        /// (S4, Proposed + Derived -> Accepted + Confirmed): the same proposals and commit paths
+        /// as `confirm_glossary`, `confirm_calculation` and `confirm_scenario`, so the CLI
+        /// reaches every confirmation the HTTP API offers. `None` when `element` is not a node
+        /// of a dedicated type (the caller then uses [`ApiState::confirm_elements`]).
+        pub fn confirm_dedicated(
+            &self,
+            loaded: &LoadedRevision,
+            element: &str,
+        ) -> Result<Option<WriteResult>, ApiError> {
+            let id = parse_id(element)
+                .ok_or_else(|| ApiError::invalid(format!("{element} is not an ID")))?;
+            let Some(node) = loaded.graph.node(&id) else {
+                return Ok(None);
+            };
+            let created_at = self.now();
+            let (stage, operation_id) = match node.payload.node_type() {
+                NodeType::Term => (StageId::S1, "confirm_glossary"),
+                NodeType::Calculation => (StageId::S2, "confirm_calculation"),
+                NodeType::Scenario => {
+                    let proposal = propose_scenario_confirmation(&loaded.graph, &id)
+                        .map_err(crate::routes::scenario_lifecycle_error)?;
+                    return self
+                        .write(
+                            loaded,
+                            &proposal,
+                            false,
+                            None,
+                            created_at,
+                            "confirm_scenario",
+                        )
+                        .map(Some);
+                }
+                _ => return Ok(None),
+            };
+            if node.status != ElementStatus::Proposed {
+                return Err(ApiError::unprocessable(
+                    "E_SEMANTIC_INVARIANT",
+                    "only a Proposed element can be confirmed",
+                )
+                .with_details(json!({ "status": wire(&node.status)? })));
+            }
+            let proposal = Proposal::new(
+                stage,
+                PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch: SemanticPatch::SetStatus {
+                        target: ElementPrecondition {
+                            id: node.id.clone(),
+                            expected_hash: node_element_hash(node)
+                                .map_err(|_| ApiError::internal("element_hash"))?,
+                        },
+                        from: ElementStatus::Proposed,
+                        to: ElementStatus::Accepted,
+                    },
+                },
+                Vec::new(),
+                Vec::new(),
+                ProposalMateriality::Semantic,
+                AcceptancePolicy::HumanConfirm,
+                None,
+            )
+            .map_err(|_| ApiError::internal("proposal"))?;
+            self.commit(loaded, &proposal, created_at, operation_id)
+                .map(Some)
         }
 
         /// `ask` (R0.6): materializes Questions from the findings of the current persisted F2

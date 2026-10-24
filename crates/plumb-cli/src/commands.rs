@@ -15,7 +15,7 @@ use plumb_api::application::{
 };
 use plumb_api::error::ApiError;
 use plumb_api::openapi::{ExportFormat, JobStatus};
-use plumb_api::{serve_blocking, ApiState, Recipe};
+use plumb_api::{serve_blocking, ApiState, ReadyRule, Recipe};
 use plumb_core::{to_canonical_json, Clock, Id, SystemClock};
 use plumb_import::docx::{check_input_size, DOCX_MAX_INPUT_BYTES};
 use plumb_import::{check_text_input_size, ImportError, SourceKind, TEXT_MAX_INPUT_BYTES};
@@ -249,7 +249,7 @@ pub fn stage(state: &ApiState, recipe: Recipe, scope: Vec<String>) -> Result<Don
     let run = state.run_stage(recipe, scope, None)?;
     state.execute_recipe_job(&run.job_id)?;
     let (job, _) = state.get_job(run.job_id.as_str())?;
-    let gates = state.recipe_gate_results(&run.job_id)?;
+    let gates = state.recipe_gate_details(&run.job_id)?;
     let mut value = serde_json::to_value(&job).map_err(|e| CliError::Io(e.to_string()))?;
     value["job_id"] = Value::String(run.job_id.to_string());
     let status = serde_json::to_value(job.status)
@@ -262,8 +262,9 @@ pub fn stage(state: &ApiState, recipe: Recipe, scope: Vec<String>) -> Result<Don
         job.base_revision,
         job.result_version.as_deref().unwrap_or("-")
     );
-    for (gate, result) in &gates {
+    for (gate, result, failed) in &gates {
         text.push_str(&format!("\n{gate}: {result}"));
+        push_failed_rules(&mut text, failed);
     }
     if let Some(error) = &job.error {
         text.push_str(&format!("\nerror: {error}"));
@@ -272,7 +273,7 @@ pub fn stage(state: &ApiState, recipe: Recipe, scope: Vec<String>) -> Result<Don
         json: value,
         text,
         raw: None,
-        gate_failed: gates.iter().any(|(_, result)| result == "fail"),
+        gate_failed: gates.iter().any(|(_, result, _)| result == "fail"),
     };
     match job.status {
         JobStatus::Ready | JobStatus::Committed => Ok(done),
@@ -400,8 +401,22 @@ pub fn confirm(
     elements: &[String],
     reason: Option<String>,
 ) -> Result<Done, CliError> {
-    let loaded = state.head()?;
-    let result = state.confirm_elements(&loaded, elements, reason)?;
+    // Terms, Calculations and Scenarios have dedicated confirmations (one revision each);
+    // every other element goes through the generic governed confirmation in one revision.
+    let mut generic = Vec::new();
+    let mut last = None;
+    for element in elements {
+        let loaded = state.head()?;
+        match state.confirm_dedicated(&loaded, element)? {
+            Some(result) => last = Some(result),
+            None => generic.push(element.clone()),
+        }
+    }
+    if !generic.is_empty() {
+        let loaded = state.head()?;
+        last = Some(state.confirm_elements(&loaded, &generic, reason)?);
+    }
+    let result = last.expect("confirm needs at least one element");
     let text = format!(
         "confirmed {}: revision {}",
         elements.join(" "),
@@ -575,6 +590,7 @@ pub fn ready(state: &ApiState) -> Result<Done, CliError> {
     );
     for gate in &outcome.gates {
         text.push_str(&format!("\n{}: {}", gate.gate, gate.result));
+        push_failed_rules(&mut text, &gate.failed_rules);
     }
     for precondition in &outcome.preconditions {
         text.push_str(&format!("\nprecondition: {precondition}"));
@@ -582,6 +598,26 @@ pub fn ready(state: &ApiState) -> Result<Done, CliError> {
     let mut done = Done::new(&outcome, text)?;
     done.gate_failed = !outcome.passed();
     Ok(done)
+}
+
+/// One indented line per non-passing rule: state, severity, rule and its first targets.
+fn push_failed_rules(text: &mut String, rules: &[ReadyRule]) {
+    for rule in rules {
+        let shown: Vec<String> = rule.targets.iter().take(5).map(Id::to_string).collect();
+        let more = rule.targets.len().saturating_sub(shown.len());
+        text.push_str(&format!(
+            "\n  {} {} {} [{}{}]",
+            rule.state.as_str().unwrap_or("?"),
+            rule.severity.as_str().unwrap_or("?"),
+            rule.rule_id,
+            shown.join(" "),
+            if more > 0 {
+                format!(" +{more} more")
+            } else {
+                String::new()
+            }
+        ));
+    }
 }
 
 /// `export --format`: the selected artifact of the shared pilot projection, written raw.

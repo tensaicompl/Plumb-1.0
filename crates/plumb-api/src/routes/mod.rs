@@ -23,6 +23,8 @@ mod sessions;
 mod sources;
 mod stages;
 
+pub(crate) use scenarios::lifecycle_error as scenario_lifecycle_error;
+
 /// Largest request body of `POST /api/sources` (architecture §33.1).
 pub const MAX_SOURCE_UPLOAD_BODY_BYTES: usize = 129 * 1024 * 1024;
 

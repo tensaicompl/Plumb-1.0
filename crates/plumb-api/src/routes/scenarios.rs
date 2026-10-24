@@ -291,7 +291,7 @@ fn scenario_node<'g>(graph: &'g Graph, id: &str) -> Result<&'g Node, ApiError> {
         .ok_or_else(missing)
 }
 
-fn lifecycle_error(error: ScenarioLifecycleError) -> ApiError {
+pub(crate) fn lifecycle_error(error: ScenarioLifecycleError) -> ApiError {
     match error {
         ScenarioLifecycleError::NotAScenario(id) => {
             ApiError::not_found(format!("scenario {id} not found"))
