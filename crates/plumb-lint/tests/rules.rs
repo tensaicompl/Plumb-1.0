@@ -366,6 +366,12 @@ fn rules_relative_time_no_anchor() {
         hits("Reply no later than 3 hours.", RelativeTimeNoAnchor),
         ["no later than 3 hours"]
     );
+    // A duration bound of the subject's own action is anchored by that action.
+    assert!(hits(
+        "The submission operation should complete within 2 seconds.",
+        RelativeTimeNoAnchor
+    )
+    .is_empty());
     assert!(hits(
         "The system shall respond within 2 days of submission.",
         RelativeTimeNoAnchor

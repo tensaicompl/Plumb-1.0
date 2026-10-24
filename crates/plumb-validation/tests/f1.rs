@@ -2267,17 +2267,9 @@ mod f1_contract {
                 .map(|t| source_identifier(&g, t.as_str()))
                 .collect::<Vec<_>>()
         );
-        assert_eq!(state(&report, QUALITY), Fail);
-        let quality: Vec<String> = rule(&report, QUALITY)
-            .targets
-            .iter()
-            .map(|t| source_identifier(&g, t.as_str()))
-            .collect();
-        // The complete deterministic quality target set under the frozen S1.4 rules.
-        assert_eq!(quality, ["HR-030"]);
-        assert_eq!(rule(&report, QUALITY).evidence.len(), 1);
-        assert!(rule(&report, QUALITY).evidence[0]
-            .starts_with("lint:PLUMB.LINT.REQ.RELATIVE_TIME_NO_ANCHOR:"));
+        // HR-030 "should complete within 2 seconds" bounds the duration of the operation
+        // itself, so RELATIVE_TIME_NO_ANCHOR no longer fires and no quality error remains.
+        assert_eq!(state(&report, QUALITY), Pass);
         assert_eq!(report.result, GateResult::Fail);
         // Replay determinism.
         let (g2, i2) = hr();

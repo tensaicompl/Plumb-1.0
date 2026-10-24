@@ -873,6 +873,16 @@ fn number_no_unit(statement: &str, tokens: &[Token]) -> Vec<Hit> {
     hits
 }
 
+/// Verbs whose "within N units" bounds the duration of the subject's own action.
+const DURATION_VERBS: [&str; 6] = [
+    "complete",
+    "completes",
+    "finish",
+    "finishes",
+    "execute",
+    "executes",
+];
+
 const TIME_UNITS: [&str; 23] = [
     "ms",
     "s",
@@ -928,12 +938,19 @@ fn relative_time_no_anchor(statement: &str, tokens: &[Token]) -> Vec<Hit> {
         if !TIME_UNITS.contains(&unit.lower.as_str()) {
             continue;
         }
-        let anchored = tokens[unit_index + 1..].iter().take(3).any(|a| {
-            matches!(
-                a.lower.as_str(),
-                "of" | "after" | "from" | "following" | "upon"
-            )
-        });
+        // "complete within 2 seconds" bounds the duration of the subject's own action, which
+        // is its anchor; only a free-standing "within N units" needs an anchor event.
+        let duration_bound = t.lower == "within"
+            && i.checked_sub(1)
+                .and_then(|p| tokens.get(p))
+                .is_some_and(|v| DURATION_VERBS.contains(&v.lower.as_str()));
+        let anchored = duration_bound
+            || tokens[unit_index + 1..].iter().take(3).any(|a| {
+                matches!(
+                    a.lower.as_str(),
+                    "of" | "after" | "from" | "following" | "upon"
+                )
+            });
         if !anchored {
             hits.push(hit(
                 t.start,
