@@ -1073,6 +1073,15 @@
         ],
         "type": "string"
       },
+      "GateEvaluationState": {
+        "description": "The evaluation state of a NOW gate on the branch head (H0.11, architecture §33.12):\n`current` has a report for the head; `stale` has only reports of earlier heads and cannot be\nevaluated now; `not_evaluated` has never been evaluated and cannot be evaluated now. A gate\nthat is not current carries no rule results.",
+        "enum": [
+          "not_evaluated",
+          "current",
+          "stale"
+        ],
+        "type": "string"
+      },
       "GateName": {
         "description": "A NOW-scope gate.",
         "enum": [
@@ -1230,6 +1239,23 @@
         ],
         "type": "string"
       },
+      "GateStateReason": {
+        "additionalProperties": false,
+        "description": "The typed failure that keeps a gate from being evaluated on the branch head.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
       "GateStatus": {
         "additionalProperties": false,
         "properties": {
@@ -1244,7 +1270,19 @@
             "$ref": "#/components/schemas/GateName"
           },
           "passed": {
+            "description": "The current report's result; false when the gate is not current.",
             "type": "boolean"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GateStateReason",
+                "description": "Why the gate is not current: the typed failure that prevents its evaluation now; null\nexactly when `state` is `current`."
+              }
+            ]
           },
           "rules": {
             "description": "The report's rule results, in report order (Hotfix 082).",
@@ -1252,6 +1290,10 @@
               "$ref": "#/components/schemas/GateRuleResult"
             },
             "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/GateEvaluationState",
+            "description": "Whether this entry is the gate's report current for the branch head (H0.11)."
           },
           "summary": {
             "$ref": "#/components/schemas/GateSummaryView",
@@ -1267,6 +1309,8 @@
         },
         "required": [
           "gate",
+          "state",
+          "reason",
           "passed",
           "findings",
           "rules",
@@ -4521,6 +4565,10 @@
                     ],
                     "gate": "F1",
                     "passed": true,
+                    "reason": {
+                      "code": "example",
+                      "message": "example"
+                    },
                     "rules": [
                       {
                         "applicability": {
@@ -4552,6 +4600,7 @@
                         "waiver_ref": "example"
                       }
                     ],
+                    "state": "current",
                     "summary": {
                       "blocker_failed": 0,
                       "blocker_waived": 0,

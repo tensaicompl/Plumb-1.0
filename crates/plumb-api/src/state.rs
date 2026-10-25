@@ -674,6 +674,20 @@ impl ApiState {
         Ok(current)
     }
 
+    /// Whether any report of `gate` exists, durable or startup-injected, for any revision.
+    pub(crate) fn has_any_gate_report(&self, gate: GateId) -> Result<bool, ApiError> {
+        if self.inner.gate_reports.iter().any(|r| r.gate == gate) {
+            return Ok(true);
+        }
+        if self.inner.stage.is_none() {
+            return Ok(false);
+        }
+        let records = self
+            .with_stage_store(|store| store.gate_reports())?
+            .map_err(|_| ApiError::workflow_corrupt("gate reports"))?;
+        Ok(records.iter().any(|r| r.gate == gate.as_str()))
+    }
+
     /// The current report of `gate`, owned, or 409 `E_GATE_REPORT_UNAVAILABLE`.
     pub(crate) fn current_gate_report(
         &self,

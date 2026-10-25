@@ -508,7 +508,16 @@ mod http_stages {
     }
 
     async fn send(app: &App, request: Request<Body>) -> Reply {
-        let response = app.router.clone().oneshot(request).await.unwrap();
+        send_router(&app.router, request).await
+    }
+
+    /// A GET of `uri` through another router (e.g. over a differently configured state).
+    async fn send_to(router: &Router, uri: &str) -> Reply {
+        send_router(router, Request::get(uri).body(Body::empty()).unwrap()).await
+    }
+
+    async fn send_router(router: &Router, request: Request<Body>) -> Reply {
+        let response = router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let etag = response
             .headers()
@@ -1285,6 +1294,91 @@ mod http_stages {
     }
 
     // ------------------------------------------------------------------ gates
+
+    /// `(gate, state, reason code)` of each GET /api/gates entry, in order.
+    fn gate_states(gates: &Value) -> Vec<(String, String, Option<String>)> {
+        gates
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| {
+                (
+                    g["gate"].as_str().unwrap().to_owned(),
+                    g["state"].as_str().unwrap().to_owned(),
+                    g["reason"]["code"].as_str().map(str::to_owned),
+                )
+            })
+            .collect()
+    }
+
+    /// H0.11 (architecture §33.12): GET /api/gates reports every NOW gate as not_evaluated,
+    /// current or stale, with the typed reason when it is not current; F3 is reachable.
+    #[tokio::test]
+    async fn gates_report_not_evaluated_current_or_stale() {
+        let app = app(data_graph(&["Email"]));
+        let state = |gate: &str, state: &str, reason: Option<&str>| {
+            (gate.to_owned(), state.to_owned(), reason.map(str::to_owned))
+        };
+        // Without the F1 and F4 inputs those gates have never been evaluated.
+        let gates = get(&app, "/api/gates").await.json();
+        assert_eq!(
+            gate_states(&gates),
+            [
+                state("I0", "current", None),
+                state("F1", "not_evaluated", Some("E_GATE_INPUTS_MISSING")),
+                state("F2", "current", None),
+                state("F3", "current", None),
+                state("F4", "not_evaluated", Some("E_GATE_INPUTS_MISSING")),
+            ],
+            "{gates}"
+        );
+        let f1 = &gates[1];
+        assert_eq!(f1["passed"], false);
+        assert_eq!(f1["rules"], json!([]));
+        assert!(!f1["reason"]["message"].as_str().unwrap().is_empty());
+        // With the inputs every gate, F3 included, is evaluated through the same route.
+        let configured = router(open(&app.path, app.provider.clone(), &chain_gates()));
+        let r = send_to(&configured, "/api/gates").await;
+        assert_eq!(
+            gate_states(&r.json()),
+            ["I0", "F1", "F2", "F3", "F4"].map(|g| state(g, "current", None)),
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        // A semantic change: the gates evaluated before that cannot be evaluated now are stale.
+        let loaded = head(&app);
+        SqliteRevisionStore::open(&app.path)
+            .unwrap()
+            .commit(
+                &BranchName::main(),
+                &loaded.revision.id,
+                &PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch: SemanticPatch::AddNode {
+                        node: requirement("req:new", "Accepted", "Employees shall log in."),
+                    },
+                },
+                RevisionWriteMeta {
+                    decision_refs: vec![],
+                    created_by: id(ACTOR),
+                    created_at: ts(NOW),
+                },
+            )
+            .unwrap();
+        let gates = get(&app, "/api/gates").await.json();
+        assert_eq!(
+            gate_states(&gates),
+            [
+                state("I0", "current", None),
+                state("F1", "stale", Some("E_GATE_INPUTS_MISSING")),
+                // The new Accepted requirement needs an analyse run first.
+                state("F2", "stale", Some("E_GATE_INPUTS_STALE")),
+                state("F3", "current", None),
+                state("F4", "stale", Some("E_GATE_INPUTS_MISSING")),
+            ],
+            "{gates}"
+        );
+    }
 
     #[tokio::test]
     async fn http_stages_ready_requires_configured_inputs() {

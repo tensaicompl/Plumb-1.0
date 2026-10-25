@@ -117,6 +117,21 @@ function RuleRow({ rule }: { rule: GateRuleResult }) {
   );
 }
 
+/** A gate without a current report: not evaluated or stale, with the server's typed reason. */
+function UnavailableGate({ status }: { status: GateStatus | undefined }) {
+  return (
+    <>
+      <p data-testid="gate-result">{t(status?.state === "stale" ? "gate.stale" : "gate.unevaluated")}</p>
+      {status?.reason !== undefined && status.reason !== null && (
+        <p className="text-sm" data-testid="gate-reason">
+          {t("gates.reason")} <span className="font-mono" data-testid="gate-reason-code">{status.reason.code}</span>{" "}
+          <span data-testid="gate-reason-message">{status.reason.message}</span>
+        </p>
+      )}
+    </>
+  );
+}
+
 /** A current gate: its server Pass/Fail, summary, every rule result in report order and waivers. */
 function CurrentGate({ status }: { status: GateStatus }) {
   return (
@@ -205,7 +220,7 @@ function ReadinessSection({ readiness }: { readiness: Readiness }) {
 
 /**
  * U2.7 Gates (Hotfix 082): the I0-F4 gates in order from GET /api/gates; a gate without a
- * current report is Unevaluated. Every rule result, waiver and summary is the server projection
+ * current report is Unevaluated or Stale with the server's typed reason (H0.11). Every rule result, waiver and summary is the server projection
  * of the current GateReport; readiness is a separate advisory section.
  */
 export function GatesPage() {
@@ -224,8 +239,8 @@ export function GatesPage() {
             return (
               <li key={gate} className="space-y-2 rounded border p-2" data-gate={gate}>
                 <h2 className="font-mono text-lg font-semibold">{gate}</h2>
-                {status === undefined ? (
-                  <p data-testid="gate-result">{t("gate.unevaluated")}</p>
+                {status === undefined || status.state !== "current" ? (
+                  <UnavailableGate status={status} />
                 ) : (
                   <CurrentGate status={status} />
                 )}

@@ -1469,6 +1469,14 @@ export interface components {
          */
         FindingRuleClass: "external_standard" | "external_interop" | "plumb_core" | "profile_policy" | "organization_policy";
         /**
+         * @description The evaluation state of a NOW gate on the branch head (H0.11, architecture §33.12):
+         *     `current` has a report for the head; `stale` has only reports of earlier heads and cannot be
+         *     evaluated now; `not_evaluated` has never been evaluated and cannot be evaluated now. A gate
+         *     that is not current carries no rule results.
+         * @enum {string}
+         */
+        GateEvaluationState: "not_evaluated" | "current" | "stale";
+        /**
          * @description A NOW-scope gate.
          * @enum {string}
          */
@@ -1512,13 +1520,22 @@ export interface components {
          * @enum {string}
          */
         GateRuleState: "PASS" | "FAIL" | "WARN" | "NOT_APPLICABLE" | "WAIVED" | "ERROR";
+        /** @description The typed failure that keeps a gate from being evaluated on the branch head. */
+        GateStateReason: {
+            code: string;
+            message: string;
+        };
         GateStatus: {
             /** @description Finding IDs. */
             findings: string[];
             gate: components["schemas"]["GateName"];
+            /** @description The current report's result; false when the gate is not current. */
             passed: boolean;
+            reason: null | components["schemas"]["GateStateReason"];
             /** @description The report's rule results, in report order (Hotfix 082). */
             rules: components["schemas"]["GateRuleResult"][];
+            /** @description Whether this entry is the gate's report current for the branch head (H0.11). */
+            state: components["schemas"]["GateEvaluationState"];
             /** @description The report's own summary counts (Hotfix 082). */
             summary: components["schemas"]["GateSummaryView"];
             /** @description The report's applied governed waivers, in report order (Hotfix 082). */
@@ -2609,6 +2626,10 @@ export interface operations {
                      *         ],
                      *         "gate": "F1",
                      *         "passed": true,
+                     *         "reason": {
+                     *           "code": "example",
+                     *           "message": "example"
+                     *         },
                      *         "rules": [
                      *           {
                      *             "applicability": {
@@ -2640,6 +2661,7 @@ export interface operations {
                      *             "waiver_ref": "example"
                      *           }
                      *         ],
+                     *         "state": "current",
                      *         "summary": {
                      *           "blocker_failed": 0,
                      *           "blocker_waived": 0,

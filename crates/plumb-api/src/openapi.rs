@@ -856,6 +856,13 @@ pub enum GateName {
 #[serde(deny_unknown_fields)]
 pub struct GateStatus {
     pub gate: GateName,
+    /// Whether this entry is the gate's report current for the branch head (H0.11).
+    pub state: GateEvaluationState,
+    /// Why the gate is not current: the typed failure that prevents its evaluation now; null
+    /// exactly when `state` is `current`.
+    #[schema(required = true)]
+    pub reason: Option<GateStateReason>,
+    /// The current report's result; false when the gate is not current.
     pub passed: bool,
     /// Finding IDs.
     pub findings: Vec<String>,
@@ -865,6 +872,28 @@ pub struct GateStatus {
     pub waivers: Vec<GateWaiver>,
     /// The report's own summary counts (Hotfix 082).
     pub summary: GateSummaryView,
+}
+
+/// The evaluation state of a NOW gate on the branch head (H0.11, architecture §33.12):
+/// `current` has a report for the head; `stale` has only reports of earlier heads and cannot be
+/// evaluated now; `not_evaluated` has never been evaluated and cannot be evaluated now. A gate
+/// that is not current carries no rule results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum GateEvaluationState {
+    #[serde(rename = "not_evaluated")]
+    NotEvaluated,
+    #[serde(rename = "current")]
+    Current,
+    #[serde(rename = "stale")]
+    Stale,
+}
+
+/// The typed failure that keeps a gate from being evaluated on the branch head.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GateStateReason {
+    pub code: String,
+    pub message: String,
 }
 
 /// The exact result state of one rule in a gate report (Hotfix 082).

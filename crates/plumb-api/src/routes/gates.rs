@@ -13,9 +13,9 @@ use plumb_validation::{
 
 use crate::error::ApiError;
 use crate::openapi::{
-    GateName, GateRuleApplicability, GateRuleApplicabilityState, GateRuleError, GateRuleResult,
-    GateRuleState, GateStatus, GateSummaryView, GateWaiver, Readiness, ReadinessGroup,
-    ReadinessSubScores,
+    GateEvaluationState, GateName, GateRuleApplicability, GateRuleApplicabilityState,
+    GateRuleError, GateRuleResult, GateRuleState, GateStateReason, GateStatus, GateSummaryView,
+    GateWaiver, Readiness, ReadinessGroup, ReadinessSubScores,
 };
 use crate::state::{parse_wire, read_json, wire, ApiState, QueryParams};
 
@@ -29,43 +29,74 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/readiness", get(get_readiness))
 }
 
-/// `get_gates`: the current reports in I0, F1, F2, F3, F4 order. A gate without a current
-/// report is evaluated on demand (and persisted, as `ready` does); a gate that cannot be
-/// evaluated (e.g. its analysis never ran) is unevaluated and omitted, never reported as failed.
+/// `get_gates`: every NOW gate in I0, F1, F2, F3, F4 order (H0.11). A gate without a current
+/// report is evaluated on demand (and persisted, as `ready` does). A gate that cannot be
+/// evaluated is reported `stale` when only reports of earlier heads exist and `not_evaluated`
+/// otherwise, with the typed reason; it is never reported as failed and never omitted. A
+/// server-side failure (corrupt persisted state) fails the read.
 async fn get_gates(State(state): State<ApiState>) -> Result<Response, ApiError> {
     let loaded = state.load_head()?;
     let mut gates = Vec::new();
-    let mut reports = Vec::new();
     for gate in [GateId::I0, GateId::F1, GateId::F2, GateId::F3, GateId::F4] {
-        if let Ok(report) = state.current_or_evaluated_report(&loaded, gate) {
-            reports.push(report);
+        let name = parse_wire::<GateName>(&wire(&gate)?, "gate")?;
+        match state.current_or_evaluated_report(&loaded, gate) {
+            Ok(report) => gates.push(current_view(name, &report)?),
+            Err(error) if error.body().status.is_server_error() => return Err(error),
+            Err(error) => {
+                let state = if state.has_any_gate_report(gate)? {
+                    GateEvaluationState::Stale
+                } else {
+                    GateEvaluationState::NotEvaluated
+                };
+                gates.push(GateStatus {
+                    gate: name,
+                    state,
+                    reason: Some(GateStateReason {
+                        code: error.body().code.to_owned(),
+                        message: error.body().message.clone(),
+                    }),
+                    passed: false,
+                    findings: Vec::new(),
+                    rules: Vec::new(),
+                    waivers: Vec::new(),
+                    summary: GateSummaryView {
+                        blocker_failed: 0,
+                        blocker_waived: 0,
+                        warnings: 0,
+                    },
+                });
+            }
         }
     }
-    for report in reports {
-        let Ok(gate) = parse_wire::<GateName>(&wire(&report.gate)?, "gate") else {
-            continue; // Later gates are outside the NOW API.
-        };
-        let mut findings: Vec<String> = report.findings.iter().map(|f| f.id.to_string()).collect();
-        findings.sort();
-        let rules = report
-            .rules
-            .iter()
-            .map(rule_view)
-            .collect::<Result<Vec<_>, _>>()?;
-        gates.push(GateStatus {
-            gate,
-            passed: report.result == GateResult::Pass,
-            findings,
-            rules,
-            waivers: report.waivers.iter().map(waiver_view).collect(),
-            summary: GateSummaryView {
-                blocker_failed: report.summary.blocker_failed,
-                blocker_waived: report.summary.blocker_waived,
-                warnings: report.summary.warnings,
-            },
-        });
-    }
     Ok(read_json(&loaded, gates))
+}
+
+/// The projection of a report current for the head.
+fn current_view(
+    gate: GateName,
+    report: &plumb_validation::GateReport,
+) -> Result<GateStatus, ApiError> {
+    let mut findings: Vec<String> = report.findings.iter().map(|f| f.id.to_string()).collect();
+    findings.sort();
+    let rules = report
+        .rules
+        .iter()
+        .map(rule_view)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(GateStatus {
+        gate,
+        state: GateEvaluationState::Current,
+        reason: None,
+        passed: report.result == GateResult::Pass,
+        findings,
+        rules,
+        waivers: report.waivers.iter().map(waiver_view).collect(),
+        summary: GateSummaryView {
+            blocker_failed: report.summary.blocker_failed,
+            blocker_waived: report.summary.blocker_waived,
+            warnings: report.summary.warnings,
+        },
+    })
 }
 
 /// The API state of a validation rule result; exhaustive, so a new state must be considered here.

@@ -1172,6 +1172,8 @@ mod http_core {
             .collect();
         json!({
             "gate": report.gate.as_str(),
+            "state": "current",
+            "reason": null,
             "passed": report.result == plumb_validation::GateResult::Pass,
             "findings": findings,
             "rules": rules,
@@ -1182,6 +1184,20 @@ mod http_core {
                 "warnings": report.summary.warnings
             },
         })
+    }
+
+    /// The entries of a GET /api/gates body whose gate is current (H0.11: every NOW gate is
+    /// listed; the others are `not_evaluated` or `stale`).
+    fn current_gates(gates: &Value) -> Value {
+        let all = gates.as_array().unwrap();
+        let names: Vec<&str> = all.iter().map(|g| g["gate"].as_str().unwrap()).collect();
+        assert_eq!(names, ["I0", "F1", "F2", "F3", "F4"]);
+        Value::Array(
+            all.iter()
+                .filter(|g| g["state"] == "current")
+                .cloned()
+                .collect(),
+        )
     }
 
     /// `graph` plus the Accepted Finding nodes of `report` (findings do not change the semantic
@@ -1252,7 +1268,7 @@ mod http_core {
         );
 
         let app = app_with(waived_graph, &[GateId::F1], fixed());
-        let gates = get(&app, "/api/gates").await.json();
+        let gates = current_gates(&get(&app, "/api/gates").await.json());
         assert_eq!(gates.as_array().unwrap().len(), 1);
         let f1 = &gates[0];
         assert_eq!(*f1, gate_json(&report));
@@ -1307,7 +1323,7 @@ mod http_core {
         assert_eq!(version["semantic_hash"], h.semantic_hash.to_string());
         assert_eq!(version["evidence_hash"], h.evidence_hash.to_string());
         // Current reports in gate order; the current I0 FAIL is still current.
-        let gates = get(&app, "/api/gates").await.json();
+        let gates = current_gates(&get(&app, "/api/gates").await.json());
         let names: Vec<&str> = gates
             .as_array()
             .unwrap()
@@ -1401,7 +1417,10 @@ mod http_core {
     async fn http_core_gate_report_freshness() {
         // No current reports: no gates, and the gate-report-dependent export conflicts.
         let bare = app_with(fixture_graph(), &[], fixed());
-        assert_eq!(get(&bare, "/api/gates").await.json(), json!([]));
+        assert_eq!(
+            current_gates(&get(&bare, "/api/gates").await.json()),
+            json!([])
+        );
         let r = get(&bare, "/api/model/export?format=report").await;
         assert_eq!(
             (r.status, r.code().as_str()),
@@ -1484,7 +1503,7 @@ mod http_core {
                 Request::get("/api/gates").body(Body::empty()).unwrap(),
             )
             .await;
-            assert_eq!(r.json(), json!([]), "{label}");
+            assert_eq!(current_gates(&r.json()), json!([]), "{label}");
         }
         // Registration order does not matter.
         let dir = tempfile::tempdir().unwrap();
@@ -1514,8 +1533,7 @@ mod http_core {
             Request::get("/api/gates").body(Body::empty()).unwrap(),
         )
         .await;
-        let names: Vec<String> = r
-            .json()
+        let names: Vec<String> = current_gates(&r.json())
             .as_array()
             .unwrap()
             .iter()

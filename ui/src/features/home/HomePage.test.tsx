@@ -115,9 +115,11 @@ const VERSION: ModelVersion = {
 };
 
 const GATES: GateStatus[] = [
-  { gate: "I0", passed: true, findings: [], rules: [], waivers: [], summary: { blocker_failed: 0, blocker_waived: 0, warnings: 0 } },
+  { gate: "I0", state: "current", reason: null, passed: true, findings: [], rules: [], waivers: [], summary: { blocker_failed: 0, blocker_waived: 0, warnings: 0 } },
   {
     gate: "F1",
+    state: "current",
+    reason: null,
     passed: false,
     findings: ["fnd:0123456789abcdef"],
     rules: [

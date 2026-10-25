@@ -18,8 +18,11 @@ async function fetchGates(): Promise<GateStatus[]> {
 
 /** A returned gate passes or fails; a gate absent from the response is unevaluated. */
 function gateState(status: GateStatus | undefined): MessageKey {
-  if (status === undefined) {
+  if (status === undefined || status.state === "not_evaluated") {
     return "gate.unevaluated";
+  }
+  if (status.state === "stale") {
+    return "gate.stale";
   }
   return status.passed ? "gate.pass" : "gate.fail";
 }

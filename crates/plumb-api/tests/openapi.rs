@@ -1994,8 +1994,9 @@ mod openapi {
         // Hotfix 073 adds SemanticElementDiff and SemanticChangePreviewResponse; Hotfix 079 adds
         // ProcessNodeView, ProcessNodeViewKind and ProcessFlowView; Hotfix 080 adds
         // FindingRuleClass; Hotfix 082 adds GateRuleState, GateRuleApplicabilityState,
-        // GateRuleApplicability, GateRuleError, GateRuleResult, GateWaiver and GateSummaryView.
-        assert_eq!(schemas.len(), 128);
+        // GateRuleApplicability, GateRuleError, GateRuleResult, GateWaiver and GateSummaryView;
+        // H0.11 adds GateEvaluationState and GateStateReason.
+        assert_eq!(schemas.len(), 130);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -2082,13 +2083,15 @@ mod openapi {
                 .cloned()
                 .collect::<BTreeSet<_>>()
         };
+        // H0.11: every NOW gate carries its evaluation state and, when not current, the reason.
+        let gate_fields = [
+            "gate", "state", "reason", "passed", "findings", "rules", "waivers", "summary",
+        ];
+        assert_eq!(keys("GateStatus"), set(&gate_fields));
+        assert_eq!(required(&doc, "GateStatus"), set(&gate_fields));
         assert_eq!(
-            keys("GateStatus"),
-            set(&["gate", "passed", "findings", "rules", "waivers", "summary"])
-        );
-        assert_eq!(
-            required(&doc, "GateStatus"),
-            set(&["gate", "passed", "findings", "rules", "waivers", "summary"])
+            enum_of(&doc, "GateEvaluationState"),
+            json!(["not_evaluated", "current", "stale"])
         );
         assert_eq!(
             enum_of(&doc, "GateRuleState"),
