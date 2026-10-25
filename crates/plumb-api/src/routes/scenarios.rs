@@ -146,19 +146,23 @@ impl<'a> RunCurrency<'a> {
         let Some(recorded) = self.recorded_graph(baseline)? else {
             return Ok(false);
         };
-        let execution = ScenarioExecution {
-            actor_ref: state.actor_ref(),
-            calendars: runtime.calendars.as_ref(),
-            predicates: runtime.predicates.as_ref(),
-            expression_scopes: &runtime.expression_scopes,
-            calculation_scope_overrides: &runtime.calculation_scope_overrides,
-            runtime_semantic_values: &runtime.runtime_semantic_values,
+        // Each model resolves the configured selectors against its own graph. A configuration
+        // that does not resolve, or a model that cannot be built, cannot establish currency:
+        // stale, never current.
+        let model_of = |graph| -> Option<_> {
+            let execution = ScenarioExecution {
+                actor_ref: state.actor_ref(),
+                calendars: runtime.calendars.as_ref(),
+                predicates: runtime.predicates.as_ref(),
+                expression_scopes: &runtime.expression_scopes_for(graph).ok()?,
+                calculation_scope_overrides: &runtime
+                    .calculation_scope_overrides_for(graph)
+                    .ok()?,
+                runtime_semantic_values: &runtime.runtime_semantic_values_for(graph).ok()?,
+            };
+            execution_model(graph, &execution).ok()
         };
-        // A model that cannot be built cannot establish currency: stale, never current.
-        let (Ok(model), Ok(recorded)) = (
-            execution_model(head, &execution),
-            execution_model(recorded, &execution),
-        ) else {
+        let (Some(model), Some(recorded)) = (model_of(head), model_of(recorded)) else {
             return Ok(false);
         };
         Ok(matches!(
