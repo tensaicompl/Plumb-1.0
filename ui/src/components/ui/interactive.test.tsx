@@ -159,6 +159,36 @@ describe("SegmentedControl", () => {
     expect(await axeViolations()).toEqual([]);
   });
 
+  it("fills its container, can be named by another element and stays reachable with nothing chosen (Inbox Yes/No answer)", async () => {
+    const onChange = vi.fn();
+    render(
+      <div>
+        <p id="answer-heading">Answer</p>
+        <SegmentedControl
+          labelledBy="answer-heading"
+          fill
+          value={null}
+          onChange={onChange}
+          options={[
+            { value: "yes", label: "Yes" },
+            { value: "no", label: "No" },
+          ]}
+        />
+      </div>,
+    );
+    const group = screen.getByRole("radiogroup", { name: "Answer" });
+    expect(classOf(group)).toContain("w-full");
+    const [yes, no] = within(group).getAllByRole("radio") as [HTMLElement, HTMLElement];
+    expect(classOf(yes)).toContain("flex-1");
+    expect(yes.getAttribute("aria-checked")).toBe("false");
+    expect(yes.tabIndex).toBe(0);
+    expect(no.tabIndex).toBe(-1);
+    yes.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(onChange).toHaveBeenLastCalledWith("no");
+    expect(await axeViolations()).toEqual([]);
+  });
+
   it("renders navigation segments as links that navigate on a plain click", async () => {
     const onNavigate = vi.fn();
     render(

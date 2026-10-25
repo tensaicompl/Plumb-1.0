@@ -2869,76 +2869,112 @@ mod services {
         /// the same rationale and supersession. The stale proposal is then rejected. Nothing is
         /// rebased: the governed answer is resolved again on the current graph. An answer that
         /// no longer applies (e.g. already decided) only rejects the stale proposal. Returns
-        /// (stale proposal, new proposal or the reason it was not re-submitted).
+        /// (stale proposal, new proposal or the reason it was not re-submitted). Each entry is
+        /// exactly its stored occurrence (H0.10): an identical occurrence on the head is a
+        /// different record and is never rejected here.
         pub fn refresh_stale_answers(
             &self,
             loaded: &LoadedRevision,
         ) -> Result<Vec<AnswerRefresh>, ApiError> {
             let mut outcomes = Vec::new();
-            for view in self.pending_proposals()? {
+            for (view, stored) in self.pending_entries_on(loaded)? {
                 if !view.stale || view.origin != "question" {
                     continue;
                 }
-                // Exactly this stale occurrence (H0.10): an identical occurrence on the head
-                // is a different record and is never rejected here.
-                let corrupt =
-                    || ApiError::workflow_corrupt(&format!("proposal {}", view.proposal_id));
-                let (id, base): (Id, plumb_store::RevisionId) = (
-                    view.proposal_id.parse().map_err(|_| corrupt())?,
-                    view.base_revision.parse().map_err(|_| corrupt())?,
-                );
-                let record = self
-                    .with_workflow_store(|store| store.proposal(&id, &base))?
-                    .map_err(workflow_error)?
-                    .ok_or_else(corrupt)?;
-                let stored = decode_proposal(record)?;
-                let decision = answer_decision(&stored.proposal.patch_set.patch);
-                let resubmitted = match decision {
-                    None => Err("the proposal records no answer decision".to_owned()),
-                    Some(decision) => {
-                        let question = decision
-                            .question_ref
-                            .as_ref()
-                            .and_then(|q| loaded.graph.node(q))
-                            .and_then(|n| match &n.payload {
-                                NodePayload::Question(q) => Some((n.id.clone(), q.clone())),
-                                _ => None,
-                            });
-                        match question {
-                            None => Err("its question no longer exists".to_owned()),
-                            Some((question_ref, question)) => {
-                                let keys: Vec<String> = question
-                                    .answer_schema
-                                    .as_ref()
-                                    .and_then(|s| s.get("properties"))
-                                    .and_then(Value::as_object)
-                                    .map(|p| p.keys().cloned().collect())
-                                    .unwrap_or_default();
-                                let answer: serde_json::Map<String, Value> = keys
-                                    .iter()
-                                    .filter_map(|k| {
-                                        decision.answer.get(k).map(|v| (k.clone(), v.clone()))
-                                    })
-                                    .collect();
-                                self.answer_question(
-                                    loaded,
-                                    question_ref.as_str(),
-                                    Value::Object(answer),
-                                    decision.rationale.clone(),
-                                    decision.supersedes.clone(),
-                                )
-                                .map(|r| r.proposal_id)
-                                .map_err(|e| e.body().message.clone())
-                            }
-                        }
-                    }
-                };
+                let resubmitted = self.resubmit_answer(loaded, &stored).map(|r| r.proposal_id);
                 if stored.record.state == WorkflowProposalState::Pending {
                     self.reject_stored(loaded, &stored, self.now())?;
                 }
                 outcomes.push((view.proposal_id, resubmitted));
             }
             Ok(outcomes)
+        }
+
+        /// S2 (the Inbox "Refresh proposal"): re-submits exactly the stale question-origin
+        /// pending proposal `proposal_id` from its recorded decision on `loaded` and rejects
+        /// the stale occurrence. 404 when unknown, 409 `E_PROPOSAL_NOT_PENDING` when resolved,
+        /// 409 `E_PROPOSAL_NOT_REFRESHABLE` when it is not a stale answer, and 409
+        /// `E_PROPOSAL_REFRESH_FAILED` (nothing changed) when the answer no longer applies.
+        pub fn refresh_stale_answer(
+            &self,
+            loaded: &LoadedRevision,
+            proposal_id: &str,
+        ) -> Result<(String, AnswerResponse), ApiError> {
+            let entries = self.pending_entries_on(loaded)?;
+            let Some((view, stored)) = entries
+                .iter()
+                .filter(|(view, _)| view.proposal_id == proposal_id)
+                .max_by_key(|(view, _)| view.stale)
+            else {
+                let missing = || ApiError::not_found(format!("proposal {proposal_id} not found"));
+                let id: Id = proposal_id.parse().map_err(|_| missing())?;
+                let latest = self
+                    .with_workflow_store(|store| store.latest_proposal(&id))?
+                    .map_err(workflow_error)?;
+                return Err(match latest {
+                    Some(record) => not_pending(&record),
+                    None => missing(),
+                });
+            };
+            if !view.stale || view.origin != "question" {
+                return Err(ApiError::conflict(
+                    "E_PROPOSAL_NOT_REFRESHABLE",
+                    "only a stale answer proposal can be refreshed",
+                )
+                .with_details(json!({
+                    "proposal": view.proposal_id,
+                    "origin": view.origin,
+                    "stale": view.stale,
+                })));
+            }
+            let response = self.resubmit_answer(loaded, stored).map_err(|why| {
+                ApiError::conflict("E_PROPOSAL_REFRESH_FAILED", why)
+                    .with_details(json!({ "proposal": view.proposal_id }))
+            })?;
+            self.reject_stored(loaded, stored, self.now())?;
+            Ok((view.proposal_id.clone(), response))
+        }
+
+        /// Re-submits the answer a stored question-origin proposal records on `loaded`, or why
+        /// it cannot be re-submitted.
+        fn resubmit_answer(
+            &self,
+            loaded: &LoadedRevision,
+            stored: &StoredProposal,
+        ) -> Result<AnswerResponse, String> {
+            let Some(decision) = answer_decision(&stored.proposal.patch_set.patch) else {
+                return Err("the proposal records no answer decision".to_owned());
+            };
+            let question = decision
+                .question_ref
+                .as_ref()
+                .and_then(|q| loaded.graph.node(q))
+                .and_then(|n| match &n.payload {
+                    NodePayload::Question(q) => Some((n.id.clone(), q.clone())),
+                    _ => None,
+                });
+            let Some((question_ref, question)) = question else {
+                return Err("its question no longer exists".to_owned());
+            };
+            let keys: Vec<String> = question
+                .answer_schema
+                .as_ref()
+                .and_then(|s| s.get("properties"))
+                .and_then(Value::as_object)
+                .map(|p| p.keys().cloned().collect())
+                .unwrap_or_default();
+            let answer: serde_json::Map<String, Value> = keys
+                .iter()
+                .filter_map(|k| decision.answer.get(k).map(|v| (k.clone(), v.clone())))
+                .collect();
+            self.answer_question(
+                loaded,
+                question_ref.as_str(),
+                Value::Object(answer),
+                decision.rationale.clone(),
+                decision.supersedes.clone(),
+            )
+            .map_err(|e| e.body().message.clone())
         }
 
         /// The pending S1.2 EARS proposal of `requirement` on `loaded` (R0.6): a pending

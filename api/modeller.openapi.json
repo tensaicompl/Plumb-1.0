@@ -3161,6 +3161,48 @@
         ],
         "type": "object"
       },
+      "RefreshProposalResponse": {
+        "additionalProperties": false,
+        "description": "The result of `refresh_proposal` (S2): the stale answer proposal `refreshed` was re-submitted\nfrom its recorded decision as the new pending proposal `proposal_id` (of class `action`) and\nthen rejected. Nothing is committed: the write fields name the unchanged head.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ProposalKind"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DesignEvent"
+            },
+            "type": "array"
+          },
+          "proposal_id": {
+            "description": "The new pending answer proposal on the head.",
+            "type": "string"
+          },
+          "refreshed": {
+            "description": "The stale proposal that was re-submitted and rejected.",
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "semantic_hash": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "semantic_hash",
+          "events",
+          "refreshed",
+          "proposal_id",
+          "action"
+        ],
+        "type": "object"
+      },
       "RequirementClass": {
         "description": "The closed requirement class vocabulary (`Requirement.requirement_kind`, §7.5).",
         "enum": [
@@ -4530,7 +4572,7 @@
     }
   },
   "info": {
-    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79) and B2 (the UI pipeline operations 80-84).",
+    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79), B2 (the UI pipeline operations 80-84) and S2 (the Inbox refresh of a stale answer, operation 85).",
     "title": "Plumb Modeller API",
     "version": "0.1.0",
     "x-plumb-error-codes": [
@@ -4817,6 +4859,16 @@
       {
         "code": "E_PROPOSAL_NOT_PENDING",
         "meaning": "The proposal is not pending.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_NOT_REFRESHABLE",
+        "meaning": "Only a stale pending answer proposal can be refreshed.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_REFRESH_FAILED",
+        "meaning": "The stale answer could not be re-submitted on the current head; nothing changed.",
         "status": 409
       },
       {
@@ -9087,6 +9139,82 @@
               }
             },
             "description": "Write result"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "example",
+                  "details": {},
+                  "message": "example",
+                  "revision": "example",
+                  "semantic_hash": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PreconditionFailedResponse"
+                }
+              }
+            },
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
+          }
+        },
+        "tags": [
+          "proposals"
+        ]
+      }
+    },
+    "/api/proposals/{id}/refresh": {
+      "post": {
+        "operationId": "refresh_proposal",
+        "parameters": [
+          {
+            "description": "Proposal ID",
+            "example": "example",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
+            "example": "example",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "action": "accept",
+                  "events": [
+                    {
+                      "ids": [
+                        "example"
+                      ],
+                      "kind": "example",
+                      "version": "example"
+                    }
+                  ],
+                  "proposal_id": "example",
+                  "refreshed": "example",
+                  "revision": "example",
+                  "semantic_hash": "example",
+                  "version": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshProposalResponse"
+                }
+              }
+            },
+            "description": "The stale answer proposal is re-submitted from its recorded decision as a new pending proposal and rejected; nothing is committed (409 E_PROPOSAL_NOT_REFRESHABLE unless it is a stale answer, 409 E_PROPOSAL_REFRESH_FAILED when the answer no longer applies)"
           },
           "412": {
             "content": {

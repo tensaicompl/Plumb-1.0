@@ -5,7 +5,7 @@ import { apiClient, readReviewed, revisionEtag, ReviewedEtag, type Reviewed } fr
 import type { components } from "../../api/schema";
 import { modelVersionQueryKey, useModelVersion, useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
-import { fetchQuestions, QuestionAnswerCard, questionsQueryKey, writeErrorCode } from "../questions/QuestionsPage";
+import { fetchQuestions, QuestionAnswerCard, questionsQueryKey, writeErrorCode } from "../../components/QuestionAnswerCard";
 import { useMe } from "../../app/auth";
 import { ProposalCard } from "./ProposalCard";
 

@@ -24,7 +24,7 @@ use crate::application::{baseline_changed, not_pending, ProposalAction};
 use crate::error::ApiError;
 use crate::openapi::{
     AcceptProposalSetRequest, ConfirmElementsRequest, IntakeRequest, IntakeResponse,
-    PendingProposalList, ProposalActionRequest,
+    PendingProposalList, ProposalActionRequest, RefreshProposalResponse,
 };
 use crate::state::{
     check_if_match, parse_body, read_json, require_clean_reason, run_intake, ApiState,
@@ -48,6 +48,8 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/proposals/{id}", get(get_proposal))
         .route("/api/proposals/accept-set", post(accept_proposal_set))
         .route("/api/model/confirm", post(confirm_elements))
+        // S2 Inbox.
+        .route("/api/proposals/{id}/refresh", post(refresh_proposal))
 }
 
 /// The store vocabulary of a workflow origin.
@@ -303,6 +305,30 @@ async fn confirm_elements(
     check_if_match(&headers, &loaded)?;
     let write = state.confirm_any(&loaded, &request.element_ids, request.reason)?;
     Ok(Json(write).into_response())
+}
+
+/// `refresh_proposal` (S2 Inbox "Refresh proposal"): re-submits one stale answer proposal from
+/// its recorded decision on the head (the CLI `proposals --refresh` for one proposal) and
+/// rejects the stale occurrence; nothing is committed. Takes no body.
+async fn refresh_proposal(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    state.runtime("workflow_store")?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let (refreshed, answer) = state.refresh_stale_answer(&loaded, &id)?;
+    Ok(Json(RefreshProposalResponse {
+        version: answer.version,
+        revision: answer.revision,
+        semantic_hash: answer.semantic_hash,
+        events: answer.events,
+        refreshed,
+        proposal_id: answer.proposal_id,
+        action: answer.action,
+    })
+    .into_response())
 }
 
 /// `reject_proposal`: pending -> rejected without changing the PSG.

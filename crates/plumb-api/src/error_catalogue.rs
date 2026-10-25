@@ -302,6 +302,16 @@ pub const ERROR_CATALOGUE: &[CatalogueEntry] = &[
         "The proposal is not pending.",
     ),
     entry(
+        "E_PROPOSAL_NOT_REFRESHABLE",
+        409,
+        "Only a stale pending answer proposal can be refreshed.",
+    ),
+    entry(
+        "E_PROPOSAL_REFRESH_FAILED",
+        409,
+        "The stale answer could not be re-submitted on the current head; nothing changed.",
+    ),
+    entry(
         "E_PROPOSAL_RESOLUTION_INVALID",
         409,
         "The resolution revision does not descend from the proposal's base.",

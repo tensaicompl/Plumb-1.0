@@ -1,3 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
+
+import { apiClient, readData } from "../api/client";
 import type { components } from "../api/schema";
 import { t, type MessageKey } from "../i18n";
 import { useRunStore, type RunJob } from "./run";
@@ -69,16 +72,45 @@ export function jobStep(job: RunJob): PipelineStep {
   return isJobActive(job) ? { stage: job.stage, state: "running", progress: job.progress } : { stage: job.stage, state: "done" };
 }
 
+type PipelineResponse = components["schemas"]["PipelineResponse"];
+type ServerStep = components["schemas"]["PipelineStep"];
+
+/** GET /api/pipeline (`get_pipeline`): every stage recipe's state and the next step. Key ["pipeline"]. */
+export const pipelineQuery = {
+  queryKey: ["pipeline"] as const,
+  queryFn: (): Promise<PipelineResponse> => readData(apiClient.GET("/api/pipeline")),
+};
+
+const STEP_STATE: Readonly<Record<ServerStep["status"], StepState>> = {
+  not_started: "not_started",
+  queued: "running",
+  running: "running",
+  needs_review: "needs_review",
+  done: "done",
+  failed: "failed",
+  stale: "stale",
+};
+
+/** One server step as the snapshot shows it. */
+export function serverStep(step: ServerStep): PipelineStep {
+  return {
+    stage: step.recipe,
+    state: STEP_STATE[step.status],
+    ...(typeof step.progress === "number" ? { progress: step.progress } : {}),
+    reviewCount: step.pending_proposals,
+    error: step.error?.message ?? null,
+  };
+}
+
 /**
- * The pipeline snapshot: the single seam for pipeline data.
- *
- * The contract has no pipeline read yet (a backend lane is adding `GET /api/pipeline` with step
- * states). Until it is in the generated schema, the snapshot holds what this browser knows: the
- * stage job it started, and no `next` step. When the read lands, query it here (TanStack Query,
- * key ["pipeline"]) and merge the local job over it; `useNextAction`, the Run menu and the
- * Overview stepper then pick it up unchanged.
+ * The pipeline snapshot: the single seam for pipeline data. The server's `get_pipeline` steps,
+ * with the stage job this browser tracks laid over its own step (it is fresher while it runs).
  */
 export function usePipeline(): PipelineSnapshot {
   const job = useRunStore((state) => state.job);
-  return { steps: job === null ? [] : [jobStep(job)], next: null };
+  const pipeline = useQuery(pipelineQuery);
+  const server = Array.isArray(pipeline.data?.steps) ? pipeline.data.steps.map(serverStep) : [];
+  const local = job === null ? null : jobStep(job);
+  const steps = local === null ? server : server.some((s) => s.stage === local.stage) ? server.map((s) => (s.stage === local.stage ? local : s)) : [...server, local];
+  return { steps, next: pipeline.data?.next ?? null };
 }

@@ -18,7 +18,7 @@ export function etagJson<T extends JsonBodyType>(body: T, init?: ResponseInit, e
  * (version indicator, Run step If-Match) and the work counts behind the Inbox badge and the Next
  * action. Tests that assert which reads a page makes leave these out.
  */
-export const SHELL_READS: readonly string[] = ["/api/me", "/api/model/version", "/api/proposals", "/api/questions", "/api/findings", "/api/gates"];
+export const SHELL_READS: readonly string[] = ["/api/me", "/api/model/version", "/api/proposals", "/api/questions", "/api/findings", "/api/gates", "/api/pipeline"];
 
 /** Whether a request path is one of the shell's own reads. */
 export function isShellRead(path: string): boolean {
@@ -37,6 +37,7 @@ export const handlers: RequestHandler[] = [
   http.get("*/api/questions", () => etagJson({ items: [], health: [], next_cursor: null })),
   http.get("*/api/findings", () => etagJson({ items: [], next_cursor: null })),
   http.get("*/api/gates", () => etagJson([])),
+  http.get("*/api/pipeline", () => etagJson({ steps: [], next: null, open_questions: 0, sources: 0 })),
 ];
 
 export const server = setupServer(...handlers);
