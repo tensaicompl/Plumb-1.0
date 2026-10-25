@@ -1157,6 +1157,23 @@ mod f3_contract {
                 .code,
             "F3_QUESTION_LINK"
         );
+        // Fable #299: a Question on a blocker Finding of any family is blocking.
+        for family in ["F1", "I0", "F3"] {
+            let other = edit_node(
+                &question_graph(vec![("q:00000000000000a1", "fnd:00000000000000b1", "Open")]),
+                "fnd:00000000000000b1",
+                |n| {
+                    if let NodePayload::Finding(f) = &mut n.payload {
+                        f.family = family.into();
+                    }
+                },
+            );
+            assert_eq!(state(&r(&other), NO_BLOCKING_OPEN), FAIL, "{family}");
+            assert_eq!(
+                targets(&r(&other), NO_BLOCKING_OPEN),
+                vec![id("q:00000000000000a1")]
+            );
+        }
         // A missing or inactive Finding leaves the question outside the applicable set.
         let missing = question_graph(vec![("q:00000000000000a1", "fnd:00000000000000ff", "Open")]);
         assert_eq!(state(&r(&missing), NO_BLOCKING_OPEN), PASS);
@@ -1537,7 +1554,6 @@ mod f3_contract {
             edit(|a| a.owner_ref = "operation:approve".parse().unwrap()),
             edit(|a| a.owner_ref = "agent:intern".parse().unwrap()),
             edit(|a| a.expires_at = None),
-            edit(|a| a.risk_ref = Some("risk:any".parse().unwrap())),
         ] {
             let report = evaluate(&bad, inputs());
             assert_eq!(state(&report, ASSUMPTION_OWNER), FAIL);
@@ -1546,6 +1562,18 @@ mod f3_contract {
                 vec![g.assumption.clone()]
             );
         }
+        // H0.7: exactly the profile condition (owner and expiry); a risk_ref is not part of
+        // it, so an otherwise governed assumption with a risk_ref passes.
+        assert_eq!(
+            state(
+                &evaluate(
+                    &edit(|a| a.risk_ref = Some("risk:any".parse().unwrap())),
+                    inputs()
+                ),
+                ASSUMPTION_OWNER
+            ),
+            PASS
+        );
         // Not linked to a blocker finding: not applicable.
         let unlinked = edit(|a| a.finding_ref = None);
         assert_eq!(state(&evaluate(&unlinked, inputs()), ASSUMPTION_OWNER), NA);

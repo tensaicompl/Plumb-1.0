@@ -471,20 +471,23 @@ mod i0_contract {
         );
     }
 
+    /// Fable #131: evidence of a non-built-in source kind is reported, never silently treated
+    /// as verified (this test previously asserted it was ignored).
     #[test]
-    fn non_built_in_fragments_are_ignored_by_locator_rules() {
+    fn non_built_in_fragments_are_reported_by_locator_rules() {
         let (source, fragment, artifact) = foreign_source();
         let mut corpus = small_corpus();
-        corpus.nodes.push(source);
+        corpus.nodes.push(source.clone());
         corpus.nodes.push(fragment.clone());
         let mut artifacts = corpus.artifacts.clone();
         artifacts.push(artifact);
         let report = evaluate(&corpus, &artifacts);
-        assert_eq!(state(&report, LOCATABLE), Pass);
-        assert_eq!(state(&report, HASH_MATCH), Pass);
-        assert_eq!(state(&report, PARSE_STATUS), Pass);
-        assert!(!targets(&report, LOCATABLE).contains(&fragment.id.to_string()));
-        assert!(!targets(&report, HASH_MATCH).contains(&fragment.id.to_string()));
+        assert_eq!(state(&report, LOCATABLE), Fail);
+        assert_eq!(state(&report, HASH_MATCH), Fail);
+        assert_eq!(state(&report, PARSE_STATUS), Fail);
+        assert_eq!(targets(&report, LOCATABLE), [fragment.id.to_string()]);
+        assert_eq!(targets(&report, HASH_MATCH), [fragment.id.to_string()]);
+        assert_eq!(targets(&report, PARSE_STATUS), [source.id.to_string()]);
         // The foreign evidence lacks the pilot links, so no exact manifest exists for it.
         assert!(matches!(
             build_evidence_manifest(&corpus.graph()),
@@ -679,33 +682,66 @@ mod i0_contract {
     fn empty_evidence_baseline_passes_universal_rules() {
         let corpus = Corpus::empty();
         let report = evaluate_complete(&corpus);
-        for rule_id in [
-            CONTENT_ADDRESSED,
-            LOCATABLE,
-            HASH_MATCH,
-            PARSE_STATUS,
-            BASELINE_HASHABLE,
-        ] {
+        for rule_id in [CONTENT_ADDRESSED, BASELINE_HASHABLE] {
             assert_eq!(state(&report, rule_id), Pass, "{rule_id}");
             assert!(targets(&report, rule_id).is_empty(), "{rule_id}");
             assert!(result(&report, rule_id).evidence.is_empty(), "{rule_id}");
+        }
+        // Fable #131: without evidence of a built-in source kind the locator, hash and parse
+        // rules record why they do not apply instead of passing over nothing.
+        for (rule_id, reason) in [
+            (
+                LOCATABLE,
+                "No baseline EvidenceFragment of a built-in source kind is present.",
+            ),
+            (
+                HASH_MATCH,
+                "No baseline EvidenceFragment of a built-in source kind is present.",
+            ),
+            (
+                PARSE_STATUS,
+                "No baseline SourceArtifact of a built-in source kind is present.",
+            ),
+        ] {
+            assert_eq!(state(&report, rule_id), NotApplicable, "{rule_id}");
+            assert_eq!(
+                result(&report, rule_id).applicability,
+                Applicability::NotApplicable {
+                    reason: reason.into()
+                },
+                "{rule_id}"
+            );
         }
         assert_eq!(state(&report, AGENT_IDENTIFIED), NotApplicable);
         assert_eq!(report.result, GateResult::Pass);
     }
 
     #[test]
-    fn only_foreign_evidence_leaves_built_in_rules_empty() {
+    fn only_foreign_evidence_is_reported_by_built_in_rules() {
         let (source, fragment, artifact) = foreign_source();
         let corpus = Corpus {
-            nodes: vec![source.clone(), fragment],
+            nodes: vec![source.clone(), fragment.clone()],
             artifacts: vec![artifact],
         };
         let report = evaluate(&corpus, &corpus.artifacts);
-        for rule_id in [LOCATABLE, HASH_MATCH, PARSE_STATUS] {
-            assert_eq!(state(&report, rule_id), Pass, "{rule_id}");
-            assert!(targets(&report, rule_id).is_empty(), "{rule_id}");
+        // Fable #131: never a PASS over an empty checked set while foreign evidence exists.
+        for (rule_id, target) in [
+            (LOCATABLE, &fragment.id),
+            (HASH_MATCH, &fragment.id),
+            (PARSE_STATUS, &source.id),
+        ] {
+            assert_eq!(state(&report, rule_id), Fail, "{rule_id}");
+            assert_eq!(targets(&report, rule_id), [target.to_string()], "{rule_id}");
         }
+        // A foreign source without baseline fragments is not reported by PARSE_STATUS.
+        let lone = Corpus {
+            nodes: vec![source.clone()],
+            artifacts: corpus.artifacts.clone(),
+        };
+        assert_eq!(
+            state(&evaluate(&lone, &lone.artifacts), PARSE_STATUS),
+            NotApplicable
+        );
         assert_eq!(state(&report, CONTENT_ADDRESSED), Pass);
         assert_eq!(targets(&report, CONTENT_ADDRESSED), [source.id.to_string()]);
         assert_eq!(state(&report, BASELINE_HASHABLE), Fail);

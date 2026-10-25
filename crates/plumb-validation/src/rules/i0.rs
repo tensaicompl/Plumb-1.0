@@ -5,6 +5,8 @@
 //! context. Bad evidence is a violation; an evaluator failure is reserved for a genuine
 //! internal inability to evaluate.
 
+use std::collections::BTreeSet;
+
 use plumb_artifacts::ArtifactKind;
 use plumb_core::{to_canonical_json, Hash, HashKind, Id};
 use plumb_import::{
@@ -103,24 +105,69 @@ fn extension<T: DeserializeOwned>(node: &Node, key: &str) -> Option<T> {
     serde_json::from_value(node.extensions.get(&key)?.clone()).ok()
 }
 
-/// The baseline fragments whose resolved baseline source is of a built-in kind.
-fn builtin_fragments(graph: &Graph) -> Vec<(&Node, &EvidenceFragment, &Node)> {
-    baseline_nodes(graph, NodeType::EvidenceFragment)
-        .filter_map(|node| {
-            let NodePayload::EvidenceFragment(fragment) = &node.payload else {
-                return None;
-            };
-            let source_node = graph
-                .node(&fragment.source_ref)
-                .filter(|s| is_baseline(s.status))?;
-            match &source_node.payload {
-                NodePayload::SourceArtifact(source) if builtin_source_kind(source).is_some() => {
-                    Some((node, fragment, source_node))
-                }
-                _ => None,
+/// The baseline fragments split by their source (Fable #131): those whose resolved baseline
+/// source is of a built-in kind, and every other one (a non-built-in source kind or a source
+/// that does not resolve to a baseline SourceArtifact), which can never be verified.
+struct Fragments<'g> {
+    builtin: Vec<(&'g Node, &'g EvidenceFragment, &'g Node)>,
+    unverifiable: Vec<&'g Node>,
+}
+
+fn baseline_fragments(graph: &Graph) -> Fragments<'_> {
+    let mut out = Fragments {
+        builtin: Vec::new(),
+        unverifiable: Vec::new(),
+    };
+    for node in baseline_nodes(graph, NodeType::EvidenceFragment) {
+        let NodePayload::EvidenceFragment(fragment) = &node.payload else {
+            continue;
+        };
+        let source = graph
+            .node(&fragment.source_ref)
+            .filter(|s| is_baseline(s.status));
+        match source.map(|s| (s, &s.payload)) {
+            Some((source_node, NodePayload::SourceArtifact(source)))
+                if builtin_source_kind(source).is_some() =>
+            {
+                out.builtin.push((node, fragment, source_node));
             }
-        })
-        .collect()
+            _ => out.unverifiable.push(node),
+        }
+    }
+    out
+}
+
+const NO_BUILTIN_FRAGMENT: &str =
+    "No baseline EvidenceFragment of a built-in source kind is present.";
+
+/// A fragment rule over the baseline fragments: NOT_APPLICABLE without any fragment, otherwise
+/// `verified` over the built-in ones and a violation for every unverifiable one.
+fn fragment_rule(
+    graph: &Graph,
+    verified: impl Fn(&Node, &EvidenceFragment, &Node) -> bool,
+    condition_key: &str,
+    message: &str,
+) -> Outcome {
+    let fragments = baseline_fragments(graph);
+    if fragments.builtin.is_empty() && fragments.unverifiable.is_empty() {
+        return RuleEvaluation::not_applicable(NO_BUILTIN_FRAGMENT.to_owned())
+            .map_err(|e| internal("E_I0_OUTPUT", e.to_string()));
+    }
+    let mut checked = Vec::new();
+    let mut violating = Vec::new();
+    for (node, fragment, source) in fragments.builtin {
+        if !verified(node, fragment, source) {
+            violating.push(node.id.clone());
+        }
+        checked.push(node.id.clone());
+    }
+    for node in fragments.unverifiable {
+        violating.push(node.id.clone());
+        checked.push(node.id.clone());
+    }
+    checked.sort();
+    violating.sort();
+    universal(checked, violating, condition_key, message)
 }
 
 /// The exact extracted bytes a built-in fragment locates, if it can be resolved.
@@ -189,57 +236,61 @@ fn content_addressed(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -
 }
 
 fn locatable(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Outcome {
-    let mut checked = Vec::new();
-    let mut violating = Vec::new();
-    for (node, fragment, source) in builtin_fragments(graph) {
-        if resolve_range(ctx, node, fragment, source).is_none() {
-            violating.push(node.id.clone());
-        }
-        checked.push(node.id.clone());
-    }
-    universal(
-        checked,
-        violating,
+    fragment_rule(
+        graph,
+        |node, fragment, source| resolve_range(ctx, node, fragment, source).is_some(),
         "evidence-locatable",
         "One or more EvidenceFragment nodes cannot be resolved to their exact extracted source range.",
     )
 }
 
 fn hash_match(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Outcome {
-    let mut checked = Vec::new();
-    let mut violating = Vec::new();
-    for (node, fragment, source) in builtin_fragments(graph) {
-        let matches = resolve_range(ctx, node, fragment, source).is_some_and(|bytes| {
-            Hash::content_sha256(&bytes) == fragment.content_hash
-                && fragment
-                    .extracted_text
-                    .as_ref()
-                    .is_none_or(|text| text.as_bytes() == bytes.as_slice())
-        });
-        if !matches {
-            violating.push(node.id.clone());
-        }
-        checked.push(node.id.clone());
-    }
-    universal(
-        checked,
-        violating,
+    fragment_rule(
+        graph,
+        |node, fragment, source| {
+            resolve_range(ctx, node, fragment, source).is_some_and(|bytes| {
+                Hash::content_sha256(&bytes) == fragment.content_hash
+                    && fragment
+                        .extracted_text
+                        .as_ref()
+                        .is_none_or(|text| text.as_bytes() == bytes.as_slice())
+            })
+        },
         "evidence-hash-match",
         "One or more EvidenceFragment content hashes do not match the bytes resolved from the extracted source.",
     )
 }
 
+/// The built-in sources need a valid explicit parse status; a non-built-in source that
+/// grounds baseline evidence has no verifiable parse status and is reported (Fable #131).
+/// NOT_APPLICABLE when neither exists.
 fn parse_status(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
+    let grounding: BTreeSet<&Id> = baseline_nodes(graph, NodeType::EvidenceFragment)
+        .filter_map(|n| match &n.payload {
+            NodePayload::EvidenceFragment(f) => Some(&f.source_ref),
+            _ => None,
+        })
+        .collect();
     let mut checked = Vec::new();
     let mut violating = Vec::new();
     for (node, source) in baseline_sources(graph) {
         if builtin_source_kind(source).is_none() {
+            if grounding.contains(&node.id) {
+                violating.push(node.id.clone());
+                checked.push(node.id.clone());
+            }
             continue;
         }
         if source_parse_metadata(node).is_err() {
             violating.push(node.id.clone());
         }
         checked.push(node.id.clone());
+    }
+    if checked.is_empty() {
+        return RuleEvaluation::not_applicable(
+            "No baseline SourceArtifact of a built-in source kind is present.".to_owned(),
+        )
+        .map_err(|e| internal("E_I0_OUTPUT", e.to_string()));
     }
     universal(
         checked,

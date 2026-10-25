@@ -1145,7 +1145,56 @@ mod f4_contract {
                 json!({"result": "pass", "diff_count": 0}),
             ),
         ];
+        // Fable #165: the execution phase ends with its S4.2 terminal step.
+        let without_terminal = |result| {
+            let mut t = complete_trace(S_OP, result);
+            t.retain(|e| e["step"]["step"] != "execution_completed");
+            t
+        };
+        // A stopped (business-failed) execution has no execution_completed and its comparison
+        // records no expectation steps: complete for a Fail run.
+        assert_eq!(
+            state(
+                &check(
+                    without_terminal(ScenarioRunResult::Fail),
+                    ScenarioRunResult::Fail
+                ),
+                TRACE_COMPLETE
+            ),
+            PASS
+        );
+        let mut compared_without_terminal = without_terminal(ScenarioRunResult::Fail);
+        compared_without_terminal.insert(
+            5,
+            cmp(
+                "attribute_compared",
+                json!({"attribute_ref": "attr:days", "matched": false}),
+            ),
+        );
+        let mut missing_after_completion = complete_trace(S_OP, ScenarioRunResult::Pass);
+        missing_after_completion.insert(
+            5,
+            exec(
+                "semantic_missing",
+                json!({"missing": [{"owner_ref": CALC, "key": "half_day_fraction", "kind": "semantic_ref"}]}),
+            ),
+        );
         let cases = [
+            (
+                without_terminal(ScenarioRunResult::Pass),
+                ScenarioRunResult::Pass,
+                "trace_execution_incomplete",
+            ),
+            (
+                compared_without_terminal,
+                ScenarioRunResult::Fail,
+                "trace_execution_incomplete",
+            ),
+            (
+                missing_after_completion,
+                ScenarioRunResult::Pass,
+                "trace_execution_incomplete",
+            ),
             (unknown, ScenarioRunResult::Pass, "trace_unknown_step"),
             (bad_order, ScenarioRunResult::Pass, "trace_bad_order"),
             (
