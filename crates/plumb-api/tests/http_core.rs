@@ -3737,14 +3737,24 @@ mod http_core {
     /// underlying cause of an internal failure, which never reaches the response.
     #[tokio::test]
     async fn requests_and_internal_causes_are_traced() {
+        // A process-wide subscriber: a scoped one can miss callsites first hit by other tests.
+        static CAPTURED: std::sync::OnceLock<Captured> = std::sync::OnceLock::new();
+        let captured = CAPTURED
+            .get_or_init(|| {
+                let captured = Captured::default();
+                let writer = captured.clone();
+                tracing::subscriber::set_global_default(
+                    tracing_subscriber::fmt()
+                        .with_writer(move || writer.clone())
+                        .with_ansi(false)
+                        .finish(),
+                )
+                .unwrap();
+                captured
+            })
+            .clone();
+        tracing::callsite::rebuild_interest_cache();
         let app = app();
-        let captured = Captured::default();
-        let writer = captured.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || writer.clone())
-            .with_ansi(false)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
         let r = get(&app, "/api/requirements/req:a").await;
         assert_eq!(r.status, StatusCode::OK);
         let r = get(&app, "/api/nowhere/secret-text").await;
