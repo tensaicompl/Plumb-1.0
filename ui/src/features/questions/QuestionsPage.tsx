@@ -392,11 +392,22 @@ function QuestionItem({ question }: { question: Question }) {
 export function QuestionsPage() {
   const questions = useQuery({ queryKey: [...questionsQueryKey, "inbox"], queryFn: () => fetchQuestions() });
 
+  const title = <h1 className="text-xl font-semibold">{t("questions.title")}</h1>;
   if (questions.isError) {
-    return <ReadFailure error={questions.error} messageKey="questions.loadFailed" />;
+    return (
+      <div className="space-y-4">
+        {title}
+        <ReadFailure error={questions.error} messageKey="questions.loadFailed" />
+      </div>
+    );
   }
   if (questions.data === undefined) {
-    return <p>{t("questions.loading")}</p>;
+    return (
+      <div className="space-y-4">
+        {title}
+        <p>{t("questions.loading")}</p>
+      </div>
+    );
   }
   // Groups by exact stakeholder_ref in server order of first appearance; unassigned last.
   const groups = new Map<string, Question[]>();
@@ -414,7 +425,7 @@ export function QuestionsPage() {
   return (
     <ReviewedEtag.Provider value={questions.data.etag}>
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">{t("questions.title")}</h1>
+      {title}
       <RoundManager stakeholders={[...groups.keys()]} />
       <HealthMarkers health={questions.data.health} />
       {questions.data.items.length === 0 && <p>{t("questions.empty")}</p>}

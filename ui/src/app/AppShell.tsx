@@ -19,6 +19,14 @@ async function searchModel(q: string): Promise<SearchPage> {
   return (await readData(apiClient.GET("/api/search", { params: { query: { q } } })));
 }
 
+/** `page` for the link of the current route, `location` for the section of a nested route. */
+export function navCurrent(href: string, pathname: string): "page" | "location" | undefined {
+  if (pathname === href) {
+    return "page";
+  }
+  return href !== "/" && pathname.startsWith(href + "/") ? "location" : undefined;
+}
+
 /** One navigation anchor; plain left clicks navigate client-side through the router history. */
 function NavAnchor({ link, pathname }: { link: NavLink; pathname: string }) {
   const router = useRouter();
@@ -33,7 +41,7 @@ function NavAnchor({ link, pathname }: { link: NavLink; pathname: string }) {
     <a
       href={link.href}
       onClick={onClick}
-      aria-current={pathname === link.href ? "page" : undefined}
+      aria-current={navCurrent(link.href, pathname)}
       data-nav-id={link.id}
       className="block rounded px-2 py-1 hover:bg-slate-100 aria-[current=page]:font-semibold"
     >

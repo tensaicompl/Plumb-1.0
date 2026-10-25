@@ -109,14 +109,15 @@ export function RequirementsPage() {
             <p>{t("requirements.empty")}</p>
           ) : (
             <table className="w-full text-left text-sm">
+            <caption className="sr-only">{t("requirements.caption")}</caption>
               <thead>
                 <tr>
-                  <th>{t("requirements.column.id")}</th>
-                  <th>{t("requirements.column.text")}</th>
-                  <th>{t("requirements.column.class")}</th>
-                  <th>{t("requirements.column.status")}</th>
-                  <th>{t("requirements.column.smells")}</th>
-                  <th>{t("requirements.column.readiness")}</th>
+                  <th scope="col">{t("requirements.column.id")}</th>
+                  <th scope="col">{t("requirements.column.text")}</th>
+                  <th scope="col">{t("requirements.column.class")}</th>
+                  <th scope="col">{t("requirements.column.status")}</th>
+                  <th scope="col">{t("requirements.column.smells")}</th>
+                  <th scope="col">{t("requirements.column.readiness")}</th>
                 </tr>
               </thead>
               <tbody>

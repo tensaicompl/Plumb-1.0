@@ -338,11 +338,26 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
     reviewed,
   );
 
+  const title = (
+    <h1 className="text-xl font-semibold">
+      {t("requirement.title")} <span className="font-mono" data-testid="requirement-id">{requirementId}</span>
+    </h1>
+  );
   if (requirement.isError) {
-    return <ReadFailure error={requirement.error} messageKey="requirement.loadFailed" />;
+    return (
+      <div className="space-y-4">
+        {title}
+        <ReadFailure error={requirement.error} messageKey="requirement.loadFailed" />
+      </div>
+    );
   }
   if (requirement.data === undefined) {
-    return <p>{t("requirement.loading")}</p>;
+    return (
+      <div className="space-y-4">
+        {title}
+        <p>{t("requirement.loading")}</p>
+      </div>
+    );
   }
   const detail = requirement.data;
   // Absent and null both mean not calculated by the server; nothing is derived locally.
@@ -358,9 +373,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">
-        {t("requirement.title")} <span className="font-mono" data-testid="requirement-id">{detail.id}</span>
-      </h1>
+      {title}
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 text-sm">
         <dt>{t("requirements.column.class")}</dt>
         <dd className="font-mono" data-testid="requirement-class">

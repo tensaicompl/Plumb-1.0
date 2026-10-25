@@ -126,14 +126,15 @@ export function GlossaryPage() {
             <p>{t("glossary.empty")}</p>
           ) : (
             <table className="w-full text-left text-sm">
+            <caption className="sr-only">{t("glossary.caption")}</caption>
               <thead>
                 <tr>
-                  <th>{t("glossary.column.term")}</th>
-                  <th>{t("glossary.column.id")}</th>
-                  <th>{t("glossary.column.language")}</th>
-                  <th>{t("glossary.column.status")}</th>
-                  <th>{t("glossary.column.aliases")}</th>
-                  <th>{t("glossary.column.merge")}</th>
+                  <th scope="col">{t("glossary.column.term")}</th>
+                  <th scope="col">{t("glossary.column.id")}</th>
+                  <th scope="col">{t("glossary.column.language")}</th>
+                  <th scope="col">{t("glossary.column.status")}</th>
+                  <th scope="col">{t("glossary.column.aliases")}</th>
+                  <th scope="col">{t("glossary.column.merge")}</th>
                 </tr>
               </thead>
               <tbody>

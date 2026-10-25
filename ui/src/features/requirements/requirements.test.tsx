@@ -257,6 +257,10 @@ describe("RequirementsPage", () => {
     const user = userEvent.setup();
 
     expect(await screen.findByText(PAGE_1.items[0]?.text ?? "")).toBeTruthy();
+    // Fable #225: the list table has a caption and scoped headers.
+    const table = document.querySelector("main table") as HTMLElement;
+    expect(table.querySelector("caption")?.textContent).toBe("Requirements of this page");
+    expect([...table.querySelectorAll("th")].every((th) => th.getAttribute("scope") === "col")).toBe(true);
     const first = calls.find((c) => c.path === "/api/requirements");
     expect(first?.search.get("cursor")).toBeNull();
     expect(first?.search.get("limit")).toBe("25");

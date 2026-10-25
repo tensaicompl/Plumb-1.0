@@ -666,6 +666,70 @@ describe("HomePage locale selection", () => {
   });
 });
 
+describe("HomePage routing and accessibility", () => {
+  const ROUTES = [
+    "/",
+    "/requirements",
+    "/requirements/req:a",
+    "/model/glossary",
+    "/model/sentences",
+    "/questions",
+    "/sessions",
+    "/model/processes",
+    "/model/scenarios",
+    "/model/entities",
+    "/model/findings",
+    "/model/rules",
+    "/model/calculations",
+    "/gates",
+    "/decisions",
+  ];
+
+  /** Every other read fails with a typed 503, so each page also shows its failure state. */
+  function failingReads() {
+    return [
+      http.get("*/api/me", () => HttpResponse.json(ME)),
+      http.get("*/api/*", () => HttpResponse.json({ code: "E_A03_RUNTIME_UNAVAILABLE", message: "not configured", details: {} }, { status: 503 })),
+    ];
+  }
+
+  it("gives every routed page exactly one h1, in loading and failure states alike (Fable #352)", async () => {
+    for (const path of ROUTES) {
+      server.use(...failingReads());
+      const queryClient = newQueryClient();
+      const router = app.router.createAppRouter(createMemoryHistory({ initialEntries: [path] }));
+      const view = renderRouter(router, queryClient);
+      await waitFor(() => expect(router.state.location.pathname).toBe(path));
+      expect(document.querySelectorAll("main h1"), path).toHaveLength(1);
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+      expect(document.querySelectorAll("main h1"), path + " after loading").toHaveLength(1);
+      view.unmount();
+      server.resetHandlers();
+    }
+  });
+
+  it("renders a typed not-found page inside the shell for an unknown route (Fable #352, #225)", async () => {
+    server.use(...shellHandlers());
+    const router = app.router.createAppRouter(createMemoryHistory({ initialEntries: ["/no/such/page"] }));
+    renderRouter(router, newQueryClient());
+    expect(await screen.findByRole("heading", { level: 1, name: "Page not found" })).toBeTruthy();
+    expect(screen.getByTestId("not-found-path").textContent).toBe("/no/such/page");
+    // The shell stays: navigation and identity are present.
+    expect(screen.getByRole("navigation", { name: "Pilot navigation" })).toBeTruthy();
+    expect(document.querySelectorAll("main h1")).toHaveLength(1);
+  });
+
+  it("marks the nav section of a nested route and gives tables captions and scoped headers (Fable #225)", async () => {
+    server.use(...failingReads());
+    const router = app.router.createAppRouter(createMemoryHistory({ initialEntries: ["/requirements/req:a"] }));
+    renderRouter(router, newQueryClient());
+    const nav = await screen.findByRole("navigation", { name: "Pilot navigation" });
+    const link = nav.querySelector("[data-nav-id='requirements']") as HTMLElement;
+    expect(link.getAttribute("aria-current")).toBe("location");
+    expect((nav.querySelector("[data-nav-id='home']") as HTMLElement).getAttribute("aria-current")).toBeNull();
+  });
+});
+
 // ------------------------------------------------------------------ roles
 
 describe("HomePage role membership", () => {

@@ -319,7 +319,27 @@ describe("FindingsPage", () => {
 
 // ------------------------------------------------------------------ entities
 
+
+/** Fable #225: every data table has a caption and every header cell a scope. */
+function expectAccessibleTables() {
+  const tables = [...document.querySelectorAll("main table")];
+  expect(tables.length).toBeGreaterThan(0);
+  for (const table of tables) {
+    expect(table.querySelector("caption")?.textContent ?? "").not.toBe("");
+    for (const th of table.querySelectorAll("th")) {
+      expect(["col", "row"]).toContain(th.getAttribute("scope"));
+    }
+  }
+}
+
 describe("EntitiesPage", () => {
+  it("gives the attribute, relationship and CRUD tables captions and scoped headers", async () => {
+    await renderAt("/model/entities");
+    await screen.findByText("Leave request");
+    await screen.findByTestId("crud-matrix");
+    expectAccessibleTables();
+  });
+
   it("renders attributes and relationships exactly from the entity list", async () => {
     const { router } = await renderAt("/model/entities");
     await screen.findByText("Leave request");

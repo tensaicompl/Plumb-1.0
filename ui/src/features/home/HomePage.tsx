@@ -32,17 +32,28 @@ export function HomePage() {
   const version = useModelVersion();
   const gates = useQuery({ queryKey: gatesQueryKey, queryFn: fetchGates });
 
+  const title = <h1 className="text-xl font-semibold">{t("home.title")}</h1>;
   if (version.isError || gates.isError) {
-    return <ReadFailure error={version.error ?? gates.error} messageKey="home.loadFailed" />;
+    return (
+      <div className="space-y-6">
+        {title}
+        <ReadFailure error={version.error ?? gates.error} messageKey="home.loadFailed" />
+      </div>
+    );
   }
   if (version.data === undefined || gates.data === undefined) {
-    return <p>{t("home.loading")}</p>;
+    return (
+      <div className="space-y-6">
+        {title}
+        <p>{t("home.loading")}</p>
+      </div>
+    );
   }
   const byGate = new Map(gates.data.map((status) => [status.gate, status]));
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">{t("home.title")}</h1>
+      {title}
       <section aria-labelledby="home-model">
         <h2 id="home-model" className="font-semibold">
           {t("home.model")}
@@ -65,6 +76,7 @@ export function HomePage() {
           {t("home.gates")}
         </h2>
         <table className="text-sm">
+            <caption className="sr-only">{t("home.gates.caption")}</caption>
           <tbody>
             {PILOT_GATES.map((gate) => {
               const state = gateState(byGate.get(gate));

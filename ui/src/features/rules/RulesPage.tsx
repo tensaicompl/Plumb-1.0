@@ -56,11 +56,12 @@ function Rows({ rows }: { rows: Rule["rows"] }) {
   }
   return (
     <table className="text-sm" data-testid="rule-rows">
+            <caption className="sr-only">{t("rules.caption")}</caption>
       <thead>
         <tr>
-          <th className="pr-2 text-left">{t("rules.row")}</th>
-          <th className="pr-2 text-left">{t("rules.when")}</th>
-          <th className="pr-2 text-left">{t("rules.then")}</th>
+          <th scope="col" className="pr-2 text-left">{t("rules.row")}</th>
+          <th scope="col" className="pr-2 text-left">{t("rules.when")}</th>
+          <th scope="col" className="pr-2 text-left">{t("rules.then")}</th>
         </tr>
       </thead>
       <tbody>

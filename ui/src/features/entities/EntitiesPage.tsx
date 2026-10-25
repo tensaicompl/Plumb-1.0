@@ -89,13 +89,14 @@ function Attributes({ entity }: { entity: Entity }) {
   }
   return (
     <table className="text-sm" data-testid="entity-attributes">
+      <caption className="sr-only">{t("entities.attributes.caption")}</caption>
       <thead>
         <tr>
-          <th className="pr-2 text-left">{t("entities.attribute.name")}</th>
-          <th className="pr-2 text-left">{t("entities.attribute.type")}</th>
-          <th className="pr-2 text-left">{t("entities.attribute.nullable")}</th>
-          <th className="pr-2 text-left">{t("entities.attribute.class")}</th>
-          <th className="pr-2 text-left">{t("entities.attribute.unit")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.attribute.name")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.attribute.type")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.attribute.nullable")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.attribute.class")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.attribute.unit")}</th>
         </tr>
       </thead>
       <tbody>
@@ -126,12 +127,13 @@ function Relationships({ entity }: { entity: Entity }) {
   }
   return (
     <table className="text-sm" data-testid="entity-relationships">
+      <caption className="sr-only">{t("entities.relationships.caption")}</caption>
       <thead>
         <tr>
-          <th className="pr-2 text-left">{t("entities.relationship.id")}</th>
-          <th className="pr-2 text-left">{t("entities.relationship.kind")}</th>
-          <th className="pr-2 text-left">{t("entities.relationship.target")}</th>
-          <th className="pr-2 text-left">{t("entities.relationship.cardinality")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.relationship.id")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.relationship.kind")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.relationship.target")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.relationship.cardinality")}</th>
         </tr>
       </thead>
       <tbody>
@@ -187,11 +189,12 @@ function Crud({ matrix }: { matrix: CrudMatrix }) {
   }
   return (
     <table className="text-sm" data-testid="crud-matrix">
+      <caption className="sr-only">{t("entities.crud.caption")}</caption>
       <thead>
         <tr>
-          <th className="pr-2 text-left">{t("entities.crud.operation")}</th>
+          <th scope="col" className="pr-2 text-left">{t("entities.crud.operation")}</th>
           {matrix.entities.map((ent) => (
-            <th key={ent} className="pr-2 text-left font-mono">
+            <th key={ent} scope="col" className="pr-2 text-left font-mono">
               {ent}
             </th>
           ))}
@@ -200,7 +203,7 @@ function Crud({ matrix }: { matrix: CrudMatrix }) {
       <tbody>
         {matrix.operations.map((op) => (
           <tr key={op}>
-            <th className="pr-2 text-left font-mono">{op}</th>
+            <th scope="row" className="pr-2 text-left font-mono">{op}</th>
             {matrix.entities.map((ent) => {
               const cell = cellOf(op, ent);
               return (

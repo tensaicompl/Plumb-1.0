@@ -387,11 +387,22 @@ export function SentencesPage() {
       return next;
     });
 
+  const title = <h1 className="text-xl font-semibold">{t("sentences.title")}</h1>;
   if (entities.isError || all.isError || perEntity.some((q) => q.isError)) {
-    return <ReadFailure error={entities.error ?? all.error ?? perEntity.find((q) => q.isError)?.error} messageKey="sentences.loadFailed" />;
+    return (
+      <div className="space-y-4">
+        {title}
+        <ReadFailure error={entities.error ?? all.error ?? perEntity.find((q) => q.isError)?.error} messageKey="sentences.loadFailed" />
+      </div>
+    );
   }
   if (entities.data === undefined || all.data === undefined || perEntity.some((q) => q.data === undefined)) {
-    return <p>{t("sentences.loading")}</p>;
+    return (
+      <div className="space-y-4">
+        {title}
+        <p>{t("sentences.loading")}</p>
+      </div>
+    );
   }
   const questionMap: ReviewedQuestions | undefined =
     openQuestions.data === undefined ? undefined : { byId: new Map(openQuestions.data.items.map((q) => [q.id, q] as const)), etag: openQuestions.data.etag };
@@ -405,7 +416,7 @@ export function SentencesPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">{t("sentences.title")}</h1>
+      {title}
       {entities.data.map((entity, index) => (
         <SentenceSection
           key={entity.id}
