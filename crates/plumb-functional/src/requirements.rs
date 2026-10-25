@@ -81,18 +81,6 @@ pub enum RequirementCompilationError {
     /// A candidate is classified more than once.
     #[error("candidate {candidate_ref} is classified more than once")]
     DuplicateClassification { candidate_ref: Id },
-    /// The same intent kind is proposed twice for one candidate.
-    #[error("duplicate {intent_kind} intent for candidate {candidate_ref}")]
-    DuplicateIntent {
-        candidate_ref: Id,
-        intent_kind: &'static str,
-    },
-    /// An intent references an unknown candidate or an invalid stakeholder.
-    #[error("invalid intent reference {reference} for candidate {candidate_ref}")]
-    InvalidIntentReference { candidate_ref: Id, reference: Id },
-    /// A proposed intent field is not acceptable as-is.
-    #[error("invalid intent for candidate {candidate_ref}: {reason}")]
-    InvalidIntent { candidate_ref: Id, reason: String },
     /// A proposed node or proposal is structurally invalid.
     #[error("invalid proposal: {reason}")]
     InvalidProposal { reason: String },
@@ -415,6 +403,7 @@ struct Classification {
 struct ValidatedClassification {
     classifications: BTreeMap<Id, Classification>,
     intents: Vec<IntentOutput>,
+    intent_issues: Vec<RequirementCompilationIssue>,
 }
 
 fn compile_schema() -> Result<JSONSchema, RequirementCompilationError> {
@@ -498,10 +487,11 @@ fn validate_classification(
             candidate_ref: (*missing).clone(),
         });
     }
-    let intents = validate_intents(graph, &request.context, decoded.intents)?;
+    let (intents, intent_issues) = validate_intents(graph, &request.context, decoded.intents);
     Ok(ValidatedClassification {
         classifications,
         intents,
+        intent_issues,
     })
 }
 
@@ -750,8 +740,8 @@ fn proposed_node_id(proposal: &Proposal) -> Option<&Id> {
 
 // ============================================================================ compilation
 
-/// A deterministic reason a candidate produced no Requirement proposal. These are compilation
-/// outcomes, not PSG Finding nodes, and carry no rule IDs.
+/// A deterministic reason a candidate produced no Requirement proposal, or an optional intent
+/// was dropped. These are compilation outcomes, not PSG Finding nodes, and carry no rule IDs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "issue", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RequirementCompilationIssue {
@@ -780,6 +770,15 @@ pub enum RequirementCompilationIssue {
     EmptyStatement {
         candidate_ref: Id,
     },
+    /// An optional intent proposal was dropped (the Requirement and every other intent are
+    /// still compiled). `reason` is one of `duplicate_intent`, `candidate_not_in_context`,
+    /// `need_stakeholders_empty_or_repeated`, `stakeholder_not_supplied` or
+    /// `concern_text_not_grounded`; `candidate_ref` may be outside the context.
+    IntentDropped {
+        candidate_ref: Id,
+        intent_kind: String,
+        reason: String,
+    },
 }
 
 impl RequirementCompilationIssue {
@@ -792,7 +791,8 @@ impl RequirementCompilationIssue {
             | RequirementCompilationIssue::MissingModality { candidate_ref }
             | RequirementCompilationIssue::UnsupportedModality { candidate_ref, .. }
             | RequirementCompilationIssue::MultipleModalities { candidate_ref, .. }
-            | RequirementCompilationIssue::EmptyStatement { candidate_ref } => candidate_ref,
+            | RequirementCompilationIssue::EmptyStatement { candidate_ref }
+            | RequirementCompilationIssue::IntentDropped { candidate_ref, .. } => candidate_ref,
         }
     }
 
@@ -812,12 +812,14 @@ impl RequirementCompilationIssue {
             RequirementCompilationIssue::UnsupportedModality { .. } => "unsupported_modality",
             RequirementCompilationIssue::MultipleModalities { .. } => "multiple_modalities",
             RequirementCompilationIssue::EmptyStatement { .. } => "empty_statement",
+            RequirementCompilationIssue::IntentDropped { .. } => "intent_dropped",
         }
     }
 
     fn order_key(&self) -> (&Id, &'static str, &str) {
         let token = match self {
             RequirementCompilationIssue::UnsupportedModality { token, .. } => token.as_str(),
+            RequirementCompilationIssue::IntentDropped { intent_kind, .. } => intent_kind.as_str(),
             _ => "",
         };
         (self.candidate_ref(), self.as_str(), token)
@@ -862,6 +864,7 @@ pub fn compile_requirement_candidates(
         return Ok(finish(proposals, unresolved));
     };
     let validated = validate_classification(graph, classification_request, inference.artifact)?;
+    unresolved.extend(validated.intent_issues.iter().cloned());
     let base_semantic_hash = graph.semantic_hash()?;
     let context = ProposalContext {
         graph,

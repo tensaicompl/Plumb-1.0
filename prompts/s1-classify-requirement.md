@@ -47,7 +47,7 @@ Every intent must reference one supplied candidate_ref.
 For a need, stakeholder_refs may contain only stakeholder IDs supplied
 in the context.
 
-Do not invent stakeholder IDs.
+Do not invent stakeholder IDs. When the context supplies no stakeholders, return no need intents.
 
 Do not rewrite, normalize or paraphrase the candidate source text for
 Requirement, Goal, Need or Constraint statements. Plumb derives those

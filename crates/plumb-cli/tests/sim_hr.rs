@@ -810,6 +810,280 @@ fn hr_pilot_simulation() {
     hr_reference_outputs(&out);
 }
 
+/// The HR pilot against the real model (goal-approach real-model run): the same product flow
+/// as `hr_pilot_simulation`, with every inference stage answered by the Anthropic API. It
+/// asserts nothing about model output: it records how far the flow gets and writes a
+/// comparison with the fixture contract to `<dir>/real-report.json`. Opt-in and billed:
+/// `PLUMB_REAL_KEY_FILE=<key file> [PLUMB_REAL_MODEL=<model>] [SIM_DIR=<dir>] cargo test -p
+/// plumb-cli --features llm --test sim_hr hr_pilot_real_model -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn hr_pilot_real_model() {
+    let key = PathBuf::from(
+        std::env::var("PLUMB_REAL_KEY_FILE").expect("set PLUMB_REAL_KEY_FILE to a key file"),
+    );
+    let model = std::env::var("PLUMB_REAL_MODEL").unwrap_or_else(|_| "claude-opus-5-5".into());
+    let mut config = config();
+    config["provider_policy"] = json!({"provider": "anthropic", "config": {
+        "adapter_version": 1, "model": model, "max_tokens": 32000,
+        "api_version": "2023-06-01", "effort": "high"}});
+    let mut sim = Sim::new(config, hr_model);
+    sim.real = Some(key);
+    let mut log: Vec<Value> = Vec::new();
+    let mut step = |name: &str, code: i32| {
+        println!(">>> {name}: exit {code}");
+        log.push(json!({"step": name, "exit": code}));
+    };
+    sim.cli(&["init", "--project", "project:hr"], &[]);
+    let md = fixture("requirements.md");
+    sim.cli(
+        &[
+            "import",
+            md.to_str().unwrap(),
+            "--media-type",
+            "text/markdown",
+            "--name",
+            "requirements.md",
+        ],
+        &[],
+    );
+    let settle = |sim: &Sim, recipe: &str| -> i32 {
+        let (code, _) = sim.stage(recipe);
+        sim.accept_all();
+        sim.confirm_all(&[]);
+        code
+    };
+    for recipe in ["extract", "consolidate", "lint"] {
+        let code = settle(&sim, recipe);
+        step(recipe, code);
+    }
+    // Govern a duplicate finding the way the analyst does in the scripted pilot, when present.
+    let findings = sim.json(&["findings", "list"]);
+    sim.cli(&["findings", "materialize"], &[]);
+    for f in findings.as_array().cloned().unwrap_or_default() {
+        if f["code"] == "PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED" && f["disposition"] == "waivable" {
+            sim.cli(
+                &[
+                    "findings",
+                    "waive",
+                    f["id"].as_str().unwrap(),
+                    "--reason",
+                    "The flagged requirements notify different outcomes; they are distinct.",
+                ],
+                &[],
+            );
+        }
+    }
+    let (code, _) = sim.cli(&["lint"], &[]);
+    step("lint (after waivers)", code);
+    let (code, _) = sim.cli(&["directory"], &[]);
+    step("directory", code);
+    sim.accept_all();
+    sim.confirm_all(&[]);
+    for recipe in ["analyse", "flows"] {
+        let code = settle(&sim, recipe);
+        step(recipe, code);
+    }
+    let mut typed = Vec::new();
+    for (name, value_type) in [
+        ("start date", "Date"),
+        ("end date", "Date"),
+        ("leave type", "String"),
+        ("half day", "Decimal(2)"),
+    ] {
+        let found = sim.nodes().into_iter().find(|n| {
+            n["payload"]["type"] == "Attribute"
+                && n["payload"]["data"]["name"].as_str().map(norm) == Some(norm(name))
+        });
+        match found {
+            Some(n) => {
+                let (code, _) = sim.cli(
+                    &[
+                        "set-attribute-type",
+                        n["id"].as_str().unwrap(),
+                        "--type",
+                        value_type,
+                    ],
+                    &[],
+                );
+                typed.push(json!({"attribute": name, "exit": code}));
+            }
+            None => typed.push(json!({"attribute": name, "missing": true})),
+        }
+    }
+    for recipe in ["analyse", "calc", "rules", "scenarios", "tags", "run"] {
+        let code = settle(&sim, recipe);
+        step(recipe, code);
+    }
+    let (code, _) = sim.cli(&["ask"], &[]);
+    step("ask", code);
+    let questions = sim.json(&["questions"]);
+    sim.cli(
+        &[
+            "rounds",
+            "create",
+            "--stakeholder",
+            "stakeholder:hr",
+            "--max",
+            "15",
+        ],
+        &[],
+    );
+    let withdraw = sim.nodes().into_iter().find(|n| {
+        n["payload"]["type"] == "Operation"
+            && n["payload"]["data"]["name"]
+                .as_str()
+                .is_some_and(|s| s.to_lowercase().contains("withdraw"))
+    });
+    let calendar = sim.accepted("Calendar").first().cloned();
+    let mut unanswered = Vec::new();
+    for q in questions.as_array().cloned().unwrap_or_default() {
+        let props = &q["answer_schema"]["properties"];
+        let answer = if props.get("trigger_ref").is_some() {
+            withdraw.as_ref().map(|w| json!({"trigger_ref": w["id"]}))
+        } else if props.get("inclusive_end").is_some() {
+            Some(json!({"inclusive_end": true}))
+        } else if props.get("holiday_consumes_working_day").is_some() {
+            calendar
+                .as_ref()
+                .map(|c| json!({"calendar_ref": c, "holiday_consumes_working_day": false}))
+        } else if props.get("decimal").is_some() {
+            Some(json!({"decimal": "0.5", "unit": "working_day"}))
+        } else {
+            None
+        };
+        match answer {
+            Some(answer) => {
+                sim.cli(
+                    &[
+                        "answer",
+                        q["id"].as_str().unwrap(),
+                        "--answer",
+                        &answer.to_string(),
+                        "--rationale",
+                        "Expert answer.",
+                    ],
+                    &[],
+                );
+            }
+            None => unanswered.push(q["template_ref"].clone()),
+        }
+    }
+    // Accept the answers one by one, refreshing the stale ones from their recorded answers.
+    for _ in 0..16 {
+        sim.cli(&["proposals", "--refresh"], &[]);
+        let fresh = sim.json(&["proposals"]);
+        let Some(next) = fresh
+            .as_array()
+            .and_then(|a| a.iter().find(|p| p["stale"] == false).cloned())
+        else {
+            break;
+        };
+        sim.cli(
+            &[
+                "apply",
+                next["proposal_id"].as_str().unwrap(),
+                "--action",
+                "accept",
+                "--reason",
+                "Expert answer.",
+            ],
+            &[],
+        );
+    }
+    sim.confirm_all(&[]);
+    for recipe in ["analyse", "scenarios", "run"] {
+        let code = settle(&sim, recipe);
+        step(recipe, code);
+    }
+    let out = sim.dir.join("report");
+    let (code, _) = sim.cli(&["report", "--out", out.to_str().unwrap()], &[]);
+    step("report", code);
+    let (ready_code, ready) = sim.cli(&["ready", "--json"], &[]);
+    step("ready", ready_code);
+
+    // Comparison with the fixture contract (reported, never asserted).
+    let contract: Value =
+        serde_yaml::from_str(&std::fs::read_to_string(fixture("fixture-contract.yaml")).unwrap())
+            .unwrap();
+    let nodes = sim.nodes();
+    let accepted = |t: &str| -> Vec<Value> {
+        nodes
+            .iter()
+            .filter(|n| n["status"] == "Accepted" && n["payload"]["type"] == t)
+            .cloned()
+            .collect()
+    };
+    let requirements = accepted("Requirement");
+    let mut statement_ok = 0;
+    let mut kind_ok = 0;
+    let mut missing = Vec::new();
+    for r in contract["requirements"].as_array().unwrap() {
+        match requirements
+            .iter()
+            .find(|n| n["payload"]["data"]["source_identifier"] == r["id"])
+        {
+            Some(n) => {
+                statement_ok += usize::from(n["payload"]["data"]["statement"] == r["statement"]);
+                kind_ok += usize::from(n["payload"]["data"]["requirement_kind"] == r["kind"]);
+            }
+            None => missing.push(r["id"].clone()),
+        }
+    }
+    let mut sections = serde_json::Map::new();
+    for (section, node_type) in [
+        ("states", "State"),
+        ("rules", "Rule"),
+        ("operations", "Operation"),
+        ("events", "Event"),
+        ("entities", "Entity"),
+        ("calculations", "Calculation"),
+        ("processes", "Process"),
+        ("invariants", "Invariant"),
+        ("scenarios", "Scenario"),
+    ] {
+        let produced: std::collections::BTreeSet<String> = accepted(node_type)
+            .iter()
+            .filter_map(|n| n["payload"]["data"]["name"].as_str().map(norm))
+            .collect();
+        let expected: std::collections::BTreeSet<String> = contract[section]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().or_else(|| v["name"].as_str()).map(norm))
+                    .collect()
+            })
+            .unwrap_or_default();
+        sections.insert(
+            section.into(),
+            json!({
+                "accepted": accepted(node_type).len(),
+                "contract": expected.len(),
+                "matching_names": produced.intersection(&expected).count(),
+                "not_in_contract": produced.difference(&expected).collect::<Vec<_>>(),
+            }),
+        );
+    }
+    let report = json!({
+        "model": model,
+        "steps": log,
+        "attribute_typing": typed,
+        "questions": questions.as_array().map_or(0, Vec::len),
+        "unanswered_question_templates": unanswered,
+        "requirements": {"accepted": requirements.len(), "contract": 32,
+            "statement_matches": statement_ok, "kind_matches": kind_ok, "missing": missing},
+        "sections": sections,
+        "ready_exit": ready_code,
+        "ready": serde_json::from_str::<Value>(&ready).unwrap_or(Value::String(ready)),
+    });
+    std::fs::write(
+        sim.dir.join("real-report.json"),
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .unwrap();
+    println!("===== real-model report\n{report:#}");
+}
+
 /// E0.1: the deterministic pilot outputs are compared with the committed reference copies in
 /// fixtures/hr-leave/derived (decisions.jsonl carries wall-clock decision times and is not
 /// compared). Set PLUMB_REGENERATE_REFERENCE=1 to rewrite the references deliberately.

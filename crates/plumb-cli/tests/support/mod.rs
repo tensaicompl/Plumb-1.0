@@ -199,6 +199,9 @@ pub struct Sim {
     /// Committed replay mode: `Some((dir, regenerate))` reads (or, when regenerating, writes)
     /// one recorded-executions file per stage invocation in `dir` instead of recording live.
     pub replay: Option<(PathBuf, bool)>,
+    /// Real-model mode: `Some(key_file)` runs every inference stage through the CLI with the
+    /// Anthropic provider instead of the scripted model (opt-in, billed).
+    pub real: Option<PathBuf>,
     stage_count: std::cell::Cell<usize>,
     _tmp: Option<tempfile::TempDir>,
 }
@@ -226,6 +229,7 @@ impl Sim {
             config: std::cell::RefCell::new(config),
             model,
             replay: None,
+            real: None,
             stage_count: std::cell::Cell::new(0),
             _tmp: tmp,
         }
@@ -281,6 +285,17 @@ impl Sim {
     /// Runs `recipe`: records the scripted executions over a copy of the database, then
     /// replays them through the CLI over the real database.
     pub fn stage(&self, recipe: &str) -> (i32, String) {
+        if let Some(key) = &self.real {
+            return self.cli(
+                &[recipe],
+                &[
+                    "--provider",
+                    "anthropic",
+                    "--anthropic-api-key-file",
+                    key.to_str().unwrap(),
+                ],
+            );
+        }
         let n = self.stage_count.get() + 1;
         self.stage_count.set(n);
         let committed = self

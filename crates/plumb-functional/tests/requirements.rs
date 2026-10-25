@@ -37,7 +37,7 @@ mod requirements_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:48e1e7148b38676d95767832a068d7fc3f5dd201f63bc4f0fd6a97451b39939a";
+        "sha256:59abbb13ed4240796f52c1dc26f86959b2fc66530b7baa47f78afed9834f82b6";
     const SCHEMA_HASH: &str =
         "sha256:16abf2288daac76199316fd44c1db682347fcda50d0b24e6cce5345b3e869101";
     const GOLDEN_CANDIDATE: &str = "seg:31d8789f008efd04";
@@ -45,7 +45,7 @@ mod requirements_contract {
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:fbe4e912ae613c1ec09b4f6c5f63c275a9bd88a1cdb99d5ba0bb9f7d282e9978";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:f24e58e8bb49266ea88e3ca03f30dfca288cb2aaf83935885fa9b5dc3de59920";
+        "sha256:48620c2c221d65f0cc5b60c30b68c786277171d7fead0736dad06c1f2f5e11a9";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and
@@ -1428,10 +1428,14 @@ mod requirements_contract {
         assert_eq!(result.proposals.len(), 1);
     }
 
+    /// Optional intents are not all-or-nothing (goal-approach deviation, real-model run): an
+    /// invalid intent is dropped with a reported `intent_dropped` issue, and the
+    /// classifications and every valid intent are still compiled. Schema-invalid output and
+    /// classification errors still reject the whole output.
     #[test]
-    fn requirements_invalid_intents_are_rejected() {
+    fn requirements_invalid_intents_are_dropped_and_reported() {
         let (graph, candidates, request) = intent_setup();
-        let c = request.context.candidates[0].candidate_ref.to_string();
+        let c = request.context.candidates[0].candidate_ref.clone();
         let run = |intents: Vec<Value>| {
             compile(
                 &graph,
@@ -1440,28 +1444,82 @@ mod requirements_contract {
                 Some(uniform(&request, json!(null), json!("system"), intents)),
             )
         };
+        let dropped = |result: &RequirementCompilationResult| -> Vec<(String, String, String)> {
+            result
+                .unresolved
+                .iter()
+                .filter_map(|issue| match issue {
+                    RequirementCompilationIssue::IntentDropped {
+                        candidate_ref,
+                        intent_kind,
+                        reason,
+                    } => Some((
+                        candidate_ref.to_string(),
+                        intent_kind.clone(),
+                        reason.clone(),
+                    )),
+                    _ => None,
+                })
+                .collect()
+        };
+        let types = |result: &RequirementCompilationResult| -> Vec<&'static str> {
+            let mut t: Vec<&'static str> = result
+                .proposals
+                .iter()
+                .map(|p| added_node(p).payload.node_type().as_str())
+                .collect();
+            t.sort();
+            t
+        };
         let need = |refs: Value| json!({"candidate_ref": c, "intent_kind": "need", "stakeholder_refs": refs});
+        let constraint = json!({"candidate_ref": c, "intent_kind": "constraint",
+            "constraint_category": "technical", "strength": "mandatory"});
+        // An invented, Proposed or wrong-type stakeholder ref drops only the need: the
+        // Requirement and the valid constraint of the same candidate are still proposed.
         for refs in [
             json!(["stakeholder:unknown"]),
             json!(["stakeholder:proposed"]),
             json!([candidates[0].fragment_ref]),
         ] {
-            assert!(matches!(
-                run(vec![need(refs)]),
-                Err(RequirementCompilationError::InvalidIntentReference { .. })
-            ));
+            let result = run(vec![need(refs.clone()), constraint.clone()]).unwrap();
+            assert_eq!(types(&result), ["Constraint", "Requirement"], "{refs}");
+            assert_eq!(
+                dropped(&result),
+                [(
+                    c.to_string(),
+                    "need".to_owned(),
+                    "stakeholder_not_supplied".to_owned()
+                )],
+                "{refs}"
+            );
         }
-        assert!(matches!(
-            run(vec![json!({"candidate_ref": SEG, "intent_kind": "goal"})]),
-            Err(RequirementCompilationError::InvalidIntentReference { .. })
-        ));
-        assert!(matches!(
-            run(vec![
-                json!({"candidate_ref": c, "intent_kind": "goal"}),
-                json!({"candidate_ref": c, "intent_kind": "goal"})
-            ]),
-            Err(RequirementCompilationError::DuplicateIntent { .. })
-        ));
+        // An intent for a candidate outside the context is dropped under that reference.
+        let result = run(vec![json!({"candidate_ref": SEG, "intent_kind": "goal"})]).unwrap();
+        assert_eq!(types(&result), ["Requirement"]);
+        assert_eq!(
+            dropped(&result),
+            [(
+                SEG.to_owned(),
+                "goal".to_owned(),
+                "candidate_not_in_context".to_owned()
+            )]
+        );
+        // Every entry of a repeated (candidate, kind) pair is dropped: no entry is preferred.
+        let result = run(vec![
+            json!({"candidate_ref": c, "intent_kind": "goal"}),
+            json!({"candidate_ref": c, "intent_kind": "goal"}),
+            constraint.clone(),
+        ])
+        .unwrap();
+        assert_eq!(types(&result), ["Constraint", "Requirement"]);
+        assert_eq!(
+            dropped(&result),
+            [(
+                c.to_string(),
+                "goal".to_owned(),
+                "duplicate_intent".to_owned()
+            )]
+        );
         for (name, description) in [
             (" Lead", "ok"),
             ("Trail ", "ok"),
@@ -1469,16 +1527,22 @@ mod requirements_contract {
             ("tab\there", "ok"),
             ("ok", "\u{7}"),
         ] {
-            assert!(
-                matches!(
-                    run(vec![
-                        json!({"candidate_ref": c, "intent_kind": "concern", "name": name, "description": description})
-                    ]),
-                    Err(RequirementCompilationError::InvalidIntent { .. })
-                ),
+            let result = run(vec![
+                json!({"candidate_ref": c, "intent_kind": "concern", "name": name, "description": description}),
+            ])
+            .unwrap();
+            assert_eq!(types(&result), ["Requirement"], "{name:?} {description:?}");
+            assert_eq!(
+                dropped(&result),
+                [(
+                    c.to_string(),
+                    "concern".to_owned(),
+                    "concern_text_not_grounded".to_owned()
+                )],
                 "{name:?} {description:?}"
             );
         }
+        // Schema-invalid output still rejects the whole output.
         for bad in [
             json!({"candidate_ref": c, "intent_kind": "constraint", "constraint_category": "physical", "strength": "mandatory"}),
             json!({"candidate_ref": c, "intent_kind": "constraint", "constraint_category": "technical", "strength": "optional"}),
@@ -1489,6 +1553,18 @@ mod requirements_contract {
                 Err(RequirementCompilationError::SchemaInvalid { .. })
             ));
         }
+        // The result does not depend on intent order.
+        let a = run(vec![
+            need(json!(["stakeholder:unknown"])),
+            constraint.clone(),
+        ])
+        .unwrap();
+        let b = run(vec![
+            constraint.clone(),
+            need(json!(["stakeholder:unknown"])),
+        ])
+        .unwrap();
+        assert_eq!(a, b);
     }
 
     // ------------------------------------------------------------------ determinism

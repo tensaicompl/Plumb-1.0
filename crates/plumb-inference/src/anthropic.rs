@@ -75,7 +75,12 @@ struct AnthropicConfig {
     request_timeout_ms: Option<u64>,
     #[serde(default)]
     connect_timeout_ms: Option<u64>,
+    #[serde(default)]
+    effort: Option<String>,
 }
+
+/// The `output_config.effort` levels the Messages API accepts.
+const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 /// The validated adapter configuration with its effective timeouts.
 struct EffectiveConfig {
@@ -85,6 +90,7 @@ struct EffectiveConfig {
     workspace_id: Option<String>,
     request_timeout: Duration,
     connect_timeout: Duration,
+    effort: Option<String>,
 }
 
 fn is_clean(text: &str) -> bool {
@@ -102,6 +108,7 @@ fn decode_config(config: &Value) -> Result<EffectiveConfig, ProviderError> {
         ("workspace_id", "a string"),
         ("request_timeout_ms", "an integer"),
         ("connect_timeout_ms", "an integer"),
+        ("effort", "one of low, medium, high, xhigh, max"),
     ] {
         if config.get(field).is_some_and(Value::is_null) {
             return Err(config_error(format!("{field} must be {kind} when present")));
@@ -144,7 +151,17 @@ fn decode_config(config: &Value) -> Result<EffectiveConfig, ProviderError> {
             "connect_timeout_ms must be within 1..=request_timeout_ms",
         ));
     }
+    if decoded
+        .effort
+        .as_deref()
+        .is_some_and(|e| !EFFORT_LEVELS.contains(&e))
+    {
+        return Err(config_error(
+            "effort must be one of low, medium, high, xhigh, max",
+        ));
+    }
     Ok(EffectiveConfig {
+        effort: decoded.effort,
         model: decoded.model,
         max_tokens: decoded.max_tokens,
         api_version: decoded.api_version,
@@ -155,14 +172,19 @@ fn decode_config(config: &Value) -> Result<EffectiveConfig, ProviderError> {
 }
 
 impl EffectiveConfig {
-    /// The generation parameters of the request body: exactly `model` and `max_tokens`. No
-    /// sampling parameter is ever sent, and these are exactly what the artifact records as its
-    /// `parameters` (Fable #66).
+    /// The generation parameters of the request body: exactly `model`, `max_tokens` and, when
+    /// configured, `output_config.effort`. No sampling parameter is ever sent, and these are
+    /// exactly what the artifact records as its `parameters` (Fable #66); the structured-output
+    /// format derives from the bound schema and is not a parameter.
     fn parameters(&self) -> Value {
-        json!({
+        let mut parameters = json!({
             "model": self.model,
             "max_tokens": self.max_tokens,
-        })
+        });
+        if let Some(effort) = &self.effort {
+            parameters["output_config"] = json!({"effort": effort});
+        }
+        parameters
     }
 }
 
@@ -176,6 +198,72 @@ pub fn validate_config(config: &Value) -> Result<(), ProviderError> {
 /// inference artifact.
 pub fn request_parameters(config: &Value) -> Result<CanonicalJson, ProviderError> {
     decode_config(config).map(|c| CanonicalJson::new(c.parameters()))
+}
+
+/// The keywords the structured-outputs JSON Schema subset rejects on any schema node
+/// (measured against the live API); they are dropped from the constraint sent to the API and
+/// still enforced locally by the full output schema.
+const UNSUPPORTED_SCHEMA_KEYWORDS: [&str; 7] = [
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "maxItems",
+    "uniqueItems",
+];
+
+/// The structured-outputs constraint for `schema`: the bound output schema reduced to the
+/// subset the Messages API accepts (`oneOf` becomes `anyOf`, a `minItems` above 1 and every
+/// keyword of [`UNSUPPORTED_SCHEMA_KEYWORDS`] are dropped), or `None` when the schema has an
+/// object the subset cannot express (every object must set `additionalProperties: false`).
+/// The reduction only widens what the API admits; [`InferenceRequestMaterial`] validation of
+/// the answer against the full schema is unchanged.
+pub fn api_output_schema(schema: &Value) -> Option<Value> {
+    fn reduce(node: &Value) -> Option<Value> {
+        match node {
+            Value::Object(map) => {
+                let is_object = map.get("type").and_then(Value::as_str) == Some("object")
+                    || map.contains_key("properties");
+                if is_object && map.get("additionalProperties") != Some(&Value::Bool(false)) {
+                    return None;
+                }
+                let mut out = serde_json::Map::new();
+                for (key, value) in map {
+                    let key = key.as_str();
+                    if UNSUPPORTED_SCHEMA_KEYWORDS.contains(&key)
+                        || (key == "minItems" && value.as_u64().is_some_and(|n| n > 1))
+                    {
+                        continue;
+                    }
+                    let value = match key {
+                        // Property names and definition names are data, not keywords.
+                        "properties" | "$defs" | "definitions" => {
+                            let Value::Object(members) = value else {
+                                return None;
+                            };
+                            let mut reduced = serde_json::Map::new();
+                            for (name, member) in members {
+                                reduced.insert(name.clone(), reduce(member)?);
+                            }
+                            Value::Object(reduced)
+                        }
+                        _ => reduce(value)?,
+                    };
+                    let key = if key == "oneOf" { "anyOf" } else { key };
+                    out.insert(key.to_owned(), value);
+                }
+                Some(Value::Object(out))
+            }
+            Value::Array(items) => items
+                .iter()
+                .map(reduce)
+                .collect::<Option<Vec<_>>>()
+                .map(Value::Array),
+            other => Some(other.clone()),
+        }
+    }
+    reduce(schema)
 }
 
 fn bounded(text: &str) -> String {
@@ -387,6 +475,11 @@ impl InferenceProvider for AnthropicProvider {
         let mut body = parameters.clone();
         body["system"] = json!(material.prompt);
         body["messages"] = json!([{"role": "user", "content": user}]);
+        // Structured outputs: the bound output schema constrains decoding, so the answer is
+        // JSON of that shape (never fenced prose); it is still validated in full below.
+        if let Some(constraint) = api_output_schema(&material.schema) {
+            body["output_config"]["format"] = json!({"type": "json_schema", "schema": constraint});
+        }
         let body = to_canonical_json(&body).map_err(|e| config_error(e.to_string()))?;
 
         let client = Client::builder()

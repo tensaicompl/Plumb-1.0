@@ -192,6 +192,18 @@ mod prompts {
         assert!(!errors(&schema, &mention(Value::Null, range)).is_empty());
     }
 
+    /// Real-model run (claude-opus-5-5): with an empty supplied stakeholder list the model
+    /// proposed a need with an invented stakeholder ID ("x:y"), which the consumer rejects
+    /// and which fails the whole extract stage. The prompt states the empty-list case.
+    #[test]
+    fn s1_classification_forbids_needs_without_supplied_stakeholders() {
+        let (name, prompt, _) = PAIRS[0];
+        assert_eq!(name, "s1-classify-requirement");
+        assert!(
+            prompt.contains("When the context supplies no stakeholders, return no need intents.")
+        );
+    }
+
     // ------------------------------------------------------------------ Fable #65
 
     fn process_with_node(node: Value) -> Value {

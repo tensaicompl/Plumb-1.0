@@ -210,7 +210,8 @@ struct Run<'a> {
     ordinal: u32,
     current: LoadedRevision,
     committed: bool,
-    /// A retried attempt (N > 1) reuses inference an earlier attempt already persisted.
+    /// A retried attempt (N > 1) reuses inference an earlier attempt already persisted, unless
+    /// that attempt failed because the answer itself was rejected (then it asks again).
     retried: bool,
     status: StageStatus,
 }
@@ -748,6 +749,21 @@ impl ApiState {
         })
     }
 
+    /// Whether attempt `attempt - 1` of recipe job `id` failed because Plumb rejected the
+    /// provider's answer (`E_STAGE_EVALUATION_FAILED`): reusing that answer can never succeed,
+    /// so the retry asks the provider again.
+    fn previous_attempt_rejected_output(&self, id: &Hash, attempt: u32) -> Result<bool, ApiError> {
+        let attempts = self
+            .with_stage_store(|store| store.recipe_job_attempts(id))?
+            .map_err(crate::stage::store_error)?;
+        Ok(attempts
+            .iter()
+            .find(|a| a.attempt + 1 == attempt)
+            .and_then(|a| a.error.as_deref())
+            .and_then(|error| serde_json::from_str::<Value>(error).ok())
+            .is_some_and(|error| error["code"] == "E_STAGE_EVALUATION_FAILED"))
+    }
+
     /// The current attempt of recipe job `id` (1 for a job never retried).
     pub fn recipe_job_attempt(&self, id: &Hash) -> Result<u32, ApiError> {
         Ok(self.recipe_record(id)?.attempt)
@@ -768,6 +784,8 @@ impl ApiState {
             return Ok(());
         }
         let record = self.recipe_record(id)?;
+        let reuse =
+            record.attempt > 1 && !self.previous_attempt_rejected_output(id, record.attempt)?;
         let outcome = decode_capture(&record).and_then(|capture| {
             let recipe = capture.recipe()?;
             let current = self.load_revision(&capture.initial_base_revision)?;
@@ -779,7 +797,7 @@ impl ApiState {
                 ordinal: 0,
                 current,
                 committed: false,
-                retried: record.attempt > 1,
+                retried: reuse,
                 status: StageStatus::Acquiring,
             })
         });

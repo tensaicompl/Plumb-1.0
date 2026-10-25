@@ -2,7 +2,7 @@
 //! by a validated classification inference for one requirement candidate. Nothing is created
 //! from wording alone, no field is defaulted and no relation between intent nodes is guessed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use plumb_core::Id;
 use plumb_psg::{
@@ -11,7 +11,7 @@ use plumb_psg::{
 };
 use serde::Deserialize;
 
-use crate::requirements::{RequirementClassificationContext, RequirementCompilationError};
+use crate::requirements::{RequirementClassificationContext, RequirementCompilationIssue};
 
 /// One intent entry of the classification output, tagged by `intent_kind`.
 #[derive(Debug, Clone, Deserialize)]
@@ -62,13 +62,16 @@ fn grounded_text(value: &str) -> bool {
     !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control)
 }
 
-/// Validates every intent against the context and graph and returns them sorted by
-/// (candidate_ref, intent_kind); one invalid intent rejects the whole output.
+/// Validates every intent against the context and graph. Intents are optional proposals, so an
+/// invalid one is dropped with an `intent_dropped` issue instead of rejecting the whole output
+/// (goal-approach deviation from plan S1.1 item 12, after the first real-model run): a
+/// repeated (candidate_ref, intent_kind) pair drops every entry of the pair, so no entry is
+/// preferred. Returns the valid intents sorted by (candidate_ref, intent_kind) and the issues.
 pub(crate) fn validate_intents(
     graph: &Graph,
     context: &RequirementClassificationContext,
     mut intents: Vec<IntentOutput>,
-) -> Result<Vec<IntentOutput>, RequirementCompilationError> {
+) -> (Vec<IntentOutput>, Vec<RequirementCompilationIssue>) {
     intents.sort_by(|a, b| (a.candidate_ref(), a.kind()).cmp(&(b.candidate_ref(), b.kind())));
     let candidates: BTreeSet<&Id> = context
         .candidates
@@ -80,61 +83,65 @@ pub(crate) fn validate_intents(
         .iter()
         .map(|s| &s.stakeholder_ref)
         .collect();
-    let mut seen = BTreeSet::new();
+    let mut pairs: BTreeMap<(Id, &'static str), usize> = BTreeMap::new();
     for intent in &intents {
-        let candidate_ref = intent.candidate_ref();
-        if !candidates.contains(candidate_ref) {
-            return Err(RequirementCompilationError::InvalidIntentReference {
-                candidate_ref: candidate_ref.clone(),
-                reference: candidate_ref.clone(),
-            });
+        *pairs
+            .entry((intent.candidate_ref().clone(), intent.kind()))
+            .or_default() += 1;
+    }
+    let mut valid = Vec::new();
+    let mut issues = Vec::new();
+    let mut drop = |intent: &IntentOutput, reason: &str| {
+        issues.push(RequirementCompilationIssue::IntentDropped {
+            candidate_ref: intent.candidate_ref().clone(),
+            intent_kind: intent.kind().to_owned(),
+            reason: reason.to_owned(),
+        });
+    };
+    let mut reported_duplicates = BTreeSet::new();
+    for intent in intents {
+        let key = (intent.candidate_ref().clone(), intent.kind());
+        if pairs[&key] > 1 {
+            if reported_duplicates.insert(key) {
+                drop(&intent, "duplicate_intent");
+            }
+            continue;
         }
-        if !seen.insert((candidate_ref, intent.kind())) {
-            return Err(RequirementCompilationError::DuplicateIntent {
-                candidate_ref: candidate_ref.clone(),
-                intent_kind: intent.kind(),
-            });
+        if !candidates.contains(intent.candidate_ref()) {
+            drop(&intent, "candidate_not_in_context");
+            continue;
         }
-        match intent {
+        let reason = match &intent {
             IntentOutput::Need {
                 stakeholder_refs, ..
             } => {
                 let unique: BTreeSet<&Id> = stakeholder_refs.iter().collect();
                 if stakeholder_refs.is_empty() || unique.len() != stakeholder_refs.len() {
-                    return Err(RequirementCompilationError::InvalidIntent {
-                        candidate_ref: candidate_ref.clone(),
-                        reason: "need stakeholder_refs must be non-empty and unique".to_owned(),
-                    });
-                }
-                for reference in stakeholder_refs {
-                    let accepted = graph.node(reference).is_some_and(|node| {
-                        node.status == ElementStatus::Accepted
-                            && matches!(node.payload, NodePayload::Stakeholder(_))
-                    });
-                    if !stakeholders.contains(reference) || !accepted {
-                        return Err(RequirementCompilationError::InvalidIntentReference {
-                            candidate_ref: candidate_ref.clone(),
-                            reference: reference.clone(),
-                        });
-                    }
+                    Some("need_stakeholders_empty_or_repeated")
+                } else if stakeholder_refs.iter().any(|reference| {
+                    !stakeholders.contains(reference)
+                        || !graph.node(reference).is_some_and(|node| {
+                            node.status == ElementStatus::Accepted
+                                && matches!(node.payload, NodePayload::Stakeholder(_))
+                        })
+                }) {
+                    Some("stakeholder_not_supplied")
+                } else {
+                    None
                 }
             }
             IntentOutput::Concern {
                 name, description, ..
-            } => {
-                if !grounded_text(name) || !grounded_text(description) {
-                    return Err(RequirementCompilationError::InvalidIntent {
-                        candidate_ref: candidate_ref.clone(),
-                        reason: "concern name and description must be non-empty, without \
-                                 surrounding whitespace or control characters"
-                            .to_owned(),
-                    });
-                }
-            }
-            IntentOutput::Goal { .. } | IntentOutput::Constraint { .. } => {}
+            } => (!grounded_text(name) || !grounded_text(description))
+                .then_some("concern_text_not_grounded"),
+            IntentOutput::Goal { .. } | IntentOutput::Constraint { .. } => None,
+        };
+        match reason {
+            Some(reason) => drop(&intent, reason),
+            None => valid.push(intent),
         }
     }
-    Ok(intents)
+    (valid, issues)
 }
 
 /// The (node type, ID prefix, payload) of every validated intent of `candidate_ref`. Goal,

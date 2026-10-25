@@ -1551,6 +1551,32 @@ mod http_stages {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     }
 
+    /// Goal-approach (first real-model run): when the previous attempt failed because Plumb
+    /// rejected the model's answer (E_STAGE_EVALUATION_FAILED), a retry asks the provider
+    /// again instead of reusing that rejected answer, which could never succeed.
+    #[tokio::test]
+    async fn retry_after_a_rejected_answer_asks_the_provider_again() {
+        // An attribute the built-in dictionary does not classify, so the model must.
+        let app = app(data_graph(&["Nickname"]));
+        // A schema-valid answer naming an attribute outside the request is rejected.
+        *app.provider.classes.lock().unwrap() = vec![("attr:ghost".into(), "confidential".into())];
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        let view = job(&app, &job_id);
+        assert_eq!(view["status"], "failed", "{view}");
+        assert_eq!(
+            record(&app, &job_id).failure_code.as_deref(),
+            Some("E_STAGE_EVALUATION_FAILED")
+        );
+        assert_eq!(app.provider.calls.lock().unwrap().len(), 1);
+        *app.provider.classes.lock().unwrap() = vec![("attr:0".into(), "confidential".into())];
+        app.state.retry_recipe_job(&job_id).unwrap();
+        app.state.execute_recipe_job(&job_id).unwrap();
+        assert_eq!(app.provider.calls.lock().unwrap().len(), 2);
+        // Ready: the model's classification awaits human confirmation.
+        let view = job(&app, &job_id);
+        assert_eq!(view["status"], "ready", "{view}");
+    }
+
     /// H0.3 (§33.3): an operationally failed recipe job is retried explicitly as attempt N+1
     /// under its unchanged ID and captured identity, with its Failed child re-queued; the record
     /// of every attempt is kept. Committed, Stale and moved-base jobs are refused unchanged.

@@ -85,6 +85,23 @@ mod provider_contract {
         (request, material)
     }
 
+    /// The standard context and prompt with another output schema.
+    #[cfg(feature = "anthropic")]
+    pub(crate) fn with_schema(
+        provider: &str,
+        schema: &str,
+    ) -> (InferenceRequest, InferenceRequestMaterial) {
+        let context = context_bytes();
+        let request = request_for(
+            policy(provider, anthropic_config()),
+            &context,
+            PROMPT.as_bytes(),
+            schema.as_bytes(),
+        );
+        let material = material_for(&request, &context, PROMPT.as_bytes(), schema.as_bytes());
+        (request, material)
+    }
+
     /// A second, distinct request and its own material (another context).
     pub(crate) fn second(provider: &str) -> (InferenceRequest, InferenceRequestMaterial) {
         let context =
@@ -594,6 +611,7 @@ mod provider_contract {
             let mut sent_parameters = body.as_object().unwrap().clone();
             sent_parameters.remove("system");
             sent_parameters.remove("messages");
+            sent_parameters.remove("output_config");
             assert_eq!(&Value::Object(sent_parameters), a.parameters.as_value());
             let schema: Value = serde_json::from_str(SCHEMA).unwrap();
             let context: Value = serde_json::from_slice(&context_bytes()).unwrap();
@@ -608,6 +626,9 @@ mod provider_contract {
                     "max_tokens": 256,
                     "system": PROMPT,
                     "messages": [{"role": "user", "content": user}],
+                    // Structured outputs: the bound output schema (already part of the request
+                    // identity) constrains decoding; it is not a generation parameter.
+                    "output_config": {"format": {"type": "json_schema", "schema": schema}},
                 })
             );
             // The secret is confined to the x-api-key header.
@@ -617,6 +638,128 @@ mod provider_contract {
             assert!(!format!("{request:?}").contains(KEY));
             assert!(!format!("{execution:?}").contains(KEY));
             assert_eq!(sent.headers.values().filter(|v| v.contains(KEY)).count(), 1);
+        }
+
+        /// The API accepts a JSON Schema subset for structured outputs (measured against the
+        /// live API): numeric bounds, `maxItems`, `uniqueItems` and `minItems` above 1 are
+        /// rejected, `oneOf` is rejected (`anyOf` is accepted), and every object must close
+        /// its properties. The constraint sent to the API drops exactly what it rejects; the
+        /// full schema still validates every answer locally.
+        #[test]
+        fn output_schema_sent_to_the_api_is_the_supported_subset() {
+            use plumb_inference::anthropic::api_output_schema;
+            let full = json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["n", "names", "pick", "one"],
+                "properties": {
+                    "n": {"type": "integer", "minimum": 0, "maximum": 9,
+                          "exclusiveMinimum": -1, "exclusiveMaximum": 10, "multipleOf": 1},
+                    "names": {"type": "array", "items": {"type": "string", "minLength": 1,
+                              "pattern": "^[a-z]+$"},
+                              "minItems": 2, "maxItems": 5, "uniqueItems": true},
+                    "one": {"type": "array", "items": {"$ref": "#/$defs/x"}, "minItems": 1},
+                    "pick": {"oneOf": [{"type": "string"}, {"$ref": "#/$defs/x"}]}
+                },
+                "$defs": {"x": {"type": "object", "additionalProperties": false,
+                                "required": ["v"], "properties": {"v": {"type": "number",
+                                "minimum": 0}}}}
+            });
+            assert_eq!(
+                api_output_schema(&full),
+                Some(json!({
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["n", "names", "pick", "one"],
+                    "properties": {
+                        "n": {"type": "integer"},
+                        "names": {"type": "array", "items": {"type": "string", "minLength": 1,
+                                  "pattern": "^[a-z]+$"}},
+                        "one": {"type": "array", "items": {"$ref": "#/$defs/x"}, "minItems": 1},
+                        "pick": {"anyOf": [{"type": "string"}, {"$ref": "#/$defs/x"}]}
+                    },
+                    "$defs": {"x": {"type": "object", "additionalProperties": false,
+                                    "required": ["v"], "properties": {"v": {"type": "number"}}}}
+                }))
+            );
+            // Property *names* that look like keywords are data, never dropped.
+            let named = json!({"type": "object", "additionalProperties": false,
+                "required": ["minimum"], "properties": {"minimum": {"type": "string"}}});
+            assert_eq!(api_output_schema(&named), Some(named.clone()));
+            // An open object cannot be expressed: no constraint is sent for that schema.
+            for open in [
+                json!({"type": "object", "properties": {"p": {"type": "object"}},
+                       "required": ["p"], "additionalProperties": false}),
+                json!({"type": "object", "required": [], "properties": {}}),
+                json!({"type": "object", "additionalProperties": true}),
+            ] {
+                assert_eq!(api_output_schema(&open), None, "{open}");
+            }
+        }
+
+        /// A schema the API subset cannot express is sent without `output_config`; the answer
+        /// is still validated locally against the full schema.
+        #[test]
+        fn inexpressible_output_schema_is_sent_without_a_constraint() {
+            let body = message("m", "end_turn", json!([text(r#"{"answer":{"free":1}}"#)]));
+            let server = serve("200 OK", &[("content-type", "application/json")], &body);
+            let (request, material) = super::with_schema(
+                "anthropic",
+                r#"{"type":"object","additionalProperties":false,"required":["answer"],
+                    "properties":{"answer":{"type":"object"}}}"#,
+            );
+            let p = provider(&server);
+            p.execute(&request, &material)
+                .unwrap()
+                .validate_for(&request)
+                .unwrap();
+            let sent = server.captured.lock().unwrap()[0].clone();
+            let body: Value = serde_json::from_slice(&sent.body).unwrap();
+            assert!(body.get("output_config").is_none(), "{body}");
+        }
+
+        /// Optional effort (real-model run: at the API default the model skipped all
+        /// thinking on the 32-candidate classification and emitted an invented reference).
+        /// It is a generation parameter: sent in `output_config` next to the format, part of
+        /// the configuration identity, and recorded with the other parameters.
+        #[test]
+        fn configured_effort_is_sent_and_recorded() {
+            use plumb_inference::anthropic::validate_config;
+            let body = message("m", "end_turn", json!([text(r#"{"answer":"yes"}"#)]));
+            let server = serve("200 OK", &[("content-type", "application/json")], &body);
+            let mut config = anthropic_config();
+            config["effort"] = json!("high");
+            let context = context_bytes();
+            let request = request_for(
+                policy("anthropic", config.clone()),
+                &context,
+                PROMPT.as_bytes(),
+                SCHEMA.as_bytes(),
+            );
+            let material = material_for(&request, &context, PROMPT.as_bytes(), SCHEMA.as_bytes());
+            let execution = provider(&server).execute(&request, &material).unwrap();
+            let sent = server.captured.lock().unwrap()[0].clone();
+            let sent: Value = serde_json::from_slice(&sent.body).unwrap();
+            let schema: Value = serde_json::from_str(SCHEMA).unwrap();
+            assert_eq!(
+                sent["output_config"],
+                json!({"effort": "high", "format": {"type": "json_schema", "schema": schema}})
+            );
+            assert_eq!(
+                execution.artifact.parameters.as_value(),
+                &json!({"model": "test-model-configured", "max_tokens": 256,
+                        "output_config": {"effort": "high"}})
+            );
+            for level in ["low", "medium", "high", "xhigh", "max"] {
+                config["effort"] = json!(level);
+                validate_config(&config).unwrap();
+            }
+            for bad in [json!("extreme"), json!(""), json!(3), Value::Null] {
+                config["effort"] = bad.clone();
+                assert!(validate_config(&config).is_err(), "{bad}");
+            }
         }
 
         #[test]
