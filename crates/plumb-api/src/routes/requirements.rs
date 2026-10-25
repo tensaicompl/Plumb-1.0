@@ -325,7 +325,7 @@ async fn classify_requirement(
         ElementStatus::Proposed | ElementStatus::Accepted
     ) {
         return Err(ApiError::semantic(
-            "RequirementNotActive",
+            "RequirementNotEditable",
             "the requirement is not Proposed or Accepted",
         ));
     }
@@ -364,7 +364,7 @@ async fn accept_requirement_ears(
         ElementStatus::Proposed | ElementStatus::Accepted
     ) {
         return Err(ApiError::semantic(
-            "RequirementNotActive",
+            "RequirementNotEditable",
             "the requirement is not Proposed or Accepted",
         ));
     }

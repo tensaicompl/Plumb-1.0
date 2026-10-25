@@ -1828,6 +1828,53 @@ mod http_workflow {
         );
     }
 
+    /// H0.7 (architecture §33.7): classify_requirement and accept_requirement_ears act only on
+    /// Proposed or Accepted Requirements; a historical Requirement is 422 E_SEMANTIC_INVARIANT
+    /// with error RequirementNotEditable and no write.
+    #[tokio::test]
+    async fn requirement_edits_respect_lifecycle() {
+        let (mut nodes, edges) = base_parts();
+        nodes.push(requirement(
+            "req:rejected",
+            "Rejected",
+            "Employees shall fax leave requests.",
+        ));
+        nodes.push(requirement(
+            "req:deprecated",
+            "Deprecated",
+            "Employees shall mail leave requests.",
+        ));
+        let graph =
+            Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap_or_else(|v| panic!("{v:?}"));
+        let app = app_with(graph, |_| Vec::new());
+        let start = revision(&app).await;
+        for target in ["req:rejected", "req:deprecated"] {
+            for (uri, body) in [
+                (
+                    format!("/api/requirements/{target}/classify"),
+                    json!({"class": "operational"}),
+                ),
+                (
+                    format!("/api/requirements/{target}/accept-ears"),
+                    json!({"text": "When asked, the employee shall submit a leave request."}),
+                ),
+            ] {
+                let r = write(&app, &uri, Some(body)).await;
+                assert_error(&r, StatusCode::UNPROCESSABLE_ENTITY, "E_SEMANTIC_INVARIANT");
+                assert_eq!(r.json()["details"]["error"], "RequirementNotEditable", "{uri}");
+            }
+        }
+        assert_eq!(revision(&app).await, start, "no write happened");
+        // An Accepted and a Proposed Requirement stay editable.
+        let r = write(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(json!({"class": "operational"})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    }
+
     // ------------------------------------------------------------------ gate reports
 
     fn f1_report(graph: &Graph) -> plumb_validation::GateReport {
