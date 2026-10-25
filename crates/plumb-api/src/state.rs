@@ -176,7 +176,7 @@ impl A04Runtime {
         *self
             .queue
             .lock()
-            .map_err(|_| ApiError::internal("stage_queue"))? = Some(sender);
+            .map_err(|e| ApiError::internal_cause("stage_queue", &e))? = Some(sender);
         Ok(())
     }
 
@@ -185,7 +185,7 @@ impl A04Runtime {
         let queue = self
             .queue
             .lock()
-            .map_err(|_| ApiError::internal("stage_queue"))?;
+            .map_err(|e| ApiError::internal_cause("stage_queue", &e))?;
         Ok(match queue.as_ref() {
             Some(sender) => sender.send(id.clone()).is_ok(),
             None => false,
@@ -235,7 +235,7 @@ impl A03Runtime {
         let mut in_flight = self
             .in_flight_sessions
             .lock()
-            .map_err(|_| ApiError::internal("session_turns"))?;
+            .map_err(|e| ApiError::internal_cause("session_turns", &e))?;
         // Fable #207: one turn per session at a time, refused before any write or provider call.
         if in_flight.contains_key(session) {
             return Err(ApiError::conflict(
@@ -256,7 +256,7 @@ impl A03Runtime {
         Ok(self
             .in_flight_sessions
             .lock()
-            .map_err(|_| ApiError::internal("session_turns"))?
+            .map_err(|e| ApiError::internal_cause("session_turns", &e))?
             .contains_key(session))
     }
     fn new(config: A03RuntimeConfig) -> Result<A03Runtime, ApiStateError> {
@@ -551,7 +551,7 @@ impl ApiState {
         let mut store = runtime
             .stage_store
             .lock()
-            .map_err(|_| ApiError::internal("stage_store"))?;
+            .map_err(|e| ApiError::internal_cause("stage_store", &e))?;
         Ok(f(&mut store))
     }
 
@@ -574,7 +574,7 @@ impl ApiState {
         let mut store = runtime
             .workflow_store
             .lock()
-            .map_err(|_| ApiError::internal("workflow_store"))?;
+            .map_err(|e| ApiError::internal_cause("workflow_store", &e))?;
         Ok(f(&mut store))
     }
 
@@ -586,7 +586,7 @@ impl ApiState {
             .inner
             .artifact_store
             .lock()
-            .map_err(|_| ApiError::internal("artifact_store"))?;
+            .map_err(|e| ApiError::internal_cause("artifact_store", &e))?;
         Ok(f(&mut store))
     }
 
@@ -598,7 +598,7 @@ impl ApiState {
             .inner
             .revision_store
             .lock()
-            .map_err(|_| ApiError::internal("revision_store"))?;
+            .map_err(|e| ApiError::internal_cause("revision_store", &e))?;
         Ok(f(&mut store))
     }
 
@@ -607,11 +607,11 @@ impl ApiState {
         self.with_revision_store(|store| {
             let head = store
                 .head(&self.inner.branch)
-                .map_err(|_| ApiError::internal("revision_store"))?
+                .map_err(|e| ApiError::internal_cause("revision_store", &e))?
                 .ok_or_else(|| ApiError::internal("branch_head"))?;
             store
                 .load_revision(&head)
-                .map_err(|_| ApiError::internal("revision_store"))
+                .map_err(|e| ApiError::internal_cause("revision_store", &e))
         })?
     }
 
@@ -622,7 +622,7 @@ impl ApiState {
             Err(StoreError::RevisionNotFound(_)) => {
                 Err(ApiError::not_found(format!("revision {id} not found")))
             }
-            Err(_) => Err(ApiError::internal("revision_store")),
+            Err(e) => Err(ApiError::internal_cause("revision_store", &e)),
         })?
     }
 
@@ -738,7 +738,7 @@ impl ApiState {
             Err(IntakeAcceptanceError::ReasonRequired(_)) => {
                 return Err(reason_required(proposal, &report))
             }
-            Err(_) => return Err(ApiError::internal("intake_rationale")),
+            Err(e) => return Err(ApiError::internal_cause("intake_rationale", &e)),
         }
         self.commit_patch_set(
             loaded,
@@ -844,7 +844,7 @@ impl ApiState {
             | Err(IntakeAcceptanceError::MissingRationale(_)) => {
                 return Err(reason_required(proposal, report))
             }
-            Err(_) => return Err(ApiError::internal("intake_rationale")),
+            Err(e) => return Err(ApiError::internal_cause("intake_rationale", &e)),
         }
         // The original effect is persisted before the CAS; an orphan after a lost CAS is kept.
         let stored = self.with_artifact_store(|store| {
@@ -914,7 +914,7 @@ impl ApiState {
                 )
                 .with_details(json!({ "patch_error": error.to_string() })))
             }
-            Err(_) => return Err(ApiError::internal("revision_store")),
+            Err(e) => return Err(ApiError::internal_cause("revision_store", &e)),
         };
         let delta = &result.delta;
         let mut ids: Vec<String> = delta
@@ -970,7 +970,7 @@ pub(crate) fn run_intake(
             "the proposal contains an expression exceeding a safety limit",
         )
         .with_details(json!({ "limit": limit, "actual": actual, "max": max }))),
-        Err(_) => Err(ApiError::internal("intake")),
+        Err(e) => Err(ApiError::internal_cause("intake", &e)),
     }
 }
 
@@ -1192,12 +1192,12 @@ fn request_hash(
         "path": path,
         "query": query,
     }))
-    .map_err(|_| ApiError::internal("request_hash"))?;
+    .map_err(|e| ApiError::internal_cause("request_hash", &e))?;
     Ok(Hash::content_sha256(&bytes))
 }
 
 fn encode_cursor(cursor: &Cursor) -> Result<String, ApiError> {
-    let bytes = to_canonical_json(cursor).map_err(|_| ApiError::internal("cursor"))?;
+    let bytes = to_canonical_json(cursor).map_err(|e| ApiError::internal_cause("cursor", &e))?;
     Ok(hex::encode(bytes))
 }
 

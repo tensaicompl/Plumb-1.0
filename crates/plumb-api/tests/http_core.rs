@@ -3718,4 +3718,57 @@ mod http_core {
         let message = r.json()["message"].as_str().unwrap().to_owned();
         assert!(!message.contains(&"x".repeat(65)), "{message}");
     }
+
+    /// A writer collecting formatted tracing output.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Fable #202: one tracing record per request (method, matched route, status, latency) and the
+    /// underlying cause of an internal failure, which never reaches the response.
+    #[tokio::test]
+    async fn requests_and_internal_causes_are_traced() {
+        let app = app();
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let r = get(&app, "/api/requirements/req:a").await;
+        assert_eq!(r.status, StatusCode::OK);
+        let r = get(&app, "/api/nowhere/secret-text").await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND);
+        let error = plumb_api::error::ApiError::internal_cause("revision_store", &"disk I/O error");
+        assert_eq!(error.body().details, json!({"subsystem": "revision_store"}));
+        let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("method=GET"), "{text}");
+        assert!(text.contains("route=/api/requirements/{id}"), "{text}");
+        assert!(text.contains("status=200"), "{text}");
+        assert!(text.contains("latency_ms="), "{text}");
+        assert!(
+            text.contains("route=unmatched") && text.contains("status=404"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("secret-text"),
+            "raw paths are never logged: {text}"
+        );
+        assert!(
+            text.contains("subsystem=\"revision_store\"")
+                || text.contains("subsystem=revision_store"),
+            "{text}"
+        );
+        assert!(text.contains("disk I/O error"), "{text}");
+    }
 }

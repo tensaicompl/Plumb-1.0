@@ -8,6 +8,8 @@
   },
   "packageManager": "npm@11.19.0",
   "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

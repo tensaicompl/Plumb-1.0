@@ -49,7 +49,7 @@ async fn run_stage(
         }
     })
     .await
-    .map_err(|_| ApiError::internal("stage_task"))??;
+    .map_err(|e| ApiError::internal_cause("stage_task", &e))??;
     Ok(Json(started.response).into_response())
 }
 
@@ -60,6 +60,6 @@ async fn get_job(
 ) -> Result<Response, ApiError> {
     let (job, loaded) = tokio::task::spawn_blocking(move || state.get_job(&id))
         .await
-        .map_err(|_| ApiError::internal("stage_task"))??;
+        .map_err(|e| ApiError::internal_cause("stage_task", &e))??;
     Ok(read_json(&loaded, job))
 }

@@ -267,7 +267,7 @@ impl Recipe {
 
 /// The JSON value of one typed configuration value.
 fn v<T: Serialize>(value: &T) -> Result<Value, ApiError> {
-    serde_json::to_value(value).map_err(|_| ApiError::internal("stage_config"))
+    serde_json::to_value(value).map_err(|e| ApiError::internal_cause("stage_config", &e))
 }
 
 /// The provider object of a recipe configuration: `null` for recipes without inference.
@@ -282,7 +282,7 @@ pub(crate) fn provider_projection(
     Ok(json!({
         "mode": mode.as_str(),
         "policy": serde_json::to_value(&a03.provider_policy)
-            .map_err(|_| ApiError::internal("stage_config"))?,
+            .map_err(|e| ApiError::internal_cause("stage_config", &e))?,
         "replay_fixtures_hash": mode.fixtures_hash(),
     }))
 }
@@ -304,7 +304,7 @@ pub(crate) fn recipe_config(
 
 /// Generic SHA-256 of the RFC 8785 JSON of `value`.
 pub fn canonical_hash(value: &Value) -> Result<Hash, ApiError> {
-    let bytes = to_canonical_json(value).map_err(|_| ApiError::internal("stage_hash"))?;
+    let bytes = to_canonical_json(value).map_err(|e| ApiError::internal_cause("stage_hash", &e))?;
     Ok(Hash::content_sha256(&bytes))
 }
 
@@ -325,7 +325,8 @@ pub struct RecipeCapture {
 impl RecipeCapture {
     /// Generic SHA-256 of the RFC 8785 JSON of the capture.
     pub fn id(&self) -> Result<Hash, ApiError> {
-        let bytes = to_canonical_json(self).map_err(|_| ApiError::internal("stage_job_id"))?;
+        let bytes =
+            to_canonical_json(self).map_err(|e| ApiError::internal_cause("stage_job_id", &e))?;
         Ok(Hash::content_sha256(&bytes))
     }
 

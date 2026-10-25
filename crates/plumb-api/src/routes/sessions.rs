@@ -354,7 +354,7 @@ async fn create_session_turn(
         provider.execute(&inference_request, &inference_material)
     })
     .await
-    .map_err(|_| ApiError::internal("inference_task"))?
+    .map_err(|e| ApiError::internal_cause("inference_task", &e))?
     .map_err(|e| inference_failed(&e))?;
     let persisted = state
         .with_artifact_store(|store| {
@@ -422,7 +422,7 @@ async fn create_session_turn(
             id: card.proposal.id.to_string(),
             kind,
             payload: serde_json::to_value(&card.proposal.patch_set.patch)
-                .map_err(|_| ApiError::internal("proposal_payload"))?,
+                .map_err(|e| ApiError::internal_cause("proposal_payload", &e))?,
             intake: intake_view(&card.intake, state.profile())?,
         });
     }
@@ -443,7 +443,7 @@ async fn create_session_turn(
                 .filter(|c| c.intake.requires_reason)
                 .count(),
         )
-        .map_err(|_| ApiError::internal("session_turn"))?,
+        .map_err(|e| ApiError::internal_cause("session_turn", &e))?,
         created_at,
     };
     let turn_record = state
@@ -495,7 +495,7 @@ async fn create_session_turn(
                 let bound = write
                     .revision
                     .parse()
-                    .map_err(|_| ApiError::internal("revision_id"))?;
+                    .map_err(|e| ApiError::internal_cause("revision_id", &e))?;
                 (write, bound)
             }
             Err(error) => {

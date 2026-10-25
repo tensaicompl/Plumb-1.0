@@ -58,10 +58,11 @@ async fn search_model(
         .transpose()?
         .map(scope_kind);
     let loaded = state.load_head()?;
-    let index = LexicalIndex::build(&loaded.graph).map_err(|_| ApiError::internal("search"))?;
+    let index =
+        LexicalIndex::build(&loaded.graph).map_err(|e| ApiError::internal_cause("search", &e))?;
     let hits = index
         .search(&q, usize::MAX)
-        .map_err(|_| ApiError::internal("search"))?;
+        .map_err(|e| ApiError::internal_cause("search", &e))?;
     let mut items = Vec::new();
     for hit in hits
         .into_iter()

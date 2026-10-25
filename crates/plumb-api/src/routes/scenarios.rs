@@ -50,8 +50,9 @@ pub(crate) fn routes() -> Router<ApiState> {
 
 /// RFC 8785 text of a JSON value.
 fn canonical_text<T: serde::Serialize>(value: &T) -> Result<String, ApiError> {
-    let bytes = to_canonical_json(value).map_err(|_| ApiError::internal("canonical_json"))?;
-    String::from_utf8(bytes).map_err(|_| ApiError::internal("canonical_json"))
+    let bytes =
+        to_canonical_json(value).map_err(|e| ApiError::internal_cause("canonical_json", &e))?;
+    String::from_utf8(bytes).map_err(|e| ApiError::internal_cause("canonical_json", &e))
 }
 
 fn trace_conflict(code: &'static str, scenario: &Id, reason: &str) -> ApiError {
@@ -102,7 +103,7 @@ fn run_view(
     // result: the scenario shows as not run until it is executed again (as F4 judges it).
     if let Some(NodePayload::Scenario(spec)) = graph.node(scenario).map(|n| &n.payload) {
         let current_hash = plumb_validation::scenario_specification_hash(scenario, spec)
-            .map_err(|_| ApiError::internal("scenario_specification_hash"))?;
+            .map_err(|e| ApiError::internal_cause("scenario_specification_hash", &e))?;
         if payload.specification_hash != current_hash {
             return Ok(None);
         }
@@ -134,7 +135,7 @@ fn run_view(
                 "the linked artifact does not exist",
             ))
         }
-        Err(_) => return Err(ApiError::internal("artifact_store")),
+        Err(e) => return Err(ApiError::internal_cause("artifact_store", &e)),
     };
     if artifact.kind != ArtifactKind::ScenarioTrace || artifact.media_type != "application/json" {
         return Err(trace_conflict(
@@ -157,7 +158,7 @@ fn run_view(
         return Err(mismatch("the artifact disagrees with the scenario run"));
     }
     let result: ScenarioRunResult = parse_wire(&wire(&payload.result)?, "result")
-        .map_err(|_| ApiError::internal("scenario_run_result"))?;
+        .map_err(|e| ApiError::internal_cause("scenario_run_result", &e))?;
     let trace = payload
         .trace
         .iter()
@@ -209,7 +210,7 @@ fn scenario_view(
         }
     };
     let status: ScenarioStatus = parse_wire(&wire(&node.status)?, "status")
-        .map_err(|_| ApiError::internal("scenario_status"))?;
+        .map_err(|e| ApiError::internal_cause("scenario_status", &e))?;
     Ok(Scenario {
         id: node.id.to_string(),
         given: scenario

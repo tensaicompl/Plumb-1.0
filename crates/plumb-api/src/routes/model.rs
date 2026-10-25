@@ -176,13 +176,14 @@ fn proposal(
         AcceptancePolicy::HumanConfirm,
         None,
     )
-    .map_err(|_| ApiError::internal("proposal"))
+    .map_err(|e| ApiError::internal_cause("proposal", &e))
 }
 
 fn precondition(node: &Node) -> Result<ElementPrecondition, ApiError> {
     Ok(ElementPrecondition {
         id: node.id.clone(),
-        expected_hash: node_element_hash(node).map_err(|_| ApiError::internal("element_hash"))?,
+        expected_hash: node_element_hash(node)
+            .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
     })
 }
 
@@ -571,7 +572,7 @@ fn process(graph: &Graph, node: &Node) -> Result<Process, ApiError> {
         ProcessAnalysisMode::ActiveOverlay
     };
     let analysis = analyze_process(graph, &node.id, mode)
-        .map_err(|_| ApiError::internal("process_analysis"))?;
+        .map_err(|e| ApiError::internal_cause("process_analysis", &e))?;
     let mut lanes = BTreeSet::new();
     let mut branches = Vec::new();
     for member in &analysis.node_refs {
@@ -1001,7 +1002,7 @@ fn material_proposal(
         AcceptancePolicy::HumanDecision,
         None,
     )
-    .map_err(|_| ApiError::internal("proposal"))
+    .map_err(|e| ApiError::internal_cause("proposal", &e))
 }
 
 fn id_collision(id: &Id) -> ApiError {
@@ -1306,7 +1307,7 @@ async fn get_calculation_example(
                 .map_err(|e| ApiError::invalid(format!("input {key:?}: {e}")))?;
             let exact: ExactValue = serde_json::to_value(&typed)
                 .and_then(serde_json::from_value)
-                .map_err(|_| ApiError::internal("calculation_value"))?;
+                .map_err(|e| ApiError::internal_cause("calculation_value", &e))?;
             inputs.insert(key, exact);
         }
     }
@@ -1346,7 +1347,7 @@ async fn get_calculation_example(
     })?;
     let value: CalculationValue = serde_json::to_value(&example.value)
         .and_then(serde_json::from_value)
-        .map_err(|_| ApiError::internal("calculation_value"))?;
+        .map_err(|e| ApiError::internal_cause("calculation_value", &e))?;
     Ok(read_json(
         &loaded,
         CalculationExample {
@@ -1369,8 +1370,9 @@ fn encoding_invalid(id: &Id, error: impl ToString) -> ApiError {
 
 /// RFC 8785 text of a typed value.
 fn canonical_text<T: serde::Serialize>(value: &T) -> Result<String, ApiError> {
-    let bytes = to_canonical_json(value).map_err(|_| ApiError::internal("canonical_json"))?;
-    String::from_utf8(bytes).map_err(|_| ApiError::internal("canonical_json"))
+    let bytes =
+        to_canonical_json(value).map_err(|e| ApiError::internal_cause("canonical_json", &e))?;
+    String::from_utf8(bytes).map_err(|e| ApiError::internal_cause("canonical_json", &e))
 }
 
 /// The Rule view of a Rule or DecisionTable node.
@@ -1680,7 +1682,7 @@ async fn mutate_process_steps(
 
 /// The canonical Mermaid text of a linear process (Hotfix 065).
 fn render_mermaid(name: &str, operation_refs: &[Id]) -> Result<String, ApiError> {
-    let name = serde_json::to_string(name).map_err(|_| ApiError::internal("mermaid"))?;
+    let name = serde_json::to_string(name).map_err(|e| ApiError::internal_cause("mermaid", &e))?;
     let mut text = format!("flowchart TD\n%% plumb-process-name: {name}\n  start((Start))\n");
     let keys: Vec<String> = (0..operation_refs.len()).map(linear_step_key).collect();
     for (key, operation) in keys.iter().zip(operation_refs) {

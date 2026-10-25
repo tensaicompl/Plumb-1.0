@@ -250,6 +250,13 @@ impl ApiError {
         .with_details(json!({ "record": what }))
     }
 
+    /// [`ApiError::internal`] that first logs the underlying `cause` (Fable #202); the cause is
+    /// never part of the response.
+    pub fn internal_cause<E: std::fmt::Debug + ?Sized>(subsystem: &str, cause: &E) -> ApiError {
+        tracing::error!(target: "plumb_api::internal", subsystem, cause = ?cause, "internal failure");
+        ApiError::internal(subsystem)
+    }
+
     /// 500 `E_INTERNAL`; `subsystem` names the failing component, never its raw message.
     pub fn internal(subsystem: &str) -> ApiError {
         ApiError::new(

@@ -119,7 +119,7 @@ fn evaluation_failed(phase: Phase, error: impl std::fmt::Debug + std::fmt::Displ
 }
 
 fn to_value<T: Serialize>(value: &T) -> Result<Value, ApiError> {
-    serde_json::to_value(value).map_err(|_| ApiError::internal("phase_inputs"))
+    serde_json::to_value(value).map_err(|e| ApiError::internal_cause("phase_inputs", &e))
 }
 
 /// The inference requests a scenarios phase plans, in skeleton order.
@@ -758,7 +758,7 @@ pub(crate) fn rules_projection(graph: &Graph, tables: &[Id]) -> Result<Vec<u8>, 
         }));
     }
     to_canonical_json(&json!({ "version": 1, "tables": entries }))
-        .map_err(|_| ApiError::internal("rules_projection"))
+        .map_err(|e| ApiError::internal_cause("rules_projection", &e))
 }
 
 #[cfg(test)]

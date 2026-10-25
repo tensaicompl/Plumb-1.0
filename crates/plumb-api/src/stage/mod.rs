@@ -214,7 +214,7 @@ fn start_worker(state: &ApiState) -> Result<(), ApiError> {
                 let _ = state.execute_recipe_job(&id);
             }
         })
-        .map_err(|_| ApiError::internal("stage_worker"))?;
+        .map_err(|e| ApiError::internal_cause("stage_worker", &e))?;
     state.stage_runtime("stage_worker")?.set_queue(sender)
 }
 
@@ -347,7 +347,7 @@ impl Run<'_> {
             COMPILER_VERSION.to_owned(),
             CanonicalJson::new(config),
         )
-        .map_err(|e| ApiError::internal(&format!("compile_context: {e}")))?;
+        .map_err(|e| ApiError::internal_cause("compile_context", &e))?;
         let mut job = capture_stage_job(
             state.branch().clone(),
             &head.revision.id,
@@ -356,10 +356,11 @@ impl Run<'_> {
             stage.scope.clone(),
             &ctx,
         )
-        .map_err(|e| ApiError::internal(&format!("stage_job: {e}")))?;
+        .map_err(|e| ApiError::internal_cause("stage_job", &e))?;
         let ordinal = self.step(phase, &base.revision.id)?;
         let now = state.now();
-        let job_value = serde_json::to_value(&job).map_err(|_| ApiError::internal("stage_job"))?;
+        let job_value =
+            serde_json::to_value(&job).map_err(|e| ApiError::internal_cause("stage_job", &e))?;
         let inserted = state
             .with_stage_store(|store| {
                 store.insert_stage_job(job.id(), &job_value, StageStatus::Queued, now)
@@ -461,7 +462,7 @@ impl Run<'_> {
                 .with_artifact_store(|store| {
                     store.put(ArtifactKind::ScenarioTrace, "application/json", bytes, now)
                 })?
-                .map_err(|_| ApiError::internal("artifact_store"))?;
+                .map_err(|e| ApiError::internal_cause("artifact_store", &e))?;
             if &stored != hash {
                 return Err(StepEnd::Failed(ApiError::internal("artifact_store")));
             }
@@ -510,8 +511,7 @@ impl Run<'_> {
         job: &mut StageJob,
     ) -> Result<(PhaseOutput, Hash, CompileRun), StepEnd> {
         let state = self.state;
-        let invalid =
-            |e: plumb_compiler::StageJobError| ApiError::internal(&format!("stage_job: {e}"));
+        let invalid = |e: plumb_compiler::StageJobError| ApiError::internal_cause("stage_job", &e);
         self.set_status(StageStatus::Acquiring)?;
         job.start_acquiring().map_err(invalid)?;
         persist_child(state, job, StageStatus::Queued, state.now())?;
@@ -519,18 +519,18 @@ impl Run<'_> {
         let artifacts = acquire::acquire(state, &plan, self.recipe, stage.phase, state.now())?;
         artifacts
             .validate_for_plan(&plan)
-            .map_err(|e| ApiError::internal(&format!("artifact_set: {e}")))?;
+            .map_err(|e| ApiError::internal_cause("artifact_set", &e))?;
         job.start_evaluating().map_err(invalid)?;
         persist_child(state, job, StageStatus::Acquiring, state.now())?;
         self.set_status(StageStatus::Evaluating)?;
         let output = stage.evaluate_phase(&base.graph, &artifacts)?;
         let run = CompileRun::new(stage.phase.stage(), ctx, &artifacts, &output.evaluation)
-            .map_err(|e| ApiError::internal(&format!("compile_run: {e}")))?;
+            .map_err(|e| ApiError::internal_cause("compile_run", &e))?;
         let persisted = state
             .with_artifact_store(|store| {
                 persist_compile_run(store, &run, &output.evaluation, state.now())
             })?
-            .map_err(|e| ApiError::internal(&format!("compile_run: {e}")))?;
+            .map_err(|e| ApiError::internal_cause("compile_run", &e))?;
         let head = state.load_head()?;
         job.complete(&plan, &run, &head.revision.id)
             .map_err(invalid)?;
@@ -556,7 +556,7 @@ fn put_projection(state: &ApiState, bytes: &[u8]) -> Result<Hash, ApiError> {
                 state.now(),
             )
         })?
-        .map_err(|_| ApiError::internal("artifact_store"))
+        .map_err(|e| ApiError::internal_cause("artifact_store", &e))
 }
 
 /// Rebuilds the exact acquired ArtifactSet of a persisted run (reuse of a stored child),
@@ -644,7 +644,7 @@ impl ApiState {
         let new = NewStageRecipeJob {
             recipe_job_id: job_id.clone(),
             recipe_job_json: serde_json::to_value(&capture)
-                .map_err(|_| ApiError::internal("stage_job"))?,
+                .map_err(|e| ApiError::internal_cause("stage_job", &e))?,
             config_json: config,
             recipe: recipe.as_str().to_owned(),
             branch: self.branch().clone(),
@@ -889,7 +889,9 @@ fn decode_capture(record: &StageRecipeJobRecord) -> Result<RecipeCapture, ApiErr
 fn compiler_scope(scope: Option<&[Id]>) -> Result<Scope, ApiError> {
     match scope {
         None => Ok(Scope::Project),
-        Some(ids) => Scope::elements(ids.to_vec()).map_err(|_| ApiError::internal("stage_scope")),
+        Some(ids) => {
+            Scope::elements(ids.to_vec()).map_err(|e| ApiError::internal_cause("stage_scope", &e))
+        }
     }
 }
 

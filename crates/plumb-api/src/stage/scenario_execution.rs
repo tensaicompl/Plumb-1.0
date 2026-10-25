@@ -69,7 +69,7 @@ pub(crate) fn run_collision(run_ref: &Id) -> ApiError {
 pub(crate) fn link_key() -> Result<ExtensionKey, ApiError> {
     SCENARIO_TRACE_LINK_EXTENSION
         .parse()
-        .map_err(|_| ApiError::internal("scenario_trace_link"))
+        .map_err(|e| ApiError::internal_cause("scenario_trace_link", &e))
 }
 
 /// A current ScenarioRun node with its payload.
@@ -82,7 +82,7 @@ pub(crate) fn current_run<'g>(
     scenario: &Id,
 ) -> Result<(Id, CurrentRun<'g>), ApiError> {
     let run_ref = scenario_run_id(graph.project_id(), scenario)
-        .map_err(|_| ApiError::internal("scenario_run_id"))?;
+        .map_err(|e| ApiError::internal_cause("scenario_run_id", &e))?;
     if graph.edge(&run_ref).is_some() {
         return Err(run_collision(&run_ref));
     }

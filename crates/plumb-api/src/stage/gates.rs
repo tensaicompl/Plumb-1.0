@@ -123,7 +123,7 @@ pub(crate) fn decode_report(record: &GateReportRecord) -> Result<GateReport, Api
 /// The evaluator registry with every NOW gate's evaluators.
 fn registry(state: &ApiState) -> Result<EvaluatorRegistry, ApiError> {
     let metadata = ValidationRegistry::new(state.profile().clone())
-        .map_err(|_| ApiError::internal("validation_registry"))?;
+        .map_err(|e| ApiError::internal_cause("validation_registry", &e))?;
     let mut registry = EvaluatorRegistry::new(metadata);
     for register in [
         rules::register_i0_evaluators,
@@ -132,14 +132,15 @@ fn registry(state: &ApiState) -> Result<EvaluatorRegistry, ApiError> {
         rules::register_f3_evaluators,
         rules::register_f4_evaluators,
     ] {
-        register(&mut registry).map_err(|_| ApiError::internal("validation_registry"))?;
+        register(&mut registry).map_err(|e| ApiError::internal_cause("validation_registry", &e))?;
     }
     Ok(registry)
 }
 
 /// The content hash of supplemental inputs.
 fn input_hash<T: Serialize>(value: &T) -> Result<Hash, ApiError> {
-    let bytes = to_canonical_json(value).map_err(|_| ApiError::internal("gate_inputs"))?;
+    let bytes =
+        to_canonical_json(value).map_err(|e| ApiError::internal_cause("gate_inputs", &e))?;
     Ok(Hash::content_sha256(&bytes))
 }
 
@@ -163,7 +164,7 @@ fn i0_evidence(
     }
     let key = SOURCE_ARTIFACTS_EXTENSION
         .parse()
-        .map_err(|_| ApiError::internal("source_artifacts_extension"))?;
+        .map_err(|e| ApiError::internal_cause("source_artifacts_extension", &e))?;
     let mut refs = Vec::new();
     for id in graph.node_ids_by_type(NodeType::SourceArtifact) {
         let Some(node) = graph.node(id) else { continue };
@@ -1127,8 +1128,9 @@ pub(crate) fn persist_report(
         gate: report.gate.to_string(),
         report_hash: report
             .content_hash()
-            .map_err(|_| ApiError::internal("gate_report"))?,
-        report_json: serde_json::to_value(report).map_err(|_| ApiError::internal("gate_report"))?,
+            .map_err(|e| ApiError::internal_cause("gate_report", &e))?,
+        report_json: serde_json::to_value(report)
+            .map_err(|e| ApiError::internal_cause("gate_report", &e))?,
         supplemental_input_hash: evaluated.supplemental_input_hash.clone(),
         evaluation_at: evaluated.evaluation_at,
         recipe_job_id: recipe_job_id.cloned(),

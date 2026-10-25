@@ -2,9 +2,11 @@
 //! Hotfix 063), the 40 A0.3-owned operations (plan A0.3, Hotfix 065) and the two A0.4-owned
 //! stage and job operations (plan A0.4, Hotfix 067): all 72 operations.
 
-use axum::extract::DefaultBodyLimit;
+use std::time::Instant;
+
+use axum::extract::{DefaultBodyLimit, MatchedPath, Request};
 use axum::http::{header, StatusCode};
-use axum::middleware::map_response;
+use axum::middleware::{from_fn, map_response, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 
@@ -67,6 +69,27 @@ fn typed_framework_error(limit_bytes: usize, response: Response) -> Response {
     typed
 }
 
+/// One tracing record per request (Fable #202): method, matched route (never the raw path, which
+/// may carry client text), status and latency.
+async fn trace_request(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or_else(|| "unmatched".to_owned(), |p| p.as_str().to_owned());
+    let started = Instant::now();
+    let response = next.run(request).await;
+    tracing::info!(
+        target: "plumb_api::http",
+        method = %method,
+        route = %route,
+        status = response.status().as_u16(),
+        latency_ms = started.elapsed().as_millis() as u64,
+        "request"
+    );
+    response
+}
+
 /// The typed 404 of a path no route serves.
 async fn route_not_found() -> ApiError {
     ApiError::route_not_found()
@@ -98,5 +121,6 @@ pub fn router(state: ApiState) -> Router {
         .layer(map_response(|response: Response| async move {
             typed_framework_error(MAX_JSON_BODY_BYTES, response)
         }))
+        .layer(from_fn(trace_request))
         .with_state(state)
 }

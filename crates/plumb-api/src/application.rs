@@ -727,7 +727,7 @@ mod services {
             }
         };
         let kind: QuestionKind = parse_wire(&wire(&q.question_kind)?, "question kind")
-            .map_err(|_| ApiError::internal("question_kind"))?;
+            .map_err(|e| ApiError::internal_cause("question_kind", &e))?;
         Ok(Question {
             id: node.id.to_string(),
             kind,
@@ -830,7 +830,7 @@ mod services {
                 AcceptancePolicy::AutoNonSemantic,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             let write = self.commit(loaded, &proposal, created_at, "create_source")?;
             let NodePayload::SourceArtifact(source) = &imported.source.payload else {
                 return Err(ApiError::internal("importer"));
@@ -930,7 +930,7 @@ mod services {
             members.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
             let ordered: Vec<Id> = members.into_iter().map(|(_, _, id)| id).collect();
             let expected = round_id(loaded.graph.project_id(), stakeholder, &ordered)
-                .map_err(|_| ApiError::internal("round_id"))?;
+                .map_err(|e| ApiError::internal_cause("round_id", &e))?;
             if expected != round_ref {
                 return Err(inconsistent(
                     "the round ID does not match its ordered members",
@@ -993,7 +993,7 @@ mod services {
                     )
                     .with_details(json!({
                         "dispositions": serde_json::to_value(&result.dispositions)
-                            .map_err(|_| ApiError::internal("dispositions"))?
+                            .map_err(|e| ApiError::internal_cause("dispositions", &e))?
                     })));
                 }
                 return Err(ApiError::conflict(
@@ -1054,7 +1054,7 @@ mod services {
                 )
                 .with_details(json!({
                     "issues": serde_json::to_value(&generation.issues)
-                        .map_err(|_| ApiError::internal("question_issues"))?
+                        .map_err(|e| ApiError::internal_cause("question_issues", &e))?
                 })));
             }
             let write = match &generation.proposal {
@@ -1260,7 +1260,7 @@ mod services {
                     | Err(plumb_intake::IntakeAcceptanceError::MissingRationale(_)) => {
                         return Err(reason_required(&proposal, &report))
                     }
-                    Err(_) => return Err(ApiError::internal("intake_rationale")),
+                    Err(e) => return Err(ApiError::internal_cause("intake_rationale", &e)),
                 }
                 // The member's own effect on the untouched base.
                 let delta = plumb_patch::apply_patch(&loaded.graph, &proposal.patch_set)
@@ -1476,7 +1476,7 @@ mod services {
                 action,
                 intake: intake_view(&persisted.intake, self.profile())?,
                 patch_preview: serde_json::to_value(&persisted.proposal.patch_set.patch)
-                    .map_err(|_| ApiError::internal("patch_preview"))?,
+                    .map_err(|e| ApiError::internal_cause("patch_preview", &e))?,
             })
         }
 
@@ -1693,7 +1693,7 @@ mod services {
                     target: ElementPrecondition {
                         id: node.id.clone(),
                         expected_hash: node_element_hash(node)
-                            .map_err(|_| ApiError::internal("element_hash"))?,
+                            .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                     },
                     from: ElementStatus::Proposed,
                     to: ElementStatus::Accepted,
@@ -1704,7 +1704,7 @@ mod services {
                     target: ElementPrecondition {
                         id: edge.id.clone(),
                         expected_hash: edge_element_hash(edge)
-                            .map_err(|_| ApiError::internal("element_hash"))?,
+                            .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                     },
                     from: ElementStatus::Proposed,
                     to: ElementStatus::Accepted,
@@ -1727,7 +1727,7 @@ mod services {
                 AcceptancePolicy::HumanConfirm,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             self.write(
                 loaded,
                 &proposal,
@@ -1792,7 +1792,7 @@ mod services {
                         target: ElementPrecondition {
                             id: node.id.clone(),
                             expected_hash: node_element_hash(node)
-                                .map_err(|_| ApiError::internal("element_hash"))?,
+                                .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                         },
                         payload: NodePayload::Attribute(payload),
                     },
@@ -1803,7 +1803,7 @@ mod services {
                 AcceptancePolicy::HumanConfirm,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             self.commit(loaded, &proposal, self.now(), "set_attribute_type")
         }
 
@@ -1857,7 +1857,7 @@ mod services {
                         target: ElementPrecondition {
                             id: node.id.clone(),
                             expected_hash: node_element_hash(node)
-                                .map_err(|_| ApiError::internal("element_hash"))?,
+                                .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                         },
                         from: ElementStatus::Proposed,
                         to: ElementStatus::Accepted,
@@ -1869,7 +1869,7 @@ mod services {
                 AcceptancePolicy::HumanConfirm,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             self.commit(loaded, &proposal, created_at, operation_id)
                 .map(Some)
         }
@@ -1961,7 +1961,7 @@ mod services {
             let a04 = self.stage_runtime("materialize_gate_findings")?;
             let created_at = self.now();
             let audit = AuditMeta::new(a04.stage_actor_ref.clone(), created_at, None, None)
-                .map_err(|_| ApiError::internal("audit"))?;
+                .map_err(|e| ApiError::internal_cause("audit", &e))?;
             let policy = a04.validation_policy.clone();
             let reports = self.current_or_evaluated_reports(loaded);
             let mut current: std::collections::BTreeSet<Id> = reports
@@ -2016,7 +2016,7 @@ mod services {
                     target: ElementPrecondition {
                         id: node.id.clone(),
                         expected_hash: node_element_hash(node)
-                            .map_err(|_| ApiError::internal("element_hash"))?,
+                            .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                     },
                     payload: NodePayload::Finding(closed),
                 });
@@ -2041,7 +2041,7 @@ mod services {
                 AcceptancePolicy::AutoNonSemantic,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             self.write(
                 loaded,
                 &proposal,
@@ -2229,8 +2229,8 @@ mod services {
             let NodePayload::Requirement(current) = &node.payload else {
                 return Ok(None);
             };
-            let current_hash =
-                node_element_hash(node).map_err(|_| ApiError::internal("element_hash"))?;
+            let current_hash = node_element_hash(node)
+                .map_err(|e| ApiError::internal_cause("element_hash", &e))?;
             let records = self
                 .with_workflow_store(|store| store.pending_proposals())?
                 .map_err(workflow_error)?;
