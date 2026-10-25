@@ -44,9 +44,9 @@ mod openapi {
     /// The frozen Hotfix 062 inventory (01-72) with the two U2.1 semantic change previews
     /// appended by Hotfix 073 (73-74), the H0.11 proposal list and discard (75-76); the B1
     /// Inbox proposal detail, set acceptance and confirmation (77-79) and the B2 UI
-    /// pipeline operations (80-84), then the S2 Inbox refresh (85), written independently of
-    /// the production table.
-    const INVENTORY: [(&str, &str, &str); 85] = [
+    /// pipeline operations (80-84), then the S2 Inbox refresh (85) and the S4 element labels of the
+    /// Model and Scenarios screens (86), written independently of the production table.
+    const INVENTORY: [(&str, &str, &str); 86] = [
         ("GET", "/api/me", "get_me"),
         ("GET", "/api/model/version", "get_model_version"),
         ("GET", "/api/gates", "get_gates"),
@@ -200,6 +200,7 @@ mod openapi {
         ("POST", "/api/findings/materialize", "materialize_findings"),
         ("GET", "/api/sources", "list_sources"),
         ("POST", "/api/proposals/{id}/refresh", "refresh_proposal"),
+        ("GET", "/api/model/labels", "resolve_labels"),
     ];
 
     const PAGEABLE: [&str; 14] = [
@@ -411,7 +412,7 @@ mod openapi {
     fn openapi_inventory_is_exact() {
         let doc = doc();
         let ops = operations(&doc);
-        assert_eq!(ops.len(), 85);
+        assert_eq!(ops.len(), 86);
         let found: BTreeSet<(String, String, String)> = ops
             .iter()
             .map(|(m, p, o)| {
@@ -428,7 +429,7 @@ mod openapi {
             .collect();
         assert_eq!(found, expected);
         let ids: BTreeSet<&str> = INVENTORY.iter().map(|i| i.2).collect();
-        assert_eq!(ids.len(), 85);
+        assert_eq!(ids.len(), 86);
         // The production table is the frozen order.
         let production: Vec<(&str, &str, &str)> = OPERATIONS
             .iter()
@@ -437,7 +438,7 @@ mod openapi {
         assert_eq!(production, INVENTORY.to_vec());
         assert_eq!(
             OPERATIONS.iter().map(|s| s.number).collect::<Vec<_>>(),
-            (1..=85).collect::<Vec<_>>()
+            (1..=86).collect::<Vec<_>>()
         );
         // Tags match the production table and every operation has exactly one.
         for spec in &OPERATIONS {
@@ -458,7 +459,7 @@ mod openapi {
             .map(|(p, _)| p)
             .collect();
         assert_eq!(shared, vec!["/api/sources"]);
-        assert_eq!(doc["paths"].as_object().unwrap().len(), 84);
+        assert_eq!(doc["paths"].as_object().unwrap().len(), 85);
     }
 
     #[test]
@@ -725,7 +726,7 @@ mod openapi {
                 .flatten()
                 .all(|p| p["name"] != "If-Match"));
         }
-        assert_eq!(gets, 38);
+        assert_eq!(gets, 39);
     }
 
     #[test]
@@ -1003,7 +1004,7 @@ mod openapi {
                 "{name} must require lint_current"
             );
         }
-        assert_eq!(operations(&doc).len(), 85);
+        assert_eq!(operations(&doc).len(), 86);
         has(
             "Sentence",
             &["id", "text", "slots", "status", "evidence", "unknowns"],
@@ -1023,7 +1024,9 @@ mod openapi {
         );
         has("CrudMatrix", &["operations", "entities", "cells"]);
         has("CrudCell", &["op", "ent", "c", "r", "u", "d"]);
-        has("Calculation", &["id", "name", "expr"]);
+        has("Calculation", &["id", "name", "expr", "status"]);
+        has("ElementLabel", &["id", "kind", "label"]);
+        has("ElementLabelList", &["items"]);
         has("CalculationExample", &["expr", "rendered_example", "value"]);
         has(
             "Rule",
@@ -1032,6 +1035,7 @@ mod openapi {
                 "name",
                 "kind",
                 "conditions",
+                "outputs",
                 "rows",
                 "uncovered_cells",
                 "overlaps",
@@ -1629,8 +1633,8 @@ mod openapi {
         ));
         for needle in [
             "Contract version 3",
-            "85 operations",
-            "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 B1 those of operations 77-79, B2 those of operations 80-84 and S2 that of operation 85.",
+            "86 operations",
+            "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 B1 those of operations 77-79, B2 those of operations 80-84, S2 that of operation 85 and S4 that of operation 86.",
             "ETag",
             "If-Match",
             "412 Precondition Failed",
@@ -1654,6 +1658,8 @@ mod openapi {
             "- B2 appends operations 80 to 84 for the UI",
             "- S2: 1 operations (1 POST, 0 GET).",
             "- S2 (UI Inbox, UI-SPEC §5.2) appends operation 85",
+            "- S4: 1 operations (0 POST, 1 GET).",
+            "- S4 (UI Model and Scenarios, UI-SPEC §5.4 and §5.5) appends operation 86",
             "- Hotfix 073 appends operations 73 and 74, the U2.1 semantic change previews",
             "a preview never persists a pending proposal",
             "- H0.11 appends operations 75 and 76",
@@ -1674,7 +1680,7 @@ mod openapi {
             .lines()
             .filter(|l| l.starts_with("| ") && !l.starts_with("| #"))
             .collect();
-        assert_eq!(rows.len(), 85);
+        assert_eq!(rows.len(), 86);
         for ((row, (method, path, id)), spec) in rows.iter().zip(INVENTORY).zip(OPERATIONS.iter()) {
             assert!(
                 row.contains(&format!("| {method} | `{path}` | `{id}` |")),
@@ -1765,11 +1771,17 @@ mod openapi {
             ),
             (2, 1, 1)
         );
-        assert!(OPERATIONS
+        assert!(OPERATIONS.iter().all(|s| [
+            "A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2", "S2", "S4"
+        ]
+        .contains(&s.owner)));
+        // S4 (UI Model and Scenarios) owns exactly the appended element labels.
+        let s4: Vec<(u32, &str)> = OPERATIONS
             .iter()
-            .all(
-                |s| ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2", "S2"].contains(&s.owner)
-            ));
+            .filter(|s| s.owner == "S4")
+            .map(|s| (s.number, s.operation_id))
+            .collect();
+        assert_eq!(s4, vec![(86, "resolve_labels")]);
         // B1 (UI Inbox) owns exactly the appended proposal detail, set acceptance and
         // confirmation.
         let b1: Vec<(u32, &str)> = OPERATIONS
@@ -1890,10 +1902,10 @@ mod openapi {
             .into_iter()
             .collect()
         );
-        // Only Hotfix 073 (73 and 74), H0.11 (75 and 76), B1 (77 to 79), B2 (80 to 84) and
-        // S2 (85) added operations; none was removed.
+        // Only Hotfix 073 (73 and 74), H0.11 (75 and 76), B1 (77 to 79), B2 (80 to 84),
+        // S2 (85) and S4 (86) added operations; none was removed.
         let doc = doc();
-        assert_eq!(operations(&doc).len(), 85);
+        assert_eq!(operations(&doc).len(), 86);
     }
 
     #[test]
@@ -2072,7 +2084,7 @@ mod openapi {
                 ops.iter().filter(|o| o.0 == "POST").count(),
                 ops.iter().filter(|o| o.0 == "GET").count()
             ),
-            (85, 46, 39)
+            (86, 46, 40)
         );
         let (_, counts) = example_locations(&doc);
         assert_eq!(
@@ -2089,8 +2101,9 @@ mod openapi {
             // path ID, 200 and ETag, and two If-Match headers, request bodies, 200 and 412. B2 adds
             // the retry path ID, three If-Match headers, three request bodies, five 200 and three
             // 412 responses and the pipeline and source-list ETags. S2 adds the refresh path ID,
-            // If-Match, 200 and 412 (no request body).
-            (150, 40, 144, 38, 1)
+            // If-Match, 200 and 412 (no request body); S4 adds the labels query parameter, 200 and
+            // ETag.
+            (151, 40, 145, 39, 1)
         );
         let schemas = doc["components"]["schemas"].as_object().unwrap();
         // Hotfix 073 adds SemanticElementDiff and SemanticChangePreviewResponse; Hotfix 079 adds
@@ -2105,8 +2118,9 @@ mod openapi {
         // PipelineError, PipelineStep, PipelineResponse, RetryJobRequest, GenerateQuestionsRequest,
         // GenerateQuestionsResponse, MaterializeFindingsRequest, MaterializeFindingsResponse,
         // SourceListItem and SourceList; S2 adds RefreshProposalResponse. S1 adds ProjectInfo
-        // (`get_me.project`) and SpanRequirement (`Span.requirements`).
-        assert_eq!(schemas.len(), 160);
+        // (`get_me.project`) and SpanRequirement (`Span.requirements`). S4 adds ElementLabel and
+        // ElementLabelList.
+        assert_eq!(schemas.len(), 162);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -2467,12 +2481,13 @@ mod openapi {
                 "name",
                 "kind",
                 "conditions",
+                "outputs",
                 "rows",
                 "uncovered_cells",
                 "overlaps"
             ])
         );
-        for nullable in ["rows", "uncovered_cells", "overlaps"] {
+        for nullable in ["outputs", "rows", "uncovered_cells", "overlaps"] {
             assert_eq!(
                 rule["properties"][nullable]["type"],
                 json!(["array", "null"])
@@ -3071,7 +3086,7 @@ mod openapi {
     #[test]
     fn openapi_hotfix_079_process_projection_and_lane_move() {
         let doc = doc();
-        assert_eq!(operations(&doc).len(), 85);
+        assert_eq!(operations(&doc).len(), 86);
         assert_eq!(doc["x-plumb-contract-version"], json!(3));
         // Process keeps its summary fields and gains the structured projection.
         let process_fields = set(&[

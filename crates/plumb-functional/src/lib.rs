@@ -113,9 +113,10 @@ pub use data_class::{
     DATA_CLASS_DICTIONARY_VERSION, DATA_CLASS_OUTPUT_VERSION, DATA_CLASS_TASK_KIND,
 };
 pub use decision_table::{
-    analyze_decision_table, decode_decision_table, encode_decision_table, set_output_cell,
-    DecisionCellError, DecisionCoverage, DecisionTableAnalysis, DecisionTableEncodingError,
-    DecisionTableSpec, MAX_COVERAGE_WITNESSES, MAX_FINITE_DECISION_POINTS,
+    analyze_decision_table, cover_uncovered_point, decode_decision_table, encode_decision_table,
+    set_output_cell, DecisionCellError, DecisionCoverage, DecisionTableAnalysis,
+    DecisionTableEncodingError, DecisionTableSpec, MAX_COVERAGE_WITNESSES,
+    MAX_FINITE_DECISION_POINTS,
 };
 pub use directory::{
     produce_directory, DirectoryAudit, DirectoryCalendarBinding, DirectoryCalendarDraft,

@@ -18,33 +18,7 @@ function Views({ labelKey, items }: { labelKey: MessageKey; items: readonly { hr
   return <SegmentedLinks label={t(labelKey)} items={items} onNavigate={go} className="mb-6" />;
 }
 
-// ------------------------------------------------------------------ Model and Quality
-
-const MODEL_SEGMENTS: readonly { segment: string; label: MessageKey }[] = [
-  { segment: "glossary", label: "nav.glossary" },
-  { segment: "entities", label: "nav.entities" },
-  { segment: "rules", label: "nav.rules" },
-  { segment: "calculations", label: "nav.calculations" },
-  { segment: "processes", label: "nav.processes" },
-];
-
-/** /model/*: the five Model segments as segmented navigation above the segment's old page. */
-export function ModelInterim() {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  return (
-    <Legacy>
-      <Views
-        labelKey="model.views"
-        items={MODEL_SEGMENTS.map(({ segment, label }) => ({
-          href: "/model/" + segment,
-          label: t(label),
-          active: pathname === "/model/" + segment || pathname.startsWith("/model/" + segment + "/"),
-        }))}
-      />
-      <Outlet />
-    </Legacy>
-  );
-}
+// ------------------------------------------------------------------ Quality
 
 /** /quality/*: Gates · Issues · History above the old pages. */
 export function QualityInterim() {

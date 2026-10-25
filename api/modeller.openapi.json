@@ -290,12 +290,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "status": {
+            "description": "The node ElementStatus wire string (S4): `Proposed` until `confirm_calculation`.",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "name",
-          "expr"
+          "expr",
+          "status"
         ],
         "type": "object"
       },
@@ -936,6 +941,44 @@
           "subject_ref",
           "candidate_ref",
           "score"
+        ],
+        "type": "object"
+      },
+      "ElementLabel": {
+        "additionalProperties": false,
+        "description": "The plain-language name of one model element (S4): a node's name (a Transition is\n\"<from> → <to>\", a Requirement its source identifier) or a relation's\n\"<from> <relation> <to>\".",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "description": "The lower snake_case node type (e.g. `operation`, `state`) or a relation kind.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label"
+        ],
+        "type": "object"
+      },
+      "ElementLabelList": {
+        "additionalProperties": false,
+        "description": "The labels of the requested elements that exist at the head, sorted by ID. Not paged.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ElementLabel"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
         ],
         "type": "object"
       },
@@ -3505,6 +3548,16 @@
           "name": {
             "type": "string"
           },
+          "outputs": {
+            "description": "The canonical output columns of a DecisionTable (S4); `null` for a scalar Rule.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "overlaps": {
             "items": {
               "type": "string"
@@ -3539,6 +3592,7 @@
           "name",
           "kind",
           "conditions",
+          "outputs",
           "rows",
           "uncovered_cells",
           "overlaps"
@@ -4638,7 +4692,7 @@
     }
   },
   "info": {
-    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79), B2 (the UI pipeline operations 80-84) and S2 (the Inbox refresh of a stale answer, operation 85).",
+    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79), B2 (the UI pipeline operations 80-84), S2 (the Inbox refresh of a stale answer, operation 85) and S4 (the element labels of the Model and Scenarios screens, operation 86).",
     "title": "Plumb Modeller API",
     "version": "0.1.0",
     "x-plumb-error-codes": [
@@ -6801,7 +6855,8 @@
                     {
                       "expr": "if leave_type == Annual then RequestedWorkingDays else 0",
                       "id": "AnnualBalanceDelta",
-                      "name": "AnnualBalanceDelta"
+                      "name": "AnnualBalanceDelta",
+                      "status": "example"
                     }
                   ]
                 },
@@ -7380,6 +7435,56 @@
         ]
       }
     },
+    "/api/model/labels": {
+      "get": {
+        "operationId": "resolve_labels",
+        "parameters": [
+          {
+            "description": "Comma-separated element IDs (1 to 200); unknown IDs are omitted",
+            "example": "example",
+            "in": "query",
+            "name": "ids",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "items": [
+                    {
+                      "id": "example",
+                      "kind": "example",
+                      "label": "example"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ElementLabelList"
+                }
+              }
+            },
+            "description": "The plain-language labels of the requested elements that exist at the head, sorted by ID",
+            "headers": {
+              "ETag": {
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
+                "example": "example",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "entities"
+        ]
+      }
+    },
     "/api/model/rules": {
       "get": {
         "operationId": "list_rules",
@@ -7426,6 +7531,9 @@
                       "id": "AnnualLeaveEligibility",
                       "kind": "decision_table",
                       "name": "AnnualLeaveEligibility",
+                      "outputs": [
+                        "example"
+                      ],
                       "overlaps": [
                         "example"
                       ],
@@ -7508,6 +7616,9 @@
                   "id": "AnnualLeaveEligibility",
                   "kind": "decision_table",
                   "name": "AnnualLeaveEligibility",
+                  "outputs": [
+                    "example"
+                  ],
                   "overlaps": [
                     "example"
                   ],

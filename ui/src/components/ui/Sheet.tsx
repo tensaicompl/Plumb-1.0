@@ -166,6 +166,10 @@ export interface ReasonSheetProps {
   readonly pending?: boolean;
   /** A failed write's explanation, shown above the footer. */
   readonly error?: ReactNode;
+  /** A governed choice shown above the reason (e.g. a rule outcome). */
+  readonly children?: ReactNode;
+  /** Keeps Confirm disabled while the choice in `children` is incomplete. */
+  readonly confirmDisabled?: boolean;
 }
 
 /** The governed-action sheet: one multiline reason (min 96 px, radius 10) plus Cancel / Confirm. */
@@ -181,6 +185,8 @@ export function ReasonSheet({
   reasonPlaceholder,
   pending = false,
   error,
+  children,
+  confirmDisabled = false,
 }: ReasonSheetProps) {
   const [reason, setReason] = useState("");
   const [wasOpen, setWasOpen] = useState(open);
@@ -202,11 +208,12 @@ export function ReasonSheet({
       description={description}
       confirmLabel={confirmLabel}
       onConfirm={() => onConfirm(trimmed)}
-      confirmDisabled={reasonRequired && trimmed === ""}
+      confirmDisabled={confirmDisabled || (reasonRequired && trimmed === "")}
       destructive={destructive}
       pending={pending}
-      initialFocus={textarea}
+      initialFocus={children === undefined ? textarea : undefined}
     >
+      {children}
       <label htmlFor={fieldId} className="sr-only">
         {label}
       </label>

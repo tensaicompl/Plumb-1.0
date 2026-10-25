@@ -204,6 +204,23 @@ mod http_workflow {
         serde_json::to_value(encode_decision_table("Eligibility", &spec).unwrap()).unwrap()
     }
 
+    /// S4: an incomplete single-output table (no row covers `Contractor`) and a two-output
+    /// table with the same gap.
+    fn gap_table(outputs: usize) -> Value {
+        let output = |name: &str| {
+            serde_json::from_value(json!({"name": name, "ty": {"type": "bool"}, "domain": null}))
+                .unwrap()
+        };
+        let spec = plumb_functional::DecisionTableSpec {
+            hit_policy: "UNIQUE".into(),
+            inputs: vec![serde_json::from_value(json!({"name": "contract", "ty": {"type": "enum", "members": ["Contractor", "Employee"]}, "domain": null})).unwrap()],
+            outputs: (0..outputs).map(|i| output(&format!("eligible_{i}"))).collect(),
+            rows: vec![serde_json::from_value(json!({"inputs": [{"cell": "enum_set", "members": ["Employee"]}], "outputs": vec![json!({"cell": "bool", "value": true}); outputs]})).unwrap()],
+            default_output: None,
+        };
+        serde_json::to_value(encode_decision_table("Gap", &spec).unwrap()).unwrap()
+    }
+
     /// The fixture PSG before question generation.
     fn base_parts() -> (Vec<Node>, Vec<Edge>) {
         let mut calc = node(
@@ -2549,7 +2566,7 @@ mod http_workflow {
         let scalar = get(&app, "/api/model/rules/rule:positive").await.json();
         assert_eq!(
             scalar,
-            json!({"id": "rule:positive", "name": "Positive days", "kind": "rule", "conditions": ["days > 0"], "rows": null, "uncovered_cells": null, "overlaps": null})
+            json!({"id": "rule:positive", "name": "Positive days", "kind": "rule", "conditions": ["days > 0"], "outputs": null, "rows": null, "uncovered_cells": null, "overlaps": null})
         );
         let table = get(&app, "/api/model/rules/dt:eligibility").await.json();
         assert_eq!(
@@ -2557,6 +2574,7 @@ mod http_workflow {
             json!({
                 "id": "dt:eligibility", "name": "Eligibility", "kind": "decision_table",
                 "conditions": [r#"{"domain":null,"name":"eligible","ty":{"type":"bool"}}"#],
+                "outputs": [r#"{"domain":null,"name":"route","ty":{"members":["Director","Manager"],"type":"enum"}}"#],
                 "rows": [
                     {"when": [r#"{"cell":"bool","value":true}"#], "then": [r#"{"cell":"enum","member":"Manager"}"#]},
                     {"when": [r#"{"cell":"bool","value":false}"#], "then": [r#"{"cell":"enum","member":"Director"}"#]}
@@ -2644,6 +2662,85 @@ mod http_workflow {
             json!([r#"{"cell":"bool","value":true}"#])
         );
         assert_eq!(acceptance_decisions(&head(&app).graph).len(), 1);
+    }
+
+    /// S4: "Uncovered · Set outcome" covers one uncovered point of a single-output table with
+    /// a new row (`uncovered:<witness>:output:0`), a governed decision with a mandatory reason.
+    #[tokio::test]
+    async fn http_workflow_rules_cover_an_uncovered_point() {
+        let (mut nodes, edges) = base_parts();
+        nodes.push(node("dt:gap", "Accepted", "DecisionTable", gap_table(1)));
+        nodes.push(node("dt:gap2", "Accepted", "DecisionTable", gap_table(2)));
+        let graph =
+            Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap_or_else(|v| panic!("{v:?}"));
+        let app = app_with(with_performer_questions(graph), |_| Vec::new());
+        let gap = get(&app, "/api/model/rules/dt:gap").await.json();
+        assert_eq!(
+            gap["uncovered_cells"],
+            json!([r#"[{"kind":"enum","member":"Contractor"}]"#])
+        );
+        let cell = |cell: &str| json!({"cell": cell, "outcome": r#"{"cell":"bool","value":false}"#, "reason": "Contractors are not employees."});
+        for (uri, body, status, code) in [
+            (
+                "/api/model/rules/dt:gap/cells",
+                cell("uncovered:1:output:0"),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/model/rules/dt:gap/cells",
+                cell("uncovered:0:output:1"),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/model/rules/dt:gap/cells",
+                cell("uncovered:00:output:0"),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/model/rules/dt:gap2/cells",
+                cell("uncovered:0:output:0"),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/model/rules/dt:eligibility/cells",
+                cell("uncovered:0:output:0"),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+            (
+                "/api/model/rules/dt:gap/cells",
+                json!({"cell": "uncovered:0:output:0", "outcome": r#"{"cell":"enum","member":"Nobody"}"#, "reason": "Policy."}),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "E_SEMANTIC_INVARIANT",
+            ),
+            (
+                "/api/model/rules/dt:gap/cells",
+                json!({"cell": "uncovered:0:output:0", "outcome": r#"{"cell":"bool","value":false}"#, "reason": " "}),
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            ),
+        ] {
+            assert_error(&write(&app, uri, Some(body)).await, status, code);
+        }
+        let decisions = acceptance_decisions(&head(&app).graph).len();
+        let r = write(
+            &app,
+            "/api/model/rules/dt:gap/cells",
+            Some(cell("uncovered:0:output:0")),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let gap = get(&app, "/api/model/rules/dt:gap").await.json();
+        assert_eq!(gap["uncovered_cells"], json!([]));
+        assert_eq!(
+            gap["rows"][1],
+            json!({"when": [r#"{"cell":"enum_set","members":["Contractor"]}"#], "then": [r#"{"cell":"bool","value":false}"#]})
+        );
+        assert_eq!(acceptance_decisions(&head(&app).graph).len(), decisions + 1);
     }
 
     // ------------------------------------------------------------------ processes

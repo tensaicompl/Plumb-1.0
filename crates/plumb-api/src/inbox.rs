@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::application::{is_discardable, not_pending, workflow_error, PendingProposalView};
 use crate::error::{echo, ApiError};
 use crate::openapi::{
-    DiffItem, PendingProposal, PendingProposalDetail, ProposalElementKind as Kind,
+    DiffItem, ElementLabel, PendingProposal, PendingProposalDetail, ProposalElementKind as Kind,
     ProposalEvidence, ProposalFact, ProposalKind, ProposalModelDiff, ProposalOrigin,
 };
 use crate::state::{parse_id, parse_wire, ApiState};
@@ -145,6 +145,33 @@ impl<'a> Names<'a> {
             self.label(&edge.to)
         )
     }
+}
+
+/// The plain-language labels of the `ids` present in `graph` (S4 `resolve_labels`), each once,
+/// sorted by ID: a node's name and lower snake_case type, or a relation's words and kind.
+pub(crate) fn element_labels(graph: &Graph, ids: &[Id]) -> Vec<ElementLabel> {
+    let names = Names {
+        added: BTreeMap::new(),
+        graphs: vec![graph],
+    };
+    ids.iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|id| {
+            if let Some(node) = graph.node(id) {
+                return Some(ElementLabel {
+                    id: id.to_string(),
+                    kind: type_snake(node.payload.node_type()),
+                    label: names.node_label(node),
+                });
+            }
+            graph.edge(id).map(|edge| ElementLabel {
+                id: id.to_string(),
+                kind: edge.kind.as_str().to_owned(),
+                label: names.edge_label(edge),
+            })
+        })
+        .collect()
 }
 
 /// The `data` object of a payload (`{"type", "data"}` on the wire).

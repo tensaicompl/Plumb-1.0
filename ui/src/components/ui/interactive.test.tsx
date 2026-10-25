@@ -133,6 +133,23 @@ describe("SegmentedControl", () => {
     );
   }
 
+  it("keeps one tab stop on the first enabled option while nothing is chosen yet", () => {
+    render(
+      <SegmentedControl
+        label="Outcome"
+        value=""
+        onChange={() => undefined}
+        options={[
+          { value: "maybe", label: "Maybe", disabled: true },
+          { value: "yes", label: "Yes" },
+          { value: "no", label: "No" },
+        ]}
+      />,
+    );
+    const group = screen.getByRole("radiogroup", { name: "Outcome" });
+    expect(within(group).getAllByRole("radio").map((radio) => radio.tabIndex)).toEqual([-1, 0, -1]);
+  });
+
   it("is a radio group with roving focus and arrow keys that skip disabled options", async () => {
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
@@ -339,6 +356,28 @@ describe("ReasonSheet", () => {
     await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
     expect(onConfirm).toHaveBeenCalledWith("Duplicate of HR-019");
     expect(await axeViolations()).toEqual([]);
+  });
+
+  it("shows a governed choice above the reason and keeps Confirm disabled until it is made", async () => {
+    const onConfirm = vi.fn();
+    const { rerender } = render(
+      <ReasonSheet open onOpenChange={() => undefined} title="Set outcome" confirmLabel="Set outcome" confirmDisabled onConfirm={onConfirm}>
+        <p>Choose the outcome</p>
+      </ReasonSheet>,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Set outcome" });
+    expect(within(dialog).getByText("Choose the outcome")).toBeTruthy();
+    await userEvent.type(within(dialog).getByRole("textbox", { name: "Reason (required)" }), "Policy");
+    const confirm = within(dialog).getByRole("button", { name: /Set outcome/ }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    rerender(
+      <ReasonSheet open onOpenChange={() => undefined} title="Set outcome" confirmLabel="Set outcome" confirmDisabled={false} onConfirm={onConfirm}>
+        <p>Choose the outcome</p>
+      </ReasonSheet>,
+    );
+    expect(confirm.disabled).toBe(false);
+    await userEvent.click(confirm);
+    expect(onConfirm).toHaveBeenCalledWith("Policy");
   });
 
   it("allows an optional reason and shows a pending state and an error", async () => {

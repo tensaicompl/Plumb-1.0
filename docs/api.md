@@ -2,9 +2,9 @@
 
 > Generated from the Rust OpenAPI contract. Do not edit by hand.
 
-Contract version 3, API version 0.1.0, 85 operations. The machine-readable contract is `api/modeller.openapi.json`, the source of the UI client.
+Contract version 3, API version 0.1.0, 86 operations. The machine-readable contract is `api/modeller.openapi.json`, the source of the UI client.
 
-A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 B1 those of operations 77-79, B2 those of operations 80-84 and S2 that of operation 85. An operation listed here is not operational until its handler task is done.
+A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 B1 those of operations 77-79, B2 those of operations 80-84, S2 that of operation 85 and S4 that of operation 86. An operation listed here is not operational until its handler task is done.
 
 ## Conventions
 
@@ -40,6 +40,7 @@ A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime ha
 - B1: 3 operations (2 POST, 1 GET).
 - B2: 5 operations (3 POST, 2 GET).
 - S2: 1 operations (1 POST, 0 GET).
+- S4: 1 operations (0 POST, 1 GET).
 - Hotfix 065 froze the deferred A0.3 compatibility semantics (contract version 3).
 - A0.4 owns `run_stage` and `get_job` and must not start before its separate stage-orchestration contract freeze.
 - Hotfix 073 appends operations 73 and 74, the U2.1 semantic change previews: the server builds the exact domain Proposal and returns its semantic element diff without committing; `candidate_semantic_hash` is not a prediction of the committed `semantic_hash`.
@@ -48,6 +49,7 @@ A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime ha
 - B1 (UI Inbox, UI-SPEC §5.2) appends operations 77 to 79: `GET /api/proposals/{id}` is one pending proposal with its facts, evidence passages (UTF-8 byte highlight offsets) and model change; `POST /api/proposals/accept-set` accepts pending proposals atomically in one revision through the R0.3 set acceptance and, unless `confirm` is false, then confirms the Proposed elements they created; `POST /api/model/confirm` is the governed confirmation of the CLI `confirm`. List items gain `title`, `element_kind`, `created_at` and `stage`.
 - B2 appends operations 80 to 84 for the UI (UI-SPEC §9): `GET /api/pipeline` derives every stage recipe's state from its latest recipe job and the pending proposals; `POST /api/jobs/{id}/retry` re-queues a failed recipe job through the H0.3 retry service; `POST /api/questions/generate` is the CLI `ask` (optionally with a stakeholder round); `POST /api/findings/materialize` is the CLI `findings materialize`; `GET /api/sources` lists every imported source. `directory` becomes a `run_stage` recipe, `get_me` gains `inference_model` and `get_model_version` gains `created_at` and `created_by`.
 - S2 (UI Inbox, UI-SPEC §5.2) appends operation 85: `POST /api/proposals/{id}/refresh` re-submits one stale answer proposal from its recorded decision on the head (the CLI `proposals --refresh` for one proposal) and rejects the stale occurrence; nothing is committed.
+- S4 (UI Model and Scenarios, UI-SPEC §5.4 and §5.5) appends operation 86: `GET /api/model/labels?ids=...` names the elements the screens reference by ID (states, operations, performers, transitions, relations). `Calculation` gains `status`; `Rule` gains `outputs`; `set_rule_cell` also accepts `uncovered:<witness>:output:0`, which covers one uncovered point of a single-output DecisionTable with a new row.
 
 ## Operations
 
@@ -138,3 +140,4 @@ A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime ha
 | 83 | POST | `/api/findings/materialize` | `materialize_findings` | findings | B2 |
 | 84 | GET | `/api/sources` | `list_sources` | sources | B2 |
 | 85 | POST | `/api/proposals/{id}/refresh` | `refresh_proposal` | proposals | S2 |
+| 86 | GET | `/api/model/labels` | `resolve_labels` | entities | S4 |

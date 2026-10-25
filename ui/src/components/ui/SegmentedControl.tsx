@@ -36,7 +36,8 @@ export interface SegmentedControlProps<T extends string> {
 export function SegmentedControl<T extends string>({ label, labelledBy, options, value, fill = false, onChange, className }: SegmentedControlProps<T>) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const enabled = options.map((option, index) => ({ option, index })).filter(({ option }) => option.disabled !== true);
-  const tabStop = options.some((option) => option.value === value) ? null : enabled[0]?.index;
+  // With nothing chosen yet, the first enabled option is the group's one tab stop.
+  const tabStop = options.some((option) => option.value === value) ? -1 : (enabled[0]?.index ?? -1);
   const move = (event: KeyboardEvent<HTMLButtonElement>, from: number) => {
     const position = enabled.findIndex(({ index }) => index === from);
     let target: number | undefined;
