@@ -44,7 +44,7 @@ use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::sync::broadcast;
 
-use crate::error::ApiError;
+use crate::error::{echo, ApiError};
 use crate::openapi::{DesignEvent, WriteResult};
 use crate::runtime::{
     A04RuntimeConfig, CalendarConfig, DirectManagerFact, GateInputsConfig, ProviderMode,
@@ -1049,7 +1049,7 @@ pub(crate) fn parse_wire<T: serde::de::DeserializeOwned>(
     what: &str,
 ) -> Result<T, ApiError> {
     serde_json::from_value(Value::String(text.to_owned()))
-        .map_err(|_| ApiError::invalid(format!("{what} {text:?} is not a valid value")))
+        .map_err(|_| ApiError::invalid(format!("{what} {} is not a valid value", echo(text))))
 }
 
 /// Non-empty text without surrounding whitespace or control characters.
@@ -1077,7 +1077,7 @@ pub(crate) fn parse_id(text: &str) -> Option<Id> {
 /// Parses a JSON request body, mapping any failure to 400.
 pub(crate) fn parse_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
     serde_json::from_slice(body)
-        .map_err(|e| ApiError::invalid(format!("invalid request body: {e}")))
+        .map_err(|e| ApiError::invalid(format!("invalid request body: {}", echo(&e.to_string()))))
 }
 
 // ============================================================================ query and cursor
@@ -1113,12 +1113,14 @@ impl QueryParams {
                 || (pageable && (key == "cursor" || key == "limit"));
             if !known {
                 return Err(ApiError::invalid(format!(
-                    "unknown query parameter {key:?}"
+                    "unknown query parameter {}",
+                    echo(&key)
                 )));
             }
             if values.insert(key.clone(), value).is_some() {
                 return Err(ApiError::invalid(format!(
-                    "repeated query parameter {key:?}"
+                    "repeated query parameter {}",
+                    echo(&key)
                 )));
             }
         }

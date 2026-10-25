@@ -8,7 +8,7 @@ use plumb_store::{BranchName, LoadedRevision, RevisionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::error::ApiError;
+use crate::error::{echo, ApiError};
 use crate::openapi::StageName;
 use crate::runtime::ProviderMode;
 use crate::stage::scenario_execution::runnable;
@@ -345,10 +345,11 @@ pub fn parse_scope(scope: Option<&[String]>) -> Result<Option<Vec<Id>>, ApiError
     for text in items {
         let id: Id = text
             .parse()
-            .map_err(|_| ApiError::invalid(format!("scope item {text:?} is not an ID")))?;
+            .map_err(|_| ApiError::invalid(format!("scope item {} is not an ID", echo(text))))?;
         if id.as_str() != text {
             return Err(ApiError::invalid(format!(
-                "scope item {text:?} is not a canonical ID"
+                "scope item {} is not a canonical ID",
+                echo(text)
             )));
         }
         ids.push(id);

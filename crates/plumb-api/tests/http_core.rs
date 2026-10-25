@@ -1062,11 +1062,11 @@ mod http_core {
             (2, 2, 0)
         );
         assert_eq!(routed.len(), 74);
-        // An unregistered path is a plain 404.
+        // An unregistered path is the typed 404 (H0.11 replaces the former empty body).
         let r = get(&app, "/api/nowhere").await;
         assert_eq!(
-            (r.status, r.bytes.is_empty()),
-            (StatusCode::NOT_FOUND, true)
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "E_ROUTE_NOT_FOUND")
         );
     }
 
@@ -3388,5 +3388,270 @@ mod http_core {
         for token in ["fn main", "axum::serve", "TcpListener", "CorsLayer"] {
             assert!(!lib.contains(token), "lib.rs contains {token}");
         }
+    }
+
+    // ------------------------------------------------------------------ H0.11 error envelope
+
+    /// Asserts the typed `{code, message, details}` envelope with a catalogued `code` of `status`
+    /// and no framework, Rust debug or SQLite text.
+    fn assert_typed(r: &Reply, status: StatusCode, code: &str, what: &str) {
+        assert_eq!(
+            r.status,
+            status,
+            "{what}: {:?}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        assert_eq!(
+            r.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json",
+            "{what}"
+        );
+        let body = r.json();
+        let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["code", "details", "message"], "{what}");
+        assert_eq!(body["code"], code, "{what}");
+        let entry = plumb_api::error_catalogue::lookup(code)
+            .unwrap_or_else(|| panic!("{what}: {code} is not catalogued"));
+        assert_eq!(entry.status, status.as_u16(), "{what}");
+        let message = body["message"].as_str().unwrap();
+        for raw in [
+            "Failed to",
+            "axum",
+            "serde",
+            "sqlite",
+            "SQLite",
+            "{",
+            "Error(",
+        ] {
+            assert!(!message.contains(raw), "{what}: raw text in {message:?}");
+        }
+    }
+
+    /// H0.11 (architecture §33.12): every framework or extractor failure on the API boundary uses
+    /// the typed envelope.
+    #[tokio::test]
+    async fn framework_errors_use_typed_envelope() {
+        let app = app();
+        let tag = etag(&app);
+        // 404 unknown route, for any method and outside /api as well.
+        for (method, uri) in [
+            (Method::GET, "/api/nowhere"),
+            (Method::POST, "/api/nowhere"),
+            (Method::GET, "/nowhere"),
+            (Method::GET, "/api/requirements/req:a/nothing"),
+        ] {
+            let r = send(
+                &app.router,
+                Request::builder()
+                    .method(method.clone())
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_typed(&r, StatusCode::NOT_FOUND, "E_ROUTE_NOT_FOUND", uri);
+        }
+        // 405 a known route with another method.
+        for (method, uri) in [
+            (Method::DELETE, "/api/requirements"),
+            (Method::PUT, "/api/requirements/req:a/classify"),
+            (Method::POST, "/api/model/version"),
+        ] {
+            let r = send(
+                &app.router,
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_typed(
+                &r,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "E_METHOD_NOT_ALLOWED",
+                uri,
+            );
+        }
+        // 400 malformed JSON, query and path.
+        let r = post_raw(
+            &app,
+            "/api/requirements/req:p/classify",
+            "application/json",
+            b"{".to_vec(),
+        )
+        .await;
+        assert_typed(
+            &r,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+            "malformed JSON",
+        );
+        let r = get(&app, "/api/requirements?limit=x").await;
+        assert_typed(
+            &r,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+            "malformed query",
+        );
+        let r = get(&app, "/api/requirements/%FF").await;
+        assert_typed(
+            &r,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+            "malformed path",
+        );
+        // A plain GET of the WebSocket endpoint without an upgrade.
+        let r = get(&app, "/api/events").await;
+        assert_eq!(
+            r.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json",
+            "events without upgrade"
+        );
+        assert!(plumb_api::error_catalogue::lookup(&r.code()).is_some());
+        // 413 body limit.
+        let r = post_raw(
+            &app,
+            "/api/requirements/req:p/classify",
+            "application/json",
+            vec![b' '; MAX_JSON + 1],
+        )
+        .await;
+        assert_typed(
+            &r,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "E_PAYLOAD_TOO_LARGE",
+            "413",
+        );
+        // 415 an upload that is not multipart, and an unsupported source media type.
+        let r = send(
+            &app.router,
+            Request::post("/api/sources")
+                .header(header::CONTENT_TYPE, "text/plain")
+                .header("if-match", &tag)
+                .body(Body::from("x"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            r.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert!(
+            plumb_api::error_catalogue::lookup(&r.code()).is_some(),
+            "{}",
+            r.code()
+        );
+        let r = upload(
+            &app,
+            Some(&tag),
+            Some("x.exe"),
+            "application/x-msdownload",
+            b"MZ",
+        )
+        .await;
+        assert_typed(
+            &r,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "E_UNSUPPORTED_MEDIA_TYPE",
+            "415",
+        );
+    }
+
+    /// Every `"E_..."` code literal in the plumb-api source is catalogued, and the catalogue is
+    /// exactly the codes documented in OpenAPI (`x-plumb-error-codes`) with their statuses.
+    #[test]
+    fn every_error_code_is_catalogued() {
+        fn scan(dir: &Path, codes: &mut std::collections::BTreeSet<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    scan(&path, codes);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && !path.ends_with("error_catalogue.rs")
+                {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let bytes = text.as_bytes();
+                    let mut i = 0;
+                    while let Some(at) = text[i..].find("\"E_") {
+                        let start = i + at + 1;
+                        let end = start
+                            + text[start..]
+                                .find(|c: char| {
+                                    !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                                })
+                                .unwrap();
+                        if bytes[end] == b'"' && end > start + 2 {
+                            codes.insert(text[start..end].to_owned());
+                        }
+                        i = end;
+                    }
+                }
+            }
+        }
+        let mut used = std::collections::BTreeSet::new();
+        scan(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut used,
+        );
+        assert!(used.len() > 40, "{used:?}");
+        let catalogue = plumb_api::error_catalogue::ERROR_CATALOGUE;
+        let catalogued: std::collections::BTreeSet<String> =
+            catalogue.iter().map(|e| e.code.to_owned()).collect();
+        assert_eq!(
+            catalogued.len(),
+            catalogue.len(),
+            "duplicate catalogue entries"
+        );
+        let missing: Vec<&String> = used.difference(&catalogued).collect();
+        assert!(missing.is_empty(), "uncatalogued codes: {missing:?}");
+        let unused: Vec<&String> = catalogued.difference(&used).collect();
+        assert!(
+            unused.is_empty(),
+            "catalogued codes no source uses: {unused:?}"
+        );
+        for entry in catalogue {
+            assert!(StatusCode::from_u16(entry.status).is_ok(), "{}", entry.code);
+            assert!(!entry.meaning.is_empty(), "{}", entry.code);
+        }
+        let doc: Value = plumb_api::openapi_document().unwrap();
+        let documented: Vec<Value> = doc["info"]["x-plumb-error-codes"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let expected: Vec<Value> = catalogue
+            .iter()
+            .map(|e| json!({"code": e.code, "status": e.status, "meaning": e.meaning}))
+            .collect();
+        assert_eq!(documented, expected);
+    }
+
+    /// Fable #205: an error echoing client text truncates it to 64 characters plus an ellipsis.
+    #[tokio::test]
+    async fn echoed_client_text_is_truncated() {
+        assert_eq!(plumb_api::error::echo("short"), "\"short\"");
+        let long = "k".repeat(200);
+        let expected = format!("{:?}…", "k".repeat(64));
+        assert_eq!(plumb_api::error::echo(&long), expected);
+        assert_eq!(
+            plumb_api::error::echo(&"é".repeat(64)),
+            format!("{:?}", "é".repeat(64))
+        );
+        let app = app();
+        let r = get(&app, &format!("/api/requirements?{long}=1")).await;
+        assert_eq!(r.code(), "E_INVALID_REQUEST");
+        let message = r.json()["message"].as_str().unwrap().to_owned();
+        assert!(message.contains(&expected), "{message}");
+        assert!(!message.contains(&"k".repeat(65)), "{message}");
+        let r = post(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(&etag(&app)),
+            Some(json!({"class": "x".repeat(500)})),
+        )
+        .await;
+        assert_eq!(r.code(), "E_INVALID_REQUEST");
+        let message = r.json()["message"].as_str().unwrap().to_owned();
+        assert!(!message.contains(&"x".repeat(65)), "{message}");
     }
 }

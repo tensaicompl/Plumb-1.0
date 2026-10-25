@@ -40,13 +40,41 @@ fn is_typed(response: &Response) -> bool {
         .is_some_and(|value| value.as_bytes() == b"application/json")
 }
 
-/// Replaces the framework's plain-text body-limit rejection with the typed 413 of `limit_bytes`.
-fn typed_payload_too_large(limit_bytes: usize, response: Response) -> Response {
-    if response.status() == StatusCode::PAYLOAD_TOO_LARGE && !is_typed(&response) {
-        ApiError::payload_too_large(limit_bytes).into_response()
-    } else {
-        response
+/// Replaces a framework or extractor rejection (a non-JSON error response) with the typed
+/// `{code, message, details}` envelope of its status (architecture §33.12): the body limit is the
+/// typed 413 of `limit_bytes`; the framework's own text is never echoed.
+fn typed_framework_error(limit_bytes: usize, response: Response) -> Response {
+    let status = response.status();
+    if !(status.is_client_error() || status.is_server_error()) || is_typed(&response) {
+        return response;
     }
+    let error = match status {
+        StatusCode::PAYLOAD_TOO_LARGE => ApiError::payload_too_large(limit_bytes),
+        StatusCode::NOT_FOUND => ApiError::route_not_found(),
+        StatusCode::METHOD_NOT_ALLOWED => ApiError::method_not_allowed(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => ApiError::unsupported_request_media_type(),
+        s if s.is_client_error() => ApiError::invalid("the request is malformed"),
+        _ => ApiError::internal("http_framework"),
+    };
+    let mut typed = error.into_response();
+    // Keep the framework's status-specific headers (e.g. Allow, Upgrade) next to the typed body.
+    for (name, value) in response.headers() {
+        if name != header::CONTENT_TYPE && name != header::CONTENT_LENGTH {
+            typed.headers_mut().insert(name.clone(), value.clone());
+        }
+    }
+    *typed.status_mut() = status;
+    typed
+}
+
+/// The typed 404 of a path no route serves.
+async fn route_not_found() -> ApiError {
+    ApiError::route_not_found()
+}
+
+/// The typed 405 of a served path with another method.
+async fn method_not_allowed() -> ApiError {
+    ApiError::method_not_allowed()
 }
 
 /// The pilot HTTP router over `state`. `POST /api/sources` carries its own body limit, set on
@@ -64,9 +92,11 @@ pub fn router(state: ApiState) -> Router {
         .merge(sessions::routes())
         .merge(scenarios::routes())
         .merge(stages::routes())
+        .fallback(route_not_found)
+        .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
         .layer(map_response(|response: Response| async move {
-            typed_payload_too_large(MAX_JSON_BODY_BYTES, response)
+            typed_framework_error(MAX_JSON_BODY_BYTES, response)
         }))
         .with_state(state)
 }

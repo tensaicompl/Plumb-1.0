@@ -3161,6 +3161,15 @@ fn apply_extensions(doc: &mut Value, generator_doc: &Value) -> Result<(), OpenAp
         "x-plumb-contract-version".to_owned(),
         json!(CONTRACT_VERSION),
     );
+    // H0.11: the authoritative error-code catalogue of every typed error body.
+    let codes: Vec<Value> = crate::error_catalogue::ERROR_CATALOGUE
+        .iter()
+        .map(|e| json!({"code": e.code, "status": e.status, "meaning": e.meaning}))
+        .collect();
+    root.get_mut("info")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| invariant("document has no info object"))?
+        .insert("x-plumb-error-codes".to_owned(), json!(codes));
     Ok(())
 }
 
@@ -3299,7 +3308,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
     );
     out.push_str("## Conventions\n\n");
     for line in [
-        "The API is a task-oriented compatibility projection over the PSG. Requests and responses are JSON unless stated otherwise; errors carry `code`, `message` and `details`.",
+        "The API is a task-oriented compatibility projection over the PSG. Requests and responses are JSON unless stated otherwise; errors carry `code`, `message` and `details`. Every error `code` (including framework failures: unknown route, method, malformed input, body limit and media type) is one of the catalogued codes in `info.x-plumb-error-codes` with its HTTP status and meaning.",
         "Every ordinary `GET` success response carries an `ETag` header: the RFC 9110 strong entity-tag of the loaded branch-head revision ID (the quoted `rev:...`).",
         "Every `POST` (including dry-run intake, stage runs and session creation and turns) requires an `If-Match` header naming the current branch-head revision ID, quoted as in `ETag` or bare; weak validators and `*` never match, and `semantic_hash` is not a concurrency token. A mismatch returns `412 Precondition Failed` with `code`, `message`, `details` and the current branch-head `revision` and `semantic_hash`.",
         "Every successful write returns `version`, `revision`, `semantic_hash` and `events` (DesignEvent `{kind, ids, version}`); `version` is the compatibility alias of `revision`. Endpoint-specific results add fields to these four.",

@@ -3577,7 +3577,429 @@
   "info": {
     "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72) and U2.1 (the two semantic change previews, operations 73-74).",
     "title": "Plumb Modeller API",
-    "version": "0.1.0"
+    "version": "0.1.0",
+    "x-plumb-error-codes": [
+      {
+        "code": "E_A03_RUNTIME_UNAVAILABLE",
+        "meaning": "The operation needs runtime material that is not configured.",
+        "status": 503
+      },
+      {
+        "code": "E_ASSUMPTION_NOT_ACTIVE",
+        "meaning": "The assumption is not in an active lifecycle state.",
+        "status": 409
+      },
+      {
+        "code": "E_ATTRIBUTE_ALREADY_CLASSIFIED",
+        "meaning": "The attribute already has the requested classification.",
+        "status": 409
+      },
+      {
+        "code": "E_AUTO_PROPOSAL_REQUIRES_REASON",
+        "meaning": "An automatically accepted stage proposal would need a human reason.",
+        "status": 409
+      },
+      {
+        "code": "E_CALCULATION_EVALUATION",
+        "meaning": "The calculation cannot be evaluated for the given inputs.",
+        "status": 422
+      },
+      {
+        "code": "E_CALCULATION_SCOPE_UNAVAILABLE",
+        "meaning": "The calculation's input scope is not available on the current head.",
+        "status": 409
+      },
+      {
+        "code": "E_CALCULATION_VALUE_UNREPRESENTABLE",
+        "meaning": "The calculation result cannot be represented on the wire.",
+        "status": 422
+      },
+      {
+        "code": "E_CURSOR_BASELINE_CHANGED",
+        "meaning": "The cursor was issued at another branch-head revision or semantic hash.",
+        "status": 409
+      },
+      {
+        "code": "E_CURSOR_INVALID",
+        "meaning": "The cursor is malformed or not canonical.",
+        "status": 400
+      },
+      {
+        "code": "E_CURSOR_REQUEST_MISMATCH",
+        "meaning": "The cursor belongs to another request.",
+        "status": 400
+      },
+      {
+        "code": "E_DECISION_TABLE_ENCODING_INVALID",
+        "meaning": "A stored decision table encoding is invalid.",
+        "status": 409
+      },
+      {
+        "code": "E_DECISION_TABLE_INVALID",
+        "meaning": "The decision table is not valid for this operation.",
+        "status": 409
+      },
+      {
+        "code": "E_DIFF_NO_PARENT",
+        "meaning": "The revision has no parent to diff against.",
+        "status": 422
+      },
+      {
+        "code": "E_EXPRESSION_LIMIT",
+        "meaning": "An expression exceeds a resource limit.",
+        "status": 422
+      },
+      {
+        "code": "E_EXTERNAL_VALIDATOR_UNAVAILABLE",
+        "meaning": "A required external validator is not available.",
+        "status": 409
+      },
+      {
+        "code": "E_FINDING_MATERIAL_MISMATCH",
+        "meaning": "The finding's material no longer matches the current report.",
+        "status": 409
+      },
+      {
+        "code": "E_FINDING_NOT_CURRENT",
+        "meaning": "The finding is not in the current gate report.",
+        "status": 409
+      },
+      {
+        "code": "E_FINDING_NOT_FOR_REQUIREMENT",
+        "meaning": "The finding does not affect this requirement.",
+        "status": 409
+      },
+      {
+        "code": "E_GATE_INPUTS_MISSING",
+        "meaning": "Configured gate inputs are missing.",
+        "status": 409
+      },
+      {
+        "code": "E_GATE_INPUTS_STALE",
+        "meaning": "Gate inputs are stale for the current head.",
+        "status": 409
+      },
+      {
+        "code": "E_GATE_REPORT_INCOHERENT",
+        "meaning": "A persisted gate report contradicts the current head.",
+        "status": 409
+      },
+      {
+        "code": "E_GATE_REPORT_UNAVAILABLE",
+        "meaning": "No current gate report exists and none can be evaluated.",
+        "status": 409
+      },
+      {
+        "code": "E_ID_COLLISION",
+        "meaning": "A derived stable ID already names another element.",
+        "status": 409
+      },
+      {
+        "code": "E_INFERENCE_FAILED",
+        "meaning": "The inference provider or its output inspection failed.",
+        "status": 502
+      },
+      {
+        "code": "E_INFERENCE_REQUIRED",
+        "meaning": "The operation requires inference and the null provider is configured.",
+        "status": 409
+      },
+      {
+        "code": "E_INTAKE_REASON_REQUIRED",
+        "meaning": "Intake requires a non-blank reason for this change.",
+        "status": 409
+      },
+      {
+        "code": "E_INTERNAL",
+        "meaning": "Unexpected internal failure; details name the failing subsystem only.",
+        "status": 500
+      },
+      {
+        "code": "E_INVALID_REQUEST",
+        "meaning": "Malformed path, query, header, body or multipart input.",
+        "status": 400
+      },
+      {
+        "code": "E_JOB_INTERRUPTED",
+        "meaning": "A recipe job was interrupted by a process restart.",
+        "status": 409
+      },
+      {
+        "code": "E_MERMAID_INVALID",
+        "meaning": "The Mermaid process text is malformed.",
+        "status": 400
+      },
+      {
+        "code": "E_MERMAID_UNREPRESENTABLE",
+        "meaning": "The process cannot be represented as linear Mermaid.",
+        "status": 409
+      },
+      {
+        "code": "E_METHOD_NOT_ALLOWED",
+        "meaning": "The route exists but does not accept this HTTP method.",
+        "status": 405
+      },
+      {
+        "code": "E_NO_CHANGE",
+        "meaning": "The requested change would not change the model.",
+        "status": 422
+      },
+      {
+        "code": "E_NO_CONFIRMABLE_DERIVED_SCENARIOS",
+        "meaning": "The decision table has no confirmable derived scenarios.",
+        "status": 409
+      },
+      {
+        "code": "E_NO_QUESTIONS_FOR_ROUND",
+        "meaning": "No open questions are available for the round.",
+        "status": 409
+      },
+      {
+        "code": "E_NO_RUNNABLE_SCENARIOS",
+        "meaning": "No scenario in the scope can be run.",
+        "status": 409
+      },
+      {
+        "code": "E_NOT_FOUND",
+        "meaning": "The addressed element does not exist.",
+        "status": 404
+      },
+      {
+        "code": "E_PATCH_REJECTED",
+        "meaning": "The proposed change cannot be applied to the current graph.",
+        "status": 422
+      },
+      {
+        "code": "E_PAYLOAD_TOO_LARGE",
+        "meaning": "The request body exceeds the route's size limit.",
+        "status": 413
+      },
+      {
+        "code": "E_PRECONDITION_FAILED",
+        "meaning": "If-Match does not name the current branch-head revision.",
+        "status": 412
+      },
+      {
+        "code": "E_PROCESS_IMPORT_CONFLICT",
+        "meaning": "The imported process conflicts with existing elements.",
+        "status": 409
+      },
+      {
+        "code": "E_PROCESS_MUTATION_INVALID",
+        "meaning": "The process step change is invalid.",
+        "status": 422
+      },
+      {
+        "code": "E_PROCESS_NOT_LINEAR",
+        "meaning": "The process is not linear.",
+        "status": 409
+      },
+      {
+        "code": "E_PROCESS_STEP_HAS_RELATIONS",
+        "meaning": "The process step still has relations.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_ACTION_AMBIGUOUS",
+        "meaning": "The proposal's action cannot be classified unambiguously.",
+        "status": 422
+      },
+      {
+        "code": "E_PROPOSAL_ACTION_MISMATCH",
+        "meaning": "The requested action is not the proposal's classified action.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_BASELINE_CHANGED",
+        "meaning": "The proposal's baseline revision is no longer the head.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_EVIDENCE_MISMATCH",
+        "meaning": "The intake evidence does not match the proposal.",
+        "status": 400
+      },
+      {
+        "code": "E_PROPOSAL_NOT_PENDING",
+        "meaning": "The proposal is not pending.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_SET_CONFLICT",
+        "meaning": "The proposals of the set are not compatible on their shared base.",
+        "status": 409
+      },
+      {
+        "code": "E_QUESTION_GENERATION_INVALID",
+        "meaning": "Question generation produced invalid output.",
+        "status": 422
+      },
+      {
+        "code": "E_QUESTION_GENERATION_ISSUES",
+        "meaning": "Question generation reported issues.",
+        "status": 409
+      },
+      {
+        "code": "E_QUESTION_PROJECTION_INVALID",
+        "meaning": "A persisted question cannot be projected.",
+        "status": 409
+      },
+      {
+        "code": "E_ROUND_COMPOSITION_FAILED",
+        "meaning": "The question round cannot be composed.",
+        "status": 409
+      },
+      {
+        "code": "E_ROUND_INCONSISTENT",
+        "meaning": "A persisted round contradicts its questions.",
+        "status": 409
+      },
+      {
+        "code": "E_ROUND_STAKEHOLDER_INVALID",
+        "meaning": "The round stakeholder is not valid.",
+        "status": 409
+      },
+      {
+        "code": "E_ROUTE_NOT_FOUND",
+        "meaning": "No API route has this path.",
+        "status": 404
+      },
+      {
+        "code": "E_RULE_NOT_DECISION_TABLE",
+        "meaning": "The rule is not a decision table.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_NOT_CONFIRMABLE",
+        "meaning": "The scenario cannot be confirmed in its lifecycle state.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_NOT_RUNNABLE",
+        "meaning": "The scenario cannot be run in its lifecycle state.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_PROJECTION_INVALID",
+        "meaning": "A persisted scenario cannot be projected.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_RUN_COLLISION",
+        "meaning": "The stable scenario run ID holds another element.",
+        "status": 422
+      },
+      {
+        "code": "E_SCENARIO_RUN_TRACE_ARTIFACT_INVALID",
+        "meaning": "A scenario run trace artifact is invalid.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_RUN_TRACE_ARTIFACT_MISSING",
+        "meaning": "A scenario run trace artifact is missing.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_RUN_TRACE_LINK_INVALID",
+        "meaning": "A scenario run trace link is invalid.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_RUN_TRACE_MISMATCH",
+        "meaning": "A scenario run trace does not match its run.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_STATE_INVALID",
+        "meaning": "The scenario's lifecycle state does not allow the operation.",
+        "status": 409
+      },
+      {
+        "code": "E_SEMANTIC_INVARIANT",
+        "meaning": "A domain service rejected the change or the target is in the wrong lifecycle state.",
+        "status": 422
+      },
+      {
+        "code": "E_SESSION_NOT_OWNED",
+        "meaning": "The session belongs to another user.",
+        "status": 403
+      },
+      {
+        "code": "E_SOURCE_CONFLICT",
+        "meaning": "A different source with this identity already exists.",
+        "status": 409
+      },
+      {
+        "code": "E_SOURCE_EXISTS",
+        "meaning": "This exact source already exists.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_CHILD_FAILED",
+        "meaning": "A child stage of the recipe failed.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_COMMIT_FAILED",
+        "meaning": "The stage output could not be committed.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_CONFIG_MISSING",
+        "meaning": "The recipe needs configuration that is absent.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_EVALUATION_FAILED",
+        "meaning": "A phase or gate cannot be evaluated; details.error names the typed error.",
+        "status": 422
+      },
+      {
+        "code": "E_STAGE_MIXED_OUTPUT",
+        "meaning": "A stage produced incompatible output kinds.",
+        "status": 422
+      },
+      {
+        "code": "E_STAGE_PLAN_FAILED",
+        "meaning": "A phase cannot be planned; details.error names the typed error.",
+        "status": 422
+      },
+      {
+        "code": "E_STAGE_PROPOSAL_CONFLICT",
+        "meaning": "Stage proposals conflict with each other.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_SCOPE_INVALID",
+        "meaning": "The recipe scope is invalid.",
+        "status": 422
+      },
+      {
+        "code": "E_TERM_IDENTITY_CHANGE",
+        "meaning": "The edit would change the term's identity.",
+        "status": 422
+      },
+      {
+        "code": "E_TERM_MERGE_CONFLICT",
+        "meaning": "The terms cannot be merged.",
+        "status": 409
+      },
+      {
+        "code": "E_UNREPRESENTABLE_ASSUMPTION_DEFAULT",
+        "meaning": "The assumption default cannot be represented on the wire.",
+        "status": 422
+      },
+      {
+        "code": "E_UNSUPPORTED_MEDIA_TYPE",
+        "meaning": "The request or source media type is not supported.",
+        "status": 415
+      },
+      {
+        "code": "E_WORKFLOW_CORRUPT",
+        "meaning": "Persisted workflow state is impossible or corrupt.",
+        "status": 500
+      }
+    ]
   },
   "openapi": "3.1.0",
   "paths": {

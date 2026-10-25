@@ -1689,6 +1689,9 @@ mod http_stages {
         .unwrap();
         let err = state.ready().unwrap_err();
         assert_eq!(err.body().code, "E_STAGE_EVALUATION_FAILED", "{err:?}");
+        // Fable #182: details.error names the typed error, never an empty debug-string name.
+        let name = err.body().details["error"].as_str().unwrap();
+        assert!(!name.is_empty(), "{err:?}");
     }
 
     #[tokio::test]

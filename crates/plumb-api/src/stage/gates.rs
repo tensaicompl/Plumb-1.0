@@ -46,7 +46,7 @@ use crate::error::ApiError;
 use crate::stage::acceptance::load_run;
 use crate::stage::acquire::derivation_ref;
 use crate::stage::recipe::{effective_targets, Phase, Recipe};
-use crate::stage::scenario_execution::{current_run, error_name, link_key};
+use crate::stage::scenario_execution::{current_run, error_name, link_key, NamedFailure};
 use crate::state::{A03Runtime, A04Runtime, ApiState};
 
 /// 409 `E_GATE_INPUTS_MISSING`: a gate needs configured supplemental inputs that are absent.
@@ -994,7 +994,13 @@ fn f4_inputs(
                 .and_then(Value::as_str)
                 .and_then(|t| t.parse::<Hash>().ok())
                 .ok_or_else(|| {
-                    evaluation_failed(GateId::F4, "a scenario run trace link is invalid")
+                    evaluation_failed(
+                        GateId::F4,
+                        NamedFailure::new(
+                            "ScenarioRunTraceLinkInvalid",
+                            "a scenario run trace link is invalid",
+                        ),
+                    )
                 })?;
             let artifact = state
                 .with_artifact_store(|store| store.get(&link))?
@@ -1090,7 +1096,12 @@ pub(crate) fn evaluate_gate(
                 Some(hash),
             )
         }
-        other => return Err(evaluation_failed(other, "not a NOW gate")),
+        other => {
+            return Err(evaluation_failed(
+                other,
+                NamedFailure::new("GateNotNow", "not a NOW gate"),
+            ))
+        }
     };
     let report = registry
         .evaluate_gate(gate, graph, &ctx)

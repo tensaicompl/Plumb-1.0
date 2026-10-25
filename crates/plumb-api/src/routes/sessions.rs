@@ -77,7 +77,11 @@ async fn create_session(
     let mut scope = request
         .scope
         .iter()
-        .map(|s| parse_id(s).ok_or_else(|| ApiError::invalid(format!("scope {s:?} is not an ID"))))
+        .map(|s| {
+            parse_id(s).ok_or_else(|| {
+                ApiError::invalid(format!("scope {} is not an ID", crate::error::echo(s)))
+            })
+        })
         .collect::<Result<Vec<Id>, _>>()?;
     let runtime = state.runtime("workflow_store")?;
     let loaded = state.load_head()?;

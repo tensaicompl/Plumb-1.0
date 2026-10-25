@@ -363,7 +363,7 @@ mod services {
     use serde::Serialize;
     use serde_json::{json, Value};
 
-    use crate::error::ApiError;
+    use crate::error::{echo, ApiError};
     use crate::openapi::{
         AnswerResponse, CreateRoundResponse, ExportFormat, GlossaryTerm, ProposalKind, Question,
         QuestionKind, QuestionStatus, Round, SourceUploadResponse, WriteResult,
@@ -1176,8 +1176,9 @@ mod services {
             }
             let mut requested: Vec<(Id, ProposalKind)> = Vec::with_capacity(members.len());
             for (text, action) in members {
-                let id = parse_id(text)
-                    .ok_or_else(|| ApiError::not_found(format!("proposal {text} not found")))?;
+                let id = parse_id(text).ok_or_else(|| {
+                    ApiError::not_found(format!("proposal {} not found", echo(text)))
+                })?;
                 let kind = action.kind().ok_or_else(|| {
                     ApiError::invalid("reject is not a proposal-set acceptance action")
                 })?;
@@ -1572,7 +1573,7 @@ mod services {
             let mut ids = std::collections::BTreeSet::new();
             for text in element_ids {
                 let id = parse_id(text)
-                    .ok_or_else(|| ApiError::invalid(format!("{text} is not an ID")))?;
+                    .ok_or_else(|| ApiError::invalid(format!("{} is not an ID", echo(text))))?;
                 if !ids.insert(id.clone()) {
                     return Err(ApiError::invalid("an element is listed twice")
                         .with_details(json!({ "element": id })));
@@ -1806,7 +1807,7 @@ mod services {
             element: &str,
         ) -> Result<Option<WriteResult>, ApiError> {
             let id = parse_id(element)
-                .ok_or_else(|| ApiError::invalid(format!("{element} is not an ID")))?;
+                .ok_or_else(|| ApiError::invalid(format!("{} is not an ID", echo(element))))?;
             let Some(node) = loaded.graph.node(&id) else {
                 return Ok(None);
             };

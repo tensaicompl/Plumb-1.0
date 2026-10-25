@@ -756,7 +756,9 @@ impl ApiState {
             .parse()
             .ok()
             .filter(|h: &Hash| h.kind() == HashKind::Generic && h.as_str() == id)
-            .ok_or_else(|| ApiError::invalid(format!("{id:?} is not a job ID")))?;
+            .ok_or_else(|| {
+                ApiError::invalid(format!("{} is not a job ID", crate::error::echo(id)))
+            })?;
         let mut record = self.recipe_record(&hash)?;
         let loaded = self.load_head()?;
         if record.status == StageStatus::Ready {
