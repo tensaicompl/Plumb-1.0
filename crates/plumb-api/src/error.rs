@@ -267,6 +267,17 @@ impl ApiError {
         .with_details(json!({ "capability": capability }))
     }
 
+    /// 503 `E_STAGE_WORKER_UNAVAILABLE` (H0.3, Fable #179): a recipe job cannot be enqueued
+    /// because this process's stage worker is gone or shutting down.
+    pub fn stage_worker_unavailable(job_id: &str) -> ApiError {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "E_STAGE_WORKER_UNAVAILABLE",
+            "the stage worker of this process is not running; the job was not started",
+        )
+        .with_details(json!({ "job_id": job_id }))
+    }
+
     /// 500 `E_WORKFLOW_CORRUPT`: impossible or corrupt persisted workflow state.
     pub fn workflow_corrupt(what: &str) -> ApiError {
         ApiError::new(

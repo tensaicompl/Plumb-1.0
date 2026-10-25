@@ -26,7 +26,8 @@ pub use schema::{
 pub use sqlite::SqliteRevisionStore;
 pub use stages::{
     GateReportRecord, NewGateReport, NewStageRecipeJob, NewStageStep, SqliteStageStore,
-    StageJobRecord, StageProposalLink, StageRecipeJobRecord, StageStatus, StageStepRecord,
+    StageAttemptRecord, StageJobRecord, StageLease, StageProposalLink, StageRecipeJobRecord,
+    StageStatus, StageStepRecord,
 };
 pub use workflow::occurrence_id;
 pub use workflow::{

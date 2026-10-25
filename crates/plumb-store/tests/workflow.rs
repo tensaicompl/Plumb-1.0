@@ -189,7 +189,8 @@ mod workflow {
         /// Drops the store schema v3 stage tables.
         fn drop_stage_tables(&self) {
             self.exec(
-                "DROP TABLE stage_job_proposals; DROP TABLE stage_recipe_job_steps; \
+                "DROP TABLE stage_recipe_job_attempts; DROP TABLE stage_job_proposals; \
+                 DROP TABLE stage_recipe_job_steps; \
                  DROP TABLE gate_reports; DROP TABLE stage_jobs; DROP TABLE stage_recipe_jobs;",
             );
         }
@@ -218,7 +219,7 @@ mod workflow {
         /// occurrence key); the stage links are rebuilt in their v3 form too.
         fn downgrade_to_v3(&self) {
             self.exec(&format!(
-                "CREATE TABLE sl_v3 AS SELECT proposal_id, recipe_job_id, stage_job_id, \
+                "{V5_ADDITIONS} CREATE TABLE sl_v3 AS SELECT proposal_id, recipe_job_id, stage_job_id, \
                    compile_run_ref FROM stage_job_proposals; DROP TABLE stage_job_proposals; \
                  CREATE TABLE wp_v3 AS SELECT {V3_COLUMNS} FROM workflow_proposals; \
                  DROP TABLE workflow_proposals; {V3_WORKFLOW_PROPOSALS} \
@@ -294,6 +295,12 @@ mod workflow {
   FOREIGN KEY (resolved_revision_id) REFERENCES graph_revisions(id)
 );";
 
+    /// Removes what store schema v5 (H0.3) added, giving the v4 stage tables.
+    const V5_ADDITIONS: &str = "DROP TABLE stage_recipe_job_attempts; \
+        ALTER TABLE stage_recipe_jobs DROP COLUMN lease_expires_at; \
+        ALTER TABLE stage_recipe_jobs DROP COLUMN owner_id; \
+        ALTER TABLE stage_recipe_jobs DROP COLUMN attempt;";
+
     /// The columns of a store schema v2/v3 workflow proposal row.
     const V3_COLUMNS: &str = "proposal_id, base_revision_id, proposal_json, intake_json, \
         proposal_kind, state, origin_kind, origin_ref, created_at, resolved_at, \
@@ -347,7 +354,7 @@ mod workflow {
         let db = Db::new();
         drop(db.workflow());
         assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
-        assert_eq!(STORE_SCHEMA_VERSION, 4);
+        assert_eq!(STORE_SCHEMA_VERSION, 5);
         for t in [
             "workflow_proposals",
             "workflow_sessions",
@@ -363,7 +370,7 @@ mod workflow {
         drop(db.workflow());
         drop(SqliteRevisionStore::open(&db.path).unwrap());
         assert_eq!(db.schema(), before);
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![5]);
     }
 
     #[test]
@@ -410,7 +417,7 @@ mod workflow {
             .is_some());
         let rows = db.graph_rows();
         drop(SqliteRevisionStore::open(&db.path).unwrap());
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![5]);
         assert_eq!(db.graph_rows(), rows);
         assert_eq!(db.rows(&v3_rows), proposals_before);
         // Every migrated row is its own occurrence.
@@ -464,7 +471,7 @@ mod workflow {
         assert_eq!(db.graph_rows(), rows);
         db.exec("DROP TABLE gate_reports;");
         drop(db.workflow());
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![5]);
     }
 
     #[test]
@@ -504,7 +511,7 @@ mod workflow {
         assert_eq!(db.version(), vec![3]);
         let graph = db.graph_rows();
         let wf = db.workflow();
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![5]);
         assert_eq!(db.rows(&v3_rows), before);
         assert_eq!(db.graph_rows(), graph);
         for (proposal, base) in [
@@ -536,7 +543,7 @@ mod workflow {
         let rows = db.graph_rows();
         // Opening through either store migrates transactionally.
         let store = SqliteRevisionStore::open(&db.path).unwrap();
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![5]);
         assert!(db.tables().contains("workflow_session_turns"));
         for t in STAGE_TABLES {
             assert!(db.tables().contains(t), "{t}");
@@ -692,19 +699,19 @@ mod workflow {
         // Removing the conflict lets the migration complete.
         db.exec("DROP TABLE workflow_session_turns;");
         drop(db.workflow());
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![5]);
     }
 
     #[test]
     fn workflow_unknown_versions_and_unversioned_tables_are_rejected() {
         let db = Db::new();
         drop(db.workflow());
-        db.exec("UPDATE schema_meta SET version = 5;");
+        db.exec("UPDATE schema_meta SET version = 6;");
         assert!(matches!(
             SqliteWorkflowStore::open(&db.path).unwrap_err(),
-            StoreError::UnsupportedStoreSchemaVersion { found: 5 }
+            StoreError::UnsupportedStoreSchemaVersion { found: 6 }
         ));
-        assert_eq!(db.version(), vec![5]);
+        assert_eq!(db.version(), vec![6]);
 
         let db = Db::new();
         db.exec("CREATE TABLE workflow_proposals (proposal_id TEXT PRIMARY KEY);");

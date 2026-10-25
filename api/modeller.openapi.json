@@ -4155,6 +4155,11 @@
         "status": 422
       },
       {
+        "code": "E_STAGE_WORKER_UNAVAILABLE",
+        "meaning": "The stage worker of this process is not running or is shutting down.",
+        "status": 503
+      },
+      {
         "code": "E_STORE_CORRUPT",
         "meaning": "Persisted store or artifact content failed an integrity check.",
         "status": 500

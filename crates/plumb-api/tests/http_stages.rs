@@ -7,7 +7,7 @@
 
 mod http_stages {
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::time::Duration;
 
     use axum::body::{to_bytes, Body};
@@ -1514,6 +1514,413 @@ mod http_stages {
         assert_eq!(err.body().code, "E_STAGE_RETRY_BASE_MOVED");
         let view = serde_json::to_value(state.get_job(queued.job_id.as_str()).unwrap().0).unwrap();
         assert_eq!(view["status"], "failed");
+    }
+
+    // ------------------------------------------------------------------ H0.3 attempts and leases
+
+    /// The lease a job claimed or created at the fixed clock gets: now + 60 s.
+    const LEASE_END: &str = "2026-05-01T12:01:00.000000000Z";
+
+    fn record(app: &App, job_id: &Hash) -> plumb_store::StageRecipeJobRecord {
+        stage_store(app).recipe_job(job_id).unwrap().unwrap()
+    }
+
+    fn is_owner_id(owner: &str) -> bool {
+        owner.len() == 20
+            && owner.starts_with("own:")
+            && owner[4..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+
+    /// H0.3 (§33.3): an operationally failed recipe job is retried explicitly as attempt N+1
+    /// under its unchanged ID and captured identity, with its Failed child re-queued; the record
+    /// of every attempt is kept. Committed, Stale and moved-base jobs are refused unchanged.
+    #[tokio::test]
+    async fn retry_reruns_failed_job_as_new_attempt_with_same_id() {
+        let app = app(data_graph(&["Email"]));
+        *app.provider.fail.lock().unwrap() = true;
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        assert_eq!(job(&app, &job_id)["status"], "failed");
+        let captured = record(&app, &job_id);
+        assert_eq!(captured.attempt, 1);
+        let child_id = stage_store(&app).steps(&job_id).unwrap()[0]
+            .stage_job_id
+            .clone()
+            .unwrap();
+        *app.provider.fail.lock().unwrap() = false;
+        app.state.retry_recipe_job(&job_id).unwrap();
+        app.state.execute_recipe_job(&job_id).unwrap();
+        assert_eq!(job(&app, &job_id)["status"], "committed");
+        let retried = record(&app, &job_id);
+        assert_eq!(retried.attempt, 2);
+        assert_eq!(retried.recipe_job_json, captured.recipe_job_json);
+        assert_eq!(retried.config_json, captured.config_json);
+        assert_eq!(retried.base_revision_id, captured.base_revision_id);
+        assert_eq!(
+            stage_store(&app).steps(&job_id).unwrap()[0].stage_job_id,
+            Some(child_id)
+        );
+        let attempts = stage_store(&app).recipe_job_attempts(&job_id).unwrap();
+        assert_eq!(
+            attempts
+                .iter()
+                .map(|a| (a.attempt, a.outcome))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, Some(StageStatus::Failed)),
+                (2, Some(StageStatus::Committed))
+            ]
+        );
+        assert!(attempts[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains(r#""code":"E_INFERENCE_FAILED""#));
+        for attempt in &attempts {
+            assert!(
+                is_owner_id(attempt.owner_id.as_deref().unwrap()),
+                "{attempt:?}"
+            );
+        }
+        // Committed work is never retried; nothing changes.
+        let err = app.state.retry_recipe_job(&job_id).unwrap_err();
+        assert_eq!(err.body().code, "E_STAGE_RETRY_NOT_FAILED");
+        assert_eq!(record(&app, &job_id), record(&app, &job_id));
+        assert_eq!(record(&app, &job_id).attempt, 2);
+
+        // Stale semantic work is never retried or rebased.
+        let app = self::app(data_graph(&["Email", "Salary"]));
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        commit_patch(&app, |_| SemanticPatch::AddNode {
+            node: requirement("req:later", "Proposed", "A later change."),
+        });
+        assert_eq!(job(&app, &job_id)["status"], "stale");
+        let before = record(&app, &job_id);
+        let err = app.state.retry_recipe_job(&job_id).unwrap_err();
+        assert_eq!(err.body().code, "E_STAGE_RETRY_NOT_FAILED");
+        assert_eq!(record(&app, &job_id), before);
+
+        // A failed job whose base moved is refused with nothing changed.
+        let app = self::app(data_graph(&["Email"]));
+        *app.provider.fail.lock().unwrap() = true;
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        commit_patch(&app, |_| SemanticPatch::AddNode {
+            node: requirement("req:later", "Proposed", "A later change."),
+        });
+        let before = record(&app, &job_id);
+        let err = app.state.retry_recipe_job(&job_id).unwrap_err();
+        assert_eq!(err.body().code, "E_STAGE_RETRY_BASE_MOVED");
+        assert_eq!(record(&app, &job_id), before);
+        assert_eq!(
+            stage_store(&app)
+                .recipe_job_attempts(&job_id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// H0.3 (§33.3): the creating process leases a queued job to itself; a second live process
+    /// opening the same database never interrupts it, and the owner still executes it.
+    #[tokio::test]
+    async fn second_process_does_not_interrupt_live_jobs() {
+        let app = app(data_graph(&["Email"]));
+        let queued = app.state.run_stage(Recipe::Tags, None, None).unwrap();
+        let leased = record(&app, &queued.job_id);
+        assert!(is_owner_id(leased.owner_id.as_deref().unwrap()));
+        assert_eq!(leased.lease_expires_at, Some(ts(LEASE_END)));
+        let second = open(&app.path, app.provider.clone(), &Gates::default());
+        assert_eq!(record(&app, &queued.job_id), leased);
+        app.state.execute_recipe_job(&queued.job_id).unwrap();
+        assert_eq!(job(&app, &queued.job_id)["status"], "committed");
+        // A settled job holds no lease.
+        assert_eq!(record(&app, &queued.job_id).lease_expires_at, None);
+        drop(second);
+    }
+
+    /// H0.3 (§33.3): while another process is alive, startup recovery interrupts only in-flight
+    /// jobs whose lease expired or that have no owner (pre-H0.3 rows).
+    #[tokio::test]
+    async fn restart_interrupts_only_expired_leases() {
+        let app = app(data_graph(&["Email", "Salary"]));
+        let live = app.state.run_stage(Recipe::Tags, None, None).unwrap();
+        let expired = app.state.run_stage(Recipe::Intake, None, None).unwrap();
+        let ownerless = app.state.run_stage(Recipe::Rules, None, None).unwrap();
+        let conn = rusqlite::Connection::open(&app.path).unwrap();
+        conn.execute(
+            "UPDATE stage_recipe_jobs SET lease_expires_at = ?1 WHERE recipe_job_id = ?2",
+            [T0, expired.job_id.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE stage_recipe_jobs SET owner_id = NULL, lease_expires_at = NULL \
+             WHERE recipe_job_id = ?1",
+            [ownerless.job_id.as_str()],
+        )
+        .unwrap();
+        // The first process is still alive while the second opens.
+        let _second = open(&app.path, app.provider.clone(), &Gates::default());
+        assert_eq!(record(&app, &live.job_id).status, StageStatus::Queued);
+        for id in [&expired.job_id, &ownerless.job_id] {
+            let r = record(&app, id);
+            assert_eq!(r.status, StageStatus::Failed);
+            assert_eq!(r.failure_code.as_deref(), Some("E_JOB_INTERRUPTED"));
+            let attempts = stage_store(&app).recipe_job_attempts(id).unwrap();
+            assert_eq!(attempts.len(), 1);
+            assert_eq!(attempts[0].outcome, Some(StageStatus::Failed));
+        }
+    }
+
+    /// Fails the first provider call with a panic; later calls are answered normally.
+    struct PanicOnce {
+        inner: Arc<TestProvider>,
+        armed: Mutex<bool>,
+    }
+
+    impl InferenceProvider for PanicOnce {
+        fn execute(
+            &self,
+            request: &InferenceRequest,
+            material: &InferenceRequestMaterial,
+        ) -> Result<ProviderExecution, ProviderError> {
+            let armed = std::mem::take(&mut *self.armed.lock().unwrap());
+            if armed {
+                panic!("the provider exploded");
+            }
+            self.inner.execute(request, material)
+        }
+    }
+
+    fn raw_status(path: &Path, job_id: &Hash) -> (String, Option<String>, Option<String>) {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT status, failure_code, failure_message FROM stage_recipe_jobs \
+                 WHERE recipe_job_id = ?1",
+                [job_id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    }
+
+    /// Polls the raw row until the job leaves the in-flight states.
+    async fn wait_raw(path: &Path, job_id: &Hash) -> (String, Option<String>, Option<String>) {
+        for _ in 0..400 {
+            let row = raw_status(path, job_id);
+            if !["queued", "acquiring", "evaluating"].contains(&row.0.as_str()) {
+                return row;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("job {job_id} did not finish");
+    }
+
+    /// H0.3 (§33.3, Fable #179): the worker never discards an execution error or panic: the
+    /// claimed job is persisted Failed with E_INTERNAL and its bounded message, and the worker
+    /// keeps serving later jobs.
+    #[tokio::test]
+    async fn worker_error_is_persisted() {
+        let panicking = Arc::new(PanicOnce {
+            inner: TestProvider::new(),
+            armed: Mutex::new(true),
+        });
+        let app = app_using(
+            data_graph(&["Email", "Salary"]),
+            &[],
+            Gates::default(),
+            Some(panicking),
+        );
+        let r = run_stage(&app, "tags", Value::Null).await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        let first: Hash = r.json()["job_id"].as_str().unwrap().parse().unwrap();
+        let (status, code, message) = wait_raw(&app.path, &first).await;
+        assert_eq!(
+            (status.as_str(), code.as_deref()),
+            ("failed", Some("E_INTERNAL"))
+        );
+        let message = message.unwrap();
+        assert!(message.contains("the provider exploded"), "{message}");
+        assert!(message.len() <= 512);
+        // The worker survived the panic and executes the next job.
+        let r = run_stage(&app, "intake", Value::Null).await;
+        let second = r.json()["job_id"].as_str().unwrap().to_owned();
+        let view = wait_job(&app, &second).await;
+        assert_ne!(view["status"], "failed", "{view}");
+
+        // An execution error (here: the recipe row becomes unreadable mid-run) is persisted.
+        let app = self::app(data_graph(&["Email"]));
+        let path = app.path.clone();
+        let job_ref: Arc<Mutex<Option<Hash>>> = Arc::new(Mutex::new(None));
+        let hook_job = job_ref.clone();
+        *app.provider.hook.lock().unwrap() = Some(Box::new(move || {
+            let id = hook_job.lock().unwrap().clone().unwrap();
+            rusqlite::Connection::open(&path)
+                .unwrap()
+                .execute(
+                    "UPDATE stage_recipe_jobs SET recipe_job_json = '{ \"x\": 1 }' \
+                     WHERE recipe_job_id = ?1",
+                    [id.as_str()],
+                )
+                .unwrap();
+        }));
+        let run = app.state.run_stage(Recipe::Tags, None, None).unwrap();
+        *job_ref.lock().unwrap() = Some(run.job_id.clone());
+        app.state.enqueue_recipe_job(&run.job_id).unwrap();
+        let (status, code, _) = wait_raw(&app.path, &run.job_id).await;
+        assert_eq!(
+            (status.as_str(), code.as_deref()),
+            ("failed", Some("E_INTERNAL"))
+        );
+    }
+
+    /// Blocks the first provider call until released; reports when it started.
+    fn gate_provider(app: &App) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        *app.provider.hook.lock().unwrap() = Some(Box::new(move || {
+            started_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        }));
+        (started_rx, release_tx)
+    }
+
+    /// H0.3 graceful shutdown (§33.3): the queue closes to new claims (run_stage is a typed
+    /// 503), an in-flight job stops at its next safe step boundary once its provider call
+    /// returned and its bundle is persisted, and is Failed with E_JOB_INTERRUPTED; a retry
+    /// reuses the persisted inference without calling the provider again (Fable #62). A job
+    /// that misses the grace period is persisted Failed with E_JOB_INTERRUPTED by the shutdown.
+    #[tokio::test]
+    async fn shutdown_drains_or_persists_interrupted() {
+        let app = app(data_graph(&["Email"]));
+        let (started, release) = gate_provider(&app);
+        let r = run_stage(&app, "tags", Value::Null).await;
+        let job_id: Hash = r.json()["job_id"].as_str().unwrap().parse().unwrap();
+        started.recv_timeout(Duration::from_secs(10)).unwrap();
+        app.state.begin_stage_shutdown();
+        release.send(()).unwrap();
+        assert!(app.state.finish_stage_shutdown(Duration::from_secs(10)));
+        let r = record(&app, &job_id);
+        assert_eq!(r.status, StageStatus::Failed);
+        assert_eq!(r.failure_code.as_deref(), Some("E_JOB_INTERRUPTED"));
+        assert_eq!(app.provider.calls.lock().unwrap().len(), 1);
+        // The queue is closed: a new run is a typed 503 and nothing executes it.
+        let r = run_stage(&app, "intake", Value::Null).await;
+        assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(r.code(), "E_STAGE_WORKER_UNAVAILABLE");
+        // A new process retries the job; the persisted inference is reused, never re-billed.
+        app.state.release_jobs_lock();
+        let state = open(&app.path, app.provider.clone(), &Gates::default());
+        state.retry_recipe_job(&job_id).unwrap();
+        state.execute_recipe_job(&job_id).unwrap();
+        let view = serde_json::to_value(state.get_job(job_id.as_str()).unwrap().0).unwrap();
+        assert_eq!(view["status"], "committed", "{view}");
+        assert_eq!(app.provider.calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            data_classes(&app),
+            vec![("attr:0".into(), Some("pii".into()))]
+        );
+
+        // The in-flight job misses the grace period: the shutdown persists it interrupted.
+        let app = self::app(data_graph(&["Email"]));
+        let (started, release) = gate_provider(&app);
+        let r = run_stage(&app, "tags", Value::Null).await;
+        let job_id: Hash = r.json()["job_id"].as_str().unwrap().parse().unwrap();
+        started.recv_timeout(Duration::from_secs(10)).unwrap();
+        app.state.begin_stage_shutdown();
+        assert!(!app.state.finish_stage_shutdown(Duration::from_millis(100)));
+        let r = record(&app, &job_id);
+        assert_eq!(r.status, StageStatus::Failed);
+        assert_eq!(r.failure_code.as_deref(), Some("E_JOB_INTERRUPTED"));
+        // The late provider answer is still persisted; the job stays interrupted.
+        release.send(()).unwrap();
+        for _ in 0..200 {
+            if !app.provider.calls.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            record(&app, &job_id).failure_code.as_deref(),
+            Some("E_JOB_INTERRUPTED")
+        );
+    }
+
+    /// H0.3 (Fable #183): startup recovery is per-row fault tolerant: an in-flight row that
+    /// cannot be decoded is marked failed with a typed corruption error, the other rows are
+    /// recovered, and opening the application does not fail.
+    #[tokio::test]
+    async fn recovery_is_per_row_fault_tolerant() {
+        let app = app(data_graph(&["Email", "Salary"]));
+        let corrupt = app.state.run_stage(Recipe::Tags, None, None).unwrap();
+        let healthy = app.state.run_stage(Recipe::Intake, None, None).unwrap();
+        rusqlite::Connection::open(&app.path)
+            .unwrap()
+            .execute(
+                "UPDATE stage_recipe_jobs SET recipe_job_json = 'not json' \
+                 WHERE recipe_job_id = ?1",
+                [corrupt.job_id.as_str()],
+            )
+            .unwrap();
+        app.state.release_jobs_lock();
+        let _state = open(&app.path, app.provider.clone(), &Gates::default());
+        let (status, code, _) = raw_status(&app.path, &corrupt.job_id);
+        assert_eq!(
+            (status.as_str(), code.as_deref()),
+            ("failed", Some("E_WORKFLOW_CORRUPT"))
+        );
+        let (status, code, _) = raw_status(&app.path, &healthy.job_id);
+        assert_eq!(
+            (status.as_str(), code.as_deref()),
+            ("failed", Some("E_JOB_INTERRUPTED"))
+        );
+    }
+
+    /// H0.3 (Fable #188): an interrupted recipe job whose child proposals were already persisted
+    /// is settled Ready over them on recovery, so their acceptance is still reflected.
+    #[tokio::test]
+    async fn recovery_settles_parent_over_persisted_proposals() {
+        let app = app(data_graph(&["Email", "Salary"]));
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        assert_eq!(job(&app, &job_id)["status"], "ready");
+        let base = record(&app, &job_id).base_revision_id;
+        // A crash after the proposals were persisted, before the parent became Ready.
+        rusqlite::Connection::open(&app.path)
+            .unwrap()
+            .execute(
+                "UPDATE stage_recipe_jobs SET status = 'evaluating', result_revision_id = NULL \
+                 WHERE recipe_job_id = ?1",
+                [job_id.as_str()],
+            )
+            .unwrap();
+        app.state.release_jobs_lock();
+        let _state = open(&app.path, app.provider.clone(), &Gates::default());
+        let settled = record(&app, &job_id);
+        assert_eq!(settled.status, StageStatus::Ready);
+        assert_eq!(settled.result_revision_id, Some(base));
+        let proposals = pending(&app, &job_id);
+        assert_eq!(proposals.len(), 2);
+        let tag = head_tag(&app).await;
+        let reply = post(
+            &app,
+            &format!("/api/proposals/{}/accept", proposals[0].id),
+            Some(&tag),
+            json!({"reason": null}),
+        )
+        .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&reply.bytes)
+        );
+        assert_eq!(record(&app, &job_id).status, StageStatus::Committed);
     }
 
     // ------------------------------------------------------------------ gates

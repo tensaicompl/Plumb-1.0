@@ -37,12 +37,27 @@ fn inference_failed<E: std::fmt::Debug>(error: &E) -> ApiError {
 /// store lock and persisted as one verified bundle. A non-empty external validation list is
 /// `E_EXTERNAL_VALIDATOR_UNAVAILABLE` (the pilot has no validator transport). Under the `null`
 /// provider mode the declared absence policies apply first (R0.2).
+#[cfg(test)]
 pub(crate) fn acquire(
     state: &ApiState,
     plan: &StagePlan,
     recipe: Recipe,
     phase: Phase,
     created_at: Timestamp,
+) -> Result<ArtifactSet, ApiError> {
+    acquire_with(state, plan, recipe, phase, created_at, false)
+}
+
+/// [`acquire`] for a retried attempt when `reuse` (H0.3, Fable #62): a planned request whose
+/// validated inference an earlier attempt already persisted is reused instead of calling the
+/// provider again, so a retry never re-bills or re-generates a completed request.
+pub(crate) fn acquire_with(
+    state: &ApiState,
+    plan: &StagePlan,
+    recipe: Recipe,
+    phase: Phase,
+    created_at: Timestamp,
+    reuse: bool,
 ) -> Result<ArtifactSet, ApiError> {
     if !plan.external_validation_requests.is_empty() {
         return Err(ApiError::conflict(
@@ -107,6 +122,13 @@ pub(crate) fn acquire(
         .clone();
     let mut inference = Vec::with_capacity(plan.inference_requests.len());
     for planned in &plan.inference_requests {
+        // Fable #62: a request completed by an earlier attempt is reused, never re-billed.
+        if reuse {
+            if let Some(input) = persisted_inference(state, &planned.request)? {
+                inference.push(input);
+                continue;
+            }
+        }
         // No lock is held here: the provider may perform network I/O.
         let execution = provider
             .execute(&planned.request, &planned.material)
@@ -124,9 +146,60 @@ pub(crate) fn acquire(
             media_type: JSON_MEDIA_TYPE.to_owned(),
             bytes,
         });
+        // H0.3: after a provider call returned and its bundle is persisted is a safe step
+        // boundary; a shutting-down process stops here (a retry reuses the bundle).
+        if state.stage_stop_requested() {
+            return Err(crate::stage::worker::interrupted("after_provider_call"));
+        }
     }
     ArtifactSet::new(deterministic, inference, Vec::new())
         .map_err(|e| ApiError::internal_cause("artifact_set", &e))
+}
+
+/// The persisted, verified validated-inference artifact of `request`, if an earlier attempt
+/// completed it: the stored bytes hash to their ref, decode strictly to canonical JSON, belong to
+/// `request`, and their request and raw-response artifacts are stored too.
+fn persisted_inference(
+    state: &ApiState,
+    request: &InferenceRequest,
+) -> Result<Option<ArtifactInput>, ApiError> {
+    let refs = state
+        .with_stage_store(|store| store.validated_inference_refs(&request.id))?
+        .map_err(crate::stage::store_error)?;
+    let request_ref = Hash::content_sha256(
+        &to_canonical_json(request)
+            .map_err(|e| ApiError::internal_cause("inference_request", &e))?,
+    );
+    for hash in refs {
+        let Ok(artifact) = state.get_artifact(&hash)? else {
+            continue;
+        };
+        let Ok(decoded) = serde_json::from_slice::<InferenceArtifact>(&artifact.bytes) else {
+            continue;
+        };
+        let canonical = to_canonical_json(&decoded).ok();
+        let exists = |h: &Hash| {
+            state
+                .with_artifact_store(|store| plumb_artifacts::ArtifactStore::exists(store, h))
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(false)
+        };
+        if canonical.as_deref() == Some(artifact.bytes.as_slice())
+            && artifact.media_type == JSON_MEDIA_TYPE
+            && decoded.validate_for(request).is_ok()
+            && exists(&request_ref)
+            && exists(&decoded.raw_response_hash)
+        {
+            return Ok(Some(ArtifactInput {
+                hash,
+                kind: ArtifactKind::ValidatedInference,
+                media_type: JSON_MEDIA_TYPE.to_owned(),
+                bytes: artifact.bytes,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// The validated-inference artifact of `request` among `artifacts` with its input hash.

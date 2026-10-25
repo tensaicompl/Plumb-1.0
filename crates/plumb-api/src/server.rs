@@ -86,15 +86,43 @@ pub fn is_loopback_origin(origin: &str) -> bool {
     scheme.eq_ignore_ascii_case("http") && is_loopback_authority(authority)
 }
 
-/// Serves the pilot router over `state` on `listen` until Ctrl-C, blocking the caller. A
-/// non-loopback `listen` is refused before any runtime or listener is created.
+/// Resolves on SIGINT (Ctrl-C) or, on Unix, SIGTERM.
+async fn shutdown_signal() {
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    {
+        let terminate = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut signal) => {
+                    signal.recv().await;
+                }
+                Err(_) => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            () = interrupt => {}
+            () = terminate => {}
+        }
+    }
+    #[cfg(not(unix))]
+    interrupt.await;
+}
+
+/// Serves the pilot router over `state` on `listen` until SIGINT or SIGTERM, blocking the
+/// caller. A non-loopback `listen` is refused before any runtime or listener is created. On
+/// shutdown the stage job queue closes and the in-flight job is drained or persisted
+/// interrupted within `STAGE_SHUTDOWN_GRACE_SECONDS` (H0.3, architecture §33.3).
 pub fn serve_blocking(state: ApiState, listen: SocketAddr) -> Result<(), ServeError> {
     require_loopback_bind(listen)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(ServeError::Runtime)?;
-    runtime.block_on(async move {
+    let stages = state.clone();
+    let closing = state.clone();
+    let served = runtime.block_on(async move {
         let listener = tokio::net::TcpListener::bind(listen)
             .await
             .map_err(|source| ServeError::Bind {
@@ -102,10 +130,19 @@ pub fn serve_blocking(state: ApiState, listen: SocketAddr) -> Result<(), ServeEr
                 source,
             })?;
         axum::serve(listener, router(state))
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
+            .with_graceful_shutdown(async move {
+                shutdown_signal().await;
+                // Close the queue to new claims as soon as the signal arrives.
+                closing.begin_stage_shutdown();
             })
             .await
             .map_err(ServeError::Serve)
-    })
+    });
+    if !stages.shutdown_stages() {
+        tracing::error!(
+            target: "plumb_api::stage",
+            "the in-flight stage job was persisted interrupted at shutdown"
+        );
+    }
+    served
 }

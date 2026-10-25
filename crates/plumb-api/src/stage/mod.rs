@@ -10,9 +10,7 @@ pub(crate) mod gates;
 pub(crate) mod phases;
 pub mod recipe;
 pub(crate) mod scenario_execution;
-
-use std::sync::mpsc;
-use std::thread;
+pub(crate) mod worker;
 
 use plumb_artifacts::{ArtifactKind, ArtifactStore};
 use plumb_compiler::{
@@ -33,6 +31,7 @@ use crate::state::ApiState;
 pub use gates::{ReadyGate, ReadyOutcome, ReadyRule};
 pub use phases::SegmentationIntermediate;
 pub use recipe::{Phase, Recipe, RecipeCapture};
+pub use worker::{STAGE_HEARTBEAT_SECONDS, STAGE_LEASE_SECONDS, STAGE_SHUTDOWN_GRACE_SECONDS};
 
 use acceptance::{decode_child, persist_child, settle, status_of, StepEnd};
 use phases::{rules_projection, PhaseOutput, PhaseStage};
@@ -48,10 +47,27 @@ const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_FAILURE_MESSAGE: usize = 512;
 
 /// The failure code of a job interrupted by the end of its process.
-const JOB_INTERRUPTED: &str = "E_JOB_INTERRUPTED";
+pub(crate) const JOB_INTERRUPTED: &str = "E_JOB_INTERRUPTED";
 
 /// The operation ID of stage-produced design events.
 const STAGE_OPERATION: &str = "run_stage";
+
+/// A Failed recipe job re-queued as its next attempt (H0.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageRetry {
+    pub job_id: Hash,
+    pub recipe: Recipe,
+    /// The attempt the job will run as (N+1).
+    pub attempt: u32,
+}
+
+/// A job ID: exactly a generic `sha256:` hash (400 `E_INVALID_REQUEST` otherwise).
+fn parse_job_id(id: &str) -> Result<Hash, ApiError> {
+    id.parse()
+        .ok()
+        .filter(|h: &Hash| h.kind() == HashKind::Generic && h.as_str() == id)
+        .ok_or_else(|| ApiError::invalid(format!("{} is not a job ID", crate::error::echo(id))))
+}
 
 /// A captured or reused recipe job.
 #[derive(Debug, Clone, PartialEq)]
@@ -107,7 +123,7 @@ pub fn job_response(record: &StageRecipeJobRecord) -> JobResponse {
 }
 
 /// The bounded failure message of an error (at most 512 bytes, on a character boundary).
-fn bounded(message: &str) -> String {
+pub(crate) fn bounded(message: &str) -> String {
     if message.len() <= MAX_FAILURE_MESSAGE {
         return message.to_owned();
     }
@@ -131,7 +147,7 @@ pub(crate) fn store_error(error: plumb_store::StoreError) -> ApiError {
 
 /// The stored failure message: the error message and, when present, its structured details
 /// (stable codes and names only; never secrets or traces).
-fn failure_message(error: &ApiError) -> String {
+pub(crate) fn failure_message(error: &ApiError) -> String {
     let body = error.body();
     match &body.details {
         Value::Object(map) if !map.is_empty() => format!("{} {}", body.message, body.details),
@@ -139,9 +155,10 @@ fn failure_message(error: &ApiError) -> String {
     }
 }
 
-/// Construction-time start of the A0.4 runtime: fails in-flight children through `mark_failed`
-/// and in-flight parents with `E_JOB_INTERRUPTED`, reconciles interrupted stage acceptances and
-/// starts the recipe worker. Nothing resumes.
+/// Construction-time start of the A0.4 runtime (H0.3, see [`worker`]): recovers abandoned jobs
+/// (every in-flight job when this is the sole live opener, otherwise only those whose lease
+/// expired or that have no owner), reconciles interrupted stage acceptances and starts the
+/// recipe worker and its lease heartbeat. Nothing resumes.
 pub(crate) fn start(state: &ApiState) -> Result<(), ApiError> {
     let path = state
         .with_stage_store(|store| store.database_path())?
@@ -150,36 +167,10 @@ pub(crate) fn start(state: &ApiState) -> Result<(), ApiError> {
             name.push(".jobs.lock");
             std::path::PathBuf::from(name)
         });
-    if !sole_live_process(state, path.as_deref())? {
-        // Another live process has this database open and may be executing a job right now:
-        // nothing is interrupted (a later sole opener does that). Reconciling acceptances
-        // that already committed is idempotent and always safe.
-        acceptance::reconcile_pending(state)?;
-        return start_worker(state);
-    }
-    // H0.10: committed plain work is settled before anything in flight is interrupted.
-    acceptance::settle_plain_commits(state)?;
-    let now = state.now();
-    let children = state
-        .with_stage_store(|store| store.in_flight_stage_jobs())?
-        .map_err(|_| ApiError::workflow_corrupt("stage jobs"))?;
-    for record in children {
-        let mut job = decode_child(&record.stage_job_json, &record.stage_job_id)?;
-        job.mark_failed()
-            .map_err(|_| ApiError::workflow_corrupt("stage job"))?;
-        persist_child(state, &job, record.status, now)?;
-    }
-    state
-        .with_stage_store(|store| {
-            store.interrupt_recipe_jobs(
-                JOB_INTERRUPTED,
-                "the job was interrupted by a process restart",
-                now,
-            )
-        })?
-        .map_err(crate::stage::store_error)?;
-    acceptance::reconcile_pending(state)?;
-    start_worker(state)
+    // Another live process may be executing its leased jobs right now; a sole opener knows
+    // every in-flight job was abandoned.
+    let sole = sole_live_process(state, path.as_deref())?;
+    worker::start(state, sole)
 }
 
 /// Every process that opens a database holds a shared lock on `<db>.jobs.lock` for its
@@ -210,22 +201,6 @@ fn sole_live_process(
     Ok(sole)
 }
 
-/// Starts the recipe worker thread of `state`.
-fn start_worker(state: &ApiState) -> Result<(), ApiError> {
-    let (sender, receiver) = mpsc::channel::<Hash>();
-    let weak = state.downgrade();
-    thread::Builder::new()
-        .name("plumb-stage-worker".into())
-        .spawn(move || {
-            for id in receiver {
-                let Some(state) = weak.upgrade() else { break };
-                let _ = state.execute_recipe_job(&id);
-            }
-        })
-        .map_err(|e| ApiError::internal_cause("stage_worker", &e))?;
-    state.stage_runtime("stage_worker")?.set_queue(sender)
-}
-
 /// Mutable progress of one recipe execution.
 struct Run<'a> {
     state: &'a ApiState,
@@ -235,6 +210,8 @@ struct Run<'a> {
     ordinal: u32,
     current: LoadedRevision,
     committed: bool,
+    /// A retried attempt (N > 1) reuses inference an earlier attempt already persisted.
+    retried: bool,
     status: StageStatus,
 }
 
@@ -260,8 +237,12 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Records the next ordered step.
+    /// Records the next ordered step. Before a phase starts is a safe step boundary: a
+    /// shutting-down process stops here (H0.3).
     fn step(&mut self, phase: Phase, input: &RevisionId) -> Result<u32, StepEnd> {
+        if self.state.stage_stop_requested() {
+            return Err(StepEnd::Failed(worker::interrupted("before_phase")));
+        }
         let ordinal = self.ordinal;
         self.state
             .with_stage_store(|store| {
@@ -531,7 +512,14 @@ impl Run<'_> {
         job.start_acquiring().map_err(invalid)?;
         persist_child(state, job, StageStatus::Queued, state.now())?;
         let plan = stage.plan_phase(&base.graph)?;
-        let artifacts = acquire::acquire(state, &plan, self.recipe, stage.phase, state.now())?;
+        let artifacts = acquire::acquire_with(
+            state,
+            &plan,
+            self.recipe,
+            stage.phase,
+            state.now(),
+            self.retried,
+        )?;
         artifacts
             .validate_for_plan(&plan)
             .map_err(|e| ApiError::internal_cause("artifact_set", &e))?;
@@ -663,6 +651,7 @@ impl ApiState {
             branch: self.branch().clone(),
             base_revision_id: loaded.revision.id.clone(),
             created_at: self.now(),
+            lease: self.stage_lease(),
         };
         let stored = self
             .with_stage_store(|store| store.insert_recipe_job(&new))?
@@ -735,23 +724,45 @@ impl ApiState {
                 persist_child(self, &child, StageStatus::Failed, self.now())?;
             }
         }
-        self.with_stage_store(|store| store.retry_recipe_job(id, self.now()))?
-            .map_err(crate::stage::store_error)?;
+        let lease = self.stage_lease();
+        self.with_stage_store(|store| {
+            store.retry_recipe_job_leased(id, lease.as_ref(), self.now())
+        })?
+        .map_err(crate::stage::store_error)?;
         Ok(())
     }
 
-    /// Hands a queued recipe job to this instance's worker.
-    pub fn enqueue_recipe_job(&self, id: &Hash) -> Result<(), ApiError> {
-        self.stage_runtime("stage_worker")?.enqueue(id)?;
-        Ok(())
+    /// The retry application service of the CLI `retry <JOB_ID>` (H0.3, §33.3; no HTTP
+    /// operation): parses the job ID, re-queues the Failed job as its next attempt under the
+    /// same ID through [`ApiState::retry_recipe_job`] and returns the job, its recipe and the new
+    /// attempt. Execution is separate.
+    pub fn retry_job(&self, id: &str) -> Result<StageRetry, ApiError> {
+        let job_id = parse_job_id(id)?;
+        self.retry_recipe_job(&job_id)?;
+        let record = self.recipe_record(&job_id)?;
+        let recipe = decode_capture(&record)?.recipe()?;
+        Ok(StageRetry {
+            job_id,
+            recipe,
+            attempt: record.attempt,
+        })
+    }
+
+    /// The current attempt of recipe job `id` (1 for a job never retried).
+    pub fn recipe_job_attempt(&self, id: &Hash) -> Result<u32, ApiError> {
+        Ok(self.recipe_record(id)?.attempt)
     }
 
     /// Executes a queued recipe job to completion in the calling thread (the worker, or the CLI).
     /// A job that is not queued is left unchanged (executed at most once).
     pub fn execute_recipe_job(&self, id: &Hash) -> Result<(), ApiError> {
         let now = self.now();
+        let lease = self.stage_lease();
         let claimed = self
-            .with_stage_store(|store| store.claim_recipe_job(id, now))?
+            .with_stage_store(|store| match &lease {
+                Some(lease) => store.claim_recipe_job_leased(id, lease, now),
+                None => store.claim_recipe_job(id, now),
+            })?
             .map_err(crate::stage::store_error)?;
         if !claimed {
             return Ok(());
@@ -768,6 +779,7 @@ impl ApiState {
                 ordinal: 0,
                 current,
                 committed: false,
+                retried: record.attempt > 1,
                 status: StageStatus::Acquiring,
             })
         });
@@ -816,13 +828,7 @@ impl ApiState {
     /// `get_job`: the recipe job `id` with the only legal observation, a Ready job whose result
     /// revision is no longer the head becoming stale (with its Ready children).
     pub fn get_job(&self, id: &str) -> Result<(JobResponse, LoadedRevision), ApiError> {
-        let hash: Hash = id
-            .parse()
-            .ok()
-            .filter(|h: &Hash| h.kind() == HashKind::Generic && h.as_str() == id)
-            .ok_or_else(|| {
-                ApiError::invalid(format!("{} is not a job ID", crate::error::echo(id)))
-            })?;
+        let hash = parse_job_id(id)?;
         let mut record = self.recipe_record(&hash)?;
         let loaded = self.load_head()?;
         if record.status == StageStatus::Ready {
@@ -933,7 +939,7 @@ impl ApiState {
 }
 
 /// Decodes the stored capture: strict serde, canonical bytes, matching identity.
-fn decode_capture(record: &StageRecipeJobRecord) -> Result<RecipeCapture, ApiError> {
+pub(crate) fn decode_capture(record: &StageRecipeJobRecord) -> Result<RecipeCapture, ApiError> {
     let id = &record.recipe_job_id;
     let corrupt = || ApiError::workflow_corrupt(&format!("stage recipe job {id}"));
     let capture: RecipeCapture =

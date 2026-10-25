@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::branches::BranchName;
 use crate::revisions::RevisionId;
-use crate::schema::{durability_of, open_database, Durability, StoreOpenMode};
+use crate::schema::{attempt_error, durability_of, open_database, Durability, StoreOpenMode};
 use crate::workflow::{
     canonical_text, corrupt, insert_proposal_on, parse_field, parse_optional, proposal_on,
     require_revision, NewWorkflowProposal, WorkflowInsert, WorkflowOrigin, WorkflowProposal,
@@ -88,6 +88,15 @@ impl fmt::Display for StageStatus {
     }
 }
 
+/// The lease of an in-flight recipe job (H0.3, architecture §33.3): the owning process and the
+/// instant after which another process may recover the job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageLease {
+    /// `own:<first 16 hex of SHA-256(RFC 8785 {pid, process start time, db path})>`.
+    pub owner_id: String,
+    pub expires_at: Timestamp,
+}
+
 /// A recipe job to persist as `queued`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewStageRecipeJob {
@@ -98,6 +107,22 @@ pub struct NewStageRecipeJob {
     pub branch: BranchName,
     pub base_revision_id: RevisionId,
     pub created_at: Timestamp,
+    /// The lease of the creating process, which will execute the queued job (`None`: ownerless).
+    pub lease: Option<StageLease>,
+}
+
+/// One attempt of a recipe job (store schema v5, H0.3): attempts are numbered from 1 under the
+/// job's unchanged ID; `outcome` and `ended_at` are set when the attempt ends, and `error` is the
+/// canonical JSON `{code, message}` of a failed attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageAttemptRecord {
+    pub recipe_job_id: Hash,
+    pub attempt: u32,
+    pub owner_id: Option<String>,
+    pub started_at: Timestamp,
+    pub ended_at: Option<Timestamp>,
+    pub outcome: Option<StageStatus>,
+    pub error: Option<String>,
 }
 
 /// A persisted recipe job; the JSON fields are the exact stored canonical text.
@@ -115,6 +140,12 @@ pub struct StageRecipeJobRecord {
     pub failure_message: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// The current attempt (1 for a job never retried).
+    pub attempt: u32,
+    /// The process that created or last claimed the job.
+    pub owner_id: Option<String>,
+    /// The lease of an in-flight job; `None` once the job is terminal.
+    pub lease_expires_at: Option<Timestamp>,
 }
 
 /// A persisted compiler stage job; `stage_job_json` is its exact stored canonical text.
@@ -200,7 +231,12 @@ pub struct SqliteStageStore {
 
 const RECIPE_COLUMNS: &str = "recipe_job_id, recipe_job_json, config_json, recipe, branch, \
      base_revision_id, status, result_revision_id, failure_code, failure_message, created_at, \
-     updated_at";
+     updated_at, attempt, owner_id, lease_expires_at";
+
+const ATTEMPT_COLUMNS: &str =
+    "recipe_job_id, attempt, owner_id, started_at, ended_at, outcome, error";
+
+const IN_FLIGHT: &str = "('queued', 'acquiring', 'evaluating')";
 
 const STEP_COLUMNS: &str = "recipe_job_id, ordinal, phase, compiler_stage, input_revision_id, \
      stage_job_id, compile_run_ref, intermediate_artifact_ref, gate, result_revision_id";
@@ -243,6 +279,18 @@ impl SqliteStageStore {
         Ok(self.conn.busy_timeout(timeout)?)
     }
 
+    /// Takes and releases the write lock without writing: fails exactly when the database
+    /// cannot be written (a read-only file is SQLite `READONLY`), before any stage work starts.
+    pub fn require_writable(&mut self) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // A write statement that changes no row still needs a writable database.
+        tx.execute("UPDATE schema_meta SET version = version WHERE 0", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------------ recipe jobs
 
     /// Inserts `job` as `queued`; an existing row with the same ID is returned unchanged.
@@ -260,7 +308,7 @@ impl SqliteStageStore {
         tx.execute(
             &format!(
                 "INSERT INTO stage_recipe_jobs ({RECIPE_COLUMNS}) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', NULL, NULL, NULL, ?7, ?7)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', NULL, NULL, NULL, ?7, ?7, 1, ?8, ?9)"
             ),
             params![
                 job.recipe_job_id.as_str(),
@@ -270,6 +318,8 @@ impl SqliteStageStore {
                 job.branch.as_str(),
                 job.base_revision_id.as_str(),
                 job.created_at.to_string(),
+                job.lease.as_ref().map(|l| l.owner_id.as_str()),
+                job.lease.as_ref().map(|l| l.expires_at.to_string()),
             ],
         )?;
         let inserted = recipe_on(&tx, &job.recipe_job_id)?
@@ -294,15 +344,165 @@ impl SqliteStageStore {
         raws.into_iter().map(RawRecipe::decode).collect()
     }
 
-    /// Starts a queued recipe job: `queued -> acquiring` only when it is still queued. Returns
-    /// whether this caller claimed it, so a job is executed at most once.
+    /// Starts a queued recipe job without an owner (see [`Self::claim_recipe_job_leased`]).
     pub fn claim_recipe_job(&mut self, id: &Hash, at: Timestamp) -> Result<bool, StoreError> {
-        let changed = self.conn.execute(
-            "UPDATE stage_recipe_jobs SET status = 'acquiring', updated_at = ?1 \
-             WHERE recipe_job_id = ?2 AND status = 'queued'",
+        self.claim_with(id, None, at)
+    }
+
+    /// Starts a queued recipe job: `queued -> acquiring` only when it is still queued, leased to
+    /// `lease`'s owner, with the record of its current attempt started at `at` (H0.3). Returns
+    /// whether this caller claimed it, so a job is executed at most once.
+    pub fn claim_recipe_job_leased(
+        &mut self,
+        id: &Hash,
+        lease: &StageLease,
+        at: Timestamp,
+    ) -> Result<bool, StoreError> {
+        self.claim_with(id, Some(lease), at)
+    }
+
+    fn claim_with(
+        &mut self,
+        id: &Hash,
+        lease: Option<&StageLease>,
+        at: Timestamp,
+    ) -> Result<bool, StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE stage_recipe_jobs SET status = 'acquiring', updated_at = ?1, owner_id = ?2, \
+             lease_expires_at = ?3 WHERE recipe_job_id = ?4 AND status = 'queued'",
+            params![
+                at.to_string(),
+                lease.map(|l| l.owner_id.as_str()),
+                lease.map(|l| l.expires_at.to_string()),
+                id.as_str()
+            ],
+        )?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        tx.execute(
+            &format!(
+                "INSERT INTO stage_recipe_job_attempts ({ATTEMPT_COLUMNS}) \
+                 SELECT recipe_job_id, attempt, owner_id, ?1, NULL, NULL, NULL \
+                 FROM stage_recipe_jobs WHERE recipe_job_id = ?2"
+            ),
             params![at.to_string(), id.as_str()],
         )?;
-        Ok(changed == 1)
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Extends the lease of every in-flight recipe job owned by `owner_id` to `expires_at` (the
+    /// worker heartbeat); returns how many were renewed.
+    pub fn renew_leases(
+        &mut self,
+        owner_id: &str,
+        expires_at: Timestamp,
+    ) -> Result<usize, StoreError> {
+        Ok(self.conn.execute(
+            &format!(
+                "UPDATE stage_recipe_jobs SET lease_expires_at = ?1 \
+                 WHERE owner_id = ?2 AND status IN {IN_FLIGHT}"
+            ),
+            params![expires_at.to_string(), owner_id],
+        )?)
+    }
+
+    /// The hashes of the stored `validated-inference` artifacts whose JSON `request_hash` is
+    /// `request_hash`, oldest first (Fable #62: a retried attempt reuses a completed request
+    /// instead of calling the provider again). The artifacts themselves are read and verified
+    /// through the artifact store.
+    pub fn validated_inference_refs(&self, request_hash: &Hash) -> Result<Vec<Hash>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT hash FROM artifacts WHERE kind = ?1 AND json_valid(CAST(bytes AS TEXT)) \
+             AND json_extract(CAST(bytes AS TEXT), '$.request_hash') = ?2 \
+             ORDER BY created_at, hash",
+        )?;
+        let hashes = stmt
+            .query_map(
+                params![
+                    plumb_artifacts::ArtifactKind::ValidatedInference.as_str(),
+                    request_hash.as_str()
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(hashes.into_iter().filter_map(|h| h.parse().ok()).collect())
+    }
+
+    /// The IDs of every in-flight recipe job, in order; a row whose ID cannot be read is
+    /// skipped.
+    pub fn in_flight_recipe_job_ids(&self) -> Result<Vec<Hash>, StoreError> {
+        in_flight_ids(&self.conn, "stage_recipe_jobs", "recipe_job_id")
+    }
+
+    /// The IDs of every in-flight compiler stage job, in order (rows are decoded one at a
+    /// time by the caller, so one unreadable row never hides the others).
+    pub fn in_flight_stage_job_ids(&self) -> Result<Vec<Hash>, StoreError> {
+        in_flight_ids(&self.conn, "stage_jobs", "stage_job_id")
+    }
+
+    /// The in-flight recipe jobs another process may recover at `now`, in ID order: those
+    /// without an owner or lease (pre-H0.3 rows) and those whose lease expired. A lease that
+    /// cannot be read counts as expired; a row whose ID cannot be read is skipped.
+    pub fn abandoned_recipe_jobs(&self, now: Timestamp) -> Result<Vec<Hash>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT recipe_job_id, owner_id, lease_expires_at FROM stage_recipe_jobs \
+             WHERE status IN {IN_FLIGHT} ORDER BY recipe_job_id"
+        ))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(_, owner, lease)| {
+                let live = owner.is_some()
+                    && lease
+                        .as_deref()
+                        .and_then(|l| l.parse::<Timestamp>().ok())
+                        .is_some_and(|expires| expires >= now);
+                !live
+            })
+            .filter_map(|(id, _, _)| id.parse().ok())
+            .collect())
+    }
+
+    /// Fails one in-flight recipe job with `code` and ends its current attempt, without decoding
+    /// its JSON (recovery of an abandoned or unreadable row). Returns whether it was in flight.
+    pub fn interrupt_recipe_job(
+        &mut self,
+        id: &Hash,
+        code: &str,
+        message: &str,
+        at: Timestamp,
+    ) -> Result<bool, StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let interrupted = interrupt_on(&tx, id.as_str(), code, message, at)?;
+        tx.commit()?;
+        Ok(interrupted)
+    }
+
+    /// Every attempt record of a recipe job, in attempt order.
+    pub fn recipe_job_attempts(&self, id: &Hash) -> Result<Vec<StageAttemptRecord>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {ATTEMPT_COLUMNS} FROM stage_recipe_job_attempts WHERE recipe_job_id = ?1 \
+             ORDER BY attempt"
+        ))?;
+        let raws = stmt
+            .query_map([id.as_str()], raw_attempt)?
+            .collect::<Result<Vec<_>, _>>()?;
+        raws.into_iter().map(RawAttempt::decode).collect()
     }
 
     /// Moves a recipe job from one of `from` to `to` with its result revision and failure.
@@ -335,9 +535,13 @@ impl SqliteStageStore {
         if let Some(revision) = result_revision_id {
             require_revision(&tx, revision)?;
         }
+        // An in-flight job that settles ends its current attempt and gives up its lease.
+        let settles = current.status.is_in_flight() && !to.is_in_flight();
         tx.execute(
             "UPDATE stage_recipe_jobs SET status = ?1, result_revision_id = ?2, \
-             failure_code = ?3, failure_message = ?4, updated_at = ?5 WHERE recipe_job_id = ?6",
+             failure_code = ?3, failure_message = ?4, updated_at = ?5, \
+             lease_expires_at = CASE WHEN ?7 THEN NULL ELSE lease_expires_at END \
+             WHERE recipe_job_id = ?6",
             params![
                 to.as_str(),
                 result_revision_id.map(RevisionId::as_str),
@@ -345,20 +549,43 @@ impl SqliteStageStore {
                 failure.map(|f| f.1),
                 at.to_string(),
                 id.as_str(),
+                settles,
             ],
         )?;
+        if settles {
+            let error = failure.map(|(c, m)| attempt_error(c, m)).transpose()?;
+            end_attempt(
+                &tx,
+                id.as_str(),
+                current.attempt,
+                current.owner_id.as_deref(),
+                to,
+                error.as_deref(),
+                at,
+            )?;
+        }
         let updated = recipe_on(&tx, id)?.ok_or_else(|| not_found("stage_recipe_job", id))?;
         tx.commit()?;
         Ok(updated)
     }
 
-    /// Re-queues a Failed recipe job for a new attempt under its unchanged ID (H0.3, §33.3):
-    /// `failed -> queued` with its failure and result cleared and the steps of the failed
-    /// attempt removed, in one transaction. Another current state is
-    /// [`StoreError::WorkflowStateConflict`] and nothing changes.
+    /// [`Self::retry_recipe_job_leased`] without an owner.
     pub fn retry_recipe_job(
         &mut self,
         id: &Hash,
+        at: Timestamp,
+    ) -> Result<StageRecipeJobRecord, StoreError> {
+        self.retry_recipe_job_leased(id, None, at)
+    }
+
+    /// Re-queues a Failed recipe job as attempt N+1 under its unchanged ID (H0.3, §33.3):
+    /// `failed -> queued` with its failure and result cleared, leased to `lease`'s owner, and the
+    /// steps of the failed attempt removed, in one transaction; the record of attempt N is kept.
+    /// Another current state is [`StoreError::WorkflowStateConflict`] and nothing changes.
+    pub fn retry_recipe_job_leased(
+        &mut self,
+        id: &Hash,
+        lease: Option<&StageLease>,
         at: Timestamp,
     ) -> Result<StageRecipeJobRecord, StoreError> {
         let tx = self
@@ -379,9 +606,15 @@ impl SqliteStageStore {
         )?;
         tx.execute(
             "UPDATE stage_recipe_jobs SET status = 'queued', result_revision_id = NULL, \
-             failure_code = NULL, failure_message = NULL, updated_at = ?1 \
+             failure_code = NULL, failure_message = NULL, updated_at = ?1, \
+             attempt = attempt + 1, owner_id = ?3, lease_expires_at = ?4 \
              WHERE recipe_job_id = ?2",
-            params![at.to_string(), id.as_str()],
+            params![
+                at.to_string(),
+                id.as_str(),
+                lease.map(|l| l.owner_id.as_str()),
+                lease.map(|l| l.expires_at.to_string())
+            ],
         )?;
         let updated = recipe_on(&tx, id)?.ok_or_else(|| not_found("stage_recipe_job", id))?;
         tx.commit()?;
@@ -408,19 +641,16 @@ impl SqliteStageStore {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let ids: Vec<String> = {
-            let mut stmt = tx.prepare(
+            let mut stmt = tx.prepare(&format!(
                 "SELECT recipe_job_id FROM stage_recipe_jobs \
-                 WHERE status IN ('queued', 'acquiring', 'evaluating') ORDER BY recipe_job_id",
-            )?;
+                 WHERE status IN {IN_FLIGHT} ORDER BY recipe_job_id"
+            ))?;
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             rows.collect::<Result<_, _>>()?
         };
-        tx.execute(
-            "UPDATE stage_recipe_jobs SET status = 'failed', result_revision_id = NULL, \
-             failure_code = ?1, failure_message = ?2, updated_at = ?3 \
-             WHERE status IN ('queued', 'acquiring', 'evaluating')",
-            params![code, message, at.to_string()],
-        )?;
+        for id in &ids {
+            interrupt_on(&tx, id, code, message, at)?;
+        }
         tx.commit()?;
         ids.iter()
             .map(|id| parse_field("stage_recipe_job", id, "recipe_job_id", id))
@@ -735,7 +965,128 @@ impl SqliteStageStore {
     }
 }
 
+/// The IDs in `column` of the in-flight rows of `table`, in order; unreadable IDs are skipped.
+fn in_flight_ids(conn: &Connection, table: &str, column: &str) -> Result<Vec<Hash>, StoreError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {column} FROM {table} WHERE status IN {IN_FLIGHT} ORDER BY {column}"
+    ))?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ids.into_iter().filter_map(|id| id.parse().ok()).collect())
+}
+
+/// Fails the in-flight recipe job `id` with `code` and ends its current attempt; false when it
+/// is not in flight. Only plain columns are read, so an unreadable JSON column never blocks it.
+fn interrupt_on(
+    tx: &Connection,
+    id: &str,
+    code: &str,
+    message: &str,
+    at: Timestamp,
+) -> Result<bool, StoreError> {
+    let current: Option<(String, i64, Option<String>)> = tx
+        .query_row(
+            "SELECT status, attempt, owner_id FROM stage_recipe_jobs WHERE recipe_job_id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((status, attempt, owner)) = current else {
+        return Ok(false);
+    };
+    if !status
+        .parse::<StageStatus>()
+        .is_ok_and(StageStatus::is_in_flight)
+    {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE stage_recipe_jobs SET status = 'failed', result_revision_id = NULL, \
+         failure_code = ?1, failure_message = ?2, updated_at = ?3, lease_expires_at = NULL \
+         WHERE recipe_job_id = ?4",
+        params![code, message, at.to_string(), id],
+    )?;
+    let attempt =
+        u32::try_from(attempt).map_err(|_| corrupt("stage_recipe_job", id, "invalid attempt"))?;
+    end_attempt(
+        tx,
+        id,
+        attempt,
+        owner.as_deref(),
+        StageStatus::Failed,
+        Some(&attempt_error(code, message)?),
+        at,
+    )?;
+    Ok(true)
+}
+
+/// Ends the record of `attempt` with `outcome` at `at`; an attempt that never started (a queued
+/// job settled directly) is recorded as started at `at`. An already ended record is kept.
+fn end_attempt(
+    tx: &Connection,
+    id: &str,
+    attempt: u32,
+    owner: Option<&str>,
+    outcome: StageStatus,
+    error: Option<&str>,
+    at: Timestamp,
+) -> Result<(), StoreError> {
+    tx.execute(
+        "INSERT OR IGNORE INTO stage_recipe_job_attempts (recipe_job_id, attempt, owner_id, \
+         started_at, ended_at, outcome, error) VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL)",
+        params![id, attempt, owner, at.to_string()],
+    )?;
+    tx.execute(
+        "UPDATE stage_recipe_job_attempts SET ended_at = ?1, outcome = ?2, error = ?3 \
+         WHERE recipe_job_id = ?4 AND attempt = ?5 AND ended_at IS NULL",
+        params![at.to_string(), outcome.as_str(), error, id, attempt],
+    )?;
+    Ok(())
+}
+
 // ============================================================================ decoding
+
+struct RawAttempt {
+    recipe_job_id: String,
+    attempt: i64,
+    owner_id: Option<String>,
+    started_at: String,
+    ended_at: Option<String>,
+    outcome: Option<String>,
+    error: Option<String>,
+}
+
+fn raw_attempt(row: &Row<'_>) -> rusqlite::Result<RawAttempt> {
+    Ok(RawAttempt {
+        recipe_job_id: row.get(0)?,
+        attempt: row.get(1)?,
+        owner_id: row.get(2)?,
+        started_at: row.get(3)?,
+        ended_at: row.get(4)?,
+        outcome: row.get(5)?,
+        error: row.get(6)?,
+    })
+}
+
+impl RawAttempt {
+    fn decode(self) -> Result<StageAttemptRecord, StoreError> {
+        const K: &str = "stage_recipe_job_attempt";
+        let id = self.recipe_job_id.clone();
+        if let Some(error) = &self.error {
+            require_canonical(K, &id, "error", error)?;
+        }
+        Ok(StageAttemptRecord {
+            recipe_job_id: parse_field(K, &id, "recipe_job_id", &self.recipe_job_id)?,
+            attempt: u32::try_from(self.attempt).map_err(|_| corrupt(K, &id, "invalid attempt"))?,
+            owner_id: self.owner_id,
+            started_at: parse_field(K, &id, "started_at", &self.started_at)?,
+            ended_at: parse_optional(K, &id, "ended_at", self.ended_at)?,
+            outcome: parse_optional(K, &id, "outcome", self.outcome)?,
+            error: self.error,
+        })
+    }
+}
 
 fn not_found(kind: &'static str, id: &Hash) -> StoreError {
     StoreError::WorkflowRecordNotFound {
@@ -772,6 +1123,9 @@ struct RawRecipe {
     failure_message: Option<String>,
     created_at: String,
     updated_at: String,
+    attempt: i64,
+    owner_id: Option<String>,
+    lease_expires_at: Option<String>,
 }
 
 fn raw_recipe(row: &Row<'_>) -> rusqlite::Result<RawRecipe> {
@@ -788,6 +1142,9 @@ fn raw_recipe(row: &Row<'_>) -> rusqlite::Result<RawRecipe> {
         failure_message: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
+        attempt: row.get(12)?,
+        owner_id: row.get(13)?,
+        lease_expires_at: row.get(14)?,
     })
 }
 
@@ -815,6 +1172,9 @@ impl RawRecipe {
             failure_message: self.failure_message,
             created_at: parse_field(K, &id, "created_at", &self.created_at)?,
             updated_at: parse_field(K, &id, "updated_at", &self.updated_at)?,
+            attempt: u32::try_from(self.attempt).map_err(|_| corrupt(K, &id, "invalid attempt"))?,
+            owner_id: self.owner_id,
+            lease_expires_at: parse_optional(K, &id, "lease_expires_at", self.lease_expires_at)?,
         })
     }
 }
