@@ -9,6 +9,8 @@ mod proposal_contract {
     use serde_json::{json, Value};
 
     const GOLDEN_ID: &str = "prop:512079ebd217cddf";
+    /// The ID of the bare 0.7-confidence proposal of `confidence_wire_form_reproduces_the_identity`.
+    const CONFIDENCE_GOLDEN_ID: &str = "prop:09d04824d78c30f4";
     const GOLDEN_JSON: &str = r#"{"acceptance_policy":"HUMAN_CONFIRM","confidence":0.75,"derivation_refs":["drv:48d777dc5cc38d3c"],"evidence_refs":["evd:0123456789abcdef","evd:fedcba9876543210"],"id":"prop:512079ebd217cddf","materiality":"semantic","patch_set":{"base_semantic_hash":"psg:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","patch":{"from":"Proposed","op":"SetStatus","target":{"expected_hash":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","id":"req:HR-001"},"to":"Accepted"}},"stage":"S1"}"#;
 
     fn id(s: &str) -> Id {
@@ -239,7 +241,7 @@ mod proposal_contract {
             let back: Proposal = serde_json::from_slice(&to_canonical_json(&p).unwrap()).unwrap();
             assert_eq!(back, p);
         }
-        for bad in [-0.01f32, 1.01, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for bad in [-0.01f64, 1.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let err = Proposal::new(
                 StageId::S1,
                 patch_set('a'),
@@ -264,6 +266,39 @@ mod proposal_contract {
         let mut w = wire();
         w["confidence"] = json!(-1);
         assert!(serde_json::from_value::<Proposal>(w).is_err());
+    }
+
+    #[test]
+    fn confidence_wire_form_reproduces_the_identity() {
+        // Fable #88: a client that parses the wire JSON (numbers as f64) and hashes the RFC 8785
+        // identity projection reproduces the ID; the wire number is the hashed number.
+        let p = Proposal::new(
+            StageId::S1,
+            patch_set('a'),
+            vec![],
+            vec![],
+            ProposalMateriality::Semantic,
+            AcceptancePolicy::HumanConfirm,
+            Some(0.7),
+        )
+        .unwrap();
+        let wire: Value = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(wire["confidence"], json!(0.7));
+        let mut projection = wire;
+        projection.as_object_mut().unwrap().remove("id");
+        let digest = Hash::content_sha256(&to_canonical_json(&projection).unwrap());
+        assert_eq!(
+            p.id.as_str(),
+            format!("prop:{}", &digest.as_str()["sha256:".len()..][..16])
+        );
+        assert_eq!(
+            to_canonical_json(&p.identity_projection()).unwrap(),
+            to_canonical_json(&projection).unwrap()
+        );
+        // Independently computed (Python: sha256 of the sorted-key compact projection JSON).
+        assert_eq!(p.id.as_str(), CONFIDENCE_GOLDEN_ID);
+        let canonical = String::from_utf8(to_canonical_json(&p).unwrap()).unwrap();
+        assert!(canonical.contains(r#""confidence":0.7,"#), "{canonical}");
     }
 
     #[test]

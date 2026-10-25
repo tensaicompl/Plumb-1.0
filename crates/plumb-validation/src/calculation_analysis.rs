@@ -10,7 +10,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use plumb_core::Id;
-use plumb_expr::{parse, typecheck, unparse, Ast, Identifier, RoundingSpec, Symbol, Ty, TypeEnv};
+use plumb_expr::{
+    parse, typecheck, unparse, Ast, DeclaredResult, Identifier, RoundingSpec, Symbol, Ty, TypeEnv,
+};
 use plumb_psg::{ElementStatus, Graph, Node, NodePayload, NodeType};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -248,6 +250,8 @@ pub struct PreparedCalculation {
     pub type_env: TypeEnv,
     pub calendar_ref: Option<Id>,
     pub expected_ty: Ty,
+    /// The declared `Decimal(n)` scale, for scalar and unit-bearing results alike (H0.10).
+    pub declared_scale: Option<u8>,
     pub rounding: Option<RoundingSpec>,
 }
 
@@ -557,11 +561,15 @@ pub fn qualify_calculation(
     qualification.issues = issues;
     if qualification.issues.is_empty() {
         if let Some(expected_ty) = expected {
+            let declared_scale = DeclaredResult::from_value_type(draft.result_type, None)
+                .ok()
+                .and_then(|declared| declared.scale);
             qualification.prepared = Some(PreparedCalculation {
                 ast,
                 type_env: scope.env,
                 calendar_ref: draft.calendar_ref.cloned(),
                 expected_ty,
+                declared_scale,
                 rounding,
             });
         }

@@ -125,6 +125,42 @@ mod patch_contract {
         )
     }
 
+    /// The nodes the `view` fixture references by payload (existence-only references).
+    fn view_context() -> Vec<Node> {
+        vec![
+            node(
+                "soi:hr:leave",
+                "Accepted",
+                "SystemOfInterest",
+                json!({"name": "Leave"}),
+            ),
+            node(
+                "ad:hr:leave",
+                "Accepted",
+                "ArchitectureDescription",
+                json!({"system_of_interest_ref": "soi:hr:leave"}),
+            ),
+            node(
+                "vp:hr:functional",
+                "Accepted",
+                "Viewpoint",
+                json!({
+                    "name": "Functional", "concern_refs": [], "stakeholder_refs": [],
+                    "model_kind_refs": []
+                }),
+            ),
+        ]
+    }
+
+    fn actor(node_id: &str, status: &str) -> Node {
+        node(
+            node_id,
+            status,
+            "Actor",
+            json!({"name": "Owner", "actor_kind": "human"}),
+        )
+    }
+
     fn derivation(node_id: &str, status: &str) -> Node {
         node(
             node_id,
@@ -948,7 +984,9 @@ mod patch_contract {
 
     #[test]
     fn view_layout_only_change_keeps_revision() {
-        let base = graph(vec![view("view:leave", Some(&digest("4")))], vec![]);
+        let mut nodes = view_context();
+        nodes.push(view("view:leave", Some(&digest("4"))));
+        let base = graph(nodes, vec![]);
         let v = base.node(&id("view:leave")).unwrap();
         let mut payload = v.payload.clone();
         if let NodePayload::View(data) = &mut payload {
@@ -1138,6 +1176,12 @@ mod patch_contract {
         let base = graph(
             vec![
                 derivation("drv:1", "Proposed"),
+                node(
+                    "actor:hr-lead",
+                    "Accepted",
+                    "Agent",
+                    json!({"agent_kind": "human"}),
+                ),
                 node(
                     "decision:1",
                     "Proposed",
@@ -1406,14 +1450,14 @@ mod patch_contract {
     fn reference_guard_rejects_typed_and_open_json_references() {
         let mut typed = requirement("req:owner", "Proposed", "The system shall notify.");
         if let NodePayload::Requirement(r) = &mut typed.payload {
-            r.owner_refs = Some(vec![id("ent:leave")]);
+            r.owner_refs = Some(vec![id("actor:owner")]);
         }
         let mut open = requirement("req:open", "Proposed", "The system shall archive.");
         open.extensions
             .insert(ext("acme:note"), json!({"see": ["ent:leave", "rel:x"]}));
         let base = graph(
             vec![
-                entity("ent:leave", "Proposed"),
+                actor("actor:owner", "Proposed"),
                 entity("ent:other", "Proposed"),
                 typed.clone(),
             ],
@@ -1423,11 +1467,11 @@ mod patch_contract {
             apply_err(
                 &base,
                 SemanticPatch::RemoveNode {
-                    target: pre_n(&base, "ent:leave")
+                    target: pre_n(&base, "actor:owner")
                 }
             ),
             PatchError::ReferencedElement {
-                removed: id("ent:leave"),
+                removed: id("actor:owner"),
                 referenced_by: id("req:owner")
             }
         );
@@ -1521,9 +1565,12 @@ mod patch_contract {
     fn reference_replaced_by_prior_child_allows_deletion() {
         let mut typed = requirement("req:owner", "Proposed", "The system shall notify.");
         if let NodePayload::Requirement(r) = &mut typed.payload {
-            r.owner_refs = Some(vec![id("ent:leave")]);
+            r.owner_refs = Some(vec![id("actor:owner")]);
         }
-        let base = graph(vec![entity("ent:leave", "Proposed"), typed.clone()], vec![]);
+        let base = graph(
+            vec![actor("actor:owner", "Proposed"), typed.clone()],
+            vec![],
+        );
         let result = apply_ok(
             &base,
             compound(vec![
@@ -1532,11 +1579,11 @@ mod patch_contract {
                     payload: requirement_payload("The system shall notify."),
                 },
                 SemanticPatch::RemoveNode {
-                    target: pre_n(&base, "ent:leave"),
+                    target: pre_n(&base, "actor:owner"),
                 },
             ]),
         );
-        assert_eq!(result.delta.removed_nodes, ids(&["ent:leave"]));
+        assert_eq!(result.delta.removed_nodes, ids(&["actor:owner"]));
         assert_eq!(result.delta.modified_nodes, ids(&["req:owner"]));
     }
 
@@ -1741,10 +1788,15 @@ mod patch_contract {
     fn merge_rejects_incident_edges_and_references_until_rewired() {
         let keep = requirement("req:keep", "Accepted", "Employees shall submit leave.");
         let dup = requirement("req:dup", "Accepted", "Employees submit leave.");
-        let mut referrer = requirement("req:ref", "Proposed", "Refers to the duplicate.");
-        if let NodePayload::Requirement(r) = &mut referrer.payload {
-            r.stakeholder_refs = Some(vec![id("req:dup")]);
-        }
+        let referrer = node(
+            "req:ref",
+            "Proposed",
+            "Scenario",
+            json!({
+                "name": "Refers to the duplicate", "scenario_kind": "acceptance", "given": [],
+                "when": {}, "then": [], "requirement_refs": ["req:dup"]
+            }),
+        );
         let base = graph(
             vec![keep.clone(), dup.clone(), constraint("con:eu", "Accepted")],
             vec![edge(
@@ -1939,6 +1991,58 @@ mod patch_contract {
             apply_err(&base, p),
             PatchError::ElementHashMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn supersede_rejects_non_baseline_predecessor() {
+        let base_with = |status: &str| {
+            graph(
+                vec![
+                    requirement("req:old", status, "Employees shall fax leave requests."),
+                    requirement(
+                        "req:new",
+                        "Accepted",
+                        "Employees shall submit leave online.",
+                    ),
+                ],
+                vec![],
+            )
+        };
+        let sup = || edge("rel:sup", "Accepted", "supersedes", "req:new", "req:old");
+        // Only a baseline predecessor can be superseded.
+        for status in ["Accepted", "Suspect", "Deprecated"] {
+            let base = base_with(status);
+            let result = apply_ok(&base, supersede(&base, sup()));
+            let old = result.graph.node(&id("req:old")).unwrap();
+            assert_eq!(old.status, ElementStatus::Superseded, "{status}");
+        }
+        // Superseding a Proposed or Rejected node would promote it into the baseline.
+        for (status, expected) in [
+            ("Proposed", ElementStatus::Proposed),
+            ("Rejected", ElementStatus::Rejected),
+        ] {
+            let base = base_with(status);
+            assert_eq!(
+                apply_err(&base, supersede(&base, sup())),
+                PatchError::SupersedePredecessorNotBaseline {
+                    id: id("req:old"),
+                    status: expected,
+                },
+                "{status}"
+            );
+        }
+        // Re-superseding an already Superseded target is a typed conflict.
+        let base = base_with("Accepted");
+        let once = apply_ok(&base, supersede(&base, sup())).graph;
+        let again = SemanticPatch::Supersede {
+            old: pre_n(&once, "req:old"),
+            new: pre_n(&once, "req:new"),
+            edge: edge("rel:sup2", "Accepted", "supersedes", "req:new", "req:old"),
+        };
+        assert_eq!(
+            apply_err(&once, again),
+            PatchError::SupersedeAlreadyApplied(id("req:old"))
+        );
     }
 
     #[test]
@@ -2651,7 +2755,13 @@ mod patch_contract {
             "ScenarioRun",
             json!({"scenario_ref": "scn:a", "specification_hash": TRACE_A, "result": "pass", "trace": []}),
         );
-        let base = graph(vec![run], vec![]);
+        let scenario = node(
+            "scn:a",
+            "Accepted",
+            "Scenario",
+            json!({"name": "S", "scenario_kind": "acceptance", "given": [], "when": {}, "then": []}),
+        );
+        let base = graph(vec![run, scenario], vec![]);
         let result = apply_ok(
             &base,
             set_extension(

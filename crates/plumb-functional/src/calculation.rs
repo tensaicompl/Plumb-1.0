@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use jsonschema::{Draft, JSONSchema};
 use plumb_core::{to_canonical_json, CoreError, Hash, Id, StageId, Timestamp};
 use plumb_expr::{
-    eval, round_decimal, CalendarProvider, EvalContext, EvalError, PredicateProvider, RefValue,
-    Symbol, Ty, Value, ValueEnv,
+    check_result, eval, CalendarProvider, DeclaredResult, EvalContext, EvalError,
+    PredicateProvider, RefValue, ResultCheckError, Symbol, Value, ValueEnv,
 };
 use plumb_inference::{
     InferenceArtifact, InferenceError, InferenceRequest, InferenceRequestMaterial, ProviderError,
@@ -255,40 +255,28 @@ pub fn evaluate_calculation(
             predicates,
         },
     )?;
-    let value = match (value, &prepared.expected_ty) {
-        (Value::Int(i), Ty::Decimal(_)) => Value::Decimal(Decimal::from(i)),
-        (v, _) => v,
+    // H0.10: round per the declared rounding, then the declared Decimal(n) scale check (for
+    // scalar and Quantity results alike), then the unit check.
+    let declared = DeclaredResult {
+        ty: prepared.expected_ty.clone(),
+        scale: prepared.declared_scale,
     };
-    let rounded = match (&prepared.rounding, value) {
-        (None, v) => v,
-        (Some(spec), Value::Decimal(d)) => {
-            Value::Decimal(
-                round_decimal(d, spec).map_err(|e| CalculationEvalError::Rounding {
-                    reason: e.to_string(),
-                })?,
-            )
-        }
-        (Some(spec), Value::Quantity { value, unit }) => Value::Quantity {
-            value: round_decimal(value, spec).map_err(|e| CalculationEvalError::Rounding {
-                reason: e.to_string(),
-            })?,
-            unit,
+    check_result(value, &declared, prepared.rounding.as_ref()).map_err(|e| match e {
+        ResultCheckError::Rounding(e) => CalculationEvalError::Rounding {
+            reason: e.to_string(),
         },
-        (Some(_), _) => {
-            return Err(CalculationEvalError::Rounding {
-                reason: "rounding applies only to Decimal and Quantity results".into(),
+        ResultCheckError::RoundingNotApplicable => CalculationEvalError::Rounding {
+            reason: e.to_string(),
+        },
+        ResultCheckError::ScaleExceeded { scale, declared } => {
+            CalculationEvalError::ResultScaleExceeded { scale, declared }
+        }
+        ResultCheckError::UnitMismatch { .. } | ResultCheckError::TypeMismatch { .. } => {
+            CalculationEvalError::Eval(EvalError::ValueTypeMismatch {
+                context: e.to_string(),
             })
         }
-    };
-    if let (Value::Decimal(d), Ty::Decimal(declared)) = (&rounded, &prepared.expected_ty) {
-        if d.scale() > u32::from(*declared) {
-            return Err(CalculationEvalError::ResultScaleExceeded {
-                scale: d.scale(),
-                declared: *declared,
-            });
-        }
-    }
-    Ok(rounded)
+    })
 }
 
 // ============================================================================ request

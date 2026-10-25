@@ -2692,12 +2692,20 @@ mod execute_contract {
     #[test]
     fn assumption_default_values_are_never_used() {
         let mut w = submit_world(&["amount > 0"], &[], None);
+        // Assumption.owner_ref names an Agent or Stakeholder (graph-bound, architecture §33.11).
+        w.add(node(
+            "agent:owner",
+            Accepted,
+            NodePayload::Agent(plumb_psg::Agent {
+                agent_kind: plumb_psg::AgentKind::Human,
+            }),
+        ));
         w.add(node(
             "assumption:amount",
             Accepted,
             NodePayload::Assumption(Assumption {
                 statement: "Amounts default to 123".into(),
-                owner_ref: id(AMOUNT),
+                owner_ref: id("agent:owner"),
                 status: "Accepted".into(),
                 finding_ref: None,
                 default_value: Some(json!(123)),

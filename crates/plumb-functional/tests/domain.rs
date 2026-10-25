@@ -1935,7 +1935,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
     #[test]
     fn domain_unrelated_cardinality_decision_is_ignored() {
         // An Accepted, malformed and ungoverned decision for a candidate X that is not in the
-        // current inference: no rationale, non-canonical values, an unknown decider, and its
+        // current inference: no rationale, non-canonical values, a non-human decider, and its
         // only resolves edge targets a Finding of another rule.
         let stale = node(
             "decision:stale",
@@ -1953,9 +1953,18 @@ exactly one Employee, and an Employee may hold zero or more of them.";
         );
         let mut unrelated = the_finding().payload;
         unrelated.code = "PLUMB.F1.REQ.TERMS_RESOLVED".into();
+        // The decider exists (decided_by is graph-bound) but is not a human Agent.
+        let nobody = node(
+            "agent:nobody",
+            Accepted,
+            NodePayload::Agent(plumb_psg::Agent {
+                agent_kind: plumb_psg::AgentKind::SoftwareService,
+            }),
+        );
         let g = extend(
             &with_entities(),
             vec![
+                nobody,
                 stale,
                 node(
                     "fnd:00000000000000cc",
@@ -2405,8 +2414,15 @@ exactly one Employee, and an Employee may hold zero or more of them.";
             "cardinality_to_grounding": r1("zero or more", 0),
             "cardinality_decision_ref": null,
         });
+        // The Accepted duplicate's endpoints are baseline (DomainRelationship endpoints are
+        // graph-bound references, architecture §33.11).
+        let endpoints = map_nodes(&with_entities(), |n| {
+            if [EMPLOYEE_ENTITY, LEAVE_REQUEST_ENTITY].contains(&n.id.as_str()) {
+                n.status = Accepted;
+            }
+        });
         let g = extend(
-            &with_entities(),
+            &endpoints,
             vec![
                 domain_node("domainrel:dup-a", Proposed, payload.clone(), origin.clone()),
                 domain_node("domainrel:dup-b", Accepted, payload, origin),

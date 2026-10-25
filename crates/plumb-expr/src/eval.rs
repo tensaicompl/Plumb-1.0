@@ -20,8 +20,8 @@ use thiserror::Error;
 use crate::ast::{Ast, BinaryOp, Identifier, Literal, Symbol, UnaryOp};
 use crate::calendar::{CalendarError, CalendarProvider};
 use crate::typecheck::{
-    check, check_pair, is_integral, resolve, unit, Resolved, TypeCheckError, TypeEnv, DAY_UNIT,
-    WORKING_DAY_UNIT,
+    check, check_pair, is_integral, map_pilot_value_type, resolve, unit, Resolved,
+    TypeBindingError, TypeCheckError, TypeEnv, DAY_UNIT, WORKING_DAY_UNIT,
 };
 use crate::types::{Ty, Unit, MAX_DECIMAL_SCALE};
 
@@ -90,16 +90,41 @@ impl ValueEnv {
     /// The value at a dotted path, walking Ref fields; `None` when any step is absent or a
     /// non-Ref is navigated.
     pub fn lookup(&self, identifier: &Identifier) -> Option<&Value> {
+        match self.navigate(identifier) {
+            Navigation::Found(value) => Some(value),
+            Navigation::Absent | Navigation::ThroughNonRef => None,
+        }
+    }
+
+    /// The value at a dotted path, telling an absent step from a non-Ref value that a further
+    /// segment navigates through (Fable #150).
+    fn navigate(&self, identifier: &Identifier) -> Navigation<'_> {
         let segments = identifier.segments();
-        let mut current = self.roots.get(&segments[0])?;
+        let Some(mut current) = self.roots.get(&segments[0]) else {
+            return Navigation::Absent;
+        };
         for field in &segments[1..] {
             match current {
-                Value::Ref(r) => current = r.fields.get(field)?,
-                _ => return None,
+                Value::Ref(r) => match r.fields.get(field) {
+                    Some(next) => current = next,
+                    None => return Navigation::Absent,
+                },
+                _ => return Navigation::ThroughNonRef,
             }
         }
-        Some(current)
+        Navigation::Found(current)
     }
+}
+
+/// The outcome of walking a dotted path through a ValueEnv.
+enum Navigation<'a> {
+    Found(&'a Value),
+    Absent,
+    ThroughNonRef,
+}
+
+fn non_ref_step(identifier: &Identifier) -> EvalError {
+    value_mismatch(&format!("{identifier}: navigates through a non-Ref value"))
 }
 
 /// Why the injected domain predicate failed.
@@ -147,12 +172,27 @@ pub enum EvalError {
     NonIntegralDateDuration,
     #[error("date out of range")]
     DateOutOfRange,
+    /// The date is outside the business calendar's declared coverage (H0.10): the calculation
+    /// is undecidable, never evaluated with an assumed working day.
+    #[error("calendar {calendar_ref} does not cover {date}")]
+    CalendarCoverageUnavailable { calendar_ref: Id, date: time::Date },
     #[error("calendar: {0}")]
-    Calendar(#[from] CalendarError),
+    Calendar(CalendarError),
     #[error("{0}")]
     Predicate(#[from] PredicateError),
     #[error("{function} of an empty list")]
     EmptyAggregate { function: String },
+}
+
+impl From<CalendarError> for EvalError {
+    fn from(e: CalendarError) -> EvalError {
+        match e {
+            CalendarError::CoverageUnavailable { calendar_ref, date } => {
+                EvalError::CalendarCoverageUnavailable { calendar_ref, date }
+            }
+            other => EvalError::Calendar(other),
+        }
+    }
 }
 
 fn value_mismatch(context: &str) -> EvalError {
@@ -360,7 +400,10 @@ fn date_shift(date: time::Date, days: &Decimal, subtract: bool) -> Result<time::
     } else {
         date.checked_add(shift)
     };
-    shifted.ok_or(EvalError::DateOutOfRange)
+    // `time` admits years down to -9999; PlumbExpr dates are years 0000..=9999 only.
+    shifted
+        .filter(|d| (0..=9999).contains(&d.year()))
+        .ok_or(EvalError::DateOutOfRange)
 }
 
 fn arithmetic(op: BinaryOp, a: Value, b: Value) -> Result<Value, EvalError> {
@@ -456,13 +499,15 @@ impl Evaluator<'_, '_> {
 
     /// The value at a bound path, checked against its static type.
     fn lookup(&self, identifier: &Identifier, ty: &Ty) -> Result<Value, EvalError> {
-        let value =
-            self.context
-                .values
-                .lookup(identifier)
-                .ok_or_else(|| EvalError::MissingValue {
+        let value = match self.context.values.navigate(identifier) {
+            Navigation::Found(value) => value,
+            Navigation::Absent => {
+                return Err(EvalError::MissingValue {
                     identifier: identifier.to_string(),
-                })?;
+                })
+            }
+            Navigation::ThroughNonRef => return Err(non_ref_step(identifier)),
+        };
         self.check_path(identifier)?;
         if conforms(self.types(), value, ty) {
             Ok(value.clone())
@@ -639,9 +684,10 @@ impl Evaluator<'_, '_> {
                 let Resolved::Bound(ty) = resolve(self.types(), identifier, None)? else {
                     return Err(value_mismatch("exists argument"));
                 };
-                match self.context.values.lookup(identifier) {
-                    None => Ok(Value::Bool(false)),
-                    Some(value) => {
+                match self.context.values.navigate(identifier) {
+                    Navigation::Absent => Ok(Value::Bool(false)),
+                    Navigation::ThroughNonRef => Err(non_ref_step(identifier)),
+                    Navigation::Found(value) => {
                         self.check_path(identifier)?;
                         if conforms(self.types(), value, &ty) {
                             Ok(Value::Bool(true))
@@ -809,6 +855,124 @@ impl fmt::Display for Value {
     }
 }
 
+// ============================================================================ declared results
+
+/// A declared calculation result (`Calculation.result_type` and `Calculation.unit`): its type
+/// and, for `Decimal(n)`, the scale `n`. The scale applies equally to a scalar Decimal result
+/// and to a unit-bearing Quantity result (H0.10, architecture §33.11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredResult {
+    pub ty: Ty,
+    pub scale: Option<u8>,
+}
+
+impl DeclaredResult {
+    /// The declared result of a canonical pilot value type and optional unit, mapped exactly as
+    /// [`map_pilot_value_type`] maps it.
+    pub fn from_value_type(
+        value_type: &str,
+        unit: Option<&str>,
+    ) -> Result<DeclaredResult, TypeBindingError> {
+        let ty = map_pilot_value_type(value_type, unit, None)?;
+        let scale = match map_pilot_value_type(value_type, None, None) {
+            Ok(Ty::Decimal(scale)) => Some(scale),
+            _ => None,
+        };
+        Ok(DeclaredResult { ty, scale })
+    }
+}
+
+/// Why an evaluated value does not satisfy its declared result.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ResultCheckError {
+    #[error("rounding: {0}")]
+    Rounding(RoundingError),
+    #[error("rounding applies only to Decimal and Quantity results")]
+    RoundingNotApplicable,
+    #[error("result scale {scale} exceeds the declared scale {declared}")]
+    ScaleExceeded { scale: u32, declared: u8 },
+    #[error("result unit {actual:?} does not match the declared unit {expected:?}")]
+    UnitMismatch {
+        expected: Option<Unit>,
+        actual: Option<Unit>,
+    },
+    #[error("result does not match the declared type {expected:?}")]
+    TypeMismatch { expected: Ty },
+}
+
+/// Checks an evaluated calculation value against its declared result in the frozen order
+/// (after parse, type check and evaluation): round per the declared rounding, then check the
+/// declared `Decimal(n)` scale, then the unit, then the remaining type. An Int value promotes
+/// to a declared Decimal first. The scale is the value's own (trailing zeros removed), so a
+/// division followed by the declared business rounding can satisfy its declared scale.
+pub fn check_result(
+    value: Value,
+    declared: &DeclaredResult,
+    rounding: Option<&RoundingSpec>,
+) -> Result<Value, ResultCheckError> {
+    let value = match (value, &declared.ty) {
+        (Value::Int(i), Ty::Decimal(_)) => Value::Decimal(Decimal::from(i)),
+        (v, _) => v,
+    };
+    let round = |d: Decimal, spec: &RoundingSpec| {
+        round_decimal(d, spec).map_err(ResultCheckError::Rounding)
+    };
+    let value = match (rounding, value) {
+        (None, v) => v,
+        (Some(spec), Value::Decimal(d)) => Value::Decimal(round(d, spec)?),
+        (Some(spec), Value::Quantity { value, unit }) => Value::Quantity {
+            value: round(value, spec)?,
+            unit,
+        },
+        (Some(_), _) => return Err(ResultCheckError::RoundingNotApplicable),
+    };
+    if let (Some(declared_scale), Value::Decimal(d) | Value::Quantity { value: d, .. }) =
+        (declared.scale, &value)
+    {
+        let scale = d.normalize().scale();
+        if scale > u32::from(declared_scale) {
+            return Err(ResultCheckError::ScaleExceeded {
+                scale,
+                declared: declared_scale,
+            });
+        }
+    }
+    let expected_unit = match &declared.ty {
+        Ty::Quantity(u) => Some(u.clone()),
+        _ => None,
+    };
+    let actual_unit = match &value {
+        Value::Quantity { unit, .. } => Some(unit.clone()),
+        _ => None,
+    };
+    let numeric = matches!(
+        value,
+        Value::Int(_) | Value::Decimal(_) | Value::Quantity { .. }
+    );
+    if numeric && expected_unit != actual_unit {
+        return Err(ResultCheckError::UnitMismatch {
+            expected: expected_unit,
+            actual: actual_unit,
+        });
+    }
+    let matches = matches!(
+        (&value, &declared.ty),
+        (Value::Int(_), Ty::Int)
+            | (Value::Decimal(_), Ty::Decimal(_))
+            | (Value::Quantity { .. }, Ty::Quantity(_))
+            | (Value::Bool(_), Ty::Bool)
+            | (Value::String(_), Ty::String)
+            | (Value::Date(_), Ty::Date)
+            | (Value::DateTime(_), Ty::DateTime)
+    );
+    if !matches {
+        return Err(ResultCheckError::TypeMismatch {
+            expected: declared.ty.clone(),
+        });
+    }
+    Ok(value)
+}
+
 // ============================================================================ rounding
 
 /// A deterministic rounding rule; its canonical string is the `Calculation.rounding` form.
@@ -846,7 +1010,7 @@ pub fn round_decimal(value: Decimal, spec: &RoundingSpec) -> Result<Decimal, Rou
             return Err(RoundingError::InvalidScale(u32::from(scale)));
         }
         let mut rounded = value.round_dp_with_strategy(u32::from(scale), strategy);
-        rounded.rescale(u32::from(scale));
+        rescaled_exactly(&mut rounded, u32::from(scale))?;
         Ok(rounded)
     };
     match spec {
@@ -865,9 +1029,20 @@ pub fn round_decimal(value: Decimal, spec: &RoundingSpec) -> Result<Decimal, Rou
             let mut rounded = multiples
                 .checked_mul(*step)
                 .ok_or(RoundingError::Overflow)?;
-            rounded.rescale(step.scale());
+            rescaled_exactly(&mut rounded, step.scale())?;
             Ok(rounded)
         }
+    }
+}
+
+/// `rescale` saturates when the value cannot carry `scale` fractional digits in 96 bits; that
+/// is an overflow, never a silently shorter scale (Fable #148).
+fn rescaled_exactly(value: &mut Decimal, scale: u32) -> Result<(), RoundingError> {
+    value.rescale(scale);
+    if value.scale() == scale {
+        Ok(())
+    } else {
+        Err(RoundingError::Overflow)
     }
 }
 

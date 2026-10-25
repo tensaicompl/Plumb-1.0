@@ -422,8 +422,19 @@ mod round_contract {
             .question(&qid(6), BLOCKER, Some(HR), "5")
             .edit_question(&qid(6), |q| q.round_ref = Some(id("rnd:00000000000000aa")))
             .question(&qid(7), BLOCKER, None, "5")
-            .question(&qid(8), BLOCKER, Some("stakeholder:old"), "5")
+            .question(&qid(8), BLOCKER, Some("stakeholder:old"), "5");
+        // A Question whose Finding does not exist is a graph-bound reference violation
+        // (architecture §33.11): such a graph cannot be built, so no round reads it.
+        let dangling = fx
+            .clone()
             .question(&qid(9), "fnd:00000000000000ff", Some(HR), "5");
+        assert!(Graph::new(
+            id("project:pilot"),
+            id("profile:plumb-software-2026.1"),
+            dangling.nodes,
+            dangling.edges,
+        )
+        .is_err());
         let result = compose(&fx, 15);
         let round = round_of(&result, HR);
         assert_eq!(strings(&round.question_refs), [qid(1)]);
@@ -459,15 +470,6 @@ mod round_contract {
                 question_ref: id(&qid(8)),
                 reason: StaleReason::StakeholderNotAccepted {
                     stakeholder_ref: id("stakeholder:old")
-                },
-            }]
-        );
-        assert_eq!(
-            disposition(&result, &qid(9)),
-            [&QuestionRoundDisposition::StaleQuestion {
-                question_ref: id(&qid(9)),
-                reason: StaleReason::FindingMissing {
-                    finding_ref: id("fnd:00000000000000ff")
                 },
             }]
         );
@@ -510,9 +512,34 @@ mod round_contract {
                 status: "Closed".into()
             }
         );
+        // The waiver decision and its governing Agent exist (graph-bound references).
+        let waiver = || {
+            base()
+                .with(node(
+                    "agent:waiver-owner",
+                    Accepted,
+                    NodePayload::Agent(plumb_psg::Agent {
+                        agent_kind: plumb_psg::AgentKind::Human,
+                    }),
+                ))
+                .with(node(
+                    "dec:waive",
+                    Accepted,
+                    NodePayload::ResolutionDecision(plumb_psg::ResolutionDecision {
+                        question_ref: None,
+                        proposal_ref: Some(id("prop:0000000000000001")),
+                        answer: serde_json::json!({"kind": "waiver"}),
+                        decided_by: id("agent:waiver-owner"),
+                        decided_at: "2026-01-01T00:00:00.000000000Z".parse().unwrap(),
+                        patch_ref: plumb_core::Hash::content_sha256(b"waiver"),
+                        rationale: Some("Waived.".into()),
+                        supersedes: None,
+                    }),
+                ))
+        };
         assert_eq!(
             stale(
-                base().edit_node(f, |n| if let NodePayload::Finding(p) = &mut n.payload {
+                waiver().edit_node(f, |n| if let NodePayload::Finding(p) = &mut n.payload {
                     p.waiver_ref = Some(id("dec:waive"))
                 })
             ),
@@ -524,10 +551,19 @@ mod round_contract {
                 affected_ref: id("entity:retired")
             }
         );
-        assert_eq!(
-            stale(Fx::new().with(stakeholder(f, Accepted))),
-            StaleReason::NotAFinding { finding_ref: id(f) }
-        );
+        // A finding_ref naming a non-Finding is a graph-bound reference violation
+        // (architecture §33.11) that graph validation rejects.
+        let not_a_finding =
+            Fx::new()
+                .with(stakeholder(f, Accepted))
+                .question(&qid(1), f, Some(HR), "5");
+        assert!(Graph::new(
+            id("project:pilot"),
+            id("profile:plumb-software-2026.1"),
+            not_a_finding.nodes,
+            not_a_finding.edges,
+        )
+        .is_err());
         // Stale Questions are never mutated.
         let result = compose(
             &base()

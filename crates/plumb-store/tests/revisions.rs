@@ -125,6 +125,25 @@ mod revisions {
                 ),
                 constraint("con:eu"),
                 question("q:carry-over"),
+                // The question's Finding and the decisions' governing Agent (graph-bound
+                // payload references, architecture §33.11).
+                node(
+                    "finding:carry-over",
+                    "Accepted",
+                    "Finding",
+                    json!({
+                        "code": "F3", "family": "F3", "severity": "info",
+                        "message": "Carry-over is unresolved.", "status": "open",
+                        "affected_refs": ["req:a"], "standard_rule_ref": null,
+                        "suggested_resolution": null, "waiver_ref": null
+                    }),
+                ),
+                node(
+                    "actor:hr-lead",
+                    "Accepted",
+                    "Agent",
+                    json!({"agent_kind": "human"}),
+                ),
                 decision("dec:1", "Accepted"),
                 decision("dec:2", "Accepted"),
                 decision("dec:proposed", "Proposed"),
@@ -1023,7 +1042,7 @@ mod revisions {
             })
             .collect();
         assert_eq!(nodes, expected);
-        assert_eq!(nodes.len(), 7);
+        assert_eq!(nodes.len(), 9);
         let edge_json: String = conn
             .query_row(
                 "SELECT edge_json FROM revision_edges WHERE revision_id = ?1 AND edge_id = 'rel:a-eu'",

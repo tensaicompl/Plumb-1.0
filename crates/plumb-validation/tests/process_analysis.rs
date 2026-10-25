@@ -8,9 +8,9 @@ mod process_analysis_contract {
 
     use plumb_core::{Id, Timestamp};
     use plumb_psg::{
-        Actor, ActorKind, AuditMeta, BusinessRole, Edge, ElementStatus, Event, Graph, Node,
-        NodePayload, Operation, OperationKind, Outcome, OutcomeKind, Process, ProcessNode,
-        ProcessNodeKind, RelationKind, RelationProperties,
+        Actor, ActorKind, AuditMeta, BusinessRole, Edge, ElementStatus, Event, Graph,
+        GraphViolation, Node, NodePayload, NodeType, Operation, OperationKind, Outcome,
+        OutcomeKind, Process, ProcessNode, ProcessNodeKind, RelationKind, RelationProperties,
     };
     use plumb_validation::process_analysis::*;
 
@@ -231,6 +231,18 @@ mod process_analysis_contract {
             .unwrap_or_else(|v| panic!("{v:?}"))
         }
 
+        /// The violations of a fixture graph validation rejects: a ProcessNode's
+        /// process/operation/message references are graph-bound (architecture §33.11).
+        fn rejected(&self) -> Vec<GraphViolation> {
+            Graph::new(
+                id("project:pilot"),
+                id("profile:plumb-software-2026.1"),
+                self.nodes.clone(),
+                self.edges.clone(),
+            )
+            .expect_err("graph validation must reject the fixture")
+        }
+
         fn analyze(&self) -> ProcessAnalysis {
             analyze_process(&self.graph(), &id(P), ProcessAnalysisMode::AcceptedOnly).unwrap()
         }
@@ -314,8 +326,30 @@ mod process_analysis_contract {
         );
         assert!(overlay.is_qualified(), "{overlay:?}");
         // A Proposed Process is not analyzable AcceptedOnly.
+        // Its nodes and edges are Proposed too: a baseline ProcessNode cannot belong to a
+        // Proposed Process (architecture §33.11).
         let mut proposed = linear();
+        let members: Vec<Id> = proposed
+            .nodes
+            .iter()
+            .filter(
+                |n| matches!(&n.payload, NodePayload::ProcessNode(pn) if pn.process_ref == id(P)),
+            )
+            .map(|n| n.id.clone())
+            .collect();
         proposed.nodes[0].status = Proposed;
+        for n in proposed
+            .nodes
+            .iter_mut()
+            .filter(|n| members.contains(&n.id))
+        {
+            n.status = Proposed;
+        }
+        for e in proposed.edges.iter_mut() {
+            if members.contains(&e.from) || members.contains(&e.to) {
+                e.status = Proposed;
+            }
+        }
         let g = proposed.graph();
         assert_eq!(
             analyze_process(&g, &id(P), ProcessAnalysisMode::AcceptedOnly),
@@ -347,12 +381,24 @@ mod process_analysis_contract {
         let missing_consumes = start(|p| p.message_ref = Some(id("event:e"))).analyze();
         assert!(has_shape(&missing_consumes, "pn:start", |v| *v
             == ShapeViolation::MissingConsumes));
-        let bad_event = start(|p| p.message_ref = Some(id("event:draft"))).analyze();
-        assert!(has_shape(&bad_event, "pn:start", |v| *v
-            == ShapeViolation::InvalidMessageRef));
-        let not_event = start(|p| p.message_ref = Some(id("operation:a"))).analyze();
-        assert!(has_shape(&not_event, "pn:start", |v| *v
-            == ShapeViolation::InvalidMessageRef));
+        // A Proposed or non-Event message is rejected by graph validation (architecture
+        // §33.11) before any process analysis runs.
+        let bad_event = start(|p| p.message_ref = Some(id("event:draft"))).rejected();
+        assert!(
+            bad_event.contains(&GraphViolation::PayloadRefForbiddenStatus {
+                owner: id("pn:start"),
+                field: "message_ref",
+                target: id("event:draft"),
+                status: Proposed,
+            })
+        );
+        let not_event = start(|p| p.message_ref = Some(id("operation:a"))).rejected();
+        assert!(not_event.contains(&GraphViolation::PayloadRefWrongType {
+            owner: id("pn:start"),
+            field: "message_ref",
+            target: id("operation:a"),
+            node_type: NodeType::Operation,
+        }));
         // Timer start keeps opaque text.
         assert!(start(|p| p.timer_expr = Some("every weekday 09:00".into()))
             .analyze()
@@ -507,16 +553,29 @@ mod process_analysis_contract {
             unresolved(&with(K::ServiceTask, |_| {}).analyze()),
             [TaskResolutionIssue::UnresolvedServiceTask]
         );
-        assert_eq!(
-            unresolved(
-                &with(K::ServiceTask, |p| p.operation_ref =
-                    Some(id("operation:draft")))
-                .analyze()
-            ),
-            [TaskResolutionIssue::UnresolvedServiceTask]
+        // A Proposed or non-Operation operation_ref is rejected by graph validation
+        // (architecture §33.11) before any process analysis runs.
+        assert!(with(K::ServiceTask, |p| p.operation_ref =
+            Some(id("operation:draft")))
+        .rejected()
+        .contains(&GraphViolation::PayloadRefForbiddenStatus {
+            owner: id("pn:t"),
+            field: "operation_ref",
+            target: id("operation:draft"),
+            status: Proposed,
+        }));
+        assert!(
+            with(K::ServiceTask, |p| p.operation_ref = Some(id("event:e")))
+                .rejected()
+                .contains(&GraphViolation::PayloadRefWrongType {
+                    owner: id("pn:t"),
+                    field: "operation_ref",
+                    target: id("event:e"),
+                    node_type: NodeType::Event,
+                })
         );
         assert_eq!(
-            unresolved(&with(K::ServiceTask, |p| p.operation_ref = Some(id("event:e"))).analyze()),
+            unresolved(&with(K::ServiceTask, |_| {}).analyze()),
             [TaskResolutionIssue::UnresolvedServiceTask]
         );
         // Operation-backed human task: a node-level performer is its swimlane (Hotfix 079
@@ -615,13 +674,15 @@ mod process_analysis_contract {
                 .analyze()
                 .is_qualified()
         );
-        assert!(has_shape(
-            &with(K::MessageEvent, |p| p.message_ref =
-                Some(id("outcome:done")))
-            .analyze(),
-            "pn:w",
-            |v| *v == ShapeViolation::InvalidMessageRef
-        ));
+        assert!(with(K::MessageEvent, |p| p.message_ref =
+            Some(id("outcome:done")))
+        .rejected()
+        .contains(&GraphViolation::PayloadRefWrongType {
+            owner: id("pn:w"),
+            field: "message_ref",
+            target: id("outcome:done"),
+            node_type: NodeType::Outcome,
+        }));
         assert!(has_shape(
             &with(K::MessageEvent, |_| {}).analyze(),
             "pn:w",
@@ -790,10 +851,6 @@ mod process_analysis_contract {
             (
                 "missing consumes",
                 start_with(|p| p.message_ref = Some(id("event:e"))),
-            ),
-            (
-                "draft message",
-                start_with(|p| p.message_ref = Some(id("event:draft"))),
             ),
             (
                 "blank timer",

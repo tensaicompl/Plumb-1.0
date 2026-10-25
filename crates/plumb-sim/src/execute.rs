@@ -87,7 +87,9 @@ fn failure_kind(e: &EvalError) -> Option<EvaluationFailureKind> {
         EvalError::NonIntegralDateDuration => EvaluationFailureKind::NonIntegralDateDuration,
         EvalError::DateOutOfRange => EvaluationFailureKind::DateOutOfRange,
         EvalError::EmptyAggregate { .. } => EvaluationFailureKind::EmptyAggregate,
-        EvalError::Calendar(_) => EvaluationFailureKind::CalendarUnavailable,
+        EvalError::Calendar(_) | EvalError::CalendarCoverageUnavailable { .. } => {
+            EvaluationFailureKind::CalendarUnavailable
+        }
         EvalError::Predicate(_) => EvaluationFailureKind::PredicateUnavailable,
         EvalError::Type(_)
         | EvalError::MissingValue { .. }

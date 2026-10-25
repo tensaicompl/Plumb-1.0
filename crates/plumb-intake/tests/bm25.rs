@@ -13,11 +13,12 @@ mod bm25 {
         RetrievalHit, BM25_B, BM25_K1, RETRIEVAL_INDEX_VERSION,
     };
     use plumb_psg::{
-        evidence_fragment_id, source_artifact_id, AuditMeta, Calculation, Concept, ConceptKind,
-        DecisionTable, ElementStatus, Entity, EvidenceFragment, EvidenceLocator, Finding,
-        FindingSeverity, Graph, Modality, Node, NodePayload, Operation, OperationKind, Question,
-        QuestionKind, Requirement, RequirementKind, RequirementLevel, Rule, RuleKind, Scenario,
-        ScenarioKind, SourceArtifact, Term,
+        evidence_fragment_id, payload_refs, source_artifact_id, Agent, AgentKind, AuditMeta,
+        Calculation, Calendar, Concept, ConceptKind, DecisionTable, ElementStatus, Entity,
+        EvidenceFragment, EvidenceLocator, Finding, FindingSeverity, Graph, Modality, Node,
+        NodePayload, Operation, OperationKind, Question, QuestionKind, Requirement,
+        RequirementKind, RequirementLevel, Rule, RuleKind, Scenario, ScenarioKind, SourceArtifact,
+        Stakeholder, Term,
     };
     use proptest::prelude::*;
     use serde_json::{json, Value};
@@ -64,7 +65,71 @@ mod bm25 {
         }
     }
 
-    fn graph_in(project: &str, profile: &str, nodes: Vec<Node>) -> Graph {
+    fn operation(node_id: &str, name: &str) -> Node {
+        node(
+            node_id,
+            Accepted,
+            NodePayload::Operation(Operation {
+                name: name.into(),
+                operation_kind: OperationKind::Command,
+                input_schema_ref: None,
+                output_schema_ref: None,
+                preconditions: None,
+                postconditions: None,
+                idempotency: None,
+                transaction_semantics: None,
+            }),
+        )
+    }
+
+    /// The Accepted, never-indexed nodes the fixtures' graph-bound payload references name
+    /// (architecture §33.11), added when a fixture references one that is not present.
+    fn reference_targets(nodes: &[Node]) -> Vec<Node> {
+        let targets = [
+            node(
+                "agent:zebra",
+                Accepted,
+                NodePayload::Agent(Agent {
+                    agent_kind: AgentKind::Human,
+                }),
+            ),
+            node(
+                "stakeholder:zebra",
+                Accepted,
+                NodePayload::Stakeholder(Stakeholder {
+                    name: "Zebra".into(),
+                    stakeholder_kind: "business".into(),
+                    organization: None,
+                    responsibilities: None,
+                    contact_ref: None,
+                }),
+            ),
+            node(
+                "calendar:zebra",
+                Accepted,
+                NodePayload::Calendar(Calendar {
+                    time_zone: "UTC".into(),
+                    week_pattern: json!({}),
+                    region: None,
+                    holiday_source: None,
+                }),
+            ),
+            operation("operation:quokka", "Quokka"),
+        ];
+        let present: BTreeSet<&Id> = nodes.iter().map(|n| &n.id).collect();
+        let referenced: BTreeSet<&Id> = nodes
+            .iter()
+            .flat_map(|n| payload_refs(&n.payload))
+            .map(|r| r.target)
+            .collect();
+        targets
+            .into_iter()
+            .filter(|t| referenced.contains(&t.id) && !present.contains(&t.id))
+            .collect()
+    }
+
+    fn graph_in(project: &str, profile: &str, mut nodes: Vec<Node>) -> Graph {
+        nodes.extend(reference_targets(&nodes));
         Graph::new(id(project), id(profile), nodes, Vec::new()).unwrap()
     }
 
@@ -87,7 +152,7 @@ mod bm25 {
                 source_identifier: Some("ZEBRA-1".into()),
                 verification_method: Some("zebratest".into()),
                 owner_refs: Some(vec![id("agent:zebra")]),
-                stakeholder_refs: Some(vec![id("agent:zebra")]),
+                stakeholder_refs: Some(vec![id("stakeholder:zebra")]),
             }),
         )
     }
@@ -163,7 +228,7 @@ mod bm25 {
                 given,
                 when,
                 then,
-                requirement_refs: Some(vec![id("requirement:zebra")]),
+                requirement_refs: None,
                 derived_from_refs: Some(vec![id("operation:quokka")]),
                 confirmation_status: Some("Confirmed".into()),
             }),
@@ -272,7 +337,7 @@ mod bm25 {
                     severity: FindingSeverity::Info,
                     message: "leave request finding".into(),
                     status: "open".into(),
-                    affected_refs: vec![id("requirement:r1")],
+                    affected_refs: vec![id("entity:leave-request")],
                     standard_rule_ref: None,
                     suggested_resolution: None,
                     waiver_ref: None,

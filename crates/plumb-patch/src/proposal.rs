@@ -112,7 +112,7 @@ pub enum ProposalError {
     UnsortedRefs { field: &'static str },
     /// `confidence` is not a finite value in `0.0..=1.0`.
     #[error("confidence {0} must be finite and within 0.0..=1.0")]
-    InvalidConfidence(f32),
+    InvalidConfidence(f64),
     /// The supplied ID is not the ID recomputed from the identity projection.
     #[error("proposal id {supplied} does not match recomputed id {recomputed}")]
     IdMismatch { supplied: Id, recomputed: Id },
@@ -154,8 +154,9 @@ pub struct Proposal {
 
     pub materiality: ProposalMateriality,
     pub acceptance_policy: AcceptancePolicy,
-    /// Advisory only; never drives gates, intake, acceptance or readiness.
-    pub confidence: Option<f32>,
+    /// Advisory only; never drives gates, intake, acceptance or readiness. An f64, so its wire
+    /// number and its RFC 8785 identity bytes are the same number (Fable #88).
+    pub confidence: Option<f64>,
 }
 
 impl Proposal {
@@ -167,7 +168,7 @@ impl Proposal {
         mut derivation_refs: Vec<DerivationRef>,
         materiality: ProposalMateriality,
         acceptance_policy: AcceptancePolicy,
-        confidence: Option<f32>,
+        confidence: Option<f64>,
     ) -> Result<Proposal, ProposalError> {
         evidence_refs.sort();
         derivation_refs.sort();
@@ -245,7 +246,7 @@ struct ProposalFields {
     derivation_refs: Vec<DerivationRef>,
     materiality: ProposalMateriality,
     acceptance_policy: AcceptancePolicy,
-    confidence: Option<f32>,
+    confidence: Option<f64>,
 }
 
 impl TryFrom<ProposalFields> for Proposal {

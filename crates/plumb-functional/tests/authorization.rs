@@ -1369,16 +1369,22 @@ mod authorization_contract {
                 AuthorizationIssue::ExistingPolicyConditionConflict { .. }
             )
         });
+        // The constrained SecurityRoles exist (SeparationConstraint.role_refs is graph-bound,
+        // architecture §33.11).
         let sod = extend(
             &g,
-            vec![node(
-                SOD,
-                Accepted,
-                NodePayload::SeparationConstraint(SeparationConstraint {
-                    constraint_kind: K::MutualExclusion,
-                    role_refs: vec![id(APPROVER), id(REQUESTER)],
-                }),
-            )],
+            vec![
+                security_role(APPROVER, Accepted, "Approver"),
+                security_role(REQUESTER, Accepted, "Requester"),
+                node(
+                    SOD,
+                    Accepted,
+                    NodePayload::SeparationConstraint(SeparationConstraint {
+                        constraint_kind: K::MutualExclusion,
+                        role_refs: vec![id(APPROVER), id(REQUESTER)],
+                    }),
+                ),
+            ],
             vec![],
         );
         conflict(&sod, &golden_draft(), |i| {

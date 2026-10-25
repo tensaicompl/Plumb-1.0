@@ -751,11 +751,30 @@ mod resolution_contract {
             resolve(&edit_finding(|p| p.status = "Closed".into()), &answer),
             Err(ResolutionError::FindingNotOpen { .. })
         ));
+        // The waiver decision exists (Finding.waiver_ref is graph-bound, architecture §33.11).
+        let waived = rebuild(&g, |nodes, _| {
+            nodes.push(node(
+                "dec:waiver",
+                Accepted,
+                NodePayload::ResolutionDecision(plumb_psg::ResolutionDecision {
+                    question_ref: None,
+                    proposal_ref: Some(id("prop:0000000000000001")),
+                    answer: json!({"kind": "waiver"}),
+                    decided_by: id(HUMAN),
+                    decided_at: ts(AT),
+                    patch_ref: plumb_core::Hash::content_sha256(b"waiver"),
+                    rationale: Some("Waived.".into()),
+                    supersedes: None,
+                }),
+            ));
+            for n in nodes.iter_mut().filter(|n| n.id == f) {
+                if let NodePayload::Finding(p) = &mut n.payload {
+                    p.waiver_ref = Some(id("dec:waiver"));
+                }
+            }
+        });
         assert!(matches!(
-            resolve(
-                &edit_finding(|p| p.waiver_ref = Some("dec:waiver".parse().unwrap())),
-                &answer
-            ),
+            resolve(&waived, &answer),
             Err(ResolutionError::FindingWaived(_))
         ));
         assert!(matches!(
@@ -769,19 +788,24 @@ mod resolution_contract {
             ),
             Err(ResolutionError::AffectedRefNotAccepted(_))
         ));
-        let no_finding = rebuild(&g, |nodes, _| nodes.retain(|n| n.id != f));
-        assert!(matches!(
-            resolve(&no_finding, &answer),
-            Err(ResolutionError::FindingMissing(_))
-        ));
-        let wrong = rebuild(&g, |nodes, _| {
+        // A Question whose Finding is missing or not a Finding is a graph-bound reference
+        // violation (architecture §33.11) that graph validation rejects.
+        let rejected = |f: &dyn Fn(&mut Vec<Node>)| {
+            let mut nodes: Vec<Node> = g.nodes().values().cloned().collect();
+            f(&mut nodes);
+            Graph::new(
+                g.project_id().clone(),
+                g.profile_id().clone(),
+                nodes,
+                g.edges().values().cloned().collect(),
+            )
+            .is_err()
+        };
+        assert!(rejected(&|nodes| nodes.retain(|n| n.id != f)));
+        assert!(rejected(&|nodes| {
             let n = nodes.iter_mut().find(|n| n.id == f).unwrap();
             n.payload = stakeholder("stakeholder:x").payload;
-        });
-        assert!(matches!(
-            resolve(&wrong, &answer),
-            Err(ResolutionError::NotAFinding(_))
-        ));
+        }));
     }
 
     // ------------------------------------------------------------------ actor and rationale

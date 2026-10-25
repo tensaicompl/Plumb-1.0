@@ -141,6 +141,17 @@ mod waiver_contract {
                 }),
             ),
         ];
+        // Stand-ins for the fixture rule targets, so a persisted Finding's existence-only
+        // affected_refs resolve (architecture §33.11) without touching any hash.
+        for target in [TARGET, "src:b", "src:other"] {
+            nodes.push(node(
+                target,
+                Accepted,
+                NodePayload::Agent(Agent {
+                    agent_kind: AgentKind::SoftwareService,
+                }),
+            ));
+        }
         nodes.extend(rule_ids.iter().map(|r| finding_node(r)));
         nodes
     }
@@ -430,6 +441,21 @@ mod waiver_contract {
                 })
                 .collect();
             let edges = waived.edges().values().cloned().collect();
+            if matches!(actor, "agent:intern" | "agent:ghost") {
+                // A missing or Proposed decided_by Agent is a graph-bound reference violation
+                // (architecture §33.11): such a forged graph cannot even be constructed.
+                assert!(
+                    Graph::new(
+                        id("project:pilot"),
+                        id("profile:plumb-software-2026.1"),
+                        nodes,
+                        edges,
+                    )
+                    .is_err(),
+                    "{actor}"
+                );
+                continue;
+            }
             let forged = graph_of(nodes, edges);
             assert!(
                 matches!(

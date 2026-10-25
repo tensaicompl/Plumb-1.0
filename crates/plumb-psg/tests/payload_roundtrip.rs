@@ -1027,6 +1027,20 @@ mod payload_roundtrip {
     }
 
     #[test]
+    fn text_range_rejects_an_inverted_range() {
+        // Fable #40: an inverted range must never be minted into an evidence ID.
+        for (start, end) in [(0, 0), (3, 7), (7, 7)] {
+            assert_eq!(EvidenceLocator::TextRange { start, end }.validate(), Ok(()));
+        }
+        assert_eq!(
+            EvidenceLocator::TextRange { start: 8, end: 7 }.validate(),
+            Err(EvidenceLocatorError::InvertedTextRange { start: 8, end: 7 })
+        );
+        let wire = json!({"kind": "TextRange", "data": {"start": 8, "end": 7}});
+        assert!(serde_json::from_value::<EvidenceLocator>(wire).is_err());
+    }
+
+    #[test]
     fn page_region_rejects_negative_width_or_height() {
         assert_eq!(
             page_region(None, None, Some(-0.5), None).validate(),

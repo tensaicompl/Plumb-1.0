@@ -1673,3 +1673,376 @@ proptest! {
         }
     }
 }
+
+// ---------------------------------------------------------------- H0.10 numeric, date and calendar integrity
+
+/// A declared calculation result, as `Calculation.result_type` and `Calculation.unit` state it.
+fn declared(result_type: &str, unit: Option<&str>) -> DeclaredResult {
+    DeclaredResult::from_value_type(result_type, unit).unwrap()
+}
+
+#[test]
+fn quantity_scale_is_enforced() {
+    // Decimal(n) scale applies equally to scalar and unit-bearing results (architecture §33.11).
+    let days = declared("Decimal(1)", Some("day"));
+    assert_eq!(days.ty, Ty::Quantity(u("day")));
+    assert_eq!(days.scale, Some(1));
+    assert_eq!(
+        check_result(q("1.25", "day"), &days, None),
+        Err(ResultCheckError::ScaleExceeded {
+            scale: 2,
+            declared: 1
+        })
+    );
+    let scalar = declared("Decimal(1)", None);
+    assert_eq!(
+        check_result(Value::Decimal(dec("1.25")), &scalar, None),
+        Err(ResultCheckError::ScaleExceeded {
+            scale: 2,
+            declared: 1
+        })
+    );
+    // Trailing zeros do not exceed the scale; the value is kept as computed.
+    assert_eq!(
+        check_result(q("1.50", "day"), &days, None),
+        Ok(q("1.50", "day"))
+    );
+    // Order: round per declared rounding, then the scale check, then the unit check.
+    let half_up = RoundingSpec::HalfUp { scale: 1 };
+    assert_eq!(
+        check_result(q("1.25", "day"), &days, Some(&half_up)),
+        Ok(q("1.3", "day"))
+    );
+    assert_eq!(
+        check_result(Value::Decimal(dec("1.25")), &scalar, Some(&half_up)),
+        Ok(Value::Decimal(dec("1.3")))
+    );
+    // A division followed by the declared business rounding satisfies its declared scale.
+    let quotient = s_run("10 / 3").unwrap();
+    assert_eq!(
+        check_result(
+            quotient.clone(),
+            &declared("Decimal(2)", None),
+            Some(&RoundingSpec::HalfUp { scale: 2 })
+        ),
+        Ok(Value::Decimal(dec("3.33")))
+    );
+    assert!(matches!(
+        check_result(quotient, &declared("Decimal(2)", None), None),
+        Err(ResultCheckError::ScaleExceeded { declared: 2, .. })
+    ));
+    // The scale is checked before the unit.
+    assert_eq!(
+        check_result(q("1.25", "hour"), &days, None),
+        Err(ResultCheckError::ScaleExceeded {
+            scale: 2,
+            declared: 1
+        })
+    );
+    assert_eq!(
+        check_result(q("1.2", "hour"), &days, None),
+        Err(ResultCheckError::UnitMismatch {
+            expected: Some(u("day")),
+            actual: Some(u("hour"))
+        })
+    );
+    assert_eq!(
+        check_result(Value::Decimal(dec("1.2")), &days, None),
+        Err(ResultCheckError::UnitMismatch {
+            expected: Some(u("day")),
+            actual: None
+        })
+    );
+    assert_eq!(
+        check_result(q("1.2", "day"), &scalar, None),
+        Err(ResultCheckError::UnitMismatch {
+            expected: None,
+            actual: Some(u("day"))
+        })
+    );
+    // Int results promote to a declared Decimal; non-numeric results never match.
+    assert_eq!(
+        check_result(Value::Int(2), &scalar, None),
+        Ok(Value::Decimal(dec("2")))
+    );
+    assert!(matches!(
+        check_result(Value::Bool(true), &scalar, None),
+        Err(ResultCheckError::TypeMismatch { .. })
+    ));
+    // Rounding applies only to Decimal and Quantity results.
+    assert_eq!(
+        check_result(
+            Value::Int(2),
+            &declared("Int", None),
+            Some(&RoundingSpec::HalfUp { scale: 0 })
+        ),
+        Err(ResultCheckError::RoundingNotApplicable)
+    );
+}
+
+/// The HR calendar restricted to the covered year 2027.
+fn covered_calendar() -> StaticCalendarProvider {
+    StaticCalendarProvider::new([CalendarDefinition::new(
+        id(CAL),
+        [Weekday::Saturday, Weekday::Sunday],
+        [date(2027, 1, 1)],
+    )
+    .with_coverage([2027])])
+    .unwrap()
+}
+
+fn covered_working_days(start: Date, end: Date) -> Result<Value, EvalError> {
+    let types = hr_types();
+    let mut values = ValueEnv::new();
+    values.bind(sym("start_date"), Value::Date(start)).unwrap();
+    values.bind(sym("end_date"), Value::Date(end)).unwrap();
+    values
+        .bind(sym("calendar"), record(CALENDAR, CAL, vec![]))
+        .unwrap();
+    let calendars = covered_calendar();
+    eval(
+        &parse("working_days([start_date, end_date], calendar, true)").unwrap(),
+        &EvalContext {
+            types: &types,
+            values: &values,
+            calendars: &calendars,
+            predicates: &Managers,
+        },
+    )
+}
+
+#[test]
+fn date_outside_calendar_coverage_is_unavailable() {
+    // Inside the covered years the calendar answers as before.
+    assert_eq!(
+        covered_working_days(date(2027, 1, 1), date(2027, 1, 5)),
+        Ok(q("2", "working_day"))
+    );
+    // A date outside coverage is never an assumed working day (architecture §33.11).
+    assert_eq!(
+        covered_working_days(date(2026, 12, 31), date(2027, 1, 4)),
+        Err(EvalError::CalendarCoverageUnavailable {
+            calendar_ref: id(CAL),
+            date: date(2026, 12, 31),
+        })
+    );
+    assert_eq!(
+        covered_working_days(date(2027, 12, 31), date(2028, 1, 3)),
+        Err(EvalError::CalendarCoverageUnavailable {
+            calendar_ref: id(CAL),
+            date: date(2028, 1, 1),
+        })
+    );
+    let calendar = CalendarDefinition::new(id(CAL), [], []).with_coverage([2028, 2027]);
+    assert_eq!(calendar.coverage(), Some(&[2027, 2028].into()));
+    assert_eq!(calendar.is_working_day(date(2027, 6, 1)), Ok(true));
+    assert_eq!(
+        calendar.is_working_day(date(2029, 6, 1)),
+        Err(CalendarError::CoverageUnavailable {
+            calendar_ref: id(CAL),
+            date: date(2029, 6, 1),
+        })
+    );
+    // Without declared coverage every date is answered (the pre-H0.10 behaviour).
+    let open = CalendarDefinition::new(id(CAL), [], []);
+    assert_eq!(open.coverage(), None);
+    assert_eq!(open.is_working_day(date(1999, 6, 1)), Ok(true));
+}
+
+#[test]
+fn date_arithmetic_stays_within_years_0000_to_9999() {
+    // Fable #147: both directions fail with DateOutOfRange.
+    let (mut types, mut values) = scalar_env();
+    types.bind_root(sym("one"), Ty::Duration(u("day"))).unwrap();
+    values
+        .bind(
+            sym("one"),
+            Value::Duration {
+                value: dec("1"),
+                unit: u("day"),
+            },
+        )
+        .unwrap();
+    for src in [
+        "date(\"0000-01-01\") - one",
+        "date(\"9999-12-31\") + one",
+        "date(\"0000-01-01\") + (-one)",
+    ] {
+        assert_eq!(
+            run(src, &types, &values),
+            Err(EvalError::DateOutOfRange),
+            "{src}"
+        );
+    }
+    assert_eq!(
+        run("date(\"0000-01-02\") - one", &types, &values),
+        Ok(Value::Date(date(0, 1, 1)))
+    );
+    assert_eq!(
+        run("date(\"9999-12-30\") + one", &types, &values),
+        Ok(Value::Date(date(9999, 12, 31)))
+    );
+}
+
+#[test]
+fn round_decimal_never_returns_fewer_digits_than_requested() {
+    // Fable #148: a value that cannot carry the requested scale is an overflow.
+    assert_eq!(
+        round_decimal(dec("10.5"), &RoundingSpec::HalfUp { scale: 28 }),
+        Err(RoundingError::Overflow)
+    );
+    assert_eq!(
+        round_decimal(Decimal::MAX, &RoundingSpec::HalfUp { scale: 2 }),
+        Err(RoundingError::Overflow)
+    );
+    assert_eq!(
+        round_decimal(Decimal::MAX, &RoundingSpec::ToStep { step: dec("0.5") }),
+        Err(RoundingError::Overflow)
+    );
+    let fits = round_decimal(dec("1.5"), &RoundingSpec::HalfUp { scale: 27 }).unwrap();
+    assert_eq!(fits.scale(), 27);
+}
+
+#[test]
+fn list_typing_is_order_independent() {
+    // Fable #149: an empty list without context is typed by its siblings, in either order.
+    let ints = Ty::List(Box::new(Ty::List(Box::new(Ty::Int))));
+    assert_eq!(s_ty("[[1], []]"), Ok(ints.clone()));
+    assert_eq!(s_ty("[[], [1]]"), Ok(ints.clone()));
+    assert_eq!(s_ty("[[], [], [1]]"), Ok(ints));
+    let nested = Ty::List(Box::new(Ty::List(Box::new(Ty::List(Box::new(Ty::Int))))));
+    assert_eq!(s_ty("[[[]], [[1]]]"), Ok(nested));
+    assert_eq!(s_ty("[[]]"), Err(TypeCheckError::EmptyListTypeUnknown));
+    assert_eq!(
+        s_run("[[], [1]]"),
+        Ok(Value::List(vec![
+            Value::List(vec![]),
+            Value::List(vec![Value::Int(1)])
+        ]))
+    );
+}
+
+#[test]
+fn navigating_through_a_non_ref_is_a_type_mismatch() {
+    // Fable #150: a present path that navigates through a non-Ref value is malformed data,
+    // never an absent value.
+    let types = hr_types();
+    let mut values = ValueEnv::new();
+    values
+        .bind(
+            sym("LeaveRequest"),
+            record(
+                "entity:LeaveRequest",
+                "lr:1",
+                vec![("employee", Value::Int(7))],
+            ),
+        )
+        .unwrap();
+    let mut types_with_nested = types.clone();
+    types_with_nested
+        .bind_field(id(PERSON), sym("name"), Ty::String)
+        .unwrap();
+    assert!(matches!(
+        run("LeaveRequest.employee.name", &types_with_nested, &values),
+        Err(EvalError::ValueTypeMismatch { .. })
+    ));
+    assert!(matches!(
+        run(
+            "exists(LeaveRequest.employee.name)",
+            &types_with_nested,
+            &values
+        ),
+        Err(EvalError::ValueTypeMismatch { .. })
+    ));
+    // An absent step is still a missing value, and exists() is false.
+    let mut absent = ValueEnv::new();
+    absent
+        .bind(
+            sym("LeaveRequest"),
+            record("entity:LeaveRequest", "lr:1", vec![]),
+        )
+        .unwrap();
+    assert_eq!(
+        run("LeaveRequest.employee.name", &types_with_nested, &absent),
+        Err(EvalError::MissingValue {
+            identifier: "LeaveRequest.employee.name".into()
+        })
+    );
+    assert_eq!(
+        run(
+            "exists(LeaveRequest.employee.name)",
+            &types_with_nested,
+            &absent
+        ),
+        Ok(Value::Bool(false))
+    );
+}
+
+#[test]
+fn decimal_products_round_to_28_fractional_digits() {
+    // Fable #156: Decimal(a) * Decimal(b) is Decimal(min(28, a + b)); an exact product beyond 28
+    // fractional digits is rounded to 28 with the rust_decimal default (midpoint to even).
+    assert_eq!(
+        s_ty("0.1234567890123456 * 0.1234567890123456"),
+        Ok(Ty::Decimal(28))
+    );
+    assert_eq!(
+        s_run("0.1234567890123456 * 0.1234567890123456"),
+        Ok(Value::Decimal(dec("0.0152415787532388172687092138")))
+    );
+    // Exact 2.5e-28 and 3.5e-28: midpoints round to the even last digit.
+    assert_eq!(
+        s_run("0.0000000000000025 * 0.0000000000001"),
+        Ok(Value::Decimal(dec("0.0000000000000000000000000002")))
+    );
+    assert_eq!(
+        s_run("0.0000000000000035 * 0.0000000000001"),
+        Ok(Value::Decimal(dec("0.0000000000000000000000000004")))
+    );
+    // Quotients are Decimal(28) as well.
+    assert_eq!(s_ty("1 / 3"), Ok(Ty::Decimal(28)));
+    assert_eq!(
+        s_run("2 / 3"),
+        Ok(Value::Decimal(dec("0.6666666666666666666666666667")))
+    );
+}
+
+#[test]
+fn working_days_period_is_half_open_unless_inclusive() {
+    // Fable #343: [start, end) when inclusive_end is false, [start, end] when true. The start
+    // counts only when it is itself a working day.
+    let types = hr_types();
+    let wd = |start: Date, end: Date, inclusive: bool| {
+        let mut values = ValueEnv::new();
+        values.bind(sym("start_date"), Value::Date(start)).unwrap();
+        values.bind(sym("end_date"), Value::Date(end)).unwrap();
+        values
+            .bind(sym("inclusive_end"), Value::Bool(inclusive))
+            .unwrap();
+        values
+            .bind(sym("calendar"), record(CALENDAR, CAL, vec![]))
+            .unwrap();
+        run(
+            "working_days([start_date, end_date], calendar, inclusive_end)",
+            &types,
+            &values,
+        )
+    };
+    for (start, end, inclusive, expected) in [
+        // Empty half-open period; the closed one is the single day.
+        (date(2027, 2, 1), date(2027, 2, 1), false, "0"),
+        (date(2027, 2, 1), date(2027, 2, 1), true, "1"),
+        // Friday to Monday: [Fri, Mon) is Friday only; [Fri, Mon] adds Monday.
+        (date(2027, 2, 5), date(2027, 2, 8), false, "1"),
+        (date(2027, 2, 5), date(2027, 2, 8), true, "2"),
+        // A holiday start (2027-01-06) does not count.
+        (date(2027, 1, 6), date(2027, 1, 8), false, "1"),
+        (date(2027, 1, 6), date(2027, 1, 8), true, "2"),
+    ] {
+        assert_eq!(
+            wd(start, end, inclusive),
+            Ok(q(expected, "working_day")),
+            "{start}..{end} {inclusive}"
+        );
+    }
+}

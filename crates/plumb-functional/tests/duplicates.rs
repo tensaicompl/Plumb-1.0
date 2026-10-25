@@ -21,9 +21,10 @@ mod duplicates_contract {
         apply_patch, AcceptancePolicy, MergePolicy, ProposalMateriality, SemanticPatch,
     };
     use plumb_psg::{
-        node_element_hash, AuditMeta, DerivationRef, Edge, ElementStatus, EvidenceRef, Finding,
-        FindingSeverity, Graph, Modality, Node, NodePayload, RelationKind, RelationProperties,
-        Requirement, RequirementKind, RequirementLevel, ResolutionDecision,
+        node_element_hash, payload_refs, Actor, ActorKind, Agent, AgentKind, AuditMeta,
+        DerivationRef, Edge, ElementStatus, EvidenceRef, Finding, FindingSeverity, Graph, Modality,
+        Node, NodePayload, RelationKind, RelationProperties, Requirement, RequirementKind,
+        RequirementLevel, ResolutionDecision, Stakeholder,
     };
     use plumb_validation::{load_builtin_software_profile, GeneratedFinding};
     use rust_decimal::Decimal;
@@ -135,7 +136,75 @@ mod duplicates_contract {
         (nodes, ids)
     }
 
-    fn graph(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+    fn stakeholder(node_id: &str) -> Node {
+        node(
+            node_id,
+            Accepted,
+            NodePayload::Stakeholder(Stakeholder {
+                name: node_id.to_owned(),
+                stakeholder_kind: "business".to_owned(),
+                organization: None,
+                responsibilities: None,
+                contact_ref: None,
+            }),
+            &[],
+        )
+    }
+
+    /// The Accepted nodes the fixtures' graph-bound payload references name (architecture
+    /// §33.11), added when a fixture references one that is not present.
+    fn reference_targets(nodes: &[Node]) -> Vec<Node> {
+        let targets = [
+            node(
+                "actor:architect",
+                Accepted,
+                NodePayload::Agent(Agent {
+                    agent_kind: AgentKind::Human,
+                }),
+                &[],
+            ),
+            node(
+                "actor:owner",
+                Accepted,
+                NodePayload::Actor(Actor {
+                    name: "Owner".to_owned(),
+                    actor_kind: ActorKind::Human,
+                }),
+                &[],
+            ),
+            stakeholder("stakeholder:x"),
+            stakeholder("stakeholder:y"),
+            node(
+                QUESTION_FINDING,
+                Accepted,
+                NodePayload::Finding(Finding {
+                    code: "PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED".to_owned(),
+                    family: "F1".to_owned(),
+                    severity: FindingSeverity::Blocker,
+                    message: "Which requirement replaces the other?".to_owned(),
+                    status: "Open".to_owned(),
+                    affected_refs: Vec::new(),
+                    standard_rule_ref: None,
+                    suggested_resolution: None,
+                    waiver_ref: None,
+                }),
+                &[],
+            ),
+        ];
+        let present: BTreeSet<&Id> = nodes.iter().map(|n| &n.id).collect();
+        let referenced: BTreeSet<&Id> = nodes
+            .iter()
+            .flat_map(|n| payload_refs(&n.payload))
+            .map(|r| r.target)
+            .collect();
+        targets
+            .into_iter()
+            .filter(|t| referenced.contains(&t.id) && !present.contains(&t.id))
+            .collect()
+    }
+
+    fn graph(mut nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+        nodes.extend(reference_targets(&nodes));
         Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap()
     }
 
@@ -732,6 +801,8 @@ mod duplicates_contract {
     const NEW: &str = "req:0000000000000b02";
     const DECISION: &str = "dec:00000000000000d1";
     const FINDING: &str = "fnd:00000000000000f9";
+    /// The Finding a governing Question node is linked to.
+    const QUESTION_FINDING: &str = "fnd:00000000000000fa";
 
     struct Governance {
         decision_status: ElementStatus,
@@ -960,7 +1031,7 @@ mod duplicates_contract {
     #[test]
     fn duplicates_supersession_question_governance() {
         let question = NodePayload::Question(plumb_psg::Question {
-            finding_ref: id(FINDING),
+            finding_ref: id(QUESTION_FINDING),
             question_kind: serde_json::from_value(json!("PickOne")).unwrap(),
             prompt: "Which requirement replaces the other?".to_owned(),
             status: "Answered".to_owned(),

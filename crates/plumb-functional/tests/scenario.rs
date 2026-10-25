@@ -1308,9 +1308,10 @@ mod scenario_contract {
             // baseline edge, so AmbiguousTrigger is defense in depth.
             assert!(Graph::new(id(PROJECT), id(PROFILE), lifecycle_nodes(), edges).is_err());
         }
-        // Non-Accepted endpoint.
+        // Non-Accepted (baseline) endpoint; a Proposed endpoint of a baseline Transition is a
+        // graph-bound reference violation (architecture §33.11).
         let mut nodes = lifecycle_nodes();
-        nodes[2] = state("state:submitted", Proposed);
+        nodes[2] = state("state:submitted", ElementStatus::Deprecated);
         let g = graph(nodes, lifecycle_edges());
         assert!(matches!(
             analyze_scenarios(&g, &empty_inputs()),

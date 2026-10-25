@@ -1072,16 +1072,56 @@ mod graph_contract {
         )
     }
 
+    /// The nodes a View's existence-only references name.
+    fn view_context() -> Vec<Node> {
+        vec![
+            node(
+                "soi:hr:leave",
+                "Accepted",
+                "SystemOfInterest",
+                json!({"name": "Leave Management"}),
+            ),
+            node(
+                "ad:hr:leave",
+                "Accepted",
+                "ArchitectureDescription",
+                json!({"system_of_interest_ref": "soi:hr:leave"}),
+            ),
+            node(
+                "vp:hr:functional",
+                "Accepted",
+                "Viewpoint",
+                json!({
+                    "name": "Functional", "concern_refs": [], "stakeholder_refs": [],
+                    "model_kind_refs": []
+                }),
+            ),
+        ]
+    }
+
     #[test]
     fn view_layout_and_style_refs_are_omitted_from_semantic_hash() {
-        let a =
-            hash_with(|n, _| n.push(view(json!(null), json!(null), json!(["include Process"]))));
-        let b = hash_with(|n, _| n.push(view(json!(H1), json!(H1), json!(["include Process"]))));
+        let with_view = |v: Node| {
+            hash_with(|n, _| {
+                n.extend(view_context());
+                n.push(v)
+            })
+        };
+        let a = with_view(view(json!(null), json!(null), json!(["include Process"])));
+        let b = with_view(view(json!(H1), json!(H1), json!(["include Process"])));
         assert_eq!(a, b);
-        let c = hash_with(|n, _| n.push(view(json!(null), json!(null), json!(["include Entity"]))));
+        let c = with_view(view(json!(null), json!(null), json!(["include Entity"])));
         assert_ne!(a, c, "projection_rules is semantic");
-        let g = graph(vec![view(json!(H1), json!(null), json!([]))], vec![]).unwrap();
-        let data = &semantic_projection(&g)["nodes"][0]["payload"]["data"];
+        let mut nodes = view_context();
+        nodes.push(view(json!(H1), json!(null), json!([])));
+        let g = graph(nodes, vec![]).unwrap();
+        let projection = semantic_projection(&g);
+        let data = &projection["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == "view:hr:1")
+            .unwrap()["payload"]["data"];
         assert!(
             data.get("layout_ref").is_none() && data.get("style_ref").is_none(),
             "{data}"
@@ -1091,7 +1131,6 @@ mod graph_contract {
 
     #[test]
     fn excluded_node_types_do_not_change_semantic_hash() {
-        let base = base_hash();
         let excluded = [
             node(
                 "q:0123456789abcdef",
@@ -1142,9 +1181,46 @@ mod graph_contract {
                 json!({"agent_kind": "human"}),
             ),
         ];
+        // The nodes the excluded nodes reference (the golden Finding is already present).
+        let support = || {
+            vec![
+                node(
+                    "scn:a",
+                    "Accepted",
+                    "Scenario",
+                    json!({
+                        "name": "S", "scenario_kind": "acceptance", "given": [], "when": {},
+                        "then": []
+                    }),
+                ),
+                node(
+                    "test:a",
+                    "Accepted",
+                    "TestCase",
+                    json!({"name": "T", "steps": [], "expected": []}),
+                ),
+                node(
+                    "verify:a",
+                    "Accepted",
+                    "VerificationObligation",
+                    json!({"name": "V", "verification_kind": "scenario"}),
+                ),
+                node(
+                    "env:ci",
+                    "Accepted",
+                    "DeploymentNode",
+                    json!({"name": "CI"}),
+                ),
+            ]
+        };
+        let supported = hash_with(|nodes, _| nodes.extend(support()));
         for n in excluded {
             let tag = n.payload.node_type();
-            assert_eq!(hash_with(|nodes, _| nodes.push(n.clone())), base, "{tag:?}");
+            let with = hash_with(|nodes, _| {
+                nodes.extend(support());
+                nodes.push(n.clone())
+            });
+            assert_eq!(with, supported, "{tag:?}");
         }
         assert_eq!(SEMANTIC_HASH_EXCLUDED_NODE_TYPES.len(), 12);
         assert!(!contributes_to_semantic_hash(NodeType::Finding));
@@ -1683,6 +1759,16 @@ mod graph_contract {
         )
     }
 
+    /// The Accepted human Agent fixture decisions name as `decided_by`.
+    fn analyst() -> Node {
+        node(
+            "actor:analyst",
+            "Accepted",
+            "Agent",
+            json!({"agent_kind": "human"}),
+        )
+    }
+
     fn binding(v: &[GraphViolation]) -> Vec<&GraphViolation> {
         v.iter()
             .filter(|x| {
@@ -1712,8 +1798,25 @@ mod graph_contract {
     }
 
     fn decision_graph(decision: Node) -> Graph {
+        let other = node(
+            "actor:other",
+            "Accepted",
+            "Agent",
+            json!({"agent_kind": "human"}),
+        );
+        let older = full_decision("dec:older", "Accepted", |d| {
+            d["question_ref"] = Value::Null;
+            d["proposal_ref"] = json!("proposal:older");
+        });
         graph(
-            vec![decision, question("q:a", "Accepted")],
+            vec![
+                decision,
+                question("q:a", "Accepted"),
+                finding("fnd:a"),
+                analyst(),
+                other,
+                older,
+            ],
             vec![edge("rel:1", "Accepted", "resolves", "dec:a", "q:a")],
         )
         .unwrap()
@@ -1832,9 +1935,10 @@ mod graph_contract {
         assert!(contributes_to_semantic_hash(NodeType::ResolutionDecision));
         assert!(!SEMANTIC_HASH_EXCLUDED_NODE_TYPES.contains(&NodeType::ResolutionDecision));
         let req = || requirement("req:a", "Accepted", "The system shall work.");
-        let base = graph(vec![req(), ordinary("dec:o")], vec![]).unwrap();
-        let with_companion =
-            |c: Node, edges: Vec<Edge>| graph(vec![req(), ordinary("dec:o"), c], edges).unwrap();
+        let base = graph(vec![analyst(), req(), ordinary("dec:o")], vec![]).unwrap();
+        let with_companion = |c: Node, edges: Vec<Edge>| {
+            graph(vec![analyst(), req(), ordinary("dec:o"), c], edges).unwrap()
+        };
         let g = with_companion(companion("dec:c", |_| {}), vec![]);
         let c = g.node(&id("dec:c")).unwrap();
         assert!(is_proposal_acceptance_companion(c));
@@ -1875,11 +1979,15 @@ mod graph_contract {
         // An ordinary decision edge still participates and changes semantic_hash.
         let ordinary_edge = edge("rel:o", "Accepted", "supersedes", "dec:o2", "dec:o");
         let g = graph(
-            vec![req(), ordinary("dec:o"), ordinary("dec:o2")],
+            vec![analyst(), req(), ordinary("dec:o"), ordinary("dec:o2")],
             vec![ordinary_edge.clone()],
         )
         .unwrap();
-        let without = graph(vec![req(), ordinary("dec:o"), ordinary("dec:o2")], vec![]).unwrap();
+        let without = graph(
+            vec![analyst(), req(), ordinary("dec:o"), ordinary("dec:o2")],
+            vec![],
+        )
+        .unwrap();
         assert!(edge_contributes_to_semantic_hash(&g, &ordinary_edge));
         assert_ne!(g.semantic_hash().unwrap(), without.semantic_hash().unwrap());
         // Only the exact companion shape is excluded.
@@ -1894,18 +2002,24 @@ mod graph_contract {
     #[test]
     fn valid_resolution_decision_bindings() {
         // Proposal-only decision with zero resolves edges.
-        graph(vec![decision("dec:p", "Accepted", None)], vec![]).unwrap();
+        graph(vec![analyst(), decision("dec:p", "Accepted", None)], vec![]).unwrap();
         // Finding-bound decision.
         graph(
-            vec![decision("dec:f", "Accepted", None), finding("fnd:a")],
+            vec![
+                analyst(),
+                decision("dec:f", "Accepted", None),
+                finding("fnd:a"),
+            ],
             vec![edge("rel:1", "Accepted", "resolves", "dec:f", "fnd:a")],
         )
         .unwrap();
         // Question-bound decision resolving q.
         graph(
             vec![
+                analyst(),
                 decision("dec:q", "Accepted", Some("q:a")),
                 question("q:a", "Accepted"),
+                finding("fnd:a"),
             ],
             vec![edge("rel:1", "Accepted", "resolves", "dec:q", "q:a")],
         )
@@ -1913,6 +2027,7 @@ mod graph_contract {
         // Question-bound decision resolving q and a Finding.
         graph(
             vec![
+                analyst(),
                 decision("dec:q", "Accepted", Some("q:a")),
                 question("q:a", "Accepted"),
                 finding("fnd:a"),
@@ -1926,6 +2041,7 @@ mod graph_contract {
         // Proposed and Rejected decisions are not bound.
         graph(
             vec![
+                analyst(),
                 decision("dec:x", "Proposed", Some("q:missing")),
                 decision("dec:y", "Rejected", Some("q:missing")),
             ],
@@ -2026,5 +2142,286 @@ mod graph_contract {
                 node_type: NodeType::Finding,
             }]
         );
+    }
+
+    // ------------------------------------------------------------------ cycles (Fable #35)
+
+    fn cycles(v: &[GraphViolation]) -> Vec<BTreeSet<Id>> {
+        v.iter()
+            .filter_map(|v| match v {
+                GraphViolation::Relation(RelationViolation::Cycle { nodes, .. }) => {
+                    Some(nodes.iter().cloned().collect())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_disjoint_cycle_of_an_acyclic_relation_is_reported_once() {
+        let nodes: Vec<Node> = ["req:a", "req:b", "req:c", "req:d", "req:e"]
+            .iter()
+            .map(|r| requirement(r, "Accepted", "The system shall refine."))
+            .collect();
+        let edges = vec![
+            edge("rel:1", "Accepted", "refines", "req:a", "req:b"),
+            edge("rel:2", "Accepted", "refines", "req:b", "req:a"),
+            edge("rel:3", "Accepted", "refines", "req:c", "req:d"),
+            edge("rel:4", "Accepted", "refines", "req:d", "req:e"),
+            edge("rel:5", "Accepted", "refines", "req:e", "req:c"),
+        ];
+        let expected: Vec<BTreeSet<Id>> = vec![
+            [id("req:a"), id("req:b")].into(),
+            [id("req:c"), id("req:d"), id("req:e")].into(),
+        ];
+        assert_eq!(cycles(&violations(nodes, edges)), expected);
+    }
+
+    // ------------------------------------------------------------------ graph-bound payload refs
+
+    fn payload_refs(v: &[GraphViolation]) -> Vec<&GraphViolation> {
+        v.iter()
+            .filter(|v| {
+                matches!(
+                    v,
+                    GraphViolation::PayloadRefMissing { .. }
+                        | GraphViolation::PayloadRefWrongType { .. }
+                        | GraphViolation::PayloadRefForbiddenStatus { .. }
+                        | GraphViolation::PayloadRefNotANode { .. }
+                )
+            })
+            .collect()
+    }
+
+    fn agent(node_id: &str, status: &str) -> Node {
+        node(node_id, status, "Agent", json!({"agent_kind": "human"}))
+    }
+
+    fn state(node_id: &str, status: &str) -> Node {
+        node(node_id, status, "State", json!({"name": "Submitted"}))
+    }
+
+    fn calendar(node_id: &str, status: &str) -> Node {
+        node(
+            node_id,
+            status,
+            "Calendar",
+            json!({"time_zone": "Europe/Warsaw", "week_pattern": {"mon": true}}),
+        )
+    }
+
+    fn calculation(node_id: &str, status: &str, calendar_ref: &str) -> Node {
+        node(
+            node_id,
+            status,
+            "Calculation",
+            json!({
+                "name": "LeaveDays", "expression": "1", "result_type": "Int",
+                "calendar_ref": calendar_ref
+            }),
+        )
+    }
+
+    fn transition(node_id: &str, status: &str, stateful_ref: &str) -> Node {
+        node(
+            node_id,
+            status,
+            "Transition",
+            json!({"stateful_ref": stateful_ref, "from_state": "state:a", "to_state": "state:b"}),
+        )
+    }
+
+    fn scenario(node_id: &str, status: &str, requirement_refs: &[&str]) -> Node {
+        node(
+            node_id,
+            status,
+            "Scenario",
+            json!({
+                "name": "Submit", "scenario_kind": "acceptance", "given": [], "when": {},
+                "then": [], "requirement_refs": requirement_refs
+            }),
+        )
+    }
+
+    fn ref_finding(node_id: &str, affected_refs: &[&str]) -> Node {
+        node(
+            node_id,
+            "Accepted",
+            "Finding",
+            json!({
+                "code": "X", "family": "f1", "severity": "warn", "message": "m",
+                "status": "Open", "affected_refs": affected_refs
+            }),
+        )
+    }
+
+    fn owned_requirement(node_id: &str, status: &str, owners: &[&str]) -> Node {
+        node(
+            node_id,
+            status,
+            "Requirement",
+            json!({
+                "statement": "The system shall record leave.", "requirement_kind": "functional",
+                "level": "system", "modality": "shall", "owner_refs": owners
+            }),
+        )
+    }
+
+    fn proposal_decision(node_id: &str, decided_by: &str) -> Node {
+        node(
+            node_id,
+            "Accepted",
+            "ResolutionDecision",
+            json!({
+                "question_ref": null, "proposal_ref": "prop:0123456789abcdef",
+                "answer": {"kind": "proposal_acceptance", "reason_codes": []},
+                "decided_by": decided_by, "decided_at": T1, "patch_ref": H1
+            }),
+        )
+    }
+
+    fn operation_with_schema(node_id: &str) -> Node {
+        node(
+            node_id,
+            "Accepted",
+            "Operation",
+            json!({
+                "name": "Submit", "operation_kind": "command",
+                "input_schema_ref": "schema:leave-request"
+            }),
+        )
+    }
+
+    fn ref_base() -> Vec<Node> {
+        vec![
+            state("state:a", "Accepted"),
+            state("state:b", "Accepted"),
+            entity("ent:leave", "Accepted"),
+            agent("agent:human", "Accepted"),
+            agent("agent:proposed", "Proposed"),
+            calendar("cal:accepted", "Accepted"),
+            calendar("cal:proposed", "Proposed"),
+            calendar("cal:rejected", "Rejected"),
+            requirement("req:accepted", "Accepted", "The system shall approve."),
+            requirement("req:proposed", "Proposed", "The system shall reject."),
+            constraint("constraint:eu", "Accepted"),
+        ]
+    }
+
+    #[test]
+    fn dangling_and_wrong_type_payload_refs_are_rejected() {
+        // Valid: every graph-bound reference resolves to an allowed node; external
+        // identifiers (proposal_ref, input_schema_ref) are never resolved.
+        let mut valid = ref_base();
+        valid.extend([
+            transition("tr:ok", "Accepted", "ent:leave"),
+            calculation("calc:ok", "Accepted", "cal:accepted"),
+            calculation("calc:proposed-ok", "Proposed", "cal:proposed"),
+            scenario(
+                "scn:proposed-ok",
+                "Proposed",
+                &["req:accepted", "req:proposed"],
+            ),
+            owned_requirement("req:owned", "Accepted", &["agent:human"]),
+            proposal_decision("dec:ok", "agent:human"),
+            operation_with_schema("op:submit"),
+            // Finding.affected_refs may name an edge.
+            ref_finding("fnd:edge-ok", &["rel:1", "req:accepted"]),
+        ]);
+        let edges = vec![edge(
+            "rel:1",
+            "Accepted",
+            "constrained_by",
+            "req:accepted",
+            "constraint:eu",
+        )];
+        let ok = violations(valid, edges);
+        assert!(payload_refs(&ok).is_empty(), "{ok:?}");
+
+        let mut invalid = ref_base();
+        invalid.extend([
+            transition("tr:missing", "Accepted", "ent:missing"),
+            transition("tr:wrong-type", "Accepted", "state:a"),
+            calculation("calc:proposed-cal", "Accepted", "cal:proposed"),
+            calculation("calc:rejected-cal", "Proposed", "cal:rejected"),
+            scenario("scn:baseline", "Accepted", &["req:proposed"]),
+            owned_requirement("req:owned", "Accepted", &["state:b"]),
+            proposal_decision("dec:proposed-agent", "agent:proposed"),
+            ref_finding("fnd:dangling", &["req:missing"]),
+            node(
+                "scn:derived",
+                "Proposed",
+                "Scenario",
+                json!({
+                    "name": "Derived", "scenario_kind": "acceptance", "given": [], "when": {},
+                    "then": [], "derived_from_refs": ["rel:1"]
+                }),
+            ),
+        ]);
+        let v = violations(
+            invalid,
+            vec![edge(
+                "rel:1",
+                "Accepted",
+                "constrained_by",
+                "req:accepted",
+                "constraint:eu",
+            )],
+        );
+        let expected = [
+            GraphViolation::PayloadRefForbiddenStatus {
+                owner: id("calc:proposed-cal"),
+                field: "calendar_ref",
+                target: id("cal:proposed"),
+                status: ElementStatus::Proposed,
+            },
+            GraphViolation::PayloadRefForbiddenStatus {
+                owner: id("calc:rejected-cal"),
+                field: "calendar_ref",
+                target: id("cal:rejected"),
+                status: ElementStatus::Rejected,
+            },
+            GraphViolation::PayloadRefForbiddenStatus {
+                owner: id("dec:proposed-agent"),
+                field: "decided_by",
+                target: id("agent:proposed"),
+                status: ElementStatus::Proposed,
+            },
+            GraphViolation::PayloadRefMissing {
+                owner: id("fnd:dangling"),
+                field: "affected_refs",
+                target: id("req:missing"),
+            },
+            GraphViolation::PayloadRefWrongType {
+                owner: id("req:owned"),
+                field: "owner_refs",
+                target: id("state:b"),
+                node_type: NodeType::State,
+            },
+            GraphViolation::PayloadRefForbiddenStatus {
+                owner: id("scn:baseline"),
+                field: "requirement_refs",
+                target: id("req:proposed"),
+                status: ElementStatus::Proposed,
+            },
+            // Scenario.derived_from_refs names nodes, never edges.
+            GraphViolation::PayloadRefNotANode {
+                owner: id("scn:derived"),
+                field: "derived_from_refs",
+                target: id("rel:1"),
+            },
+            GraphViolation::PayloadRefMissing {
+                owner: id("tr:missing"),
+                field: "stateful_ref",
+                target: id("ent:missing"),
+            },
+            GraphViolation::PayloadRefWrongType {
+                owner: id("tr:wrong-type"),
+                field: "stateful_ref",
+                target: id("state:a"),
+                node_type: NodeType::State,
+            },
+        ];
+        assert_eq!(payload_refs(&v), expected.iter().collect::<Vec<_>>());
     }
 }

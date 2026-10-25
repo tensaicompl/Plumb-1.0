@@ -112,7 +112,49 @@ mod impact_contract {
         node(node_id, status, tag, data)
     }
 
-    fn graph(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+    /// The edge-less nodes the ApiOperation and View fixtures reference by payload (their
+    /// existence-only graph-bound references), added when a fixture needs them.
+    fn payload_context(nodes: &[Node]) -> Vec<Node> {
+        let has = |tag: NodeType| nodes.iter().any(|n| n.payload.node_type() == tag);
+        let mut context = Vec::new();
+        if has(NodeType::ApiOperation) {
+            context.push(node(
+                "api:hr:leave",
+                "Accepted",
+                "ApiContract",
+                json!({"name": "Leave API", "contract_kind": "http"}),
+            ));
+        }
+        if has(NodeType::View) {
+            context.extend([
+                node(
+                    "soi:hr:leave",
+                    "Accepted",
+                    "SystemOfInterest",
+                    arch("Leave"),
+                ),
+                node(
+                    "ad:hr:leave",
+                    "Accepted",
+                    "ArchitectureDescription",
+                    json!({"system_of_interest_ref": "soi:hr:leave"}),
+                ),
+                node(
+                    "vp:hr:functional",
+                    "Accepted",
+                    "Viewpoint",
+                    json!({
+                        "name": "Functional", "concern_refs": [], "stakeholder_refs": [],
+                        "model_kind_refs": []
+                    }),
+                ),
+            ]);
+        }
+        context
+    }
+
+    fn graph(mut nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+        nodes.extend(payload_context(&nodes));
         Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap_or_else(|v| panic!("{v:?}"))
     }
 
@@ -624,6 +666,49 @@ mod impact_contract {
         );
         assert_eq!(r.changed.edge_ids, ids(&["rel:p-eu"]));
         assert_eq!(r.dirty, DirtySet::default());
+    }
+
+    #[test]
+    fn non_baseline_edge_endpoints_are_never_seeded() {
+        // Fable #85: demote a baseline edge and retarget it to a Proposed node in one patch.
+        // The old baseline endpoints are dirty; the Proposed new endpoint, which participates in
+        // neither graph's baseline, is not.
+        let base = graph(
+            vec![
+                typed("req:a", "Accepted", "Requirement"),
+                typed("con:eu", "Accepted", "Constraint"),
+                typed("req:p", "Proposed", "Requirement"),
+            ],
+            vec![edge(
+                "rel:a-eu",
+                "Accepted",
+                "constrained_by",
+                "req:a",
+                "con:eu",
+            )],
+        );
+        let demote = set_status(
+            &base,
+            "rel:a-eu",
+            ElementStatus::Accepted,
+            ElementStatus::Proposed,
+        );
+        let (demoted, _) = apply(&base, demote.clone());
+        let retarget = SemanticPatch::ReplaceEdge {
+            target: pre(&demoted, "rel:a-eu"),
+            kind: RelationKind::ConstrainedBy,
+            from: id("req:p"),
+            to: id("con:eu"),
+            properties: RelationProperties::None,
+        };
+        let r = impact(
+            &base,
+            SemanticPatch::Compound {
+                patches: vec![demote, retarget],
+            },
+        );
+        assert_eq!(r.dirty.edge_ids, ids(&["rel:a-eu"]));
+        assert_eq!(r.dirty.node_ids, ids(&["con:eu", "req:a"]));
     }
 
     #[test]

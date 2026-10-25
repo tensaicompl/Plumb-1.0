@@ -323,10 +323,14 @@ pub enum EvidenceLocatorError {
     /// A `PageRegion` width or height is negative.
     #[error("page-region {0} must be >= 0")]
     NegativeExtent(&'static str),
+    /// A `TextRange` starts after it ends (Fable #40).
+    #[error("text range start {start} is after its end {end}")]
+    InvertedTextRange { start: u64, end: u64 },
 }
 
 /// Where an evidence fragment sits inside its source (§5.2). Structural only, except that
-/// `PageRegion` values must be finite and its width/height non-negative.
+/// `PageRegion` values must be finite and its width/height non-negative, and a `TextRange`
+/// must not start after its end.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -367,8 +371,17 @@ pub enum EvidenceLocator {
 }
 
 impl EvidenceLocator {
-    /// Checks `PageRegion` values: finite coordinates and non-negative width/height.
+    /// Checks `PageRegion` values (finite coordinates, non-negative width/height) and that a
+    /// `TextRange` is not inverted.
     pub fn validate(&self) -> Result<(), EvidenceLocatorError> {
+        if let EvidenceLocator::TextRange { start, end } = self {
+            if start > end {
+                return Err(EvidenceLocatorError::InvertedTextRange {
+                    start: *start,
+                    end: *end,
+                });
+            }
+        }
         if let EvidenceLocator::PageRegion {
             x,
             y,

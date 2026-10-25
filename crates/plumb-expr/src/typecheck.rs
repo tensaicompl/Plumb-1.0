@@ -674,6 +674,11 @@ fn check_list(env: &TypeEnv, items: &[Ast], expected: Option<&Ty>) -> Result<Ty,
             {
                 deferred.push((i, e));
             }
+            // An element whose type depends only on an empty list is typed by its siblings, so
+            // list typing is order independent (Fable #149), exactly as check_pair defers it.
+            Err(e @ TypeCheckError::EmptyListTypeUnknown) if context.is_none() => {
+                deferred.push((i, e));
+            }
             Err(e) => return Err(e),
         }
     }

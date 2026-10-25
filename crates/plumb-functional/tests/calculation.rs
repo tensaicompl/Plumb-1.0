@@ -1220,6 +1220,32 @@ mod calculation_contract {
         )
         .unwrap();
         assert_eq!(value, Value::Decimal(Decimal::from_str("0.17").unwrap()));
+        // H0.10: the declared Decimal(n) scale also binds a unit-bearing result: 0.5
+        // working_day exceeds Decimal(0) unless the declared rounding brings it to scale.
+        let c = one(
+            &g,
+            &hr_scope(),
+            candidate(
+                "Requested Working Days",
+                HALF_DAY,
+                "Decimal(0)",
+                Some("working_day"),
+                None,
+                Some(CAL),
+            ),
+        );
+        assert_eq!(
+            evaluate_calculation(
+                c.qualification.prepared.as_ref().unwrap(),
+                &half_day_values(),
+                &hr_calendars(),
+                &NoPredicates,
+            ),
+            Err(CalculationEvalError::ResultScaleExceeded {
+                scale: 1,
+                declared: 0
+            })
+        );
     }
 
     // ------------------------------------------------------------------ inference
@@ -1458,7 +1484,8 @@ mod calculation_contract {
             "{:?}",
             with_override.qualification.issues
         );
-        // A payload calendar that is no longer Accepted is unresolved.
+        // A payload calendar that is no longer Accepted is unresolved (a baseline calculation
+        // can still name a Deprecated calendar; a Proposed one is a graph violation).
         let mut cal_calc = calculation_node(
             "calculation:cal",
             Accepted,
@@ -1468,16 +1495,22 @@ mod calculation_contract {
             Some("working_day"),
         );
         if let NodePayload::Calculation(c) = &mut cal_calc.payload {
-            c.calendar_ref = Some(id("cal:draft"));
+            c.calendar_ref = Some(id("cal:deprecated"));
         }
-        let g2 = base_graph(vec![cal_calc], vec![]);
+        let g2 = base_graph(
+            vec![
+                cal_calc,
+                calendar("cal:deprecated", ElementStatus::Deprecated),
+            ],
+            vec![],
+        );
         let q =
             qualify_accepted_calculation(&g2, &id("calculation:cal"), Some(&hr_scope())).unwrap();
         assert!(q
             .qualification
             .issues
             .contains(&CalculationIssue::CalendarUnresolved {
-                calendar_ref: id("cal:draft")
+                calendar_ref: id("cal:deprecated")
             }));
         assert!(qualify_accepted_calculation(&g, &id("attr:count"), None).is_err());
     }

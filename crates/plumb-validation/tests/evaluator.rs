@@ -207,6 +207,17 @@ mod evaluator_contract {
                 json!({"agent_kind": "human"}),
             ),
         ];
+        // Stand-ins for the fixture rule targets, so a persisted Finding's existence-only
+        // affected_refs resolve (architecture §33.11). Agents touch neither the semantic nor the
+        // evidence hash, so the golden reports are unchanged.
+        for target in ["src:hr-policy", "src:hr-handbook"] {
+            all.push(node(
+                target,
+                "Accepted",
+                "Agent",
+                json!({"agent_kind": "software_service"}),
+            ));
+        }
         all.extend(nodes);
         Graph::new(id(PROJECT), id(PROFILE), all, edges).unwrap_or_else(|v| panic!("{v:?}"))
     }
@@ -2782,6 +2793,8 @@ mod evaluator_contract {
         let graph = build_graph(
             vec![
                 persisted,
+                // The persisted (stale) waiver_ref names an existing decision.
+                decision("dec:older", "Accepted", json!({"kind": "test"})),
                 decision(
                     "dec:waive-1",
                     "Accepted",

@@ -169,7 +169,7 @@ mod http_core {
             "Accepted",
             "Assumption",
             json!({
-                "statement": "Half days count as 0.5.", "owner_ref": "actor:employee",
+                "statement": "Half days count as 0.5.", "owner_ref": "agent:alice",
                 "status": "Open", "finding_ref": null, "default_value": default_value,
                 "expires_at": null, "risk_ref": null
             }),
@@ -369,6 +369,20 @@ mod http_core {
             ),
             decision("decision:d1", "cardinality", "agent:alice", T1),
             decision("decision:d2", "trigger", "agent:bob", T2),
+            // The decisions' and the assumptions' human Agents (graph-bound payload references,
+            // architecture §33.11).
+            node(
+                "agent:alice",
+                "Accepted",
+                "Agent",
+                json!({"agent_kind": "human"}),
+            ),
+            node(
+                "agent:bob",
+                "Accepted",
+                "Agent",
+                json!({"agent_kind": "human"}),
+            ),
         ];
         let edges = vec![
             edge("rel:spec-op", "specified_by", "req:a", "op:submit"),
