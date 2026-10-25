@@ -136,6 +136,7 @@ interface Backend {
   requirementStatus: string | null;
   turns: TurnResponse[];
   turnFails: boolean;
+  inferenceAvailable?: boolean;
   holdTurn: Promise<void> | null;
   metrics: { turns: number; proposals: number; requires_reason: number }[];
   action: (verb: string) => Response | null;
@@ -169,7 +170,7 @@ function handlers(backend: Backend) {
     });
   };
   return [
-    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"], inference_available: backend.inferenceAvailable ?? true })),
     http.get("*/api/model/version", () =>
       etagJson({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
@@ -478,6 +479,18 @@ describe("Session turns", () => {
     expect(window.sessionStorage.length).toBe(0);
   });
 
+  it("disables Start with an explanation when the server has no inference provider (Fable #355)", async () => {
+    const backend = newBackend({ inferenceAvailable: false });
+    server.use(...handlers(backend));
+    renderAt("/sessions");
+    const start = (await screen.findByTestId("session-start")) as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(true));
+    expect(screen.getByTestId("session-inference-unavailable").textContent).toBe(
+      "Sessions need an AI inference provider, and none is configured for this server.",
+    );
+    expect(posts(backend, "/api/sessions")).toHaveLength(0);
+  });
+
   it("appends nothing on a failed turn, keeps the draft and does not retry", async () => {
     const backend = newBackend({ turnFails: true });
     server.use(...handlers(backend));
@@ -485,7 +498,9 @@ describe("Session turns", () => {
     const user = userEvent.setup();
     await startSession(user, backend);
     await sendTurn(user, "Keep this draft.");
-    expect(await screen.findByRole("alert")).toBeTruthy();
+    // Fable #355: a turn-specific failure with the backend typed code and message.
+    const failure = await screen.findByTestId("turn-failed");
+    expect(failure.textContent).toBe("The turn failed: E_PROVIDER_FAILED provider failed");
     expect(screen.getByTestId("session-transcript").querySelectorAll("[data-role]")).toHaveLength(0);
     expect((screen.getByTestId("session-text") as HTMLTextAreaElement).value).toBe("Keep this draft.");
     await new Promise((resolve) => setTimeout(resolve, 50));

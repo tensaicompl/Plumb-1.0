@@ -86,6 +86,12 @@ async fn create_session(
     let runtime = state.runtime("workflow_store")?;
     let loaded = state.load_head()?;
     check_if_match(&headers, &loaded)?;
+    if !state.inference_available() {
+        return Err(ApiError::conflict(
+            "E_INFERENCE_UNAVAILABLE",
+            "sessions need an inference provider, and the null provider is configured",
+        ));
+    }
     let created_at = state.now();
     for id in &scope {
         let node = loaded
@@ -199,12 +205,24 @@ fn reconciled_turns(
     session: &Id,
 ) -> Result<Vec<WorkflowTurn>, ApiError> {
     let runtime = state.runtime("workflow_store")?;
+    if runtime.turn_in_flight(session)? {
+        return state
+            .with_workflow_store(|store| store.turns(session))?
+            .map_err(workflow_error);
+    }
+    reconcile_turns(state, loaded, session)
+}
+
+/// Settles the Prepared turns of `session` against `loaded` (the caller holds no other live
+/// turn of it): committed when every expected node is present, failed when none is.
+fn reconcile_turns(
+    state: &ApiState,
+    loaded: &LoadedRevision,
+    session: &Id,
+) -> Result<Vec<WorkflowTurn>, ApiError> {
     let turns = state
         .with_workflow_store(|store| store.turns(session))?
         .map_err(workflow_error)?;
-    if runtime.turn_in_flight(session)? {
-        return Ok(turns);
-    }
     let mut out = Vec::with_capacity(turns.len());
     for turn in turns {
         if turn.state != WorkflowTurnState::Prepared {
@@ -306,8 +324,9 @@ async fn create_session_turn(
     check_if_match(&headers, &loaded)?;
     let created_at = state.now();
     let (_, session) = owned_session(&state, &id)?;
-    reconciled_turns(&state, &loaded, &session.id)?;
+    // Claimed before any workflow write or provider call; a concurrent turn is 409.
     let _in_flight = runtime.begin_turn(&session.id)?;
+    reconcile_turns(&state, &loaded, &session.id)?;
     let turn = SessionUserTurn {
         text: request.text,
         user_actor_ref: state.actor_ref().clone(),

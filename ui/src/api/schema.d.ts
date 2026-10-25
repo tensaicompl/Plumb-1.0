@@ -1648,6 +1648,11 @@ export interface components {
             reason: string;
         };
         MeResponse: {
+            /**
+             * @description Whether this server can run inference (sessions and inference-requiring recipes): false
+             *     exactly when the configured provider mode is `null` (H0.11, Fable #355).
+             */
+            inference_available: boolean;
             mode: string;
             roles: string[];
             user: string;
@@ -3200,6 +3205,7 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "inference_available": true,
                      *       "mode": "example",
                      *       "roles": [
                      *         "example"

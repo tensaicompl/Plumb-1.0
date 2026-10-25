@@ -1703,6 +1703,10 @@
       "MeResponse": {
         "additionalProperties": false,
         "properties": {
+          "inference_available": {
+            "description": "Whether this server can run inference (sessions and inference-requiring recipes): false\nexactly when the configured provider mode is `null` (H0.11, Fable #355).",
+            "type": "boolean"
+          },
           "mode": {
             "type": "string"
           },
@@ -1719,7 +1723,8 @@
         "required": [
           "user",
           "roles",
-          "mode"
+          "mode",
+          "inference_available"
         ],
         "type": "object"
       },
@@ -3798,6 +3803,11 @@
         "status": 409
       },
       {
+        "code": "E_INFERENCE_UNAVAILABLE",
+        "meaning": "A session needs an inference provider and the null provider is configured.",
+        "status": 409
+      },
+      {
         "code": "E_INTAKE_REASON_REQUIRED",
         "meaning": "Intake requires a non-blank reason for this change.",
         "status": 409
@@ -4016,6 +4026,11 @@
         "code": "E_SESSION_NOT_OWNED",
         "meaning": "The session belongs to another user.",
         "status": 403
+      },
+      {
+        "code": "E_SESSION_TURN_IN_FLIGHT",
+        "meaning": "A turn of the session is still in flight; nothing was written.",
+        "status": 409
       },
       {
         "code": "E_SOURCE_CONFLICT",
@@ -5232,6 +5247,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "inference_available": true,
                   "mode": "example",
                   "roles": [
                     "example"

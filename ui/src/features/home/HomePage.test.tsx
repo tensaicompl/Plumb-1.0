@@ -113,7 +113,7 @@ afterEach(() => {
 
 // ------------------------------------------------------------------ fixtures
 
-const ME: Me = { user: "alice", mode: "pilot", roles: ["analyst", "reviewer"] };
+const ME: Me = { user: "alice", mode: "pilot", roles: ["analyst", "reviewer"], inference_available: true };
 
 const VERSION: ModelVersion = {
   version: "rev:7:aaaaaaaaaaaaaaaa",
@@ -734,7 +734,7 @@ describe("HomePage routing and accessibility", () => {
 
 describe("HomePage role membership", () => {
   it("uses exactly the server-returned roles", () => {
-    const me: Me = { user: "alice", mode: "pilot", roles: ["analyst"] };
+    const me: Me = { user: "alice", mode: "pilot", roles: ["analyst"], inference_available: true };
     expect(app.auth.hasRole(me, "analyst")).toBe(true);
     expect(app.auth.hasRole(me, "architect")).toBe(false);
     expect(app.auth.hasRole(me, "Analyst")).toBe(false);

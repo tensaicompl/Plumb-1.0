@@ -105,6 +105,7 @@ async fn get_me(State(state): State<ApiState>) -> Result<Response, ApiError> {
             user: identity.user().to_owned(),
             roles: identity.roles().to_vec(),
             mode: identity.mode().to_owned(),
+            inference_available: state.inference_available(),
         },
     ))
 }

@@ -6,6 +6,7 @@ import type { components } from "../../api/schema";
 import { modelVersionQueryKey, useModelVersion, useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { fetchQuestions, QuestionAnswerCard, questionsQueryKey, writeErrorCode } from "../questions/QuestionsPage";
+import { useMe } from "../../app/auth";
 import { ProposalCard } from "./ProposalCard";
 
 type SessionStage = components["schemas"]["SessionStage"];
@@ -117,6 +118,9 @@ export function SessionPanel(props: SessionPanelProps) {
     version.data?.etag,
   );
   const versionReady = version.data !== undefined && !version.isFetching;
+  // Fable #355: the server refuses sessions without an inference provider; so does the UI.
+  const me = useMe();
+  const inferenceAvailable = me.data?.inference_available !== false;
   const metrics = useQuery({
     queryKey: sessionMetricsKey(sessionId ?? ""),
     queryFn: () => fetchMetrics(sessionId ?? ""),
@@ -196,9 +200,20 @@ export function SessionPanel(props: SessionPanelProps) {
 
       {sessionId === null ? (
         <>
-          <button type="button" className="rounded border px-3 py-1" data-testid="session-start" disabled={!scopeReady || create.isPending} onClick={startSession}>
+          <button
+            type="button"
+            className="rounded border px-3 py-1"
+            data-testid="session-start"
+            disabled={!scopeReady || !inferenceAvailable || me.data === undefined || create.isPending}
+            onClick={startSession}
+          >
             {t("session.start")}
           </button>
+          {!inferenceAvailable && (
+            <p className="text-sm text-slate-600" data-testid="session-inference-unavailable">
+              {t("session.inferenceUnavailable")}
+            </p>
+          )}
           <WriteError error={create.error} />
         </>
       ) : (
@@ -276,7 +291,12 @@ export function SessionPanel(props: SessionPanelProps) {
                 {t("session.waiting")}
               </p>
             )}
-            <WriteError error={turn.error} />
+            {turn.error instanceof WriteFailedError && (
+              <p role="alert" className="text-sm text-red-800" data-testid="turn-failed">
+                {t("session.turnFailed")} <span className="font-mono">{writeErrorCode(turn.error) ?? String(turn.error.status)}</span>{" "}
+                <span>{writeErrorMessage(turn.error)}</span>
+              </p>
+            )}
           </form>
         </>
       )}

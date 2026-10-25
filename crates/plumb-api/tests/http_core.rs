@@ -1313,7 +1313,7 @@ mod http_core {
         let me = get(&app, "/api/me").await.json();
         assert_eq!(
             me,
-            json!({"user": "alice", "roles": ["analyst", "reviewer"], "mode": "pilot"})
+            json!({"user": "alice", "roles": ["analyst", "reviewer"], "mode": "pilot", "inference_available": true})
         );
         let version = get(&app, "/api/model/version").await.json();
         let h = head(&app).revision;

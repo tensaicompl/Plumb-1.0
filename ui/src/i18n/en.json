@@ -576,6 +576,8 @@
   "session.transcript": "Transcript (this page only)",
   "session.waiting": "Waiting for assistant…",
   "session.you": "You:",
+  "session.inferenceUnavailable": "Sessions need an AI inference provider, and none is configured for this server.",
+  "session.turnFailed": "The turn failed:",
   "shell.identityFailed": "The current user could not be loaded.",
   "shell.mode": "Mode",
   "shell.roles": "Roles",

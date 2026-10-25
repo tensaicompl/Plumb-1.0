@@ -232,12 +232,19 @@ impl Drop for InFlightTurn<'_> {
 impl A03Runtime {
     /// Marks `session` as having a turn in flight in this instance.
     pub(crate) fn begin_turn(&self, session: &Id) -> Result<InFlightTurn<'_>, ApiError> {
-        *self
+        let mut in_flight = self
             .in_flight_sessions
             .lock()
-            .map_err(|_| ApiError::internal("session_turns"))?
-            .entry(session.clone())
-            .or_default() += 1;
+            .map_err(|_| ApiError::internal("session_turns"))?;
+        // Fable #207: one turn per session at a time, refused before any write or provider call.
+        if in_flight.contains_key(session) {
+            return Err(ApiError::conflict(
+                "E_SESSION_TURN_IN_FLIGHT",
+                "a turn of this session is still in flight",
+            )
+            .with_details(json!({ "session": session })));
+        }
+        *in_flight.entry(session.clone()).or_default() += 1;
         Ok(InFlightTurn {
             runtime: self,
             session: session.clone(),
@@ -516,6 +523,15 @@ impl ApiState {
             .runtime
             .as_ref()
             .ok_or_else(|| ApiError::runtime_unavailable(capability))
+    }
+
+    /// Whether inference can run: false exactly when the stage runtime configures the `null`
+    /// provider mode (H0.11, Fable #355).
+    pub(crate) fn inference_available(&self) -> bool {
+        !matches!(
+            self.inner.stage.as_ref().map(|a04| &a04.provider_mode),
+            Some(ProviderMode::Null)
+        )
     }
 
     /// The A0.4 stage runtime, or 503 naming the missing `capability`.

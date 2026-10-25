@@ -576,6 +576,8 @@
   "session.transcript": "Transkrypcja (tylko ta strona)",
   "session.waiting": "Oczekiwanie na asystenta…",
   "session.you": "Ty:",
+  "session.inferenceUnavailable": "Sesje wymagają dostawcy wnioskowania AI, a na tym serwerze żaden nie jest skonfigurowany.",
+  "session.turnFailed": "Tura nie powiodła się:",
   "shell.identityFailed": "Nie udało się wczytać bieżącego użytkownika.",
   "shell.mode": "Tryb",
   "shell.roles": "Role",

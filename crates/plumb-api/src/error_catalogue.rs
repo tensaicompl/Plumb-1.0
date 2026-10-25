@@ -150,6 +150,11 @@ pub const ERROR_CATALOGUE: &[CatalogueEntry] = &[
         "The operation requires inference and the null provider is configured.",
     ),
     entry(
+        "E_INFERENCE_UNAVAILABLE",
+        409,
+        "A session needs an inference provider and the null provider is configured.",
+    ),
+    entry(
         "E_INTAKE_REASON_REQUIRED",
         409,
         "Intake requires a non-blank reason for this change.",
@@ -356,6 +361,11 @@ pub const ERROR_CATALOGUE: &[CatalogueEntry] = &[
         "E_SESSION_NOT_OWNED",
         403,
         "The session belongs to another user.",
+    ),
+    entry(
+        "E_SESSION_TURN_IN_FLIGHT",
+        409,
+        "A turn of the session is still in flight; nothing was written.",
     ),
     entry(
         "E_SOURCE_CONFLICT",

@@ -851,6 +851,9 @@ pub struct MeResponse {
     pub user: String,
     pub roles: Vec<String>,
     pub mode: String,
+    /// Whether this server can run inference (sessions and inference-requiring recipes): false
+    /// exactly when the configured provider mode is `null` (H0.11, Fable #355).
+    pub inference_available: bool,
 }
 
 /// Model identity. `version` == `revision` and `hash` == `semantic_hash` (compatibility

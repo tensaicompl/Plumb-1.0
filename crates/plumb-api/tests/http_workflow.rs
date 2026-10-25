@@ -476,6 +476,9 @@ mod http_workflow {
         probe: Mutex<Option<(Router, Vec<String>)>>,
         /// The probe statuses, or `None` when a probe did not finish in time (a held lock).
         probed: Mutex<Option<Option<Vec<StatusCode>>>>,
+        /// When set, the provider call signals the first channel and blocks until the second
+        /// receives (a turn held in flight).
+        hold: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     }
 
     /// GETs `uris` through `router` from a fresh thread and runtime, giving up after 20 s.
@@ -547,6 +550,13 @@ mod http_workflow {
             }
             if let Some(path) = self.race.lock().unwrap().take() {
                 concurrent_commit(&path);
+            }
+            let hold = self.hold.lock().unwrap().take();
+            if let Some((entered, release)) = hold {
+                entered.send(()).unwrap();
+                release
+                    .recv_timeout(std::time::Duration::from_secs(20))
+                    .unwrap();
             }
             let mode = *self.mode.lock().unwrap();
             let proposals = match mode {
@@ -750,6 +760,7 @@ mod http_workflow {
             received: Mutex::new(Vec::new()),
             probe: Mutex::new(None),
             probed: Mutex::new(None),
+            hold: Mutex::new(None),
         });
         let state = state_at_profile(
             &path,
@@ -3194,6 +3205,7 @@ mod http_workflow {
             received: Mutex::new(Vec::new()),
             probe: Mutex::new(None),
             probed: Mutex::new(None),
+            hold: Mutex::new(None),
         });
         let runtime = plumb_api::application::ApplicationRuntime {
             inference_provider: inference
@@ -4855,6 +4867,84 @@ mod http_workflow {
             Some(json!({"text": text, "stage": "S1"})),
         )
         .await
+    }
+
+    /// Fable #355: under the null provider mode GET /api/me says inference is unavailable and
+    /// session creation is refused with a typed error before anything is written.
+    #[tokio::test]
+    async fn null_provider_refuses_sessions_and_says_so() {
+        let null = application_app(fixture_graph());
+        let me = get(&null, "/api/me").await.json();
+        assert_eq!(me["inference_available"], false, "{me}");
+        let before = revision(&null).await;
+        assert_error(
+            &create_session(&null, json!([])).await,
+            StatusCode::CONFLICT,
+            "E_INFERENCE_UNAVAILABLE",
+        );
+        assert_eq!(revision(&null).await, before);
+        // A configured provider is available.
+        let live = app();
+        assert_eq!(
+            get(&live, "/api/me").await.json()["inference_available"],
+            true
+        );
+    }
+
+    /// Fable #207 / #235: a turn request for a session whose turn is in flight is 409
+    /// E_SESSION_TURN_IN_FLIGHT before any workflow write or provider call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_turn_on_one_session_is_rejected_while_in_flight() {
+        let app = app();
+        let r = create_session(&app, json!([])).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let session = r.json()["id"].as_str().unwrap().to_owned();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *app.provider.hold.lock().unwrap() = Some((entered_tx, release_rx));
+        let tag = etag(&app).await;
+        let router = app.router.clone();
+        let first_session = session.clone();
+        let first_tag = tag.clone();
+        let first = tokio::spawn(async move {
+            let request = Request::post(format!("/api/sessions/{first_session}/turns"))
+                .header("if-match", first_tag)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"text": "Employees request leave.", "stage": "S1"}))
+                        .unwrap(),
+                ))
+                .unwrap();
+            send(&router, request).await
+        });
+        tokio::task::spawn_blocking(move || {
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        let turns_before = workflow(&app).turns(&id(&session)).unwrap();
+        let second = post(
+            &app,
+            &format!("/api/sessions/{session}/turns"),
+            Some(&tag),
+            Some(json!({"text": "Managers approve.", "stage": "S1"})),
+        )
+        .await;
+        assert_error(&second, StatusCode::CONFLICT, "E_SESSION_TURN_IN_FLIGHT");
+        assert_eq!(
+            app.provider.received.lock().unwrap().len(),
+            1,
+            "no second provider call"
+        );
+        assert_eq!(workflow(&app).turns(&id(&session)).unwrap(), turns_before);
+        release_tx.send(()).unwrap();
+        let first = first.await.unwrap();
+        assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+        // After the turn completes the session accepts the next one.
+        let r = turn(&app, &session, "Managers approve.").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
     }
 
     #[tokio::test]

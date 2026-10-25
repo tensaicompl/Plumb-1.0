@@ -2607,8 +2607,10 @@ mod http_stages {
         assert_eq!(head(&app).revision.id, before);
     }
 
+    /// Fable #355 (replacing the former 502-per-turn behaviour): under the null provider mode a
+    /// session is refused at creation with a typed error, before anything is written.
     #[tokio::test]
-    async fn null_provider_session_turn_stays_inference_failed() {
+    async fn null_provider_refuses_session_creation() {
         let mut nodes = agents();
         nodes.push(requirement(
             "req:a",
@@ -2622,6 +2624,7 @@ mod http_stages {
             null_gates(),
             Some(Arc::new(plumb_inference::NullProvider)),
         );
+        let before = head(&app).revision.id;
         let tag = head_tag(&app).await;
         let created = post(
             &app,
@@ -2631,23 +2634,10 @@ mod http_stages {
         )
         .await;
         assert_eq!(
-            created.status,
-            StatusCode::OK,
-            "{}",
-            String::from_utf8_lossy(&created.bytes)
+            (created.status, created.code().as_str()),
+            (StatusCode::CONFLICT, "E_INFERENCE_UNAVAILABLE")
         );
-        let session = created.json()["id"].as_str().unwrap().to_owned();
-        let tag = head_tag(&app).await;
-        let r = post(
-            &app,
-            &format!("/api/sessions/{session}/turns"),
-            Some(&tag),
-            json!({"text": "Managers shall approve leave requests.", "stage": "S1"}),
-        )
-        .await;
-        assert_eq!(r.status, StatusCode::BAD_GATEWAY);
-        assert_eq!(r.code(), "E_INFERENCE_FAILED");
-        assert_eq!(r.json()["details"]["error"], "ProviderDisabled");
+        assert_eq!(head(&app).revision.id, before);
     }
 
     // ------------------------------------------------------------------ R0.3 proposal sets
