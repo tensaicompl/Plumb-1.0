@@ -35,9 +35,10 @@ mod incremental_contract {
         RuntimeSemanticValue, ScenarioVerdict, SimulationError,
     };
     use plumb_sim::{
-        rerun_dirty_scenarios, scenario_run_currency, select_dirty_scenarios, IncrementalError,
-        IncrementalScenarioPolicy, IncrementalScenarioResult, IncrementalScenarioRuntime,
-        ScenarioRunCurrency, SCENARIO_FAIL_CODE, SCENARIO_FAIL_CONDITION, SCENARIO_FINDING_FAMILY,
+        rerun_dirty_scenarios, scenario_run_currency, scenario_run_currency_since,
+        select_dirty_scenarios, IncrementalError, IncrementalScenarioPolicy,
+        IncrementalScenarioResult, IncrementalScenarioRuntime, ScenarioRunCurrency,
+        SCENARIO_FAIL_CODE, SCENARIO_FAIL_CONDITION, SCENARIO_FINDING_FAMILY,
         SCENARIO_UNDECIDABLE_CODE, SCENARIO_UNDECIDABLE_CONDITION,
     };
     use plumb_validation::{finding_id, finding_key, GeneratedFinding};
@@ -1037,6 +1038,74 @@ mod incremental_contract {
             .unwrap(),
             ScenarioRunCurrency::StaleSpecification
         );
+    }
+
+    #[test]
+    fn only_a_run_whose_own_dependencies_changed_is_stale() {
+        // §33.11: a ScenarioRun for an older dependency state is stale, never current; a run
+        // whose dependencies are unchanged on a newer baseline stays current.
+        let mut w = selection_world();
+        w.add(invariant("invariant:limit", AMOUNT, "amount < 100"))
+            .add(invariant("invariant:fee", FEE, "fee > 0"))
+            .link(RelationKind::Writes, SUBMIT, AMOUNT);
+        let cal = calendars(&[]);
+        let inputs = || {
+            scopes(vec![
+                scope(SUBMIT, &[(AMOUNT, "amount")]),
+                scope(RULE, &[(AMOUNT, "amount")]),
+                scope("invariant:limit", &[(AMOUNT, "amount")]),
+                scope("invariant:fee", &[(FEE, "fee")]),
+            ])
+        };
+        let runtimes = [IncrementalScenarioRuntime {
+            scenario_ref: id(S_SUBMIT),
+            runtime: runtime(&cal, &NO_MANAGERS, Some(ALICE), Vec::new()),
+        }];
+        let recorded_run = rerun(&w, inputs(), &["invariant:limit"], &runtimes, &[]).unwrap();
+        let body = &recorded_run.comparisons[0].trace_artifact.body;
+        let recorded_graph = w.graph();
+        let recorded = build_execution_model(&recorded_graph, inputs()).unwrap();
+        let alice = id(ALICE);
+        let currency = |current: &World| {
+            let graph = current.graph();
+            let model = build_execution_model(&graph, inputs()).unwrap();
+            assert_ne!(model.semantic_hash(), &body.model_semantic_hash);
+            scenario_run_currency_since(
+                &model,
+                &recorded,
+                &id(S_SUBMIT),
+                &body.specification_hash,
+                &body.model_semantic_hash,
+                Some(&alice),
+            )
+            .unwrap()
+        };
+        // An edit outside the Scenario's dependencies: still current.
+        let mut unrelated = w.clone();
+        unrelated.add(invariant("invariant:fee", FEE, "fee > 1"));
+        assert_eq!(currency(&unrelated), ScenarioRunCurrency::Current);
+        // An edit of one of its dependencies: stale.
+        let mut edited = w.clone();
+        edited.add(invariant("invariant:limit", AMOUNT, "amount < 10"));
+        assert_eq!(currency(&edited), ScenarioRunCurrency::StaleDependencies);
+        // A new dependency (an Invariant now scoped to its footprint): stale.
+        let mut added = w.clone();
+        added.add(invariant("invariant:new", AMOUNT, "amount > 0"));
+        assert_eq!(currency(&added), ScenarioRunCurrency::StaleDependencies);
+        // The recorded model must be the run's own baseline.
+        let graph = edited.graph();
+        let model = build_execution_model(&graph, inputs()).unwrap();
+        assert!(matches!(
+            scenario_run_currency_since(
+                &model,
+                &model,
+                &id(S_SUBMIT),
+                &body.specification_hash,
+                &body.model_semantic_hash,
+                Some(&alice),
+            ),
+            Err(IncrementalError::RecordedModelMismatch { .. })
+        ));
     }
 
     #[test]
