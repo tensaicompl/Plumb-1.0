@@ -126,6 +126,84 @@ pub struct CliConfig {
     pub question_routing: Option<StakeholderRoutingConfig>,
 }
 
+/// A JSON document decoded exactly as [`Value`], except that an object with a duplicate member
+/// name at any depth is an error (never "last one wins").
+struct StrictJson(Value);
+
+impl<'de> Deserialize<'de> for StrictJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer
+            .deserialize_any(StrictJsonVisitor)
+            .map(StrictJson)
+    }
+}
+
+struct StrictJsonVisitor;
+
+impl<'de> serde::de::Visitor<'de> for StrictJsonVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+        Ok(Value::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+        Ok(Value::from(v))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+        Ok(Value::from(v))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Value, E> {
+        serde_json::Number::from_f64(v)
+            .map(Value::Number)
+            .ok_or_else(|| E::custom("non-finite number"))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+        Ok(Value::String(v.to_owned()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Value, E> {
+        Ok(Value::String(v))
+    }
+
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_none<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut items = Vec::new();
+        while let Some(StrictJson(item)) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(Value::Array(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut object = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let StrictJson(value) = map.next_value()?;
+            if object.contains_key(&key) {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate object key {key:?}"
+                )));
+            }
+            object.insert(key, value);
+        }
+        Ok(Value::Object(object))
+    }
+}
+
 /// Requires `value` to be an object with exactly `fields` (nullable values must be present).
 fn exact_fields(value: &Value, fields: &[&str], what: &str) -> Result<(), ConfigError> {
     exact_fields_with(value, fields, &[], what)
@@ -170,11 +248,12 @@ impl CliConfig {
         CliConfig::parse(&bytes)
     }
 
-    /// Strictly decodes configuration bytes: exactly the frozen fields, version 1, and every
-    /// value in its existing typed serde form.
+    /// Strictly decodes configuration bytes: JSON without duplicate object keys at any depth
+    /// (architecture §33.9), exactly the frozen fields, version 1, and every value in its
+    /// existing typed serde form.
     pub fn parse(bytes: &[u8]) -> Result<CliConfig, ConfigError> {
-        let value: Value = serde_json::from_slice(bytes)
-            .map_err(|e| ConfigError::Invalid(format!("not JSON: {e}")))?;
+        let StrictJson(value) = serde_json::from_slice(bytes)
+            .map_err(|e| ConfigError::Invalid(format!("not strict JSON: {e}")))?;
         exact_fields_with(&value, &FIELDS, &OPTIONAL_FIELDS, "the configuration")?;
         exact_fields(&value["gates"], &GATE_FIELDS, "gates")?;
         for field in OPTIONAL_FIELDS {

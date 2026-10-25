@@ -503,6 +503,7 @@ async fn run_scenarios(
         })?;
         match stored {
             Ok(hash) if hash == item.trace_hash => {}
+            Err(e) => return Err(ApiError::artifact_store(&e, "artifact_store")),
             _ => return Err(ApiError::internal("artifact_store")),
         }
         updates.push(item.update);

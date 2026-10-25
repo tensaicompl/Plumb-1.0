@@ -464,7 +464,7 @@ impl Run<'_> {
                 .with_artifact_store(|store| {
                     store.put(ArtifactKind::ScenarioTrace, "application/json", bytes, now)
                 })?
-                .map_err(|_| ApiError::internal("artifact_store"))?;
+                .map_err(|e| ApiError::artifact_store(&e, "artifact_store"))?;
             if &stored != hash {
                 return Err(StepEnd::Failed(ApiError::internal("artifact_store")));
             }
@@ -559,7 +559,7 @@ fn put_projection(state: &ApiState, bytes: &[u8]) -> Result<Hash, ApiError> {
                 state.now(),
             )
         })?
-        .map_err(|_| ApiError::internal("artifact_store"))
+        .map_err(|e| ApiError::artifact_store(&e, "artifact_store"))
 }
 
 /// Rebuilds the exact acquired ArtifactSet of a persisted run (reuse of a stored child),

@@ -1298,7 +1298,10 @@ impl ApiState {
                 let at = self.now();
                 let evaluated =
                     evaluate_gate(self, loaded, gate, &a04.validation_policy, Some(at))?;
-                persist_report(self, loaded, &evaluated, None, at)?;
+                // A read-only instance evaluates in memory and persists nothing (H0.9).
+                if !self.is_read_only() {
+                    persist_report(self, loaded, &evaluated, None, at)?;
+                }
                 Ok(evaluated.report)
             }
             other => other,

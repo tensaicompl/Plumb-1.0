@@ -23,7 +23,7 @@ use plumb_sim::{
 };
 use plumb_store::{
     BranchName, RevisionId, RevisionWriteMeta, SqliteRevisionStore, SqliteStageStore,
-    SqliteWorkflowStore, StoreError,
+    SqliteWorkflowStore, StoreError, StoreOpenMode,
 };
 use plumb_validation::{ValidationPolicy, ValidationProfile};
 use serde::Serialize;
@@ -32,7 +32,7 @@ use thiserror::Error;
 use crate::runtime::{
     A04RuntimeConfig, CalendarConfig, DirectManagerFact, GateInputsConfig, ProviderMode,
 };
-use crate::state::{A03RuntimeConfig, ApiIdentity, ApiState, ApiStateError};
+use crate::state::{A03RuntimeConfig, ApiIdentity, ApiState, ApiStateError, OpenMode};
 
 /// Why the application cannot be opened or initialized.
 #[derive(Debug, Error)]
@@ -53,7 +53,47 @@ pub enum ApplicationError {
     /// The requested branch has no head in this database.
     #[error("branch {0} does not exist in this database (only main exists; branches cannot be created yet)")]
     UnknownBranch(String),
+    /// A runtime policy a later stage or session would use is invalid (architecture §33.9):
+    /// rejected when the application runtime is built, before any inference.
+    #[error("invalid runtime configuration: {field}: {reason}")]
+    InvalidRuntime { field: &'static str, reason: String },
 }
+
+impl ApplicationError {
+    /// The stable error code of this failure, when it has one (architecture §33.9).
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            ApplicationError::Store(error) => {
+                crate::error::ApiError::store_class(error.class()).map(|e| e.body().code)
+            }
+            ApplicationError::UnknownBranch(_) => Some("E_BRANCH_NOT_FOUND"),
+            ApplicationError::InvalidRuntime { .. } => Some("E_RUNTIME_CONFIG_INVALID"),
+            ApplicationError::Artifacts(_) => None,
+            // The stage start reports its typed API error as `CODE: message`.
+            ApplicationError::State(ApiStateError::StageRuntime(message)) => {
+                STATE_CODES.iter().copied().find(|code| {
+                    message
+                        .strip_prefix(code)
+                        .is_some_and(|rest| rest.starts_with(':'))
+                })
+            }
+            ApplicationError::State(ApiStateError::DuplicateExpressionScope(_)) => {
+                Some("E_RUNTIME_CONFIG_INVALID")
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The typed store codes a stage start can report (see [`ApplicationError::code`]).
+const STATE_CODES: [&str; 6] = [
+    "E_BRANCH_NOT_FOUND",
+    "E_DATABASE_NOT_INITIALIZED",
+    "E_DATABASE_BUSY",
+    "E_DATABASE_READ_ONLY",
+    "E_STORE_CORRUPT",
+    "E_STORE_VERSION_UNSUPPORTED",
+];
 
 /// The typed runtime material of one application instance: the A0.3 runtime inputs and the
 /// A0.4 stage inputs, each already validated by its loader.
@@ -88,7 +128,8 @@ pub struct ApplicationRuntime {
 }
 
 /// Opens the revision, artifact, workflow and stage stores over `db` and builds the full A0.4
-/// state for `branch` (startup-injected gate reports: none; durable reports are current).
+/// state for `branch` (startup-injected gate reports: none; durable reports are current), in
+/// the `Interactive` mode.
 pub fn open_application(
     db: &Path,
     branch: BranchName,
@@ -97,14 +138,150 @@ pub fn open_application(
     profile: ValidationProfile,
     runtime: ApplicationRuntime,
 ) -> Result<ApiState, ApplicationError> {
-    let revision_store = SqliteRevisionStore::open(db)?;
+    open_application_in(
+        OpenMode::Interactive,
+        db,
+        branch,
+        identity,
+        clock,
+        profile,
+        runtime,
+    )
+}
+
+/// Every runtime policy a later stage or session uses is valid (architecture §33.9), and the
+/// identity, stage and assistant actors are pairwise distinct. Checked before any store opens.
+pub fn validate_runtime(
+    identity: &ApiIdentity,
+    runtime: &ApplicationRuntime,
+) -> Result<(), ApplicationError> {
+    let invalid =
+        |field: &'static str, reason: String| ApplicationError::InvalidRuntime { field, reason };
+    let actors: BTreeSet<&Id> = [
+        identity.actor_ref(),
+        &runtime.stage_actor_ref,
+        &runtime.assistant_actor_ref,
+    ]
+    .into_iter()
+    .collect();
+    if actors.len() != 3 {
+        return Err(invalid(
+            "identity",
+            "identity.actor_ref, stage_actor_ref and assistant_actor_ref must be pairwise \
+             distinct"
+                .to_owned(),
+        ));
+    }
+    runtime
+        .duplicate_policy
+        .validate()
+        .map_err(|e| invalid("duplicate_policy", e.to_string()))?;
+    runtime
+        .vocabulary_policy
+        .validate()
+        .map_err(|e| invalid("vocabulary_policy", e.to_string()))?;
+    runtime
+        .session_turn_config
+        .validate()
+        .map_err(|e| invalid("session_turn", e.to_string()))?;
+    runtime
+        .provider_policy
+        .validate()
+        .map_err(|e| invalid("provider_policy", e.to_string()))?;
+    let mut calendars = BTreeSet::new();
+    for calendar in &runtime.calendar_configs {
+        calendar
+            .validate()
+            .map_err(|e| invalid("calendars", e.to_string()))?;
+        if !calendars.insert(&calendar.calendar_ref) {
+            return Err(invalid(
+                "calendars",
+                format!("calendar {} is defined twice", calendar.calendar_ref),
+            ));
+        }
+    }
+    crate::runtime::DirectManagerPredicates::new(&runtime.direct_managers)
+        .map_err(|e| invalid("direct_managers", e.to_string()))?;
+    let mut owners = BTreeSet::new();
+    for scope in &runtime.expression_scopes {
+        if !owners.insert(&scope.owner_ref) {
+            return Err(invalid(
+                "expression_scopes",
+                format!("owner {} is configured more than once", scope.owner_ref),
+            ));
+        }
+    }
+    if let Some(inputs) = &runtime.scenario_derivation {
+        let tables: Vec<&Id> = inputs
+            .decision_tables
+            .iter()
+            .map(|t| &t.decision_table_ref)
+            .collect();
+        if tables.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(invalid(
+                "scenario_derivation",
+                "decision-table inputs are unsorted or duplicated".to_owned(),
+            ));
+        }
+        let boundaries: Vec<(&String, &Id)> = inputs
+            .boundaries
+            .iter()
+            .map(|b| (&b.boundary_key, &b.subject_ref))
+            .collect();
+        if boundaries.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(invalid(
+                "scenario_derivation",
+                "boundary inputs are unsorted or duplicated".to_owned(),
+            ));
+        }
+    }
+    if let Some(inputs) = &runtime.verification_applicability {
+        let mut sources = BTreeSet::new();
+        for source in &inputs.sources {
+            if !sources.insert(&source.source_ref) {
+                return Err(invalid(
+                    "verification_applicability",
+                    format!("source {} is listed more than once", source.source_ref),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// [`open_application`] in `mode` (architecture §33.9): the runtime is validated first; every
+/// store then opens the existing database without ever creating a schema (`ReadOnly`: SQLite
+/// read-only access, no journal-mode change, no worker, recovery or reconciliation).
+pub fn open_application_in(
+    mode: OpenMode,
+    db: &Path,
+    branch: BranchName,
+    identity: ApiIdentity,
+    clock: Arc<dyn Clock + Send + Sync>,
+    profile: ValidationProfile,
+    runtime: ApplicationRuntime,
+) -> Result<ApiState, ApplicationError> {
+    validate_runtime(&identity, &runtime)?;
+    let store_mode = match mode {
+        OpenMode::Interactive => StoreOpenMode::Existing,
+        OpenMode::ReadOnly => StoreOpenMode::ReadOnly,
+    };
+    let revision_store = SqliteRevisionStore::open_with(db, store_mode)?;
     if revision_store.head(&branch)?.is_none() {
         return Err(ApplicationError::UnknownBranch(branch.to_string()));
     }
-    let artifact_store =
-        SqliteArtifactStore::open(db).map_err(|e| ApplicationError::Artifacts(e.to_string()))?;
-    let workflow_store = SqliteWorkflowStore::open(db)?;
-    let stage_store = SqliteStageStore::open(db)?;
+    let artifact_store = match mode {
+        OpenMode::Interactive => SqliteArtifactStore::open_existing(db),
+        OpenMode::ReadOnly => SqliteArtifactStore::open_read_only(db),
+    }
+    .map_err(|e| match e {
+        plumb_artifacts::ArtifactStoreError::NotInitialized => {
+            ApplicationError::Store(StoreError::DatabaseNotInitialized)
+        }
+        other => ApplicationError::Artifacts(other.to_string()),
+    })?;
+    let workflow_store = SqliteWorkflowStore::open_with(db, store_mode)?;
+    let stage_store = SqliteStageStore::open_with(db, store_mode)?;
     let a03 = A03RuntimeConfig {
         workflow_store,
         inference_provider: runtime.inference_provider,
@@ -136,7 +313,8 @@ pub fn open_application(
         directory: runtime.directory,
         question_routing: runtime.question_routing,
     };
-    Ok(ApiState::new_with_stage_runtime(
+    Ok(ApiState::new_with_stage_runtime_in(
+        mode,
         branch,
         revision_store,
         artifact_store,
@@ -824,6 +1002,7 @@ mod services {
                 })?;
                 match stored {
                     Ok(hash) if hash == artifact.hash => {}
+                    Err(e) => return Err(ApiError::artifact_store(&e, "artifact_store")),
                     _ => return Err(ApiError::internal("artifact_store")),
                 }
             }
@@ -1362,6 +1541,7 @@ mod services {
                 })?;
                 match stored {
                     Ok(hash) if hash == member.companion.patch_ref => {}
+                    Err(e) => return Err(ApiError::artifact_store(&e, "artifact_store")),
                     _ => return Err(ApiError::internal("artifact_store")),
                 }
             }
@@ -1479,6 +1659,7 @@ mod services {
             })?;
             match stored {
                 Ok(hash) if hash == result.decision.patch_ref => {}
+                Err(e) => return Err(ApiError::artifact_store(&e, "artifact_store")),
                 _ => return Err(ApiError::internal("artifact_store")),
             }
             let report = run_intake(loaded, &result.proposal)?;

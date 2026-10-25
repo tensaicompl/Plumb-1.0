@@ -28,6 +28,7 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
 serde_yaml = { workspace = true }
+rusqlite = { workspace = true }
 
 [features]
 default = []

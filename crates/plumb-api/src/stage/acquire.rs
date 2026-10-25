@@ -83,7 +83,7 @@ pub(crate) fn acquire(
                     created_at,
                 )
             })?
-            .map_err(|_| ApiError::internal("artifact_store"))?;
+            .map_err(|e| ApiError::artifact_store(&e, "artifact_store"))?;
         deterministic.push(ArtifactInput {
             hash,
             kind: planned.kind,

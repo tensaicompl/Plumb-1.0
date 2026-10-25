@@ -643,9 +643,10 @@ mod revisions {
         drop(store);
         // Back to the rollback journal: a read-only open never changes the journal mode.
         db.exec("PRAGMA journal_mode = DELETE;");
-        let mut perms = std::fs::metadata(&db.path).unwrap().permissions();
+        let original = std::fs::metadata(&db.path).unwrap().permissions();
+        let mut perms = original.clone();
         perms.set_readonly(true);
-        std::fs::set_permissions(&db.path, perms.clone()).unwrap();
+        std::fs::set_permissions(&db.path, perms).unwrap();
         let bytes = std::fs::read(&db.path).unwrap();
         let mut read_only = SqliteRevisionStore::open_read_only(&db.path).unwrap();
         let workflow = SqliteWorkflowStore::open_read_only(&db.path).unwrap();
@@ -675,8 +676,7 @@ mod revisions {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(journal, "delete");
-        perms.set_readonly(false);
-        std::fs::set_permissions(&db.path, perms).unwrap();
+        std::fs::set_permissions(&db.path, original).unwrap();
     }
 
     #[test]
