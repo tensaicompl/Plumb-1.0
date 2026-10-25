@@ -8,6 +8,7 @@ import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../..
 import { t } from "../../i18n";
 import { errorCode, isBaselineChanged, SemanticChangePreviewPanel, type SemanticChangePreview } from "../requirements/RequirementDetail";
 import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 type GlossaryPage = components["schemas"]["GlossaryPage"];
 type WriteResult = components["schemas"]["WriteResult"];
@@ -179,6 +180,7 @@ export function GlossaryPage() {
         </>
       )}
 
+      <RoleGate>
       <section aria-label={t("glossary.merge.title")} className="space-y-2 rounded border p-3">
         <h2 className="font-semibold">{t("glossary.merge.title")}</h2>
         <label className="block text-sm">
@@ -221,6 +223,7 @@ export function GlossaryPage() {
           />
         )}
       </section>
+      </RoleGate>
     </div>
   );
 }

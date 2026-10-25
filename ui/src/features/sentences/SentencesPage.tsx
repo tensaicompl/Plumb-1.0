@@ -16,6 +16,7 @@ import {
   writeErrorCode,
   type Question,
 } from "../questions/QuestionsPage";
+import { RoleGate } from "../../components/RoleGate";
 
 type Sentence = components["schemas"]["Sentence"];
 type SentencePage = components["schemas"]["SentencePage"];
@@ -118,6 +119,7 @@ function SentenceReview({ sentence, openQuestions }: { sentence: Sentence; openQ
 
   return (
     <div className="space-y-3 border-t pt-2" data-testid="sentence-review">
+      <RoleGate>
       <form
         aria-label={t("sentences.edit.title")}
         className="space-y-1"
@@ -148,6 +150,7 @@ function SentenceReview({ sentence, openQuestions }: { sentence: Sentence; openQ
       )}
       <WriteError error={accept.error} />
       <WriteError error={reject.error} />
+      </RoleGate>
       {sentence.unknowns.length > 0 && (
         <section aria-label={t("sentences.unknowns")} className="space-y-2">
           <h4 className="font-semibold">{t("sentences.unknowns")}</h4>
@@ -320,9 +323,11 @@ function SentenceSection({
           </ul>
         </ReviewedEtag.Provider>
       )}
+      <RoleGate>
       <button type="button" className="rounded border px-3 py-1" data-testid="bulk-accept" disabled={targets.length === 0 || running || warning !== null} onClick={start}>
         {t("sentences.bulk.accept")} <span data-testid="bulk-targets">{targets.length}</span>
       </button>
+      </RoleGate>
       {warning !== null && (
         <div role="alertdialog" aria-label={t("sentences.bulk.warningTitle")} className="space-y-2 rounded border border-amber-600 p-2 text-sm" data-testid="bulk-warning">
           <p>

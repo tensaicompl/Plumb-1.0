@@ -8,6 +8,7 @@ import { t, type MessageKey } from "../../i18n";
 import { writeErrorCode } from "../questions/QuestionsPage";
 import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
 import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 type Rule = components["schemas"]["Rule"];
 type RuleCellRequest = components["schemas"]["RuleCellRequest"];
@@ -159,7 +160,11 @@ function RuleItem({ rule }: { rule: Rule }) {
       <Rows rows={rule.rows} />
       <Analysis name="uncovered" titleKey="rules.uncovered" noneKey="rules.noUncovered" items={rule.uncovered_cells} />
       <Analysis name="overlaps" titleKey="rules.overlaps" noneKey="rules.noOverlaps" items={rule.overlaps} />
-      {rule.kind === "decision_table" && <CellFill rule={rule} />}
+      {rule.kind === "decision_table" && (
+        <RoleGate>
+          <CellFill rule={rule} />
+        </RoleGate>
+      )}
     </li>
   );
 }

@@ -9,6 +9,7 @@ import { isAnswerComplete, TypedAnswerControl, type AnswerValue } from "../../co
 import { t } from "../../i18n";
 import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
 import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 export type Question = components["schemas"]["Question"];
 export type AnswerResponse = components["schemas"]["AnswerResponse"];
@@ -426,7 +427,9 @@ export function QuestionsPage() {
     <ReviewedEtag.Provider value={questions.data.etag}>
     <div className="space-y-4">
       {title}
-      <RoundManager stakeholders={[...groups.keys()]} />
+      <RoleGate>
+        <RoundManager stakeholders={[...groups.keys()]} />
+      </RoleGate>
       <HealthMarkers health={questions.data.health} />
       {questions.data.items.length === 0 && <p>{t("questions.empty")}</p>}
       {[...groups.entries()].map(([stakeholder, items]) => (

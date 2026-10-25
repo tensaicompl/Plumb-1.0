@@ -201,11 +201,12 @@ const EXAMPLE: CalculationExample = { expr: "end - start + 1", rendered_example:
 interface Backend {
   cellFailure: Response | null;
   rulesPage?: unknown;
+  roles?: string[];
 }
 
 function handlers(backend: Backend) {
   return [
-    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: backend.roles ?? ["analyst"] })),
     http.get("*/api/model/version", () =>
       etagJson({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
@@ -331,6 +332,29 @@ function expectAccessibleTables() {
     }
   }
 }
+
+describe("Role-gated write controls (Fable #218)", () => {
+  it("offers a non-analyst no analyst actions and explains why", async () => {
+    await renderAt("/model/rules", { cellFailure: null, roles: ["reviewer"] });
+    await screen.findByText("Leave approval");
+    expect(screen.queryByTestId("cell-fill")).toBeNull();
+    expect(screen.getAllByTestId("role-required").length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("role-required")[0]?.textContent).toBe("These changes need the role: analyst");
+    cleanup();
+    await renderAt("/model/entities", { cellFailure: null, roles: ["reviewer"] });
+    await screen.findByText("Leave request");
+    expect(screen.queryByTestId("attribute-type-save")).toBeNull();
+    // The value itself stays visible.
+    expect(screen.getAllByText("decimal").length).toBeGreaterThan(0);
+  });
+
+  it("offers an analyst the same controls", async () => {
+    await renderAt("/model/rules");
+    await screen.findByText("Leave approval");
+    expect(screen.getAllByTestId("cell-fill").length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("role-required")).toBeNull();
+  });
+});
 
 describe("EntitiesPage", () => {
   it("gives the attribute, relationship and CRUD tables captions and scoped headers", async () => {

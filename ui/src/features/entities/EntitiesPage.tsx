@@ -6,6 +6,7 @@ import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t, type MessageKey } from "../../i18n";
 import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 type Entity = components["schemas"]["Entity"];
 type CrudMatrix = components["schemas"]["CrudMatrix"];
@@ -49,6 +50,7 @@ function AttributeType({ attribute }: { attribute: EntityAttribute }) {
   return (
     <span className="space-x-1">
       <span className="font-mono">{attribute.type}</span>
+      <RoleGate quiet>
       <select className="rounded border" data-testid="attribute-type-choice" aria-label={t("entities.attribute.setType")} value={choice} onChange={(event) => setChoice(event.target.value)}>
         <option value="">{t("entities.attribute.chooseType")}</option>
         {PRIMITIVE_TYPES.filter((type) => type !== attribute.type).map((type) => (
@@ -73,6 +75,7 @@ function AttributeType({ attribute }: { attribute: EntityAttribute }) {
       >
         {t("entities.attribute.setType")}
       </button>
+      </RoleGate>
       {error instanceof WriteFailedError && (
         <span role="alert" className="text-red-800">
           {t("write.failed")} {writeErrorMessage(error)}

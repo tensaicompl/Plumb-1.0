@@ -7,6 +7,7 @@ import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../..
 import { t } from "../../i18n";
 import { ProcessDiagram } from "./ProcessDiagram";
 import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 type Process = components["schemas"]["Process"];
 type ProcessStepRequest = components["schemas"]["ProcessStepRequest"];
@@ -206,7 +207,9 @@ function ProcessView({ id }: { id: string }) {
         )}
       </section>
       <ProcessDiagram input={data} />
-      <SemanticEdits key={data.id} process={data} />
+      <RoleGate>
+        <SemanticEdits key={data.id} process={data} />
+      </RoleGate>
     </div>
   );
 }

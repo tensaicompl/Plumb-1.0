@@ -606,5 +606,6 @@
   "route.error.title": "Nie można wyświetlić tej strony",
   "route.error.message": "Nieoczekiwany błąd uniemożliwił wyświetlenie tej strony. Pozostałe strony działają normalnie.",
   "route.home": "Przejdź do strony głównej",
-  "route.error.unknown": "Nieznany błąd"
+  "route.error.unknown": "Nieznany błąd",
+  "role.required": "Te zmiany wymagają roli:"
 }

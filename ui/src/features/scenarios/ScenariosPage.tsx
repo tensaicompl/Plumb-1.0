@@ -9,6 +9,7 @@ import { writeErrorCode } from "../questions/QuestionsPage";
 import { ScenarioTrace } from "./ScenarioTrace";
 import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
 import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 type Scenario = components["schemas"]["Scenario"];
 type ScenarioStatus = components["schemas"]["ScenarioStatus"];
@@ -251,6 +252,7 @@ function ScenarioCard({
         </ul>
       </section>
       <div className="flex flex-wrap items-center gap-2">
+        <RoleGate quiet>
         {confirmable && (
           <button
             type="button"
@@ -267,6 +269,7 @@ function ScenarioCard({
             {t("scenarios.correct.title")}
           </button>
         )}
+        </RoleGate>
         {runnable(scenario) && (
           <label className="text-sm">
             <input type="checkbox" checked={selected} data-testid="run-select" onChange={(event) => onSelect(scenario.id, event.target.checked)} />{" "}
@@ -414,8 +417,11 @@ export function ScenariosPage() {
         </button>
       </form>
 
-      <BulkConfirm groups={groups} etag={confirmable.data?.etag} />
+      <RoleGate>
+        <BulkConfirm groups={groups} etag={confirmable.data?.etag} />
+      </RoleGate>
 
+      <RoleGate>
       <section aria-label={t("scenarios.run.title")} className="flex flex-wrap items-center gap-2 text-sm">
         <span>
           {t("scenarios.run.selected")} <span data-testid="run-count">{scope.length}</span>
@@ -441,6 +447,7 @@ export function ScenariosPage() {
         </button>
         <WriteError error={run.error} />
       </section>
+      </RoleGate>
 
       {scenarios.isError && <ReadFailure error={scenarios.error} messageKey="scenarios.loadFailed" />}
       {scenarios.data === undefined && !scenarios.isError && <p>{t("scenarios.loading")}</p>}

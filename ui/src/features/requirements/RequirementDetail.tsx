@@ -8,6 +8,7 @@ import { DiffViewer, type ModelDiff } from "../../components/DiffViewer";
 import { ProvenanceDrawer, type ProvenanceItem } from "../../components/ProvenanceDrawer";
 import { t } from "../../i18n";
 import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 export type RequirementDetailView = components["schemas"]["RequirementDetail"];
 export type SemanticChangePreview = components["schemas"]["SemanticChangePreviewResponse"];
@@ -399,6 +400,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
             <p data-testid="ears-suggestion" data-proposal={earsProposal}>
               {ears}
             </p>
+            <RoleGate>
             <label className="mt-2 block text-sm">
               {t("requirement.reason")}
               <input className="ml-2 rounded border p-1" value={earsReason} data-testid="ears-reason" onChange={(event) => setEarsReason(event.target.value)} />
@@ -414,6 +416,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
             >
               {t("requirement.ears.accept")}
             </button>
+            </RoleGate>
             <WriteError error={acceptEars.error} />
           </>
         )}
@@ -496,6 +499,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
 
       <section aria-label={t("requirement.section.actions")} data-section="actions" className="space-y-3">
         <h2 className="font-semibold">{t("requirement.section.actions")}</h2>
+        <RoleGate>
 
         <form
           aria-label={t("requirement.classify.title")}
@@ -567,6 +571,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
         </form>
 
         <SplitAction requirementId={detail.id} etag={detail.etag} />
+        </RoleGate>
       </section>
     </div>
   );
