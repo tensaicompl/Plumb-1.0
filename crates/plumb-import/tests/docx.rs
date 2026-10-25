@@ -850,6 +850,171 @@ mod docx_contract {
         check(&imported);
     }
 
+    // ------------------------------------------------------------------ H0.10 text fidelity
+
+    const MC: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+
+    fn alternate(inner: &str) -> String {
+        format!(
+            r#"<w:p><w:r><w:t>Before </w:t></w:r><w:r><mc:AlternateContent xmlns:mc="{MC}">{inner}</mc:AlternateContent></w:r></w:p>"#
+        )
+    }
+
+    fn textbox(text: &str) -> String {
+        format!("<w:txbxContent>{}</w:txbxContent>", p(text))
+    }
+
+    #[test]
+    fn alternate_content_is_extracted_once() {
+        // [Fable #46] Only mc:Choice is flattened; mc:Fallback only without a Choice.
+        let both = alternate(&format!(
+            r#"<mc:Choice Requires="wps">{}</mc:Choice><mc:Fallback>{}</mc:Fallback>"#,
+            textbox("Box text"),
+            textbox("Box text")
+        ));
+        let fallback_only = alternate(&format!(
+            "<mc:Fallback>{}</mc:Fallback>",
+            textbox("Box text")
+        ));
+        for body in [both, fallback_only] {
+            let imported = import(&docx(&body));
+            assert_eq!(extracted_text(&imported), "Before Box text");
+            assert_eq!(kinds(&imported), pairs(&[(Paragraph, "Before Box text")]));
+            assert_eq!(
+                imported.parse.status,
+                ParseStatus::PartialWithExplicitUnparsedRegions
+            );
+            check(&imported);
+        }
+        // Two Choices: the first one.
+        let two = alternate(&format!(
+            r#"<mc:Choice Requires="a">{}</mc:Choice><mc:Choice Requires="b">{}</mc:Choice>"#,
+            textbox("First"),
+            textbox("Second")
+        ));
+        assert_eq!(extracted_text(&import(&docx(&two))), "Before First");
+    }
+
+    #[test]
+    fn num_id_zero_or_absent_removes_numbering() {
+        // [Fable #47] ECMA-376 §17.9.18: numId 0 removes numbering, also inherited numbering.
+        let style_defs = r#"
+            <w:style w:type="paragraph" w:styleId="ListBase"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr></w:style>
+            <w:style w:type="paragraph" w:styleId="Unnumbered"><w:basedOn w:val="ListBase"/><w:pPr><w:numPr><w:numId w:val="0"/></w:numPr></w:pPr></w:style>
+            <w:style w:type="paragraph" w:styleId="Child"><w:basedOn w:val="Unnumbered"/></w:style>
+            <w:style w:type="paragraph" w:styleId="Zero"><w:pPr><w:numPr><w:numId w:val="0"/></w:numPr></w:pPr></w:style>"#;
+        let body = [
+            p_props(
+                r#"<w:numPr><w:ilvl w:val="0"/><w:numId w:val="0"/></w:numPr>"#,
+                "Direct zero",
+            ),
+            p_props(
+                r#"<w:numPr><w:ilvl w:val="0"/></w:numPr>"#,
+                "Direct without numId",
+            ),
+            p_props(
+                r#"<w:pStyle w:val="ListBase"/><w:numPr><w:numId w:val="0"/></w:numPr>"#,
+                "Removes inherited",
+            ),
+            p_props(r#"<w:pStyle w:val="Child"/>"#, "Inherited removal"),
+            p_props(r#"<w:pStyle w:val="Zero"/>"#, "Style zero"),
+            p_props(r#"<w:pStyle w:val="ListBase"/>"#, "Still a list"),
+            p_props(
+                r#"<w:pStyle w:val="Zero"/><w:numPr><w:numId w:val="3"/></w:numPr>"#,
+                "Direct numbering wins",
+            ),
+        ]
+        .concat();
+        let imported = import(&docx_with_styles(&body, style_defs));
+        assert_eq!(
+            kinds(&imported),
+            pairs(&[
+                (Paragraph, "Direct zero"),
+                (Paragraph, "Direct without numId"),
+                (Paragraph, "Removes inherited"),
+                (Paragraph, "Inherited removal"),
+                (Paragraph, "Style zero"),
+                (ListItem, "Still a list"),
+                (ListItem, "Direct numbering wins"),
+            ])
+        );
+        check(&imported);
+    }
+
+    #[test]
+    fn carriage_returns_are_normalized_to_lf() {
+        // [Fable #53] The same CRLF/CR-to-LF normalisation as Markdown and plain text.
+        let body = [p("one&#13;&#10;two&#13;three"), p("four")].concat();
+        let imported = import(&docx(&body));
+        assert_eq!(extracted_text(&imported), "one\ntwo\nthree\nfour");
+        assert_eq!(
+            kinds(&imported),
+            pairs(&[(Paragraph, "one\ntwo\nthree"), (Paragraph, "four")])
+        );
+        check(&imported);
+    }
+
+    #[test]
+    fn header_only_table_yields_a_paragraph_fragment() {
+        // [Fable #54] Never a silent omission.
+        let table = format!("<w:tbl>{}</w:tbl>", tr(&[tc("Type", ""), tc("Days", "")]));
+        let imported = import(&docx(&[p("Before"), table].concat()));
+        assert_eq!(extracted_text(&imported), "Before\nType\tDays");
+        assert_eq!(
+            kinds(&imported),
+            pairs(&[(Paragraph, "Before"), (Paragraph, "Type\tDays")])
+        );
+        check(&imported);
+        // An empty header-only table still has nothing to cover.
+        let empty = format!("<w:tbl>{}</w:tbl>", tr(&[tc("", ""), tc(" ", "")]));
+        assert!(import(&docx(&empty)).fragments.is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_records_yield_no_fragment() {
+        // [Fable #55] The text stays in the extracted artifact.
+        let table = format!(
+            "<w:tbl>{}{}{}</w:tbl>",
+            tr(&[tc("A", ""), tc("B", "")]),
+            tr(&[tc(" ", ""), tc("\t", "")]),
+            tr(&[tc("x", ""), tc("y", "")])
+        );
+        let body = [
+            r#"<w:p><w:r><w:tab/></w:r></w:p>"#.to_owned(),
+            r#"<w:p><w:r><w:br/></w:r></w:p>"#.to_owned(),
+            p("   "),
+            p("Text"),
+            table,
+        ]
+        .concat();
+        let imported = import(&docx(&body));
+        assert_eq!(
+            extracted_text(&imported),
+            "\t\n\n\n   \nText\nA\tB\n \t\t\nx\ty"
+        );
+        assert_eq!(
+            kinds(&imported),
+            pairs(&[(Paragraph, "Text"), (TableRow, "x\ty")])
+        );
+        check(&imported);
+    }
+
+    #[test]
+    fn docx_text_is_normalized_to_nfc() {
+        // [Fable #20] Decomposed text imports exactly like its composed spelling.
+        let composed = import(&docx(&p("Zażółć gęślą")));
+        let decomposed = import(&docx(&p(
+            "Zaz\u{307}o\u{301}łc\u{301} ge\u{328}s\u{301}la\u{328}",
+        )));
+        assert_eq!(extracted_text(&decomposed), "Zażółć gęślą");
+        assert_eq!(kinds(&composed), kinds(&decomposed));
+        assert_eq!(
+            range(&composed.fragments[0]),
+            range(&decomposed.fragments[0])
+        );
+        check(&decomposed);
+    }
+
     // ------------------------------------------------------------------ HR fixture (§§49-51)
 
     #[test]

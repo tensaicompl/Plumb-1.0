@@ -18,6 +18,7 @@ use plumb_psg::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 /// The stable code of a source that is not valid UTF-8.
 pub const E_SOURCE_ENCODING: &str = "E_SOURCE_ENCODING";
@@ -584,10 +585,25 @@ pub(crate) struct Line<'t> {
     pub text: &'t str,
 }
 
-impl Line<'_> {
+impl<'t> Line<'t> {
     /// Blank means only ASCII spaces and tabs.
     pub fn is_blank(&self) -> bool {
         self.text.bytes().all(|b| b == b' ' || b == b'\t')
+    }
+
+    /// The text line classifiers see: the first line without one leading U+FEFF, so a byte
+    /// order mark never changes a classification. Offsets and fragment text keep it.
+    pub fn classified(&self) -> &'t str {
+        if self.start == 0 {
+            self.text.strip_prefix('\u{feff}').unwrap_or(self.text)
+        } else {
+            self.text
+        }
+    }
+
+    /// Indented by at least two ASCII spaces or a tab.
+    fn is_indented(&self) -> bool {
+        self.text.starts_with("  ") || self.text.starts_with('\t')
     }
 }
 
@@ -632,13 +648,22 @@ pub(crate) fn push_segment(
     Ok(())
 }
 
-/// Decodes UTF-8 without loss and normalizes CRLF and lone CR to LF, nothing else.
+/// Decodes UTF-8 without loss and applies [`normalize_text`], nothing else.
 pub(crate) fn decode(bytes: &[u8]) -> Result<String, ImportError> {
     let text = std::str::from_utf8(bytes).map_err(|e| ImportError::SourceEncoding {
         valid_up_to: e.valid_up_to(),
         error_len: e.error_len(),
     })?;
-    Ok(text.replace("\r\n", "\n").replace('\r', "\n"))
+    Ok(normalize_text(text))
+}
+
+/// The text normalisation every importer applies before building fragments: CRLF and lone CR
+/// to LF, then Unicode NFC, so NFC and NFD spellings of the same text import identically.
+pub(crate) fn normalize_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .nfc()
+        .collect()
 }
 
 /// Splits normalized text into lines; the empty line after a trailing LF is not a line.
@@ -666,11 +691,14 @@ pub(crate) fn lines(text: &str) -> Vec<Line<'_>> {
 }
 
 /// Classifies each line not yet consumed as a list item (when `list` matches) or as part of a
-/// paragraph, appending the segments in source order.
+/// paragraph, appending the segments in source order. With `list_continuation` (Markdown, GFM
+/// semantics), an indented non-blank line immediately after a list item that is not itself a
+/// single-line fragment continues that item.
 pub(crate) fn lists_and_paragraphs(
     lines: &[Line<'_>],
     consumed: &[bool],
     single_line: impl Fn(&str) -> Option<FragmentKind>,
+    list_continuation: bool,
     segments: &mut Vec<Segment>,
 ) -> Result<(), ImportError> {
     let mut paragraph: Option<(usize, usize)> = None;
@@ -688,12 +716,15 @@ pub(crate) fn lists_and_paragraphs(
             None => Ok(()),
         }
     };
+    // Whether the last segment is a list item the current line may continue.
+    let mut open_item = false;
     for (index, line) in lines.iter().enumerate() {
         if consumed[index] || line.is_blank() {
             close(&mut paragraph, segments)?;
+            open_item = false;
             continue;
         }
-        if let Some(kind) = single_line(line.text) {
+        if let Some(kind) = single_line(line.classified()) {
             close(&mut paragraph, segments)?;
             push_segment(
                 segments,
@@ -704,8 +735,16 @@ pub(crate) fn lists_and_paragraphs(
                     header_cells: None,
                 },
             )?;
+            open_item = list_continuation && kind == FragmentKind::ListItem;
             continue;
         }
+        if open_item && line.is_indented() {
+            if let Some(item) = segments.last_mut() {
+                item.end = line.end;
+            }
+            continue;
+        }
+        open_item = false;
         paragraph = Some(match paragraph {
             Some((start, _)) => (start, line.end),
             None => (line.start, line.end),

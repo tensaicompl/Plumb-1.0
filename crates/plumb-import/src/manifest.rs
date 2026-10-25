@@ -153,7 +153,27 @@ impl EvidenceManifest {
                 .map_err(|e| invalid(format!("fragment {} locator: {e}", fragment.fragment_ref)))?;
         }
         require_strictly_sorted("source", self.sources.iter().map(|s| &s.source_ref))?;
-        require_strictly_sorted("fragment", self.fragments.iter().map(|f| &f.fragment_ref))
+        require_strictly_sorted("fragment", self.fragments.iter().map(|f| &f.fragment_ref))?;
+        // Every fragment belongs to a manifest source and shares its extracted text.
+        for fragment in &self.fragments {
+            let source = self
+                .sources
+                .binary_search_by(|s| s.source_ref.cmp(&fragment.source_ref))
+                .map(|index| &self.sources[index])
+                .map_err(|_| {
+                    invalid(format!(
+                        "fragment {} names source {}, which is not in the manifest",
+                        fragment.fragment_ref, fragment.source_ref
+                    ))
+                })?;
+            if fragment.extracted_ref != source.extracted_ref {
+                return Err(invalid(format!(
+                    "fragment {} extracted_ref differs from its source's extracted_ref",
+                    fragment.fragment_ref
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// RFC 8785 canonical JSON of the complete manifest.
@@ -530,6 +550,34 @@ mod manifest_contract {
         ));
         assert!(matches!(
             validate_evidence_manifest(&unsorted, &graph()),
+            Err(ManifestError::InvalidManifest { .. })
+        ));
+    }
+
+    #[test]
+    fn every_fragment_names_a_manifest_source() {
+        // A fragment whose source_ref (or extracted_ref) no manifest source carries is
+        // structurally invalid, before any graph comparison.
+        let mut orphan = manifest();
+        orphan
+            .sources
+            .retain(|s| s.source_ref != orphan.fragments[0].source_ref);
+        assert!(matches!(
+            orphan.validate(),
+            Err(ManifestError::InvalidManifest { .. })
+        ));
+        assert!(matches!(
+            parse_evidence_manifest(&to_canonical_json(&orphan).unwrap()),
+            Err(ManifestError::InvalidManifest { .. })
+        ));
+        assert!(matches!(
+            evidence_manifest_artifact(&orphan, T1.parse().unwrap()),
+            Err(ManifestError::InvalidManifest { .. })
+        ));
+        let mut foreign = manifest();
+        foreign.fragments[0].extracted_ref = Hash::content_sha256(b"other");
+        assert!(matches!(
+            foreign.validate(),
             Err(ManifestError::InvalidManifest { .. })
         ));
     }

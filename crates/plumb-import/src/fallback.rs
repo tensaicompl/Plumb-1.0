@@ -65,7 +65,8 @@ fn sentences(text: &str) -> Vec<(usize, usize)> {
     let mut i = 0;
     while i < bytes.len() {
         let terminates = matches!(bytes[i], b'.' | b'?' | b'!')
-            && bytes.get(i + 1).is_none_or(|&next| is_space(next));
+            && bytes.get(i + 1).is_none_or(|&next| is_space(next))
+            && !is_leading_ordinal(&bytes[..i]);
         if terminates {
             let mut end = i + 1;
             while end < bytes.len() && is_space(bytes[end]) {
@@ -82,6 +83,16 @@ fn sentences(text: &str) -> Vec<(usize, usize)> {
         ranges.push((start, bytes.len()));
     }
     ranges
+}
+
+/// Whether the text before a `.` is a purely numeric leading ordinal (`^\s*\d+`), as in
+/// "1. The system shall ...": that period numbers the text and never ends a sentence.
+fn is_leading_ordinal(before: &[u8]) -> bool {
+    let digits = match before.iter().position(|&byte| !is_space(byte)) {
+        Some(first) => &before[first..],
+        None => return false,
+    };
+    digits.iter().all(u8::is_ascii_digit)
 }
 
 fn is_token_byte(byte: u8) -> bool {

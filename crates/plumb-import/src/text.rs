@@ -40,7 +40,7 @@ pub fn import_plain_text(
     let lines = lines(&text);
     let consumed = vec![false; lines.len()];
     let mut segments = Vec::new();
-    lists_and_paragraphs(&lines, &consumed, list_item, &mut segments)?;
+    lists_and_paragraphs(&lines, &consumed, list_item, false, &mut segments)?;
     build(
         SourceKind::PlainText,
         display_name,

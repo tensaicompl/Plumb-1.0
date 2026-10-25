@@ -34,36 +34,39 @@ pub fn table_cells(line: &str) -> Vec<String> {
         .collect()
 }
 
-/// Marks recognized table blocks as consumed and emits one TableRow per data row.
+/// Marks recognized table blocks as consumed and emits one TableRow per data row. A block
+/// starts only at a line whose successor is a delimiter row with the same cell count; its data
+/// rows are the following non-blank lines containing `|`, and no earlier line joins it.
 fn tables(
     lines: &[Line<'_>],
     consumed: &mut [bool],
     segments: &mut Vec<Segment>,
 ) -> Result<(), ImportError> {
+    let is_candidate = |line: &Line<'_>| !line.is_blank() && line.text.contains('|');
     let mut index = 0;
-    while index < lines.len() {
-        let is_candidate = |line: &Line<'_>| !line.is_blank() && line.text.contains('|');
-        if !is_candidate(&lines[index]) {
+    while index + 1 < lines.len() {
+        let (header, delimiter) = (&lines[index], &lines[index + 1]);
+        if !is_candidate(header) || !is_candidate(delimiter) {
+            index += 1;
+            continue;
+        }
+        let header_cells = table_cells(header.classified());
+        let delimiter_cells = table_cells(delimiter.text);
+        if delimiter_cells.len() != header_cells.len()
+            || !delimiter_cells.iter().all(|c| is_delimiter_cell(c))
+        {
             index += 1;
             continue;
         }
         let start = index;
+        index += 2;
         while index < lines.len() && is_candidate(&lines[index]) {
             index += 1;
         }
-        let block = &lines[start..index];
-        let [header, delimiter, data @ ..] = block else {
-            continue;
-        };
-        let delimiter_cells = table_cells(delimiter.text);
-        if delimiter_cells.is_empty() || !delimiter_cells.iter().all(|c| is_delimiter_cell(c)) {
-            continue;
-        }
-        let header_cells = table_cells(header.text);
         for flag in &mut consumed[start..index] {
             *flag = true;
         }
-        for row in data {
+        for row in &lines[start + 2..index] {
             push_segment(
                 segments,
                 Segment {
@@ -98,7 +101,7 @@ pub fn import_markdown(
     let mut consumed = vec![false; lines.len()];
     let mut segments = Vec::new();
     tables(&lines, &mut consumed, &mut segments)?;
-    lists_and_paragraphs(&lines, &consumed, heading_or_list, &mut segments)?;
+    lists_and_paragraphs(&lines, &consumed, heading_or_list, true, &mut segments)?;
     build(
         SourceKind::Markdown,
         display_name,

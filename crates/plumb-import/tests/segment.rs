@@ -1051,6 +1051,21 @@ mod segment_contract {
                 vec![("Really?! ", Non), ("Yes... ", Non), ("it can.", Req)],
             ),
             ("whitespace only", " \t\n", vec![(" \t\n", Non)]),
+            (
+                "a leading numeric ordinal is not a sentence",
+                "1. HR-001 The system shall log. Next",
+                vec![("1. HR-001 The system shall log. ", Req), ("Next", Non)],
+            ),
+            (
+                "an indented ordinal is not a sentence either",
+                "  12. Users must log in.",
+                vec![("  12. Users must log in.", Req)],
+            ),
+            (
+                "only a leading ordinal is exempt",
+                "See item 2. It must log.",
+                vec![("See item 2. ", Non), ("It must log.", Req)],
+            ),
         ];
         for (name, text, expected) in cases {
             for kind in ["paragraph", "heading", "table_row"] {
@@ -1390,6 +1405,25 @@ mod segment_contract {
             hr_ids_in_requirement_candidates(&fragments, &result, FragmentKind::Paragraph),
             32
         );
+        // [Fable #48] Exactly one candidate per requirement fragment: the literal ordinal is
+        // not split off as a junk sentence.
+        let requirement_fragments: Vec<_> = fragments
+            .iter()
+            .filter(|n| (1..=32).any(|k| text_of(n).contains(&format!("HR-{k:03}"))))
+            .collect();
+        assert_eq!(requirement_fragments.len(), 32);
+        for fragment in requirement_fragments {
+            let candidates: Vec<_> = result
+                .candidates
+                .iter()
+                .filter(|c| c.fragment_ref == fragment.id)
+                .collect();
+            assert_eq!(candidates.len(), 1, "{}", text_of(fragment));
+            assert_eq!(
+                candidates[0].classification,
+                SegmentClassification::RequirementCandidate
+            );
+        }
         // Table rows follow the same sentence/modal rule; no HR-specific semantics.
         let rows: Vec<_> = fragments
             .iter()
