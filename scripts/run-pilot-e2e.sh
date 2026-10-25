@@ -7,7 +7,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 API_PORT="${PLUMB_E2E_API_PORT:-8790}"
-UI_PORT=5173
+UI_PORT="${PLUMB_E2E_UI_PORT:-5173}"
+export PLUMB_E2E_UI_PORT="$UI_PORT"
 # Stops a process and its descendants (npm run dev starts Vite as a grandchild).
 kill_tree() {
   local child

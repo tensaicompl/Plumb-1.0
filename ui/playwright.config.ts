@@ -6,6 +6,6 @@ export default defineConfig({
   forbidOnly: true,
   retries: 0,
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: `http://127.0.0.1:${process.env["PLUMB_E2E_UI_PORT"] ?? "5173"}`,
   },
 });
