@@ -2187,6 +2187,7 @@ mod graph_contract {
                     GraphViolation::PayloadRefMissing { .. }
                         | GraphViolation::PayloadRefWrongType { .. }
                         | GraphViolation::PayloadRefForbiddenStatus { .. }
+                        | GraphViolation::PayloadRefNotANode { .. }
                 )
             })
             .collect()
@@ -2347,9 +2348,27 @@ mod graph_contract {
             owned_requirement("req:owned", "Accepted", &["state:b"]),
             proposal_decision("dec:proposed-agent", "agent:proposed"),
             ref_finding("fnd:dangling", &["req:missing"]),
+            node(
+                "scn:derived",
+                "Proposed",
+                "Scenario",
+                json!({
+                    "name": "Derived", "scenario_kind": "acceptance", "given": [], "when": {},
+                    "then": [], "derived_from_refs": ["rel:1"]
+                }),
+            ),
         ]);
-        let v = violations(invalid, vec![]);
-        let expected = vec![
+        let v = violations(
+            invalid,
+            vec![edge(
+                "rel:1",
+                "Accepted",
+                "constrained_by",
+                "req:accepted",
+                "constraint:eu",
+            )],
+        );
+        let expected = [
             GraphViolation::PayloadRefForbiddenStatus {
                 owner: id("calc:proposed-cal"),
                 field: "calendar_ref",
@@ -2384,6 +2403,12 @@ mod graph_contract {
                 field: "requirement_refs",
                 target: id("req:proposed"),
                 status: ElementStatus::Proposed,
+            },
+            // Scenario.derived_from_refs names nodes, never edges.
+            GraphViolation::PayloadRefNotANode {
+                owner: id("scn:derived"),
+                field: "derived_from_refs",
+                target: id("rel:1"),
             },
             GraphViolation::PayloadRefMissing {
                 owner: id("tr:missing"),
