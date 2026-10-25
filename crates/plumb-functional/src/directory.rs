@@ -160,7 +160,7 @@ fn present_purpose<'de, D: Deserializer<'de>>(d: D) -> Result<Option<TerminalPur
     Option::<TerminalPurpose>::deserialize(d)
 }
 
-/// The runtime weekend of one configured calendar, in configured order.
+/// The runtime weekend (in configured order) and declared coverage of one configured calendar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectoryCalendarBinding {
     pub calendar_ref: Id,
