@@ -36,12 +36,36 @@ describe("computeNextAction", () => {
     expect(action?.kind).toBe("retry");
     expect(action?.title).toBe("Requirements failed — Retry");
     expect(action?.description).toBe("E_INFERENCE_FAILED: timeout");
-    expect(action?.target).toEqual({ type: "run", stage: "extract" });
-    // A failed step reported by the pipeline counts the same way.
-    const fromPipeline = computeNextAction({ ...base, pipeline: { steps: [{ stage: "lint", state: "failed", error: null }], next: null } });
+    // S1: Retry re-runs the failed job (`POST /api/jobs/{id}/retry`).
+    expect(action?.target).toEqual({ type: "retry", stage: "extract", jobId: "job:1" });
+    // A failed step reported by the pipeline counts the same way, retrying its latest job.
+    const fromPipeline = computeNextAction({ ...base, pipeline: { steps: [{ stage: "lint", state: "failed", error: "The lint step failed.", jobId: "job:9" }], next: null } });
     expect(fromPipeline?.kind).toBe("retry");
-    expect(fromPipeline?.target).toEqual({ type: "run", stage: "lint" });
-    expect(fromPipeline?.description).toBe("");
+    expect(fromPipeline?.target).toEqual({ type: "retry", stage: "lint", jobId: "job:9" });
+    expect(fromPipeline?.description).toBe("The lint step failed.");
+    // Without a job to retry, the step runs again.
+    const noJob = computeNextAction({ ...base, pipeline: { steps: [{ stage: "lint", state: "failed", error: null }], next: null } });
+    expect(noJob?.target).toEqual({ type: "run", stage: "lint" });
+    expect(noJob?.description).toBe("");
+  });
+
+  it("asks for a document when the project has no source, after anything waiting", () => {
+    const empty = { steps: [], next: "extract" as const, sources: 0, openQuestions: 0, loaded: true };
+    const action = computeNextAction({ ...base, pipeline: empty });
+    expect(action?.kind).toBe("import");
+    expect(action?.title).toBe("Import your requirements document");
+    expect(action?.short).toBe("Import document");
+    expect(action?.cta).toBe("Import");
+    expect(action?.target).toEqual({ type: "route", to: "/sources" });
+    expect(computeNextAction({ ...base, proposals: 2, pipeline: empty })?.kind).toBe("proposals");
+  });
+
+  it("skips a next step that needs AI while AI is off", () => {
+    const blockedF3 = ALL_PASS.map((g) => (g.gate === "F3" ? gate("F3", "current", false) : g));
+    const pipeline = { steps: [], next: "flows" as const, sources: 1, loaded: true };
+    expect(computeNextAction({ ...base, gates: blockedF3, pipeline, inferenceAvailable: false })?.kind).toBe("blockedGate");
+    expect(computeNextAction({ ...base, gates: blockedF3, pipeline, inferenceAvailable: true })?.kind).toBe("step");
+    expect(computeNextAction({ ...base, gates: blockedF3, pipeline: { ...pipeline, next: "lint" }, inferenceAvailable: false })?.kind).toBe("step");
   });
 
   it("then pending proposals, then open questions", () => {

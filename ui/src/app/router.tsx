@@ -7,7 +7,7 @@ import { EntitiesPage } from "../features/entities/EntitiesPage";
 import { FindingsPage } from "../features/findings/FindingsPage";
 import { GatesPage } from "../features/gates/GatesPage";
 import { GlossaryPage } from "../features/glossary/GlossaryPage";
-import { HomePage } from "../features/home/HomePage";
+import { OverviewScreen } from "../features/overview/OverviewScreen";
 import { ProcessesPage } from "../features/processes/ProcessesPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
@@ -48,11 +48,7 @@ const indexRoute = createRoute({
 const overviewRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/overview",
-  component: () => (
-    <Legacy>
-      <HomePage />
-    </Legacy>
-  ),
+  component: OverviewScreen,
 });
 
 // ------------------------------------------------------------------ Inbox
