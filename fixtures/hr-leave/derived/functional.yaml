@@ -1,0 +1,562 @@
+version: 2
+model_hash: psg:sha256:06937019ab7406cb17872b23d10107772d89af0f9fe8e99ebf55c8e3f28f4e75
+glossary:
+- id: concept:07dd6fe2a0bce670
+  name: annual leave balance
+  definition: Approving annual leave shall deduct the approved leave duration from the employee's annual-leave balance.
+  aliases: []
+- id: concept:118361c3ae7fdb29
+  name: public holiday
+  definition: The system shall exclude public holidays from requested leave duration.
+  aliases: []
+- id: concept:2827eed8baa8839e
+  name: contractor
+  definition: A contractor shall not be eligible for paid annual leave.
+  aliases: []
+- id: concept:3efaa81157fa3474
+  name: approval record
+  definition: Approval records shall be retained for five years.
+  aliases: []
+- id: concept:43b710e37aec1004
+  name: employee
+  definition: A leave request shall identify the employee, leave type, start date, and end date.
+  aliases: []
+- id: concept:49963694af6aeb67
+  name: rejection reason
+  definition: A manager shall be allowed to reject leave requests for employees who report directly to that manager and shall record a rejection reason.
+  aliases: []
+- id: concept:5127e8d3843cdf84
+  name: leave balance
+  definition: Rejecting a leave request shall not change the employee's leave balance.
+  aliases: []
+- id: concept:837ac0803014d8a0
+  name: audit record
+  definition: The system shall create an audit record for every approval, rejection, withdrawal, and cancellation decision.
+  aliases: []
+- id: concept:86e7c78c4992d64f
+  name: decision timestamp
+  definition: An approval or rejection shall record the deciding manager and decision timestamp.
+  aliases: []
+- id: concept:a48f8b1f68ddc591
+  name: leave type
+  definition: A leave request shall identify the employee, leave type, start date, and end date.
+  aliases: []
+- id: concept:b6913206f2ea03fd
+  name: leave start date
+  definition: An employee shall be allowed to cancel an Approved leave request before the leave start date.
+  aliases: []
+- id: concept:bf7d7f558fad688c
+  name: end date
+  definition: A leave request shall identify the employee, leave type, start date, and end date.
+  aliases: []
+- id: concept:c721bb7b1f0237e9
+  name: leave request
+  definition: Cancelling a leave request shall change its status to Cancelled.
+  aliases: []
+- id: concept:c8c4d50e078bab10
+  name: half day
+  definition: The system shall support a half-day leave request.
+  aliases: []
+- id: concept:e686b064114a5777
+  name: working day
+  definition: The system shall calculate the requested leave duration in working days from the start date to the end date.
+  aliases: []
+- id: concept:ed729da8f50aa53b
+  name: start date
+  definition: A leave request shall identify the employee, leave type, start date, and end date.
+  aliases: []
+- id: concept:fb4582e25c7e05a9
+  name: manager
+  definition: A submitted leave request shall require a manager decision before it can become Approved or Rejected.
+  aliases: []
+- id: term:0b938f2fd10972d8
+  name: employee
+  definition: ''
+  aliases:
+  - employees
+- id: term:1b97e63d46bf92bb
+  name: half day
+  definition: ''
+  aliases:
+  - half-day
+- id: term:2b0813dd94bc390e
+  name: approval record
+  definition: ''
+  aliases:
+  - Approval records
+- id: term:2f498df5cf2d4987
+  name: leave balance
+  definition: ''
+  aliases: []
+- id: term:42ecef08edd26d5c
+  name: contractor
+  definition: ''
+  aliases: []
+- id: term:4c07a4479e834698
+  name: working day
+  definition: ''
+  aliases:
+  - working days
+- id: term:777193ff6dfbefbd
+  name: leave request
+  definition: ''
+  aliases:
+  - leave requests
+- id: term:8392b3b7e690d277
+  name: audit record
+  definition: ''
+  aliases: []
+- id: term:86bd652e5aea87e1
+  name: leave type
+  definition: ''
+  aliases: []
+- id: term:8b97f064c1a5555a
+  name: decision timestamp
+  definition: ''
+  aliases: []
+- id: term:9082a6c671f2a68f
+  name: rejection reason
+  definition: ''
+  aliases: []
+- id: term:96e7743f8fbb64ca
+  name: start date
+  definition: ''
+  aliases: []
+- id: term:a66d5c2e5ebd823e
+  name: manager
+  definition: ''
+  aliases: []
+- id: term:aec7ef2e5a483f22
+  name: end date
+  definition: ''
+  aliases: []
+- id: term:d51202b364b70694
+  name: leave start date
+  definition: ''
+  aliases: []
+- id: term:e6a648aae4fbab71
+  name: annual leave balance
+  definition: ''
+  aliases:
+  - annual-leave balance
+- id: term:f2c6d0ac5bc98c1f
+  name: public holiday
+  definition: ''
+  aliases:
+  - public holidays
+actors:
+- id: actor:employee
+  kind: human
+- id: actor:manager
+  kind: human
+- id: actor:system
+  kind: system
+roles:
+- id: brole:employee
+  actor: brole:employee
+  operations: []
+- id: brole:manager
+  actor: brole:manager
+  operations: []
+entities:
+- id: entity:2788ffcf161e3059
+  attributes: []
+  relationships: []
+  states: []
+  transitions: []
+  invariants: []
+- id: entity:3c56b4e640c9eb71
+  attributes: []
+  relationships: []
+  states: []
+  transitions: []
+  invariants: []
+- id: entity:661a530d75ff54ba
+  attributes: []
+  relationships: []
+  states: []
+  transitions: []
+  invariants: []
+- id: entity:7aecd2d5fe55723a
+  attributes: []
+  relationships: []
+  states: []
+  transitions: []
+  invariants: []
+- id: entity:8f409af3eaa81d0f
+  attributes: []
+  relationships: []
+  states: []
+  transitions: []
+  invariants: []
+- id: entity:e3da53d2646ed9d4
+  attributes:
+  - id: attr:2eaadedb6f14fc4f
+    type: Date
+    class: none
+  - id: attr:b4093112d1db9703
+    type: Decimal(2)
+    class: none
+  - id: attr:ca89055c5564138e
+    type: Date
+    class: none
+  - id: attr:fcd9667aa4033ebe
+    type: String
+    class: none
+  relationships: []
+  states:
+  - id: state:003e1c867ddecb92
+  - id: state:03590728fff868f1
+  - id: state:0f3ccf64aba9dc71
+  - id: state:34a520d527dd7f1e
+  - id: state:47974a687e5bdbf8
+  - id: state:48a0a02de47a5485
+  transitions:
+  - from: state:34a520d527dd7f1e
+    to: state:48a0a02de47a5485
+    operation: operation:30e3f63d799f6f1b
+    actor: actor:employee
+  - from: state:48a0a02de47a5485
+    to: state:47974a687e5bdbf8
+    operation: operation:7e6f4955e26661a1
+    actor: actor:manager
+  - from: state:48a0a02de47a5485
+    to: state:003e1c867ddecb92
+    operation: operation:e80512cc10433bdd
+    actor: actor:manager
+  - from: state:003e1c867ddecb92
+    to: state:0f3ccf64aba9dc71
+    operation: operation:6c542729efadf821
+    actor: actor:employee
+  - from: state:48a0a02de47a5485
+    to: state:03590728fff868f1
+    operation: operation:f463e7c912d3f774
+    actor: actor:employee
+  invariants: []
+calendars:
+- id: calendar:office
+  region: PL
+  tz: Europe/Warsaw
+  week_pattern:
+    weekend:
+    - saturday
+    - sunday
+calculations: []
+rules:
+- id: dt:annual-eligibility
+  conditions:
+  - domain: null
+    name: contract_type
+    ty:
+      members:
+      - Contractor
+      - Employee
+      type: enum
+  rows:
+  - inputs:
+    - cell: enum_set
+      members:
+      - Employee
+    outputs:
+    - cell: bool
+      value: true
+  - inputs:
+    - cell: enum_set
+      members:
+      - Contractor
+    outputs:
+    - cell: bool
+      value: false
+operations:
+- id: operation:30e3f63d799f6f1b
+  kind: command
+  actor: actor:employee
+  reads: []
+  writes: []
+  pre: []
+  post: []
+  outcomes:
+  - id: outcome:0b4c2a81d37ba8d4
+    kind: success
+  - id: outcome:780cce7c8999f36c
+    kind: failure
+  governed_by: []
+- id: operation:58a5e002de427674
+  kind: command
+  actor: actor:employee
+  reads: []
+  writes: []
+  pre: []
+  post: []
+  outcomes:
+  - id: outcome:1b86a6d192fc7084
+    kind: success
+  governed_by: []
+- id: operation:6c542729efadf821
+  kind: command
+  actor: actor:employee
+  reads: []
+  writes: []
+  pre: []
+  post: []
+  outcomes:
+  - id: outcome:afe136c96f37e636
+    kind: failure
+  - id: outcome:b3b0e99f636f52df
+    kind: success
+  governed_by: []
+- id: operation:7e6f4955e26661a1
+  kind: command
+  actor: actor:manager
+  reads: []
+  writes: []
+  pre: []
+  post: []
+  outcomes:
+  - id: outcome:c6d56c1968dedf01
+    kind: success
+  - id: outcome:ddb162a78d01f0b8
+    kind: failure
+  governed_by:
+  - rule:manager-decision-authorization
+- id: operation:e80512cc10433bdd
+  kind: command
+  actor: actor:manager
+  reads: []
+  writes: []
+  pre: []
+  post: []
+  outcomes:
+  - id: outcome:6bba17035c8cbf8a
+    kind: success
+  governed_by:
+  - rule:manager-decision-authorization
+- id: operation:f463e7c912d3f774
+  kind: command
+  actor: actor:employee
+  reads: []
+  writes: []
+  pre: []
+  post: []
+  outcomes:
+  - id: outcome:f469d03f66b0fd7d
+    kind: success
+  governed_by: []
+processes: []
+events:
+- id: event:4f4950dbf55c41b5
+  payload: []
+- id: event:6c1cd11bb8cbada6
+  payload: []
+- id: event:d8b31508fcb97902
+  payload: []
+- id: event:d909937e5cff022a
+  payload: []
+- id: event:f62e647f907076dd
+  payload: []
+requirements:
+- id: req:12d8029b681371e6
+  text: Cancelling a leave request shall change its status to Cancelled.
+  class: functional
+  criteria: []
+  operations:
+  - operation:6c542729efadf821
+  status: Confirmed
+- id: req:145122559d155958
+  text: A leave request shall identify the employee, leave type, start date, and end date.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:20761b382a67f41e
+  text: The leave-request submission operation should complete within 2 seconds under normal office load.
+  class: quality
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:2b07d0b04ed91759
+  text: An employee shall be able to view that employee's own leave requests.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:2bf156c1ca5105d4
+  text: The system shall create an audit record for every approval, rejection, withdrawal, and cancellation decision.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:2e6ad3781f335ac7
+  text: A submitted leave request shall require a manager decision before it can become Approved or Rejected.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:32a3fee13f03c383
+  text: Approving annual leave shall deduct the approved leave duration from the employee's annual-leave balance.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:32c489d53447cb79
+  text: The system shall allow an employee to create a draft leave request.
+  class: functional
+  criteria: []
+  operations:
+  - operation:58a5e002de427674
+  status: Confirmed
+- id: req:3414fe6a3e9233a3
+  text: A manager shall be allowed to reject leave requests for employees who report directly to that manager and shall record a rejection reason.
+  class: functional
+  criteria: []
+  operations:
+  - operation:7e6f4955e26661a1
+  status: Confirmed
+- id: req:3adc2fddf864f23f
+  text: Submitting a valid leave request shall change its status from Draft to Submitted.
+  class: functional
+  criteria: []
+  operations:
+  - operation:30e3f63d799f6f1b
+  status: Confirmed
+- id: req:3d647f145ef85a17
+  text: The system shall notify the employee when a leave request is Approved.
+  class: functional
+  criteria: []
+  operations:
+  - operation:e80512cc10433bdd
+  status: Confirmed
+- id: req:4dfe5d035c930116
+  text: Withdrawing a leave request shall change its status to Withdrawn.
+  class: functional
+  criteria: []
+  operations:
+  - operation:f463e7c912d3f774
+  status: Confirmed
+- id: req:5041534f27046140
+  text: Business timestamps shall use the Europe/Warsaw time zone.
+  class: constraint
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:509e3edc5a79b44d
+  text: A manager shall be able to view leave requests of employees who report directly to that manager.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:58f74509ddd3497a
+  text: The system shall prevent submission when the employee has insufficient annual-leave balance for the requested annual leave.
+  class: functional
+  criteria: []
+  operations:
+  - operation:30e3f63d799f6f1b
+  status: Confirmed
+- id: req:5d3f3ce4853e8159
+  text: The system shall calculate the requested leave duration in working days from the start date to the end date.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:65610fd319df1764
+  text: Rejecting a leave request shall not change the employee's leave balance.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:6a9596e68a4762db
+  text: An employee shall be allowed to cancel an Approved leave request before the leave start date.
+  class: functional
+  criteria: []
+  operations:
+  - operation:6c542729efadf821
+  status: Confirmed
+- id: req:6e60e2a009c57d32
+  text: An employee shall not approve or reject that employee's own leave request.
+  class: security
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:7cdd8f1ccd7e5321
+  text: The system shall reject a leave request whose start date is after its end date.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:94db1c477e53ae35
+  text: The employee's annual-leave balance shall never be negative.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:9f3c642e1b10299b
+  text: An employee shall be allowed to withdraw a Submitted leave request before a manager decision.
+  class: functional
+  criteria: []
+  operations:
+  - operation:f463e7c912d3f774
+  status: Confirmed
+- id: req:b0b6c74b281868af
+  text: The system shall notify the employee when a leave request is Rejected.
+  class: functional
+  criteria: []
+  operations:
+  - operation:7e6f4955e26661a1
+  status: Confirmed
+- id: req:b49b8aad8a2ad513
+  text: A contractor shall not be eligible for paid annual leave.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:c6aca309726b58fc
+  text: Approval records shall be retained for five years.
+  class: operational
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:c75fff7ad7680e2d
+  text: A manager shall be allowed to approve leave requests for employees who report directly to that manager.
+  class: functional
+  criteria: []
+  operations:
+  - operation:e80512cc10433bdd
+  status: Confirmed
+- id: req:cfda362b7cd61f10
+  text: The system shall exclude Saturdays and Sundays from requested leave duration.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:d2e2208831324b4f
+  text: Cancelling an Approved annual-leave request shall restore the deducted annual-leave balance.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:d9e6c4cdf00cef4d
+  text: The system shall exclude public holidays from requested leave duration.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:e7244e91836e954d
+  text: An approval or rejection shall record the deciding manager and decision timestamp.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:f4207d3a3884c9a2
+  text: The system shall prevent overlapping Approved leave requests for the same employee.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+- id: req:f8b3faee11f4d8c5
+  text: The system shall support a half-day leave request.
+  class: functional
+  criteria: []
+  operations: []
+  status: Confirmed
+scenarios: []
+assumptions: []

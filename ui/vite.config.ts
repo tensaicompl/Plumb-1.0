@@ -17,6 +17,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Playwright specs (e2e/) run against the real backend through scripts/run-pilot-e2e.sh.
+    exclude: ["node_modules/**", "e2e/**"],
     // U0.1 owns no unit-test file; once tests exist, failing tests still fail.
     passWithNoTests: true,
   },

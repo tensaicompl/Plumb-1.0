@@ -1240,6 +1240,34 @@ fn hr_pilot_simulation() {
         "every NOW gate passes at the end of the pilot: {gates}"
     );
     hr_oracle(&sim);
+    hr_reference_outputs(&out);
+}
+
+/// E0.1: the deterministic pilot outputs are compared with the committed reference copies in
+/// fixtures/hr-leave/derived (decisions.jsonl carries wall-clock decision times and is not
+/// compared). Set PLUMB_REGENERATE_REFERENCE=1 to rewrite the references deliberately.
+fn hr_reference_outputs(report: &Path) {
+    let derived = fixture("derived");
+    let regenerate = std::env::var("PLUMB_REGENERATE_REFERENCE").is_ok();
+    if regenerate {
+        std::fs::create_dir_all(&derived).unwrap();
+    }
+    for name in [
+        "functional.yaml",
+        "glossary.md",
+        "scenarios.yaml",
+        "model-report.md",
+        "gate-report.json",
+    ] {
+        let produced = std::fs::read_to_string(report.join(name)).unwrap();
+        if regenerate {
+            std::fs::write(derived.join(name), &produced).unwrap();
+            continue;
+        }
+        let reference = std::fs::read_to_string(derived.join(name))
+            .unwrap_or_else(|_| panic!("missing reference fixtures/hr-leave/derived/{name}"));
+        assert_eq!(produced, reference, "{name} differs from its reference");
+    }
 }
 
 /// Normalizes a name for comparison with the fixture contract ("LeaveRequest", "leave request"

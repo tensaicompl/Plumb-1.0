@@ -1,0 +1,116 @@
+version: 1
+model_hash: psg:sha256:06937019ab7406cb17872b23d10107772d89af0f9fe8e99ebf55c8e3f28f4e75
+scenarios:
+- id: scenario:5269fc4f3d07fd3f
+  name: Rule row dt:annual-eligibility row 1
+  scenario_kind: rule_row
+  given:
+  - decision_inputs:
+      '0':
+        kind: enum
+        value: Contractor
+  when:
+    decision_table: dt:annual-eligibility
+  then:
+  - decision_outputs:
+      '0':
+        kind: bool
+        value: false
+  requirement_refs: null
+  derived_from_refs:
+  - dt:annual-eligibility
+  confirmation_status: Confirmed
+- id: scenario:6b967c24cfc79179
+  name: Transition transition:069fa5463e19f0dc
+  scenario_kind: state_transition
+  given:
+  - states_active:
+    - state:34a520d527dd7f1e
+  when:
+    operation: operation:30e3f63d799f6f1b
+  then:
+  - states_active:
+    - state:48a0a02de47a5485
+  requirement_refs: null
+  derived_from_refs:
+  - transition:069fa5463e19f0dc
+  confirmation_status: Confirmed
+- id: scenario:8158d8131e8828c9
+  name: Transition transition:4721b77e05563b13
+  scenario_kind: state_transition
+  given:
+  - states_active:
+    - state:48a0a02de47a5485
+  when:
+    operation: operation:e80512cc10433bdd
+  then:
+  - states_active:
+    - state:003e1c867ddecb92
+  requirement_refs: null
+  derived_from_refs:
+  - transition:4721b77e05563b13
+  confirmation_status: Confirmed
+- id: scenario:81c869d2fda66e0b
+  name: Transition transition:9e419a85220b3ba6
+  scenario_kind: state_transition
+  given:
+  - states_active:
+    - state:003e1c867ddecb92
+  when:
+    operation: operation:6c542729efadf821
+  then:
+  - states_active:
+    - state:0f3ccf64aba9dc71
+  requirement_refs: null
+  derived_from_refs:
+  - transition:9e419a85220b3ba6
+  confirmation_status: Confirmed
+- id: scenario:b260626972172584
+  name: Transition transition:20888c9e4a8b064d
+  scenario_kind: state_transition
+  given:
+  - states_active:
+    - state:48a0a02de47a5485
+  when:
+    operation: operation:7e6f4955e26661a1
+  then:
+  - states_active:
+    - state:47974a687e5bdbf8
+  requirement_refs: null
+  derived_from_refs:
+  - transition:20888c9e4a8b064d
+  confirmation_status: Confirmed
+- id: scenario:cf9fefa10f7c9482
+  name: Transition transition:f1b56b95722e60db
+  scenario_kind: state_transition
+  given:
+  - states_active:
+    - state:48a0a02de47a5485
+  when:
+    operation: operation:f463e7c912d3f774
+  then:
+  - states_active:
+    - state:03590728fff868f1
+  requirement_refs: null
+  derived_from_refs:
+  - transition:f1b56b95722e60db
+  confirmation_status: Confirmed
+- id: scenario:eee46713b63bef85
+  name: Rule row dt:annual-eligibility row 0
+  scenario_kind: rule_row
+  given:
+  - decision_inputs:
+      '0':
+        kind: enum
+        value: Employee
+  when:
+    decision_table: dt:annual-eligibility
+  then:
+  - decision_outputs:
+      '0':
+        kind: bool
+        value: true
+  requirement_refs: null
+  derived_from_refs:
+  - dt:annual-eligibility
+  confirmation_status: Confirmed
