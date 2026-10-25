@@ -785,7 +785,11 @@ mod services {
                     .with_details(json!({ "import_error": e.to_string() }))
             })?;
             if let Some(existing) = loaded.graph.node(&imported.source.id) {
-                let code = if existing == &imported.source {
+                // Fable #314: identity is the payload and extensions; audit metadata (who and
+                // when) differs between uploads of the same source.
+                let same = existing.payload == imported.source.payload
+                    && existing.extensions == imported.source.extensions;
+                let code = if same {
                     "E_SOURCE_EXISTS"
                 } else {
                     "E_SOURCE_CONFLICT"

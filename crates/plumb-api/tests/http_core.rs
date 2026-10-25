@@ -3781,4 +3781,47 @@ mod http_core {
         );
         assert!(text.contains("disk I/O error"), "{text}");
     }
+
+    /// Fable #314: re-uploading the same source at another clock instant is E_SOURCE_EXISTS
+    /// (audit metadata is ignored); only a different payload under the same identity conflicts.
+    #[tokio::test]
+    async fn source_reupload_exists_under_another_clock_instant() {
+        let app = app();
+        let md = b"# Leave\n\nEmployees request leave.\n";
+        let r = upload(&app, Some(&etag(&app)), Some("leave.md"), "text/markdown", md).await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        let id = r.json()["id"].as_str().unwrap().to_owned();
+        // The same database served by a state whose clock reads another instant.
+        let later = state_with(
+            open_store(&app.path),
+            SqliteArtifactStore::open(&app.path).unwrap(),
+            Arc::new(FixedClock::new(ts(T1))),
+            Vec::new(),
+        );
+        let later = App {
+            _dir: tempfile::tempdir().unwrap(),
+            path: app.path.clone(),
+            router: router(later.clone()),
+            state: later,
+        };
+        let before = revision_count(&later);
+        let r = upload(&later, Some(&etag(&later)), Some("leave.md"), "text/markdown", md).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_SOURCE_EXISTS"),
+            "{:?}",
+            r.json()
+        );
+        assert_eq!(r.json()["details"]["id"], id);
+        // Fable #235: the same content under another display name is the same identity with
+        // another persisted payload: E_SOURCE_CONFLICT.
+        let r = upload(&later, Some(&etag(&later)), Some("other.md"), "text/markdown", md).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_SOURCE_CONFLICT"),
+            "{:?}",
+            r.json()
+        );
+        assert_eq!(revision_count(&later), before);
+    }
 }
