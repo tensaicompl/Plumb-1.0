@@ -738,7 +738,12 @@ mod workflow {
         }
         drop(wf);
         let wf = db.workflow();
-        assert_eq!(wf.proposal_occurrences(&id("prop:0000000000000001")).unwrap().len(), 2);
+        assert_eq!(
+            wf.proposal_occurrences(&id("prop:0000000000000001"))
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     /// R0.6: the pending-proposal enumeration returns every and only pending record, complete,

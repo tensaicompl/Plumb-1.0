@@ -5,9 +5,9 @@
 //! revision, artifact and durable workflow stores. The full A0.3 runtime is injected explicitly:
 //! a deterministic test inference provider, a static calendar provider and a test predicate
 //! provider, never anything from the environment or the network. U2.1 (Hotfix 073) adds the
-//! semantic change preview tests (split and Term merge previews, confirmation through the
-//! existing proposal actions and stale-preview rejection); Hotfix 074 makes the split preview
-//! create-class.
+//! semantic change preview tests (split and Term merge previews and stale-preview rejection);
+//! Hotfix 074 makes the split preview create-class. H0.11 (architecture §33.12) makes previews
+//! non-persistent: the reviewed preview is submitted through the direct write with its identity.
 
 mod http_workflow {
     use std::path::{Path, PathBuf};
@@ -25,8 +25,9 @@ mod http_workflow {
         generate_questions, QuestionAudit, QuestionGenerationInput, StakeholderRoutingConfig,
     };
     use plumb_functional::{
-        encode_decision_table, ExprCalendarDefinition, ExprPredicateError, ExprRefValue,
-        ExprStaticCalendarProvider, PredicateProvider, CALCULATION_ORIGIN_EXTENSION,
+        encode_decision_table, propose_requirement_split, propose_term_merge,
+        ExprCalendarDefinition, ExprPredicateError, ExprRefValue, ExprStaticCalendarProvider,
+        PredicateProvider, RequirementSplitInput, CALCULATION_ORIGIN_EXTENSION,
     };
     use plumb_inference::{
         validate_binding, InferenceArtifact, InferenceProvider, InferenceRequest,
@@ -708,12 +709,23 @@ mod http_workflow {
         actor: &str,
         profile: ValidationProfile,
     ) -> ApiState {
+        state_with_clock(path, provider, reports, actor, profile, fixed())
+    }
+
+    fn state_with_clock(
+        path: &Path,
+        provider: Arc<TestProvider>,
+        reports: Vec<plumb_validation::GateReport>,
+        actor: &str,
+        profile: ValidationProfile,
+        clock: Arc<dyn Clock + Send + Sync>,
+    ) -> ApiState {
         ApiState::new_with_runtime(
             BranchName::main(),
             SqliteRevisionStore::open(path).unwrap(),
             SqliteArtifactStore::open(path).unwrap(),
             identity(actor),
-            fixed(),
+            clock,
             reports,
             profile,
             runtime(path, provider),
@@ -734,6 +746,20 @@ mod http_workflow {
         graph: Graph,
         reports: impl FnOnce(&Graph) -> Vec<plumb_validation::GateReport>,
         profile: ValidationProfile,
+    ) -> App {
+        app_with_profile_clock(graph, reports, profile, fixed())
+    }
+
+    /// [`app_with`] whose state reads `clock`.
+    fn app_with_clock(graph: Graph, clock: Arc<dyn Clock + Send + Sync>) -> App {
+        app_with_profile_clock(graph, |_| Vec::new(), profile(), clock)
+    }
+
+    fn app_with_profile_clock(
+        graph: Graph,
+        reports: impl FnOnce(&Graph) -> Vec<plumb_validation::GateReport>,
+        profile: ValidationProfile,
+        clock: Arc<dyn Clock + Send + Sync>,
     ) -> App {
         profile.validate().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -762,12 +788,13 @@ mod http_workflow {
             probed: Mutex::new(None),
             hold: Mutex::new(None),
         });
-        let state = state_at_profile(
+        let state = state_with_clock(
             &path,
             provider.clone(),
             reports(&head.graph),
             ACTOR,
             profile,
+            clock,
         );
         let router = router(state.clone());
         App {
@@ -1305,15 +1332,16 @@ mod http_workflow {
         })
     }
 
-    /// Asserts that `reply` is a preview of a pending `kind` proposal persisted on the unchanged
-    /// head `before` (a `GET /api/model/version` body) and returns the stored Proposal.
+    /// Asserts that `reply` is a preview of the exact Proposal `rebuild(built_at)` on the
+    /// unchanged head `before` (a `GET /api/model/version` body) and returns that Proposal.
+    /// H0.11 (architecture §33.12): a preview never persists a pending WorkflowProposal.
     fn assert_preview(
         app: &App,
         reply: &Reply,
         before: &Value,
         base: &Graph,
         action: &str,
-        kind: WorkflowProposalKind,
+        rebuild: impl Fn(Timestamp) -> Proposal,
     ) -> Proposal {
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
         let body = reply.json();
@@ -1329,6 +1357,7 @@ mod http_workflow {
             keys,
             vec![
                 "action",
+                "built_at",
                 "diff",
                 "events",
                 "intake",
@@ -1338,29 +1367,24 @@ mod http_workflow {
                 "version"
             ]
         );
-        // The real pending workflow proposal, bound to the exact baseline revision.
-        let stored = workflow(app)
-            .latest_proposal(&id(body["proposal_id"].as_str().unwrap()))
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.state, WorkflowProposalState::Pending);
-        assert_eq!(stored.proposal_kind, kind);
-        assert_eq!(stored.origin_kind, WorkflowOrigin::Intake);
-        assert_eq!(stored.origin_ref, None);
-        assert_eq!(
-            stored.base_revision_id.to_string(),
-            before["revision"].as_str().unwrap()
-        );
-        let proposal: Proposal = serde_json::from_str(&stored.proposal_json).unwrap();
+        // The previewed identity is the exact domain Proposal built at `built_at`.
+        let built_at: Timestamp = body["built_at"].as_str().unwrap().parse().unwrap();
+        let proposal = rebuild(built_at);
         assert_eq!(
             proposal.id.to_string(),
             body["proposal_id"].as_str().unwrap()
         );
+        // Nothing durable: no workflow occurrence of the previewed proposal exists.
+        assert!(workflow(app)
+            .proposal_occurrences(&proposal.id)
+            .unwrap()
+            .is_empty());
+        assert!(workflow(app).pending_proposals().unwrap().is_empty());
         assert_eq!(
             proposal.patch_set.base_semantic_hash.to_string(),
             before["semantic_hash"].as_str().unwrap()
         );
-        // The diff is exactly the semantic element effect of the persisted PatchSet.
+        // The diff is exactly the semantic element effect of the previewed PatchSet.
         assert_eq!(body["diff"], expected_diff(base, &proposal.patch_set));
         for list in ["added", "removed", "modified"] {
             let ids: Vec<&str> = body["diff"][list]
@@ -1377,8 +1401,38 @@ mod http_workflow {
         proposal
     }
 
+    /// The `SPLIT_BODY` split of `req:c` on `base`, built by `ACTOR` at `at`.
+    fn split_proposal(base: &Graph, at: Timestamp) -> Proposal {
+        let body: Value = serde_json::from_str(SPLIT_BODY).unwrap();
+        propose_requirement_split(
+            base,
+            &RequirementSplitInput {
+                parent_ref: id("req:c"),
+                parts: serde_json::from_value(body["parts"].clone()).unwrap(),
+                actor_ref: id(ACTOR),
+                at,
+            },
+        )
+        .unwrap()
+    }
+
+    /// The `MERGE_BODY` merge of `term:vacation` into `term:leave` on `base`.
+    fn merge_proposal(base: &Graph) -> Proposal {
+        propose_term_merge(base, &id("term:vacation"), &id("term:leave")).unwrap()
+    }
+
+    /// The submission of a reviewed preview: the previewed request body plus `preview`.
+    fn submission(body: &str, preview: &Value) -> Value {
+        let mut request: Value = serde_json::from_str(body).unwrap();
+        request["preview"] = json!({
+            "proposal_id": preview["proposal_id"],
+            "built_at": preview["built_at"],
+        });
+        request
+    }
+
     #[tokio::test]
-    async fn http_workflow_split_preview_then_create_commits_the_exact_proposal() {
+    async fn http_workflow_split_preview_then_submit_commits_the_exact_proposal() {
         let app = app();
         let body: Value = serde_json::from_str(SPLIT_BODY).unwrap();
         let uri = "/api/requirements/req:c/split/preview";
@@ -1396,16 +1450,11 @@ mod http_workflow {
         let before = version(&app).await;
         let base = head(&app);
         let r = write(&app, uri, Some(body)).await;
-        let proposal = assert_preview(
-            &app,
-            &r,
-            &before,
-            &base.graph,
-            "create",
-            WorkflowProposalKind::Create,
-        );
+        let proposal = assert_preview(&app, &r, &before, &base.graph, "create", |at| {
+            split_proposal(&base.graph, at)
+        });
         let preview = r.json();
-        // The stored split Proposal classifies independently as Create (Hotfix 074): it adds
+        // The previewed split Proposal classifies independently as Create (Hotfix 074): it adds
         // Requirements and decomposes_to edges and carries no Supersede primitive.
         let mut leaves = vec![&proposal.patch_set.patch];
         let mut flat = Vec::new();
@@ -1446,41 +1495,59 @@ mod http_workflow {
             .flat_map(|l| preview["diff"][*l].as_array().unwrap())
             .collect();
         assert!(acceptance_decisions(&head(&app).graph).is_empty());
-        // An identical preview on the same head is the same pending proposal.
+        // An identical preview on the same head is the same proposal and persists nothing.
         let again = write(&app, uri, Some(serde_json::from_str(SPLIT_BODY).unwrap())).await;
         assert_eq!(again.json()["proposal_id"], preview["proposal_id"]);
         assert_eq!(version(&app).await, before);
-        // The normal A0.3 action-kind check refuses a supersede action on the Create-class split
-        // Proposal; nothing is committed and the proposal stays pending.
+        assert!(workflow(&app)
+            .proposal_occurrences(&proposal.id)
+            .unwrap()
+            .is_empty());
+        // There is no pending proposal to act on: the proposal actions do not know it.
         assert_error(
             &write(
                 &app,
-                &format!("/api/proposals/{}/supersede", proposal.id),
+                &format!("/api/proposals/{}/create", proposal.id),
                 Some(json!({"reason": "Two behaviours."})),
             )
             .await,
-            StatusCode::CONFLICT,
-            "E_PROPOSAL_ACTION_MISMATCH",
+            StatusCode::NOT_FOUND,
+            "E_NOT_FOUND",
         );
+        let split = "/api/requirements/req:c/split";
+        // A submission naming another proposal, or another change than the previewed one, is
+        // refused; so is a build instant outside the reviewed revision's lifetime.
+        let mut wrong = submission(SPLIT_BODY, &preview);
+        wrong["preview"]["proposal_id"] = json!("prop:0000000000000000");
+        let mut other = submission(SPLIT_BODY, &preview);
+        other["parts"][1] = json!("Employees shall withdraw leave requests.");
+        for request in [wrong, other] {
+            assert_error(
+                &write(&app, split, Some(request)).await,
+                StatusCode::CONFLICT,
+                "E_PREVIEW_MISMATCH",
+            );
+        }
+        for instant in [
+            json!("2999-01-01T00:00:00.000000000Z"),
+            json!("2025-12-31T00:00:00.000000000Z"),
+            json!("x"),
+        ] {
+            let mut late = submission(SPLIT_BODY, &preview);
+            late["preview"]["built_at"] = instant;
+            assert_error(
+                &write(&app, split, Some(late)).await,
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            );
+        }
         assert_eq!(version(&app).await, before);
-        assert_eq!(
-            workflow(&app)
-                .latest_proposal(&proposal.id)
-                .unwrap()
-                .unwrap()
-                .state,
-            WorkflowProposalState::Pending
-        );
-        // The direct split endpoint is not involved: confirmation is the create action.
-        let r = write(
-            &app,
-            &format!("/api/proposals/{}/create", proposal.id),
-            Some(json!({"reason": "Two behaviours."})),
-        )
-        .await;
+        // The submission commits exactly the previewed proposal.
+        let r = write(&app, split, Some(submission(SPLIT_BODY, &preview))).await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.text());
         let committed = r.json();
         assert_ne!(committed["revision"], before["revision"]);
+        assert_eq!(committed["events"][0]["kind"], "split_requirement");
         let loaded = head(&app);
         assert_eq!(
             loaded.revision.id.to_string(),
@@ -1500,15 +1567,10 @@ mod http_workflow {
                     && e.status == ElementStatus::Accepted
             }));
         }
-        let stored = workflow(&app)
-            .latest_proposal(&proposal.id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.state, WorkflowProposalState::Accepted);
-        // Governance adds the acceptance ResolutionDecision on top of the previewed effect: the
-        // decision is not part of the preview diff, and (R0.5) as a proposal-acceptance
-        // companion it is excluded from semantic_hash, so the committed semantic hash is exactly
-        // the previewed candidate's.
+        // Governance adds the acceptance ResolutionDecision of exactly the previewed proposal on
+        // top of the previewed effect: the decision is not part of the preview diff, and (R0.5)
+        // as a proposal-acceptance companion it is excluded from semantic_hash, so the committed
+        // semantic hash is exactly the previewed candidate's.
         let decisions = acceptance_decisions(g);
         assert_eq!(decisions.len(), 1);
         let decision = decisions[0].0.to_string();
@@ -1529,12 +1591,76 @@ mod http_workflow {
         }
     }
 
+    /// A clock that advances by one second on every read, from `NOW` (at most 59 reads).
+    struct SteppingClock(Mutex<u32>);
+
+    impl Clock for SteppingClock {
+        fn now(&self) -> Timestamp {
+            let mut second = self.0.lock().unwrap();
+            let now = ts(&format!("2026-05-01T12:00:{:02}.000000000Z", *second));
+            *second += 1;
+            now
+        }
+    }
+
+    /// H0.11: the identity of a preview that was never persisted survives it. A submission at a
+    /// later Clock instant commits exactly the previewed proposal, built at the previewed
+    /// instant; the revision records the later submission instant.
+    #[tokio::test]
+    async fn preview_identity_survives_a_later_submission_instant() {
+        let app = app_with_clock(fixture_graph(), Arc::new(SteppingClock(Mutex::new(0))));
+        let base = head(&app);
+        let r = write(
+            &app,
+            "/api/requirements/req:c/split/preview",
+            Some(serde_json::from_str(SPLIT_BODY).unwrap()),
+        )
+        .await;
+        let before = version(&app).await;
+        let proposal = assert_preview(&app, &r, &before, &base.graph, "create", |at| {
+            split_proposal(&base.graph, at)
+        });
+        let preview = r.json();
+        let built_at: Timestamp = preview["built_at"].as_str().unwrap().parse().unwrap();
+        // A second preview at a later instant is another proposal: the instant is part of it.
+        let later = write(
+            &app,
+            "/api/requirements/req:c/split/preview",
+            Some(serde_json::from_str(SPLIT_BODY).unwrap()),
+        )
+        .await
+        .json();
+        assert_ne!(later["proposal_id"], preview["proposal_id"]);
+        let r = write(
+            &app,
+            "/api/requirements/req:c/split",
+            Some(submission(SPLIT_BODY, &preview)),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let loaded = head(&app);
+        let decisions = acceptance_decisions(&loaded.graph);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].1.proposal_ref, Some(proposal.id.clone()));
+        let children: Vec<&Node> = loaded
+            .graph
+            .nodes()
+            .values()
+            .filter(|n| n.extensions.keys().any(|k| k.as_str().contains("split")))
+            .collect();
+        assert_eq!(children.len(), 2);
+        for child in children {
+            assert_eq!(child.audit.created_at, built_at);
+        }
+        assert!(loaded.revision.created_at > built_at);
+    }
+
     fn in_list(diff: &Value, list: &str, element: &str) -> bool {
         diff[list].as_array().unwrap().contains(&json!(element))
     }
 
     #[tokio::test]
-    async fn http_workflow_term_merge_preview_then_merge_commits_the_exact_proposal() {
+    async fn http_workflow_term_merge_preview_then_submit_commits_the_exact_proposal() {
         let app = app();
         let uri = "/api/glossary/term:vacation/merge/preview";
         let body: Value = serde_json::from_str(MERGE_BODY).unwrap();
@@ -1551,14 +1677,9 @@ mod http_workflow {
         let before = version(&app).await;
         let base = head(&app);
         let r = write(&app, uri, Some(body)).await;
-        let proposal = assert_preview(
-            &app,
-            &r,
-            &before,
-            &base.graph,
-            "merge",
-            WorkflowProposalKind::Merge,
-        );
+        let proposal = assert_preview(&app, &r, &before, &base.graph, "merge", |_| {
+            merge_proposal(&base.graph)
+        });
         let preview = r.json();
         assert_eq!(version(&app).await, before);
         assert!(head(&app).graph.node(&id("term:vacation")).is_some());
@@ -1578,12 +1699,25 @@ mod http_workflow {
         assert!(!in_list(&preview["diff"], "added", "term:vacation"));
         assert!(!in_list(&preview["diff"], "modified", "term:vacation"));
         assert!(in_list(&preview["diff"], "modified", "term:leave"));
-        let r = write(
-            &app,
-            &format!("/api/proposals/{}/merge", proposal.id),
-            Some(json!({"reason": "Synonym."})),
-        )
-        .await;
+        assert_error(
+            &write(
+                &app,
+                &format!("/api/proposals/{}/merge", proposal.id),
+                Some(json!({"reason": "Synonym."})),
+            )
+            .await,
+            StatusCode::NOT_FOUND,
+            "E_NOT_FOUND",
+        );
+        let merge = "/api/glossary/term:vacation/merge";
+        let mut wrong = submission(MERGE_BODY, &preview);
+        wrong["preview"]["proposal_id"] = json!("prop:0000000000000000");
+        assert_error(
+            &write(&app, merge, Some(wrong)).await,
+            StatusCode::CONFLICT,
+            "E_PREVIEW_MISMATCH",
+        );
+        let r = write(&app, merge, Some(submission(MERGE_BODY, &preview))).await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.text());
         let g = head(&app).graph;
         assert!(g.node(&id("term:vacation")).is_none());
@@ -1598,19 +1732,13 @@ mod http_workflow {
                 "vacation".to_owned()
             ])
         );
-        assert_eq!(
-            workflow(&app)
-                .latest_proposal(&proposal.id)
-                .unwrap()
-                .unwrap()
-                .state,
-            WorkflowProposalState::Accepted
-        );
-        assert_eq!(acceptance_decisions(&g).len(), 1);
+        let decisions = acceptance_decisions(&g);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].1.proposal_ref, Some(proposal.id.clone()));
     }
 
     #[tokio::test]
-    async fn http_workflow_stale_previews_are_rejected_without_rebase() {
+    async fn http_workflow_stale_previews_are_refused_without_rebase() {
         let app = app();
         let split = write(
             &app,
@@ -1629,6 +1757,7 @@ mod http_workflow {
             (StatusCode::OK, StatusCode::OK)
         );
         let a = version(&app).await;
+        let reviewed = format!("\"{}\"", a["revision"].as_str().unwrap());
         // Another write advances the head from revision A to revision B.
         let r = write(
             &app,
@@ -1639,31 +1768,27 @@ mod http_workflow {
         assert_eq!(r.status, StatusCode::OK, "{}", r.text());
         let b = version(&app).await;
         assert_ne!(a["revision"], b["revision"]);
-        for (reply, action, reason) in [
-            (&split, "create", "Two behaviours."),
-            (&merge, "merge", "Synonym."),
+        for (reply, uri, body) in [
+            (&split, "/api/requirements/req:c/split", SPLIT_BODY),
+            (&merge, "/api/glossary/term:vacation/merge", MERGE_BODY),
         ] {
-            let proposal_id = reply.json()["proposal_id"].as_str().unwrap().to_owned();
-            // The confirmation carries the latest If-Match; the proposal stays bound to A.
-            let r = write(
-                &app,
-                &format!("/api/proposals/{proposal_id}/{action}"),
-                Some(json!({"reason": reason})),
-            )
-            .await;
-            assert_error(&r, StatusCode::CONFLICT, "E_PROPOSAL_BASELINE_CHANGED");
-            let stored = workflow(&app)
-                .latest_proposal(&id(&proposal_id))
-                .unwrap()
-                .unwrap();
-            assert_eq!(stored.state, WorkflowProposalState::Pending);
-            assert_eq!(
-                stored.base_revision_id.to_string(),
-                a["revision"].as_str().unwrap()
+            let request = submission(body, &reply.json());
+            // The submission carries the reviewed preview's revision: the head moved, 412.
+            assert_error(
+                &post(&app, uri, Some(&reviewed), Some(request.clone())).await,
+                StatusCode::PRECONDITION_FAILED,
+                "E_PRECONDITION_FAILED",
+            );
+            // Even with the current If-Match, the change built on B is not the previewed one.
+            assert_error(
+                &write(&app, uri, Some(request)).await,
+                StatusCode::CONFLICT,
+                "E_PREVIEW_MISMATCH",
             );
         }
-        // Nothing was committed, rebased or retried.
+        // Nothing was committed, rebased, retried or persisted.
         assert_eq!(version(&app).await, b);
+        assert!(workflow(&app).pending_proposals().unwrap().is_empty());
         let g = head(&app).graph;
         assert_eq!(
             g.node(&id("req:c")).unwrap().status,
@@ -2264,6 +2389,50 @@ mod http_workflow {
         .await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.text());
         let _ = tampered;
+    }
+
+    /// Fable #235: E_GATE_REPORT_INCOHERENT from persisted data. The current F1 report and the
+    /// persisted Finding agree on a finding whose rule is not part of the current profile (a
+    /// report and graph written under another rule pack): the waiver is refused before any
+    /// write, never invented from the report alone.
+    #[tokio::test]
+    async fn waiver_of_a_finding_outside_the_profile_is_gate_report_incoherent() {
+        use plumb_validation::GateSummary;
+        let g = fixture_graph();
+        let mut report = f1_report(&g);
+        let finding = report
+            .findings
+            .iter_mut()
+            .find(|f| f.id == id(CRITERIA))
+            .expect("the fixture F1 report generates CRITERIA");
+        const UNPROFILED: &str = "PLUMB.F1.ZZZ.UNPROFILED";
+        finding.payload.code = UNPROFILED.to_owned();
+        // The finding is now generated by an extra rule result (every profile rule stays).
+        let origin = report
+            .rules
+            .iter()
+            .position(|r| r.finding_ref.as_ref() == Some(&id(CRITERIA)))
+            .unwrap();
+        let mut extra = report.rules[origin].clone();
+        extra.rule_id = UNPROFILED.to_owned();
+        report.rules.push(extra);
+        report.rules.sort_by(|a, b| a.rule_id.cmp(&b.rule_id));
+        report.summary = GateSummary::of(&report.rules);
+        report.result = report.summary.result();
+        report.validate().unwrap();
+        assert!(profile().rules.iter().all(|r| r.id != UNPROFILED));
+        let graph = with_findings(&g, &report);
+        let app = app_with(graph, |head| vec![f1_report_for(head, &report)]);
+        let before = version(&app).await;
+        let r = write(
+            &app,
+            &format!("/api/findings/{CRITERIA}/waive"),
+            Some(json!({"reason": "Accepted risk."})),
+        )
+        .await;
+        assert_error(&r, StatusCode::CONFLICT, "E_GATE_REPORT_INCOHERENT");
+        assert_eq!(r.json()["details"]["finding"], CRITERIA);
+        assert_eq!(version(&app).await, before);
     }
 
     // ------------------------------------------------------------------ calculations
@@ -3152,6 +3321,171 @@ mod http_workflow {
             Some(json!({"kind": kind, "payload": proposal, "evidence": []})),
         )
         .await
+    }
+
+    // ------------------------------------------------------------------ H0.11 discard
+
+    /// The pending proposals as `GET /api/proposals` lists them.
+    async fn listed(app: &App) -> Vec<Value> {
+        let r = get(app, "/api/proposals").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let etag = r.headers["etag"].to_str().unwrap().to_owned();
+        assert_eq!(etag, format!("\"{}\"", head(app).revision.id));
+        r.json()["items"].as_array().unwrap().clone()
+    }
+
+    /// H0.11 (architecture §33.12, Fable #214): an answer persists a pending proposal; the user
+    /// discards it explicitly, which moves exactly that occurrence to the terminal state
+    /// abandoned without a revision. The history is kept and the proposal is no longer offered.
+    #[tokio::test]
+    async fn discard_moves_a_pending_answer_to_abandoned_without_a_revision() {
+        let app = app();
+        assert_eq!(listed(&app).await, Vec::<Value>::new());
+        let question = question_about(&head(&app).graph, "op:approve");
+        let r = answer(&app, &question, json!({"performer_ref": "actor:clerk"})).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let proposal_id = r.json()["proposal_id"].as_str().unwrap().to_owned();
+        let before = version(&app).await;
+        // Discovery: the pending answer is listed with what is needed to govern it.
+        let items = listed(&app).await;
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0],
+            json!({
+                "proposal_id": proposal_id,
+                "action": "create",
+                "origin": "question",
+                "origin_ref": question.to_string(),
+                "recipe_job_id": null,
+                "stage_job_id": null,
+                "base_revision": before["revision"],
+                "requires_reason": true,
+                "stale": false,
+                "discardable": true,
+            })
+        );
+        let uri = format!("/api/proposals/{proposal_id}/discard");
+        assert_error(
+            &post(&app, &uri, None, Some(json!({}))).await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        assert_error(
+            &write(
+                &app,
+                "/api/proposals/prop:0000000000000000/discard",
+                Some(json!({})),
+            )
+            .await,
+            StatusCode::NOT_FOUND,
+            "E_NOT_FOUND",
+        );
+        let r = write(&app, &uri, Some(json!({}))).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let body = r.json();
+        // Nothing is committed: the head, its hashes and the graph are unchanged; no event.
+        assert_eq!(body["revision"], before["revision"]);
+        assert_eq!(body["semantic_hash"], before["semantic_hash"]);
+        assert_eq!(body["events"], json!([]));
+        assert_eq!(version(&app).await, before);
+        let stored = workflow(&app)
+            .latest_proposal(&id(&proposal_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, WorkflowProposalState::Abandoned);
+        assert_eq!(
+            stored.resolved_revision_id.unwrap().as_str(),
+            before["revision"].as_str().unwrap()
+        );
+        assert_eq!(listed(&app).await, Vec::<Value>::new());
+        // Terminal: neither a second discard nor any action reopens it.
+        for action in ["discard", "create", "reject"] {
+            assert_error(
+                &write(
+                    &app,
+                    &format!("/api/proposals/{proposal_id}/{action}"),
+                    Some(json!({"reason": null})),
+                )
+                .await,
+                StatusCode::CONFLICT,
+                "E_PROPOSAL_NOT_PENDING",
+            );
+        }
+        // An abandoned proposal is not rejection memory and the question is still open.
+        assert!(workflow(&app)
+            .rejected_proposals(WorkflowOrigin::Question)
+            .unwrap()
+            .is_empty());
+        let questions = get(&app, "/api/questions").await.json();
+        assert!(questions["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|q| q["id"] == question.to_string() && q["status"] == "Open"));
+    }
+
+    /// H0.11: discard applies to the answer and intake flows only; a session or stage proposal
+    /// keeps its own governance (accept or reject), so its discard is refused before any write.
+    #[tokio::test]
+    async fn discard_is_refused_outside_answer_and_intake_flows() {
+        let app = app();
+        // An intake-origin proposal can be discarded, and a stale one too.
+        let proposal = requirement_proposal(&app, "req:intake").await;
+        let r = intake(&app, "create", &proposal).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let session = create_session(&app, json!(["req:a"])).await.json()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        app.provider
+            .set(ProviderMode::Propose, Some(&semantic(&app).await));
+        let r = turn(&app, &session, "Employees should see their balance.").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let session_proposal = r.json()["proposals"][0]["id"].as_str().unwrap().to_owned();
+        let items = listed(&app).await;
+        let row = |id: &str| {
+            items
+                .iter()
+                .find(|p| p["proposal_id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(row(proposal.id.as_str())["discardable"], json!(true));
+        assert_eq!(row(proposal.id.as_str())["stale"], json!(true));
+        assert_eq!(row(&session_proposal)["discardable"], json!(false));
+        let before = version(&app).await;
+        let r = write(
+            &app,
+            &format!("/api/proposals/{session_proposal}/discard"),
+            Some(json!({})),
+        )
+        .await;
+        assert_error(&r, StatusCode::CONFLICT, "E_PROPOSAL_NOT_DISCARDABLE");
+        assert_eq!(r.json()["details"]["origin"], "session");
+        assert_eq!(
+            workflow(&app)
+                .latest_proposal(&id(&session_proposal))
+                .unwrap()
+                .unwrap()
+                .state,
+            WorkflowProposalState::Pending
+        );
+        let r = write(
+            &app,
+            &format!("/api/proposals/{}/discard", proposal.id),
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_eq!(
+            workflow(&app)
+                .latest_proposal(&proposal.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            WorkflowProposalState::Abandoned
+        );
+        assert_eq!(version(&app).await, before);
     }
 
     // ------------------------------------------------------------------ Hotfix 083

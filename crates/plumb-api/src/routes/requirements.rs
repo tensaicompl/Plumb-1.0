@@ -37,7 +37,7 @@ use crate::state::{
     require_clean_reason, wire, ApiState, PageRequest, QueryParams,
 };
 
-use super::model::semantic_change_preview;
+use super::model::{preview_instant, require_previewed, semantic_change_preview};
 
 /// The F1 rule whose evidence records requirement lint diagnostics.
 const QUALITY_RULE: &str = "PLUMB.F1.REQ.QUALITY_FINDINGS_CLEAR";
@@ -385,12 +385,13 @@ async fn accept_requirement_ears(
 // ============================================================================ A0.3 (Hotfix 065)
 
 /// A validated requirement split: the loaded head, the exact `propose_requirement_split`
-/// Proposal, the clean reason and the one Clock read.
+/// Proposal, the clean reason, the one Clock read and the reviewed preview it submits, if any.
 struct RequirementSplit {
     loaded: LoadedRevision,
     proposal: Proposal,
     reason: String,
     created_at: Timestamp,
+    preview: Option<crate::openapi::PreviewConfirmation>,
 }
 
 /// The shared validation and Proposal construction of `split_requirement` and
@@ -421,6 +422,12 @@ fn requirement_split(
     let loaded = state.load_head()?;
     check_if_match(headers, &loaded)?;
     let created_at = state.now();
+    // H0.11: a submitted preview is rebuilt at its own instant, so an unchanged change on an
+    // unchanged head is exactly the previewed Proposal.
+    let at = match &request.preview {
+        Some(preview) => preview_instant(&loaded, preview, created_at)?,
+        None => created_at,
+    };
     let (node, _) = requirement(&loaded.graph, id)?;
     let proposal = propose_requirement_split(
         &loaded.graph,
@@ -428,7 +435,7 @@ fn requirement_split(
             parent_ref: node.id.clone(),
             parts: request.parts,
             actor_ref: state.actor_ref().clone(),
-            at: created_at,
+            at,
         },
     )
     .map_err(|error| match error {
@@ -443,6 +450,7 @@ fn requirement_split(
         proposal,
         reason: request.reason,
         created_at,
+        preview: request.preview,
     })
 }
 
@@ -455,6 +463,9 @@ async fn split_requirement(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let split = requirement_split(&state, &id, &headers, &body)?;
+    if let Some(preview) = &split.preview {
+        require_previewed(&split.proposal, preview)?;
+    }
     let write = state.write(
         &split.loaded,
         &split.proposal,
@@ -466,10 +477,10 @@ async fn split_requirement(
     Ok(Json(write).into_response())
 }
 
-/// `preview_requirement_split` (U2.1, Hotfix 073): the exact `split_requirement` Proposal,
-/// persisted pending with its semantic element diff and committed only by `POST
-/// /api/proposals/{id}/create` (a create-class Proposal, Hotfix 074: the split adds child
-/// Requirements and `decomposes_to` edges and supersedes the parent only through `SetStatus`).
+/// `preview_requirement_split` (U2.1, Hotfix 073; H0.11): the exact `split_requirement`
+/// Proposal with its semantic element diff, never persisted; `split_requirement` with `preview`
+/// submits it (a create-class Proposal, Hotfix 074: the split adds child Requirements and
+/// `decomposes_to` edges and supersedes the parent only through `SetStatus`).
 async fn preview_requirement_split(
     State(state): State<ApiState>,
     Path(id): Path<String>,

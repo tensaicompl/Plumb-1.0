@@ -1478,6 +1478,14 @@ mod cli {
         assert!(err.contains("E_PROPOSAL_NOT_PENDING"), "{err}");
         assert_eq!(pending.len(), 2, "one proposal per requirement candidate");
         let next = &pending[1];
+        // H0.11: a stage proposal keeps its own governance; discard is refused.
+        let (code, _, err) = env.run(&["apply", next, "--action", "discard"]);
+        assert_eq!(code, 1);
+        assert!(err.contains("E_PROPOSAL_NOT_DISCARDABLE"), "{err}");
+        assert_eq!(
+            proposal_state(&env.db, next),
+            WorkflowProposalState::Pending
+        );
         // The class must match: a create proposal is not a merge.
         let (code, _, err) = env.run(&["apply", next, "--action", "merge"]);
         assert_eq!(code, 1);
@@ -2029,6 +2037,24 @@ mod cli {
         let (code, _, err) = env.run(&["answer", question, "--answer", "[1]"]);
         assert_eq!(code, 1);
         assert!(err.contains("E_INVALID_REQUEST"), "{err}");
+        // H0.11: the answer's pending proposal is discarded explicitly (pending -> abandoned)
+        // without a revision; it is kept as history and no longer listed.
+        let head = head_graph(&env.db).revision.id;
+        let (code, discarded) = env.json(&["apply", proposal, "--action", "discard"]);
+        assert_eq!(code, 0, "{discarded}");
+        assert_eq!(discarded["revision"], head.to_string());
+        assert_eq!(discarded["events"], json!([]));
+        assert_eq!(
+            proposal_state(&env.db, proposal),
+            WorkflowProposalState::Abandoned
+        );
+        let (code, listed) = env.json(&["proposals"]);
+        assert_eq!(code, 0, "{listed}");
+        assert!(listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["proposal_id"] != proposal));
     }
 
     #[test]
