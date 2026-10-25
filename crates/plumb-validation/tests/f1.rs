@@ -1869,7 +1869,7 @@ mod f1_contract {
         let (mut nodes, _) = base();
         nodes.push(req_node(
             A,
-            "The operator shall respond within 2 days.",
+            "The operator shall approve requests within 2 days.",
             &[&ev[0]],
         ));
         nodes.push(req_node(B, " \t ", &[&ev[1]]));

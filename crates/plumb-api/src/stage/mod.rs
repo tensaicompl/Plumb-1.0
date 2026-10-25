@@ -120,6 +120,9 @@ fn bounded(message: &str) -> String {
 
 /// 500 `E_INTERNAL` naming the failed stage-store operation by its stable error name.
 pub(crate) fn store_error(error: plumb_store::StoreError) -> ApiError {
+    if let Some(typed) = ApiError::store_class(error.class()) {
+        return typed.with_details(json!({ "subsystem": "stage_store" }));
+    }
     ApiError::internal(&format!(
         "stage_store: {}",
         scenario_execution::error_name(&error)
@@ -473,7 +476,7 @@ impl Run<'_> {
                 .with_artifact_store(|store| {
                     store.put(ArtifactKind::ScenarioTrace, "application/json", bytes, now)
                 })?
-                .map_err(|_| ApiError::internal("artifact_store"))?;
+                .map_err(|e| ApiError::artifact_store(&e, "artifact_store"))?;
             if &stored != hash {
                 return Err(StepEnd::Failed(ApiError::internal("artifact_store")));
             }
@@ -568,7 +571,7 @@ fn put_projection(state: &ApiState, bytes: &[u8]) -> Result<Hash, ApiError> {
                 state.now(),
             )
         })?
-        .map_err(|_| ApiError::internal("artifact_store"))
+        .map_err(|e| ApiError::artifact_store(&e, "artifact_store"))
 }
 
 /// Rebuilds the exact acquired ArtifactSet of a persisted run (reuse of a stored child),
@@ -579,7 +582,7 @@ fn artifacts_of(state: &ApiState, run: &CompileRun) -> Result<ArtifactSet, ApiEr
             .iter()
             .map(|hash| {
                 let artifact = state
-                    .with_artifact_store(|store| store.get(hash))?
+                    .get_artifact(hash)?
                     .map_err(|_| ApiError::workflow_corrupt("stage run artifact"))?;
                 Ok(ArtifactInput {
                     hash: artifact.hash,
@@ -602,9 +605,7 @@ fn artifacts_of(state: &ApiState, run: &CompileRun) -> Result<ArtifactSet, ApiEr
 /// Loads a Projection intermediate by hash: kind, media type, canonical bytes, strict decode.
 fn load_segmentation(state: &ApiState, hash: &Hash) -> Result<SegmentationIntermediate, ApiError> {
     let corrupt = || ApiError::workflow_corrupt(&format!("segmentation intermediate {hash}"));
-    let artifact = state
-        .with_artifact_store(|store| store.get(hash))?
-        .map_err(|_| corrupt())?;
+    let artifact = state.get_artifact(hash)?.map_err(|_| corrupt())?;
     if artifact.kind != ArtifactKind::Projection
         || artifact.media_type != "application/json"
         || &Hash::content_sha256(&artifact.bytes) != hash
@@ -878,7 +879,7 @@ impl ApiState {
                 continue;
             };
             let artifact = self
-                .with_artifact_store(|store| store.get(hash))?
+                .get_artifact(hash)?
                 .map_err(|_| ApiError::workflow_corrupt(&format!("step intermediate {hash}")))?;
             let Ok(value) = serde_json::from_slice::<Value>(&artifact.bytes) else {
                 continue;

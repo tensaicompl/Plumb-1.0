@@ -3,16 +3,19 @@
 use std::path::Path;
 
 use plumb_core::{Hash, HashKind, Timestamp};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 
 use crate::model::{Artifact, ArtifactKind};
 use crate::store::{ArtifactStore, ArtifactStoreError};
 
-/// Connection initialization required by plan §6.
+/// Connection initialization required by plan §6, with the frozen durability profile
+/// (Fable #199, `docs/operations.md`): WAL journal and `synchronous = FULL`.
 const CONNECTION_PRAGMAS: &str = "
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
+    PRAGMA synchronous = FULL;
 ";
 
 /// The `artifacts` table exactly as specified by plan §6.
@@ -38,6 +41,28 @@ impl SqliteArtifactStore {
         Self::init(Connection::open(path)?)
     }
 
+    /// Opens the artifact store of an existing database at `path` read-write. The file and
+    /// the `artifacts` table are never created ([`ArtifactStoreError::NotInitialized`]).
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, ArtifactStoreError> {
+        let flags = OpenFlags::default() - OpenFlags::SQLITE_OPEN_CREATE;
+        let conn = open_flags(path.as_ref(), flags)?;
+        require_artifacts_table(&conn)?;
+        conn.execute_batch(CONNECTION_PRAGMAS)?;
+        Ok(Self { conn })
+    }
+
+    /// Opens the artifact store of an existing database at `path` with SQLite read-only access
+    /// and no journal-mode change; every `put` fails.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, ArtifactStoreError> {
+        let flags = (OpenFlags::default()
+            - OpenFlags::SQLITE_OPEN_CREATE
+            - OpenFlags::SQLITE_OPEN_READ_WRITE)
+            | OpenFlags::SQLITE_OPEN_READ_ONLY;
+        let conn = open_flags(path.as_ref(), flags)?;
+        require_artifacts_table(&conn)?;
+        Ok(Self { conn })
+    }
+
     /// Opens an artifact store in a private in-memory SQLite database.
     pub fn open_in_memory() -> Result<Self, ArtifactStoreError> {
         Self::init(Connection::open_in_memory()?)
@@ -47,6 +72,67 @@ impl SqliteArtifactStore {
         conn.execute_batch(CONNECTION_PRAGMAS)?;
         ensure_artifact_schema(&conn)?;
         Ok(Self { conn })
+    }
+
+    /// The configured `PRAGMA synchronous` of this connection (2 is `FULL`).
+    pub fn synchronous(&self) -> Result<i64, ArtifactStoreError> {
+        Ok(self
+            .conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))?)
+    }
+}
+
+/// Opens `path` with `flags`; a missing or non-SQLite file is
+/// [`ArtifactStoreError::NotInitialized`].
+fn open_flags(path: &Path, flags: OpenFlags) -> Result<Connection, ArtifactStoreError> {
+    let not_initialized = |e: &rusqlite::Error| {
+        matches!(
+            e.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::CannotOpen | rusqlite::ErrorCode::NotADatabase)
+        )
+    };
+    let conn = Connection::open_with_flags(path, flags).map_err(|e| {
+        if not_initialized(&e) {
+            ArtifactStoreError::NotInitialized
+        } else {
+            e.into()
+        }
+    })?;
+    // A non-SQLite file only fails on the first read.
+    match conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'artifacts')",
+        [],
+        |row| row.get::<_, bool>(0),
+    ) {
+        Err(e) if not_initialized(&e) => Err(ArtifactStoreError::NotInitialized),
+        Err(e) => Err(e.into()),
+        Ok(_) => Ok(conn),
+    }
+}
+
+fn require_artifacts_table(conn: &Connection) -> Result<(), ArtifactStoreError> {
+    let present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'artifacts')",
+        [],
+        |row| row.get(0),
+    )?;
+    if present {
+        Ok(())
+    } else {
+        Err(ArtifactStoreError::NotInitialized)
+    }
+}
+
+/// Requires the stored `bytes` to hash to the requested and stored key `hash` (H0.10): a
+/// mismatch is typed corruption and the bytes are never returned as a valid artifact.
+pub fn verify_artifact_bytes(hash: &Hash, bytes: &[u8]) -> Result<(), ArtifactStoreError> {
+    if Hash::content_sha256(bytes) == *hash {
+        Ok(())
+    } else {
+        Err(ArtifactStoreError::Corrupt {
+            hash: hash.clone(),
+            reason: "the stored bytes do not hash to the artifact key",
+        })
     }
 }
 
@@ -155,6 +241,7 @@ impl ArtifactStore for SqliteArtifactStore {
             .optional()?;
         let (kind, media_type, bytes, created_at) =
             row.ok_or_else(|| ArtifactStoreError::NotFound(hash.clone()))?;
+        verify_artifact_bytes(hash, &bytes)?;
         let created_at = created_at.parse().map_err(|e: plumb_core::CoreError| {
             ArtifactStoreError::InvalidStoredRow {
                 hash: hash.to_string(),

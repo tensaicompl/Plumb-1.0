@@ -618,7 +618,7 @@ mod http_stages {
             .into_iter()
             .filter(|l| &l.recipe_job_id == job_id)
             .map(|l| {
-                let record = wf.proposal(&l.proposal_id).unwrap().unwrap();
+                let record = wf.latest_proposal(&l.proposal_id).unwrap().unwrap();
                 serde_json::from_str(&record.proposal_json).unwrap()
             })
             .collect();
@@ -998,7 +998,7 @@ mod http_stages {
         assert_eq!(view["result_version"], committed_revision);
         assert_eq!(
             workflow(&app)
-                .proposal(&props[0].id)
+                .latest_proposal(&props[0].id)
                 .unwrap()
                 .unwrap()
                 .state,
@@ -1070,7 +1070,11 @@ mod http_stages {
         let after = head(&app);
         assert_eq!(after.revision.id, commit.revision.id, "no second commit");
         assert_eq!(
-            workflow(&app).proposal(&target.id).unwrap().unwrap().state,
+            workflow(&app)
+                .latest_proposal(&target.id)
+                .unwrap()
+                .unwrap()
+                .state,
             WorkflowProposalState::Accepted
         );
         let child_id = stage_store(&app).steps(&job_id).unwrap()[0]
@@ -1377,7 +1381,7 @@ mod http_stages {
         assert_ne!(head(&app).revision.id, commit.revision.id);
         app.state.release_jobs_lock();
         let _state = open(&app.path, app.provider.clone(), &Gates::default());
-        let record = workflow(&app).proposal(&target.id).unwrap().unwrap();
+        let record = workflow(&app).latest_proposal(&target.id).unwrap().unwrap();
         assert_eq!(record.state, WorkflowProposalState::Accepted);
         assert_eq!(
             record.resolved_revision_id.as_ref(),
@@ -2942,7 +2946,7 @@ mod http_stages {
             self.all()
                 .iter()
                 .map(|p| {
-                    let record = workflow(&self.app).proposal(&p.id).unwrap().unwrap();
+                    let record = workflow(&self.app).latest_proposal(&p.id).unwrap().unwrap();
                     let action = match record.proposal_kind.as_str() {
                         "accept" => A::Accept,
                         "create" => A::Create,
@@ -2968,7 +2972,7 @@ mod http_stages {
         /// Asserts the complete finalised state of the one batch revision `revision`.
         fn assert_finalised(&self, revision: &plumb_store::RevisionId) {
             for p in self.all() {
-                let record = workflow(&self.app).proposal(&p.id).unwrap().unwrap();
+                let record = workflow(&self.app).latest_proposal(&p.id).unwrap().unwrap();
                 assert_eq!(record.state, WorkflowProposalState::Accepted, "{}", p.id);
                 assert_eq!(record.resolved_revision_id.as_ref(), Some(revision));
             }
@@ -2993,8 +2997,12 @@ mod http_stages {
                 assert_eq!(view["status"], "committed", "{view}");
                 assert_eq!(view["result_version"], revision.to_string());
             }
+            let manual = workflow(&self.app)
+                .latest_proposal(&self.manual.id)
+                .unwrap()
+                .unwrap();
             assert!(stage_store(&self.app)
-                .proposal_link(&self.manual.id)
+                .proposal_link(&self.manual.id, &manual.base_revision_id)
                 .unwrap()
                 .is_none());
         }
@@ -3082,7 +3090,11 @@ mod http_stages {
             assert_eq!(parent.status, StageStatus::Ready);
         }
         for p in f.all() {
-            let state = workflow(&f.app).proposal(&p.id).unwrap().unwrap().state;
+            let state = workflow(&f.app)
+                .latest_proposal(&p.id)
+                .unwrap()
+                .unwrap()
+                .state;
             assert_eq!(state, WorkflowProposalState::Pending);
         }
     }
@@ -3161,6 +3173,7 @@ mod http_stages {
         workflow(&f.app)
             .resolve_proposal(
                 &f.tags[1].id,
+                &loaded.revision.id,
                 WorkflowProposalState::Accepted,
                 &revision,
                 ts(NOW),

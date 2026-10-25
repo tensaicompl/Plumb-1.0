@@ -105,9 +105,7 @@ pub(crate) fn load_child(state: &ApiState, id: &Hash) -> Result<StageJob, ApiErr
 /// Loads a persisted CompileRun by its artifact ref.
 pub(crate) fn load_run(state: &ApiState, run_ref: &Hash) -> Result<CompileRun, ApiError> {
     let corrupt = || ApiError::workflow_corrupt(&format!("compile run {run_ref}"));
-    let artifact = state
-        .with_artifact_store(|store| store.get(run_ref))?
-        .map_err(|_| corrupt())?;
+    let artifact = state.get_artifact(run_ref)?.map_err(|_| corrupt())?;
     let run: CompileRun = serde_json::from_slice(&artifact.bytes).map_err(|_| corrupt())?;
     if to_canonical_json(&run).map_err(|_| corrupt())? != artifact.bytes {
         return Err(corrupt());
@@ -351,16 +349,18 @@ pub(crate) struct StageAcceptance {
     run: CompileRun,
 }
 
-/// The stage link of `proposal`, if it is stage-produced (A0.4 runtime present).
+/// The stage link of the occurrence of `proposal` on `base`, if it is stage-produced (A0.4
+/// runtime present).
 pub(crate) fn link_of(
     state: &ApiState,
     proposal: &Id,
+    base: &RevisionId,
 ) -> Result<Option<StageProposalLink>, ApiError> {
     if state.stage_runtime("stage_store").is_err() {
         return Ok(None);
     }
     state
-        .with_stage_store(|store| store.proposal_link(proposal))?
+        .with_stage_store(|store| store.proposal_link(proposal, base))?
         .map_err(|_| ApiError::workflow_corrupt(&format!("stage proposal {proposal}")))
 }
 
@@ -515,7 +515,7 @@ pub(crate) fn reconcile(
         .ok_or_else(|| ApiError::workflow_corrupt("stage acceptance revision"))?;
     let patch_set: PatchSet = {
         let artifact = state
-            .with_artifact_store(|store| store.get(&patch_ref))?
+            .get_artifact(&patch_ref)?
             .map_err(|_| ApiError::workflow_corrupt("stage acceptance patch"))?;
         serde_json::from_slice(&artifact.bytes)
             .map_err(|_| ApiError::workflow_corrupt("stage acceptance patch"))?
@@ -530,7 +530,7 @@ pub(crate) fn reconcile(
         .map_err(|_| ApiError::workflow_corrupt("stage acceptance patch"))?
         .delta;
     let record = state
-        .with_workflow_store(|store| store.proposal(&link.proposal_id))?
+        .with_workflow_store(|store| store.proposal(&link.proposal_id, &link.base_revision_id))?
         .map_err(|_| ApiError::workflow_corrupt("stage proposal"))?
         .ok_or_else(|| ApiError::workflow_corrupt("stage proposal"))?;
     let proposal = decode_proposal(record)?.proposal;
@@ -553,16 +553,21 @@ pub(crate) fn reconcile_pending(state: &ApiState) -> Result<(), ApiError> {
         .with_stage_store(|store| store.pending_proposal_links())?
         .map_err(crate::stage::store_error)?;
     for link in links {
+        // An acceptance always moves the head: an occurrence on the head has none to reconcile.
+        if link.base_revision_id == loaded.revision.id {
+            continue;
+        }
         let decisions = acceptance_decisions(&loaded.graph, &link.proposal_id);
         if let [(decision_ref, decided_at)] = decisions.as_slice() {
             // A set reconciliation of an earlier link may already have resolved this row.
-            if is_pending(state, &link.proposal_id)? {
+            if is_pending(state, &link.proposal_id, &link.base_revision_id)? {
                 // Fable #196: resolved with the revision that committed the decision.
                 let accepted = decision_revision(state, &loaded.revision, decision_ref)?;
                 state
                     .with_workflow_store(|store| {
                         store.resolve_proposal(
                             &link.proposal_id,
+                            &link.base_revision_id,
                             WorkflowProposalState::Accepted,
                             &accepted,
                             *decided_at,
@@ -719,10 +724,10 @@ pub(crate) fn decision_revision(
 
 // ============================================================================ proposal sets (R0.3)
 
-/// Whether the workflow proposal `id` is still pending.
-fn is_pending(state: &ApiState, id: &Id) -> Result<bool, ApiError> {
+/// Whether the occurrence of workflow proposal `id` on `base` is still pending.
+fn is_pending(state: &ApiState, id: &Id, base: &RevisionId) -> Result<bool, ApiError> {
     let record = state
-        .with_workflow_store(|store| store.proposal(id))?
+        .with_workflow_store(|store| store.proposal(id, base))?
         .map_err(|_| ApiError::workflow_corrupt("stage proposal"))?
         .ok_or_else(|| ApiError::workflow_corrupt("stage proposal"))?;
     Ok(record.state == WorkflowProposalState::Pending)
@@ -807,12 +812,14 @@ fn reconcile_set(
 ) -> Result<(), ApiError> {
     let corrupt = || ApiError::workflow_corrupt("stage acceptance set");
     let ids = set_members(patch_set).ok_or_else(corrupt)?;
+    // Every member was built on the revision the set was committed on.
+    let base = revision.parent.clone().ok_or_else(corrupt)?;
     let mut members = Vec::with_capacity(ids.len());
     let mut children: std::collections::BTreeMap<Hash, (StageProposalLink, Vec<Id>)> =
         std::collections::BTreeMap::new();
     for id in &ids {
         let record = state
-            .with_workflow_store(|store| store.proposal(id))?
+            .with_workflow_store(|store| store.proposal(id, &base))?
             .map_err(|_| corrupt())?
             .ok_or_else(corrupt)?;
         if record.state == WorkflowProposalState::Pending {
@@ -824,6 +831,7 @@ fn reconcile_set(
                 .with_workflow_store(|store| {
                     store.resolve_proposal(
                         id,
+                        &base,
                         WorkflowProposalState::Accepted,
                         &revision.id,
                         *decided_at,
@@ -832,7 +840,7 @@ fn reconcile_set(
                 .map_err(|_| internal("workflow_store"))?;
         }
         members.push(decode_proposal(record)?.proposal);
-        if let Some(link) = link_of(state, id)? {
+        if let Some(link) = link_of(state, id, &base)? {
             children
                 .entry(link.stage_job_id.clone())
                 .or_insert_with(|| (link.clone(), Vec::new()))
@@ -840,7 +848,6 @@ fn reconcile_set(
                 .push(id.clone());
         }
     }
-    let base = revision.parent.clone().ok_or_else(corrupt)?;
     let delta = apply_patch(&state.load_revision(&base)?.graph, patch_set)
         .map_err(|_| corrupt())?
         .delta;

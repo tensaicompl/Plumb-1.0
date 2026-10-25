@@ -13,7 +13,7 @@ use crate::revisions::{
     insert_revision, load_revision_on, next_version, revision_exists, validate_decision_refs,
     CommitResult, GraphRevision, LoadedRevision, RevisionId, RevisionWriteMeta, PATCH_MEDIA_TYPE,
 };
-use crate::schema::{open_connection, PSG_SCHEMA_VERSION};
+use crate::schema::{durability_of, open_database, Durability, StoreOpenMode, PSG_SCHEMA_VERSION};
 use crate::StoreError;
 
 /// Immutable graph revisions and mutable branch heads in the pilot SQLite database.
@@ -29,9 +29,35 @@ impl SqliteRevisionStore {
     /// Opens the store at `path`, initializing store schema v1 in a fresh database (an existing
     /// F0.2 `artifacts` table is kept) or verifying an existing v1 store without modifying it.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let mut conn = Connection::open(path)?;
-        open_connection(&mut conn)?;
+        Self::open_with(path, StoreOpenMode::CreateOrMigrate)
+    }
+
+    /// Opens the store of an existing PLUMB database at `path` read-write (architecture §33.9):
+    /// the file and the schema are never created; an older store is migrated in place.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with(path, StoreOpenMode::Existing)
+    }
+
+    /// Opens the store of an existing, current PLUMB database at `path` with SQLite read-only
+    /// access and no journal-mode change; every write fails.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with(path, StoreOpenMode::ReadOnly)
+    }
+
+    /// Opens the store at `path` in `mode`.
+    pub fn open_with(path: impl AsRef<Path>, mode: StoreOpenMode) -> Result<Self, StoreError> {
+        let conn = open_database(path.as_ref(), mode)?;
         Ok(Self { conn })
+    }
+
+    /// The durability pragmas of this store's connection (Fable #199).
+    pub fn durability(&self) -> Result<Durability, StoreError> {
+        durability_of(&self.conn)
+    }
+
+    /// Sets the SQLite busy timeout of this store's connection.
+    pub fn set_busy_timeout(&self, timeout: std::time::Duration) -> Result<(), StoreError> {
+        Ok(self.conn.busy_timeout(timeout)?)
     }
 
     /// Persists `graph` as revision 1 and creates branch `main` pointing to it.

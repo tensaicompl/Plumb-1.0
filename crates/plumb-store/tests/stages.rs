@@ -506,13 +506,14 @@ mod stages {
                 && p.origin_kind == WorkflowOrigin::Stage
                 && p.origin_ref.is_none()));
         let link = store
-            .proposal_link(&id("prop:0000000000000001"))
+            .proposal_link(&id("prop:0000000000000001"), &db.r1)
             .unwrap()
             .unwrap();
         assert_eq!(
             link,
             StageProposalLink {
                 proposal_id: id("prop:0000000000000001"),
+                base_revision_id: db.r1.clone(),
                 recipe_job_id: generic("1"),
                 stage_job_id: child.clone(),
                 compile_run_ref: db.run.clone(),
@@ -526,7 +527,7 @@ mod stages {
             .unwrap();
         assert_eq!(
             store
-                .proposal_link(&id("prop:0000000000000002"))
+                .proposal_link(&id("prop:0000000000000002"), &db.r1)
                 .unwrap()
                 .unwrap()
                 .recipe_job_id,
@@ -546,7 +547,10 @@ mod stages {
             store.insert_stage_proposals(&generic("1"), &child, &db.run, &batch),
             Err(StoreError::StageProposalConflict { .. })
         ));
-        assert!(wf.proposal(&id("prop:0000000000000004")).unwrap().is_none());
+        assert!(wf
+            .proposal(&id("prop:0000000000000004"), &db.r1)
+            .unwrap()
+            .is_none());
         assert!(matches!(
             store.insert_stage_proposals(&generic("1"), &child, &db.run, &[intake]),
             Err(StoreError::WorkflowInvalidOrigin { .. })
@@ -554,6 +558,7 @@ mod stages {
         // Resolving a proposal removes it from the pending links.
         wf.resolve_proposal(
             &id("prop:0000000000000001"),
+            &db.r1,
             WorkflowProposalState::Accepted,
             &db.r2,
             ts(T2),
@@ -566,6 +571,106 @@ mod stages {
             .map(|l| l.proposal_id)
             .collect();
         assert_eq!(pending, vec![id("prop:0000000000000002")]);
+        // H0.10: the identical stage proposal on a later baseline is a new occurrence with its
+        // own link; the accepted r1 occurrence and its link are unchanged.
+        let mut later = db.stage_proposal("prop:0000000000000001");
+        later.base_revision_id = db.r2.clone();
+        inserted(store.insert_recipe_job(&db.recipe("3")).unwrap());
+        let stored = store
+            .insert_stage_proposals(&generic("3"), &child, &db.run, &[later])
+            .unwrap();
+        assert_eq!(stored[0].base_revision_id, db.r2);
+        assert_eq!(stored[0].state, WorkflowProposalState::Pending);
+        assert_eq!(
+            store
+                .proposal_link(&id("prop:0000000000000001"), &db.r2)
+                .unwrap()
+                .unwrap()
+                .recipe_job_id,
+            generic("3")
+        );
+        assert_eq!(
+            store
+                .proposal_link(&id("prop:0000000000000001"), &db.r1)
+                .unwrap()
+                .unwrap()
+                .recipe_job_id,
+            generic("1")
+        );
+        let pending: Vec<(Id, RevisionId)> = store
+            .pending_proposal_links()
+            .unwrap()
+            .into_iter()
+            .map(|l| (l.proposal_id, l.base_revision_id))
+            .collect();
+        assert_eq!(
+            pending,
+            vec![
+                (id("prop:0000000000000001"), db.r2.clone()),
+                (id("prop:0000000000000002"), db.r1.clone())
+            ]
+        );
+    }
+
+    #[test]
+    fn stages_v3_links_migrate_to_their_occurrence() {
+        let db = Db::new();
+        let mut store = db.store();
+        inserted(store.insert_recipe_job(&db.recipe("1")).unwrap());
+        let child = generic("c");
+        inserted(
+            store
+                .insert_stage_job(&child, &json!({}), StageStatus::Ready, ts(T1))
+                .unwrap(),
+        );
+        let mut on_r2 = db.stage_proposal("prop:0000000000000002");
+        on_r2.base_revision_id = db.r2.clone();
+        store
+            .insert_stage_proposals(
+                &generic("1"),
+                &child,
+                &db.run,
+                &[db.stage_proposal("prop:0000000000000001"), on_r2],
+            )
+            .unwrap();
+        let links = store.pending_proposal_links().unwrap();
+        drop(store);
+        // Rebuild the exact v3 shapes of both tables.
+        let cols = "proposal_id, base_revision_id, proposal_json, intake_json, proposal_kind, \
+                    state, origin_kind, origin_ref, created_at, resolved_at, resolved_revision_id";
+        db.raw()
+            .execute_batch(&format!(
+                "CREATE TABLE sl AS SELECT proposal_id, recipe_job_id, stage_job_id, \
+                   compile_run_ref FROM stage_job_proposals; DROP TABLE stage_job_proposals; \
+                 CREATE TABLE wp AS SELECT {cols} FROM workflow_proposals; \
+                 DROP TABLE workflow_proposals; \
+                 CREATE TABLE workflow_proposals (proposal_id TEXT PRIMARY KEY, \
+                   base_revision_id TEXT NOT NULL, proposal_json TEXT NOT NULL, \
+                   intake_json TEXT NOT NULL, proposal_kind TEXT NOT NULL, state TEXT NOT NULL, \
+                   origin_kind TEXT NOT NULL, origin_ref TEXT NULL, created_at TEXT NOT NULL, \
+                   resolved_at TEXT NULL, resolved_revision_id TEXT NULL, \
+                   FOREIGN KEY (base_revision_id) REFERENCES graph_revisions(id), \
+                   FOREIGN KEY (resolved_revision_id) REFERENCES graph_revisions(id)); \
+                 INSERT INTO workflow_proposals SELECT * FROM wp; DROP TABLE wp; \
+                 CREATE TABLE stage_job_proposals (proposal_id TEXT PRIMARY KEY, \
+                   recipe_job_id TEXT NOT NULL, stage_job_id TEXT NOT NULL, \
+                   compile_run_ref TEXT NOT NULL, \
+                   FOREIGN KEY (proposal_id) REFERENCES workflow_proposals(proposal_id), \
+                   FOREIGN KEY (recipe_job_id) REFERENCES stage_recipe_jobs(recipe_job_id), \
+                   FOREIGN KEY (stage_job_id) REFERENCES stage_jobs(stage_job_id), \
+                   FOREIGN KEY (compile_run_ref) REFERENCES artifacts(hash)); \
+                 INSERT INTO stage_job_proposals SELECT * FROM sl; DROP TABLE sl; \
+                 UPDATE schema_meta SET version = 3;"
+            ))
+            .unwrap();
+        let store = db.store();
+        assert_eq!(store.pending_proposal_links().unwrap(), links);
+        assert_eq!(links[1].base_revision_id, db.r2);
+        let version: i64 = db
+            .raw()
+            .query_row("SELECT version FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
     }
 
     // ------------------------------------------------------------------ gate reports

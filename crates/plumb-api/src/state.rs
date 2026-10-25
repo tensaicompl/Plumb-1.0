@@ -58,6 +58,16 @@ use plumb_validation::ValidationPolicy;
 /// Capacity of the design-event channel; a slower subscriber is disconnected, never skipped.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
+/// How one application instance uses its database (architecture §33.3, §33.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenMode {
+    /// The worker, startup recovery and reconciliation run; on-demand gate reports persist.
+    Interactive,
+    /// Read-only commands: the stores are opened read-only; no worker, no recovery or
+    /// reconciliation writes, and gate reports evaluated on demand are not persisted.
+    ReadOnly,
+}
+
 /// Why runtime state cannot be constructed.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ApiStateError {
@@ -341,6 +351,7 @@ struct Inner {
     rule_pack_hash: Hash,
     runtime: Option<A03Runtime>,
     stage: Option<A04Runtime>,
+    mode: OpenMode,
 }
 
 /// Cheaply cloneable shared state of the pilot HTTP API.
@@ -417,6 +428,35 @@ impl ApiState {
         runtime: A03RuntimeConfig,
         stage: A04RuntimeConfig,
     ) -> Result<ApiState, ApiStateError> {
+        ApiState::new_with_stage_runtime_in(
+            OpenMode::Interactive,
+            branch,
+            revision_store,
+            artifact_store,
+            identity,
+            clock,
+            gate_reports,
+            profile,
+            runtime,
+            stage,
+        )
+    }
+
+    /// [`ApiState::new_with_stage_runtime`] in `mode`: a `ReadOnly` instance starts no worker
+    /// and performs no startup recovery or reconciliation (architecture §33.3, §33.9).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_stage_runtime_in(
+        mode: OpenMode,
+        branch: BranchName,
+        revision_store: SqliteRevisionStore,
+        artifact_store: SqliteArtifactStore,
+        identity: ApiIdentity,
+        clock: Arc<dyn Clock + Send + Sync>,
+        gate_reports: Vec<GateReport>,
+        profile: ValidationProfile,
+        runtime: A03RuntimeConfig,
+        stage: A04RuntimeConfig,
+    ) -> Result<ApiState, ApiStateError> {
         let runtime = A03Runtime::new(runtime)?;
         let stage = A04Runtime::new(stage)?;
         let mut state = ApiState::build(
@@ -429,9 +469,13 @@ impl ApiState {
             profile,
             Some(runtime),
         )?;
-        Arc::get_mut(&mut state.inner)
-            .ok_or_else(|| ApiStateError::StageRuntime("state is shared".into()))?
-            .stage = Some(stage);
+        let inner = Arc::get_mut(&mut state.inner)
+            .ok_or_else(|| ApiStateError::StageRuntime("state is shared".into()))?;
+        inner.stage = Some(stage);
+        inner.mode = mode;
+        if mode == OpenMode::ReadOnly {
+            return Ok(state);
+        }
         crate::stage::start(&state).map_err(|e| {
             ApiStateError::StageRuntime(format!("{}: {}", e.body().code, e.body().message))
         })?;
@@ -470,8 +514,14 @@ impl ApiState {
                 rule_pack_hash,
                 runtime,
                 stage: None,
+                mode: OpenMode::Interactive,
             }),
         })
+    }
+
+    /// Whether this instance was opened read-only.
+    pub fn is_read_only(&self) -> bool {
+        self.inner.mode == OpenMode::ReadOnly
     }
 
     /// Releases this instance's shared jobs lock: from now on the instance no longer counts as
@@ -591,11 +641,16 @@ impl ApiState {
         self.with_revision_store(|store| {
             let head = store
                 .head(&self.inner.branch)
-                .map_err(|_| ApiError::internal("revision_store"))?
-                .ok_or_else(|| ApiError::internal("branch_head"))?;
+                .map_err(|e| ApiError::store(&e, "revision_store"))?
+                .ok_or_else(|| {
+                    ApiError::store(
+                        &StoreError::BranchNotFound(self.inner.branch.clone()),
+                        "branch_head",
+                    )
+                })?;
             store
                 .load_revision(&head)
-                .map_err(|_| ApiError::internal("revision_store"))
+                .map_err(|e| ApiError::store(&e, "revision_store"))
         })?
     }
 
@@ -639,7 +694,7 @@ impl ApiState {
             Err(StoreError::RevisionNotFound(_)) => {
                 Err(ApiError::not_found(format!("revision {id} not found")))
             }
-            Err(_) => Err(ApiError::internal("revision_store")),
+            Err(e) => Err(ApiError::store(&e, "revision_store")),
         })?
     }
 
@@ -905,6 +960,7 @@ impl ApiState {
         })?;
         match stored {
             Ok(hash) if hash == companion.patch_ref => {}
+            Err(e) => return Err(ApiError::artifact_store(&e, "artifact_store")),
             _ => return Err(ApiError::internal("artifact_store")),
         }
         let mut decision_refs = introduced_decisions(&proposal.patch_set.patch);
@@ -988,7 +1044,7 @@ impl ApiState {
                 )
                 .with_details(json!({ "patch_error": error.to_string() })))
             }
-            Err(_) => return Err(ApiError::internal("revision_store")),
+            Err(e) => return Err(ApiError::store(&e, "revision_store")),
         };
         let delta = &result.delta;
         let mut ids: Vec<String> = delta

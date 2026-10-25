@@ -23,7 +23,7 @@ use plumb_sim::{
 };
 use plumb_store::{
     BranchName, RevisionId, RevisionWriteMeta, SqliteRevisionStore, SqliteStageStore,
-    SqliteWorkflowStore, StoreError,
+    SqliteWorkflowStore, StoreError, StoreOpenMode,
 };
 use plumb_validation::{ValidationPolicy, ValidationProfile};
 use serde::Serialize;
@@ -32,7 +32,7 @@ use thiserror::Error;
 use crate::runtime::{
     A04RuntimeConfig, CalendarConfig, DirectManagerFact, GateInputsConfig, ProviderMode,
 };
-use crate::state::{A03RuntimeConfig, ApiIdentity, ApiState, ApiStateError};
+use crate::state::{A03RuntimeConfig, ApiIdentity, ApiState, ApiStateError, OpenMode};
 
 /// Why the application cannot be opened or initialized.
 #[derive(Debug, Error)]
@@ -53,7 +53,47 @@ pub enum ApplicationError {
     /// The requested branch has no head in this database.
     #[error("branch {0} does not exist in this database (only main exists; branches cannot be created yet)")]
     UnknownBranch(String),
+    /// A runtime policy a later stage or session would use is invalid (architecture §33.9):
+    /// rejected when the application runtime is built, before any inference.
+    #[error("invalid runtime configuration: {field}: {reason}")]
+    InvalidRuntime { field: &'static str, reason: String },
 }
+
+impl ApplicationError {
+    /// The stable error code of this failure, when it has one (architecture §33.9).
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            ApplicationError::Store(error) => {
+                crate::error::ApiError::store_class(error.class()).map(|e| e.body().code)
+            }
+            ApplicationError::UnknownBranch(_) => Some("E_BRANCH_NOT_FOUND"),
+            ApplicationError::InvalidRuntime { .. } => Some("E_RUNTIME_CONFIG_INVALID"),
+            ApplicationError::Artifacts(_) => None,
+            // The stage start reports its typed API error as `CODE: message`.
+            ApplicationError::State(ApiStateError::StageRuntime(message)) => {
+                STATE_CODES.iter().copied().find(|code| {
+                    message
+                        .strip_prefix(code)
+                        .is_some_and(|rest| rest.starts_with(':'))
+                })
+            }
+            ApplicationError::State(ApiStateError::DuplicateExpressionScope(_)) => {
+                Some("E_RUNTIME_CONFIG_INVALID")
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The typed store codes a stage start can report (see [`ApplicationError::code`]).
+const STATE_CODES: [&str; 6] = [
+    "E_BRANCH_NOT_FOUND",
+    "E_DATABASE_NOT_INITIALIZED",
+    "E_DATABASE_BUSY",
+    "E_DATABASE_READ_ONLY",
+    "E_STORE_CORRUPT",
+    "E_STORE_VERSION_UNSUPPORTED",
+];
 
 /// The typed runtime material of one application instance: the A0.3 runtime inputs and the
 /// A0.4 stage inputs, each already validated by its loader.
@@ -88,7 +128,8 @@ pub struct ApplicationRuntime {
 }
 
 /// Opens the revision, artifact, workflow and stage stores over `db` and builds the full A0.4
-/// state for `branch` (startup-injected gate reports: none; durable reports are current).
+/// state for `branch` (startup-injected gate reports: none; durable reports are current), in
+/// the `Interactive` mode.
 pub fn open_application(
     db: &Path,
     branch: BranchName,
@@ -97,14 +138,150 @@ pub fn open_application(
     profile: ValidationProfile,
     runtime: ApplicationRuntime,
 ) -> Result<ApiState, ApplicationError> {
-    let revision_store = SqliteRevisionStore::open(db)?;
+    open_application_in(
+        OpenMode::Interactive,
+        db,
+        branch,
+        identity,
+        clock,
+        profile,
+        runtime,
+    )
+}
+
+/// Every runtime policy a later stage or session uses is valid (architecture §33.9), and the
+/// identity, stage and assistant actors are pairwise distinct. Checked before any store opens.
+pub fn validate_runtime(
+    identity: &ApiIdentity,
+    runtime: &ApplicationRuntime,
+) -> Result<(), ApplicationError> {
+    let invalid =
+        |field: &'static str, reason: String| ApplicationError::InvalidRuntime { field, reason };
+    let actors: BTreeSet<&Id> = [
+        identity.actor_ref(),
+        &runtime.stage_actor_ref,
+        &runtime.assistant_actor_ref,
+    ]
+    .into_iter()
+    .collect();
+    if actors.len() != 3 {
+        return Err(invalid(
+            "identity",
+            "identity.actor_ref, stage_actor_ref and assistant_actor_ref must be pairwise \
+             distinct"
+                .to_owned(),
+        ));
+    }
+    runtime
+        .duplicate_policy
+        .validate()
+        .map_err(|e| invalid("duplicate_policy", e.to_string()))?;
+    runtime
+        .vocabulary_policy
+        .validate()
+        .map_err(|e| invalid("vocabulary_policy", e.to_string()))?;
+    runtime
+        .session_turn_config
+        .validate()
+        .map_err(|e| invalid("session_turn", e.to_string()))?;
+    runtime
+        .provider_policy
+        .validate()
+        .map_err(|e| invalid("provider_policy", e.to_string()))?;
+    let mut calendars = BTreeSet::new();
+    for calendar in &runtime.calendar_configs {
+        calendar
+            .validate()
+            .map_err(|e| invalid("calendars", e.to_string()))?;
+        if !calendars.insert(&calendar.calendar_ref) {
+            return Err(invalid(
+                "calendars",
+                format!("calendar {} is defined twice", calendar.calendar_ref),
+            ));
+        }
+    }
+    crate::runtime::DirectManagerPredicates::new(&runtime.direct_managers)
+        .map_err(|e| invalid("direct_managers", e.to_string()))?;
+    let mut owners = BTreeSet::new();
+    for scope in &runtime.expression_scopes {
+        if !owners.insert(&scope.owner_ref) {
+            return Err(invalid(
+                "expression_scopes",
+                format!("owner {} is configured more than once", scope.owner_ref),
+            ));
+        }
+    }
+    if let Some(inputs) = &runtime.scenario_derivation {
+        let tables: Vec<&Id> = inputs
+            .decision_tables
+            .iter()
+            .map(|t| &t.decision_table_ref)
+            .collect();
+        if tables.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(invalid(
+                "scenario_derivation",
+                "decision-table inputs are unsorted or duplicated".to_owned(),
+            ));
+        }
+        let boundaries: Vec<(&String, &Id)> = inputs
+            .boundaries
+            .iter()
+            .map(|b| (&b.boundary_key, &b.subject_ref))
+            .collect();
+        if boundaries.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(invalid(
+                "scenario_derivation",
+                "boundary inputs are unsorted or duplicated".to_owned(),
+            ));
+        }
+    }
+    if let Some(inputs) = &runtime.verification_applicability {
+        let mut sources = BTreeSet::new();
+        for source in &inputs.sources {
+            if !sources.insert(&source.source_ref) {
+                return Err(invalid(
+                    "verification_applicability",
+                    format!("source {} is listed more than once", source.source_ref),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// [`open_application`] in `mode` (architecture §33.9): the runtime is validated first; every
+/// store then opens the existing database without ever creating a schema (`ReadOnly`: SQLite
+/// read-only access, no journal-mode change, no worker, recovery or reconciliation).
+pub fn open_application_in(
+    mode: OpenMode,
+    db: &Path,
+    branch: BranchName,
+    identity: ApiIdentity,
+    clock: Arc<dyn Clock + Send + Sync>,
+    profile: ValidationProfile,
+    runtime: ApplicationRuntime,
+) -> Result<ApiState, ApplicationError> {
+    validate_runtime(&identity, &runtime)?;
+    let store_mode = match mode {
+        OpenMode::Interactive => StoreOpenMode::Existing,
+        OpenMode::ReadOnly => StoreOpenMode::ReadOnly,
+    };
+    let revision_store = SqliteRevisionStore::open_with(db, store_mode)?;
     if revision_store.head(&branch)?.is_none() {
         return Err(ApplicationError::UnknownBranch(branch.to_string()));
     }
-    let artifact_store =
-        SqliteArtifactStore::open(db).map_err(|e| ApplicationError::Artifacts(e.to_string()))?;
-    let workflow_store = SqliteWorkflowStore::open(db)?;
-    let stage_store = SqliteStageStore::open(db)?;
+    let artifact_store = match mode {
+        OpenMode::Interactive => SqliteArtifactStore::open_existing(db),
+        OpenMode::ReadOnly => SqliteArtifactStore::open_read_only(db),
+    }
+    .map_err(|e| match e {
+        plumb_artifacts::ArtifactStoreError::NotInitialized => {
+            ApplicationError::Store(StoreError::DatabaseNotInitialized)
+        }
+        other => ApplicationError::Artifacts(other.to_string()),
+    })?;
+    let workflow_store = SqliteWorkflowStore::open_with(db, store_mode)?;
+    let stage_store = SqliteStageStore::open_with(db, store_mode)?;
     let a03 = A03RuntimeConfig {
         workflow_store,
         inference_provider: runtime.inference_provider,
@@ -136,7 +313,8 @@ pub fn open_application(
         directory: runtime.directory,
         question_routing: runtime.question_routing,
     };
-    Ok(ApiState::new_with_stage_runtime(
+    Ok(ApiState::new_with_stage_runtime_in(
+        mode,
         branch,
         revision_store,
         artifact_store,
@@ -481,7 +659,17 @@ mod services {
                 ApiError::conflict("E_PROPOSAL_NOT_PENDING", "the proposal is not pending")
                     .with_details(json!({ "proposal": id, "state": actual }))
             }
-            _ => ApiError::internal("workflow_store"),
+            // Fable #1: an acceptance must resolve to a descendant of the proposal's base.
+            StoreError::WorkflowResolutionNotDescendant {
+                id,
+                revision,
+                reason,
+            } => ApiError::conflict(
+                "E_PROPOSAL_RESOLUTION_INVALID",
+                "the resolution revision does not descend from the proposal's base",
+            )
+            .with_details(json!({ "proposal": id, "revision": revision, "reason": reason })),
+            other => ApiError::store(&other, "workflow_store"),
         }
     }
 
@@ -500,10 +688,12 @@ mod services {
         .with_details(json!({ "proposal_ref": proposal }))
     }
 
-    /// Loads and decodes the workflow proposal `id` (404 when unknown), then reconciles an
-    /// interrupted acceptance: a pending proposal whose acceptance decision is already in the
-    /// graph becomes accepted (with its stage child and parent, A0.4); several such decisions
-    /// are corrupt workflow state.
+    /// Loads and decodes the occurrence of workflow proposal `id` that a lookup on `loaded`
+    /// addresses (404 when unknown; H0.10): its pending occurrence on the loaded head, else its
+    /// newest occurrence (not pending, or built on another baseline). It then reconciles an
+    /// interrupted acceptance: a pending occurrence on an older base whose acceptance decision is
+    /// already in the graph becomes accepted (with its stage child and parent, A0.4); several
+    /// such decisions are corrupt workflow state.
     pub(crate) fn load_reconciled(
         state: &ApiState,
         loaded: &LoadedRevision,
@@ -512,13 +702,18 @@ mod services {
         let missing = || ApiError::not_found(format!("proposal {id} not found"));
         let proposal_id = parse_id(id).ok_or_else(missing)?;
         let record = state
-            .with_workflow_store(|store| store.proposal(&proposal_id))?
+            .with_workflow_store(|store| store.current_proposal(&proposal_id, &loaded.revision.id))?
             .map_err(workflow_error)?
             .ok_or_else(missing)?;
         let stored = decode_proposal(record)?;
-        if stored.record.state != WorkflowProposalState::Pending {
+        // An acceptance always moves the head, so a pending occurrence on the head itself has
+        // no committed acceptance to reconcile.
+        if stored.record.state != WorkflowProposalState::Pending
+            || stored.record.base_revision_id == loaded.revision.id
+        {
             return Ok(stored);
         }
+        let base = stored.record.base_revision_id.clone();
         let decisions = acceptance_decisions(&loaded.graph, &proposal_id);
         match decisions.as_slice() {
             [] => Ok(stored),
@@ -530,13 +725,14 @@ mod services {
                     .with_workflow_store(|store| {
                         store.resolve_proposal(
                             &proposal_id,
+                            &base,
                             WorkflowProposalState::Accepted,
                             &accepted,
                             *decided_at,
                         )
                     })?
                     .map_err(workflow_error)?;
-                if let Some(link) = stage_acceptance::link_of(state, &proposal_id)? {
+                if let Some(link) = stage_acceptance::link_of(state, &proposal_id, &base)? {
                     stage_acceptance::reconcile(state, loaded, &link)?;
                 }
                 decode_proposal(repaired)
@@ -1092,22 +1288,7 @@ mod services {
                 return Err(not_pending(&stored.record));
             }
             let Some(required) = action.kind() else {
-                self.with_workflow_store(|store| {
-                    store.resolve_proposal(
-                        &stored.proposal.id,
-                        WorkflowProposalState::Rejected,
-                        &loaded.revision.id,
-                        created_at,
-                    )
-                })?
-                .map_err(workflow_error)?;
-                let revision = loaded.revision.id.to_string();
-                return Ok(WriteResult {
-                    version: revision.clone(),
-                    revision,
-                    semantic_hash: loaded.revision.semantic_hash.to_string(),
-                    events: Vec::new(),
-                });
+                return self.reject_stored(loaded, &stored, created_at);
             };
             if stored.record.base_revision_id != loaded.revision.id {
                 return Err(baseline_changed(&stored.proposal.id));
@@ -1116,7 +1297,11 @@ mod services {
             require_kind(&stored.proposal, kind, required)?;
             // A stage-produced proposal is first proven an exact, fresh output of its child
             // StageJob (A0.4, Hotfix 067); the governance below is the unchanged A0.3 path.
-            let mut stage = match stage_acceptance::link_of(self, &stored.proposal.id)? {
+            let mut stage = match stage_acceptance::link_of(
+                self,
+                &stored.proposal.id,
+                &stored.record.base_revision_id,
+            )? {
                 Some(link) => Some(stage_acceptance::prepare(
                     self,
                     loaded,
@@ -1145,6 +1330,7 @@ mod services {
             self.with_workflow_store(|store| {
                 store.resolve_proposal(
                     &stored.proposal.id,
+                    &stored.record.base_revision_id,
                     WorkflowProposalState::Accepted,
                     &revision,
                     created_at,
@@ -1155,6 +1341,33 @@ mod services {
                 stage_acceptance::finish_parent(self, &acceptance.link.recipe_job_id, &revision)?;
             }
             Ok(write)
+        }
+
+        /// Rejects exactly the pending occurrence `stored` (pending -> rejected) without
+        /// changing the PSG; the resolution is recorded on the loaded head.
+        fn reject_stored(
+            &self,
+            loaded: &LoadedRevision,
+            stored: &StoredProposal,
+            created_at: plumb_core::Timestamp,
+        ) -> Result<WriteResult, ApiError> {
+            self.with_workflow_store(|store| {
+                store.resolve_proposal(
+                    &stored.proposal.id,
+                    &stored.record.base_revision_id,
+                    WorkflowProposalState::Rejected,
+                    &loaded.revision.id,
+                    created_at,
+                )
+            })?
+            .map_err(workflow_error)?;
+            let revision = loaded.revision.id.to_string();
+            Ok(WriteResult {
+                version: revision.clone(),
+                revision,
+                semantic_hash: loaded.revision.semantic_hash.to_string(),
+                events: Vec::new(),
+            })
         }
 
         /// Accepts a set of pending proposals built on the loaded head atomically in one
@@ -1211,21 +1424,22 @@ mod services {
             for (id, required) in &requested {
                 let missing = || ApiError::not_found(format!("proposal {id} not found"));
                 let record = self
-                    .with_workflow_store(|store| store.proposal(id))?
+                    .with_workflow_store(|store| store.current_proposal(id, &loaded.revision.id))?
                     .map_err(workflow_error)?
                     .ok_or_else(missing)?;
                 let stored = decode_proposal(record)?;
                 if stored.record.state != WorkflowProposalState::Pending {
                     return Err(not_pending(&stored.record));
                 }
+                let base = stored.record.base_revision_id.clone();
                 let proposal = stored.proposal;
                 // A stage output is first proven an exact, fresh output of its Ready child,
                 // read-only: a rejected set never persists a child or parent transition.
-                let link = stage_acceptance::link_of(self, &proposal.id)?;
+                let link = stage_acceptance::link_of(self, &proposal.id, &base)?;
                 if let Some(link) = &link {
                     stage_acceptance::validate_set_member(self, loaded, link, &proposal)?;
                 }
-                if stored.record.base_revision_id != loaded.revision.id
+                if base != loaded.revision.id
                     || proposal.patch_set.base_semantic_hash != loaded.revision.semantic_hash
                 {
                     return Err(baseline_changed(&proposal.id));
@@ -1337,6 +1551,7 @@ mod services {
                 })?;
                 match stored {
                     Ok(hash) if hash == member.companion.patch_ref => {}
+                    Err(e) => return Err(ApiError::artifact_store(&e, "artifact_store")),
                     _ => return Err(ApiError::internal("artifact_store")),
                 }
             }
@@ -1375,6 +1590,7 @@ mod services {
                 self.with_workflow_store(|store| {
                     store.resolve_proposal(
                         &member.proposal.id,
+                        &loaded.revision.id,
                         WorkflowProposalState::Accepted,
                         &revision,
                         created_at,
@@ -1453,6 +1669,7 @@ mod services {
             })?;
             match stored {
                 Ok(hash) if hash == result.decision.patch_ref => {}
+                Err(e) => return Err(ApiError::artifact_store(&e, "artifact_store")),
                 _ => return Err(ApiError::internal("artifact_store")),
             }
             let report = run_intake(loaded, &result.proposal)?;
@@ -2158,13 +2375,17 @@ mod services {
                 let record = &stored.record;
                 let (recipe_job_id, stage_job_id) = match record.origin_kind {
                     WorkflowOrigin::Stage => {
-                        let link = stage_acceptance::link_of(self, &record.proposal_id)?
-                            .ok_or_else(|| {
-                                ApiError::workflow_corrupt(&format!(
-                                    "stage link of proposal {}",
-                                    record.proposal_id
-                                ))
-                            })?;
+                        let link = stage_acceptance::link_of(
+                            self,
+                            &record.proposal_id,
+                            &record.base_revision_id,
+                        )?
+                        .ok_or_else(|| {
+                            ApiError::workflow_corrupt(&format!(
+                                "stage link of proposal {}",
+                                record.proposal_id
+                            ))
+                        })?;
                         (
                             Some(link.recipe_job_id.to_string()),
                             Some(link.stage_job_id.to_string()),
@@ -2204,7 +2425,19 @@ mod services {
                 if !view.stale || view.origin != "question" {
                     continue;
                 }
-                let stored = load_reconciled(self, loaded, &view.proposal_id)?;
+                // Exactly this stale occurrence (H0.10): an identical occurrence on the head
+                // is a different record and is never rejected here.
+                let corrupt =
+                    || ApiError::workflow_corrupt(&format!("proposal {}", view.proposal_id));
+                let (id, base): (Id, plumb_store::RevisionId) = (
+                    view.proposal_id.parse().map_err(|_| corrupt())?,
+                    view.base_revision.parse().map_err(|_| corrupt())?,
+                );
+                let record = self
+                    .with_workflow_store(|store| store.proposal(&id, &base))?
+                    .map_err(workflow_error)?
+                    .ok_or_else(corrupt)?;
+                let stored = decode_proposal(record)?;
                 let decision = answer_decision(&stored.proposal.patch_set.patch);
                 let resubmitted = match decision {
                     None => Err("the proposal records no answer decision".to_owned()),
@@ -2246,12 +2479,9 @@ mod services {
                         }
                     }
                 };
-                self.act_on_proposal(
-                    loaded,
-                    &view.proposal_id,
-                    ProposalAction::Reject,
-                    Some("Re-submitted on the current revision.".to_owned()),
-                )?;
+                if stored.record.state == WorkflowProposalState::Pending {
+                    self.reject_stored(loaded, &stored, self.now())?;
+                }
                 outcomes.push((view.proposal_id, resubmitted));
             }
             Ok(outcomes)
@@ -2314,7 +2544,9 @@ mod services {
                 if &normalized != current || updated.statement == current.statement {
                     continue;
                 }
-                let Some(link) = stage_acceptance::link_of(self, &proposal.id)? else {
+                let Some(link) =
+                    stage_acceptance::link_of(self, &proposal.id, &loaded.revision.id)?
+                else {
                     return Err(ApiError::workflow_corrupt(&format!(
                         "stage link of proposal {}",
                         proposal.id

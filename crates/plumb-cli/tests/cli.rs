@@ -463,7 +463,7 @@ mod cli {
     fn proposal_state(db: &Path, proposal: &str) -> WorkflowProposalState {
         SqliteWorkflowStore::open(db)
             .unwrap()
-            .proposal(&id(proposal))
+            .latest_proposal(&id(proposal))
             .unwrap()
             .unwrap()
             .state
@@ -1445,7 +1445,7 @@ mod cli {
         assert_eq!(pending.len(), 2);
         let link = SqliteStageStore::open(&env.db)
             .unwrap()
-            .proposal_link(&id(&pending[0]))
+            .proposal_link(&id(&pending[0]), &head_graph(&env.db).revision.id)
             .unwrap()
             .unwrap();
         // Caller order reversed; both are create proposals of one classification child.
@@ -1464,7 +1464,7 @@ mod cli {
         assert_eq!(write["events"][0]["kind"], "accept_proposal_set");
         let store = SqliteWorkflowStore::open(&env.db).unwrap();
         for p in &pending {
-            let record = store.proposal(&id(p)).unwrap().unwrap();
+            let record = store.latest_proposal(&id(p)).unwrap().unwrap();
             assert_eq!(record.state, WorkflowProposalState::Accepted);
             assert_eq!(
                 record.resolved_revision_id.as_ref().map(|r| r.to_string()),
@@ -1833,7 +1833,7 @@ mod cli {
         let proposal = answered["proposal_id"].as_str().unwrap();
         let record = SqliteWorkflowStore::open(&env.db)
             .unwrap()
-            .proposal(&id(proposal))
+            .latest_proposal(&id(proposal))
             .unwrap()
             .unwrap();
         assert_eq!(record.state, WorkflowProposalState::Pending);
@@ -1919,7 +1919,10 @@ mod cli {
             // Stale: built on the earlier head, still pending and listed.
             assert_eq!(record.base_revision_id, first_base);
             origins.insert(record.origin_kind.as_str());
-            match stage.proposal_link(&record.proposal_id).unwrap() {
+            match stage
+                .proposal_link(&record.proposal_id, &record.base_revision_id)
+                .unwrap()
+            {
                 Some(link) => {
                     assert_eq!(view["origin"], "stage");
                     assert_eq!(view["recipe_job_id"], link.recipe_job_id.to_string());
@@ -2023,6 +2026,218 @@ mod cli {
         let (code, _, err) = env.run(&["export", "--format", "yaml"]);
         assert_eq!(code, 1);
         assert!(err.contains("E_INVALID_REQUEST"), "{err}");
+    }
+
+    // ------------------------------------------------------------------ H0.9 boundaries
+
+    /// The number of stage recipe jobs ever created in `db`.
+    fn recipe_jobs(db: &Path) -> i64 {
+        rusqlite::Connection::open(db)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM stage_recipe_jobs", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Makes `path` read-only and returns its original permissions.
+    fn set_read_only(path: &Path) -> std::fs::Permissions {
+        let original = std::fs::metadata(path).unwrap().permissions();
+        let mut perms = original.clone();
+        perms.set_readonly(true);
+        std::fs::set_permissions(path, perms).unwrap();
+        original
+    }
+
+    #[test]
+    fn read_only_commands_work_on_read_only_database() {
+        let env = env();
+        env.import();
+        let (code, _, err) = env.run(&["ready"]);
+        assert!(code == 0 || code == 2, "{err}");
+        let head = head_graph(&env.db).revision.id;
+        let original = set_read_only(&env.db);
+        let bytes = std::fs::read(&env.db).unwrap();
+        let out = env.path("report");
+        let runs: Vec<(Vec<&str>, i32, &str)> = vec![
+            (vec!["vocab"], 0, ""),
+            (vec!["questions"], 0, ""),
+            (vec!["rounds", "show", "round:missing"], 1, "E_NOT_FOUND"),
+            (vec!["proposals"], 0, ""),
+            (vec!["findings", "list"], 0, ""),
+            (vec!["export", "--format", "functional"], 0, ""),
+            (vec!["report", "--out", out.to_str().unwrap()], 0, ""),
+        ];
+        for (args, expected, message) in runs {
+            let (code, _, err) = env.run(&args);
+            assert_eq!(code, expected, "{args:?}: {err}");
+            assert!(err.contains(message), "{args:?}: {err}");
+            assert!(!err.contains("E_DATABASE"), "{args:?}: {err}");
+        }
+        assert!(out.join("functional.yaml").is_file());
+        // Nothing was written: the database bytes are unchanged.
+        assert_eq!(std::fs::read(&env.db).unwrap(), bytes);
+        // A write command on the read-only file is the typed read-only error.
+        let source = env.write("more.md", MARKDOWN);
+        let (code, _, err) = env.run(&[
+            "import",
+            source.to_str().unwrap(),
+            "--media-type",
+            "text/markdown",
+            "--name",
+            "more.md",
+            "--json",
+        ]);
+        assert_eq!(code, 1);
+        assert!(err.contains("E_DATABASE_READ_ONLY"), "{err}");
+        assert_eq!(std::fs::read(&env.db).unwrap(), bytes);
+        std::fs::set_permissions(&env.db, original).unwrap();
+        assert_eq!(head_graph(&env.db).revision.id, head);
+    }
+
+    #[test]
+    fn non_project_databases_are_not_initialized() {
+        let env = bare_env();
+        for bytes in [&b""[..], &b"not a database at all"[..]] {
+            std::fs::write(&env.db, bytes).unwrap();
+            for args in [&["vocab"][..], &["lint"][..]] {
+                let (code, _, err) = env.run(&[args, &["--json"]].concat());
+                assert_eq!(code, 1, "{args:?}");
+                assert!(
+                    err.contains("E_DATABASE_NOT_INITIALIZED"),
+                    "{args:?}: {err}"
+                );
+            }
+            assert_eq!(std::fs::read(&env.db).unwrap(), bytes);
+        }
+        // A foreign SQLite database keeps its schema.
+        std::fs::remove_file(&env.db).unwrap();
+        rusqlite::Connection::open(&env.db)
+            .unwrap()
+            .execute_batch("CREATE TABLE customers (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        let (code, _, err) = env.run(&["lint", "--json"]);
+        assert_eq!(code, 1);
+        assert!(err.contains("E_DATABASE_NOT_INITIALIZED"), "{err}");
+        let tables: i64 = rusqlite::Connection::open(&env.db)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tables, 1);
+        // An unknown branch is typed too.
+        let env = self::env();
+        let (code, _, err) = env.run(&["--branch", "feature", "vocab", "--json"]);
+        assert_eq!(code, 1);
+        assert!(err.contains("E_BRANCH_NOT_FOUND"), "{err}");
+    }
+
+    /// A named edit of the configuration JSON.
+    type ConfigEdit = (&'static str, Box<dyn Fn(&mut Value)>);
+
+    #[test]
+    fn invalid_policies_fail_before_any_stage() {
+        let edits: Vec<ConfigEdit> = vec![
+            (
+                "duplicate_policy",
+                Box::new(|c| c["duplicate_policy"]["jaccard_threshold"] = json!("1.5")),
+            ),
+            (
+                "vocabulary_policy",
+                Box::new(|c| c["vocabulary_policy"]["language"] = json!("de")),
+            ),
+            (
+                "session_turn",
+                Box::new(|c| c["session_turn"]["max_context_bytes"] = json!(0)),
+            ),
+            (
+                "expression_scopes",
+                Box::new(|c| {
+                    c["expression_scopes"] = json!([
+                        {"owner_ref": "rule:a", "bindings": []},
+                        {"owner_ref": "rule:a", "bindings": []}
+                    ])
+                }),
+            ),
+            (
+                "scenario_derivation",
+                Box::new(|c| {
+                    let boundary = |key: &str| {
+                        json!({"boundary_key": key, "source_refs": [], "subject_ref": "attr:x",
+                               "kind": {"kind": "inclusive_end", "calculation_ref": "calculation:x"}})
+                    };
+                    c["scenario_derivation"] = json!({
+                        "decision_tables": [],
+                        "boundaries": [boundary("b"), boundary("a")]
+                    })
+                }),
+            ),
+            (
+                "verification_applicability",
+                Box::new(|c| {
+                    let source = json!({"source_ref": "req:a", "mode": "executable_scenario",
+                                        "blocking": true});
+                    c["verification_applicability"] = json!({"sources": [source, source]})
+                }),
+            ),
+            (
+                "identity",
+                Box::new(|c| c["assistant_actor_ref"] = json!(STAGE_ACTOR)),
+            ),
+            (
+                "identity",
+                Box::new(|c| c["stage_actor_ref"] = json!(ACTOR)),
+            ),
+        ];
+        for (field, edit) in edits {
+            let mut value = config(all_gates());
+            edit(&mut value);
+            let env = env_with(value);
+            let head = head_graph(&env.db).revision.id;
+            for args in [&["lint"][..], &["extract"][..], &["vocab"][..]] {
+                let (code, out, err) = env.run(&[args, &["--json"]].concat());
+                assert_eq!(code, 1, "{field} {args:?}: {out} {err}");
+                assert!(err.contains("E_RUNTIME_CONFIG_INVALID"), "{field}: {err}");
+                assert!(err.contains(field), "{field}: {err}");
+            }
+            assert_eq!(recipe_jobs(&env.db), 0, "{field}");
+            assert_eq!(head_graph(&env.db).revision.id, head, "{field}");
+        }
+    }
+
+    #[test]
+    fn duplicate_config_keys_are_rejected() {
+        let env = env();
+        let text = String::from_utf8(std::fs::read(&env.config).unwrap()).unwrap();
+        // A duplicate at the top level, inside an object and inside an array element.
+        let top = text.replacen('{', "{\"version\":1,", 1);
+        let nested = text.replacen(
+            "\"language\":\"en\"",
+            "\"language\":\"en\",\"language\":\"de\"",
+            1,
+        );
+        let in_array = text.replacen(
+            "\"calendar_ref\":\"cal:office\"",
+            "\"calendar_ref\":\"cal:office\",\"calendar_ref\":\"cal:other\"",
+            1,
+        );
+        for (name, text) in [("top", top), ("nested", nested), ("in_array", in_array)] {
+            assert_ne!(
+                text,
+                String::from_utf8(std::fs::read(&env.config).unwrap()).unwrap()
+            );
+            let config = env.write(&format!("{name}.json"), text.as_bytes());
+            let (code, _, err) = output(
+                bin()
+                    .arg("--db")
+                    .arg(&env.db)
+                    .arg("--config")
+                    .arg(&config)
+                    .arg("vocab"),
+            );
+            assert_eq!(code, 1, "{name}");
+            assert!(err.contains("duplicate"), "{name}: {err}");
+        }
+        // The unmodified file is accepted.
+        let (code, _, err) = env.run(&["vocab"]);
+        assert_eq!(code, 0, "{err}");
     }
 
     // ------------------------------------------------------------------ log-effort

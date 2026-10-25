@@ -13,6 +13,7 @@ pub mod runtime;
 pub mod server;
 pub mod stage;
 pub mod state;
+mod store_error;
 mod workflow;
 
 pub use openapi::{
@@ -25,4 +26,4 @@ pub use runtime::{
 };
 pub use server::{serve_blocking, ServeError};
 pub use stage::{ReadyGate, ReadyOutcome, ReadyRule, Recipe, StageRun};
-pub use state::{A03RuntimeConfig, ApiIdentity, ApiState, ApiStateError};
+pub use state::{A03RuntimeConfig, ApiIdentity, ApiState, ApiStateError, OpenMode};

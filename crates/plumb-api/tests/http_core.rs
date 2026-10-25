@@ -3240,7 +3240,7 @@ mod http_core {
         assert_eq!(
             plumb_store::SqliteWorkflowStore::open(&app.path)
                 .unwrap()
-                .proposal(&proposal.id)
+                .latest_proposal(&proposal.id)
                 .unwrap(),
             None
         );
@@ -3355,5 +3355,184 @@ mod http_core {
         for token in ["fn main", "axum::serve", "TcpListener", "CorsLayer"] {
             assert!(!lib.contains(token), "lib.rs contains {token}");
         }
+    }
+
+    // ------------------------------------------------------------------ H0.9 typed store errors
+
+    fn identity() -> ApiIdentity {
+        ApiIdentity::new(
+            "alice".into(),
+            id(ACTOR),
+            vec!["analyst".into(), "reviewer".into()],
+            "pilot".into(),
+        )
+        .unwrap()
+    }
+
+    /// A router over `path` with the given stores.
+    fn router_over(
+        branch: &str,
+        store: SqliteRevisionStore,
+        artifacts: SqliteArtifactStore,
+    ) -> Router {
+        router(
+            ApiState::new(
+                branch.parse().unwrap(),
+                store,
+                artifacts,
+                identity(),
+                fixed(),
+                vec![],
+                profile(),
+            )
+            .unwrap(),
+        )
+    }
+
+    async fn set_unit(router: &Router, if_match: &str) -> Reply {
+        let request = Request::post("/api/model/attributes/attr:days/unit")
+            .header("if-match", if_match)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({"unit": "day"})).unwrap(),
+            ))
+            .unwrap();
+        send(router, request).await
+    }
+
+    #[tokio::test]
+    async fn typed_store_errors() {
+        // A branch without a head is 404 E_BRANCH_NOT_FOUND, never E_INTERNAL.
+        let app = app();
+        let tag = semantic(&app);
+        let ghost = router_over(
+            "feature",
+            open_store(&app.path),
+            SqliteArtifactStore::open(&app.path).unwrap(),
+        );
+        let r = send(
+            &ghost,
+            Request::get("/api/requirements")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "E_BRANCH_NOT_FOUND")
+        );
+
+        // A write on a read-only database is 409 E_DATABASE_READ_ONLY and changes nothing.
+        let read_only = router_over(
+            "main",
+            SqliteRevisionStore::open_read_only(&app.path).unwrap(),
+            SqliteArtifactStore::open_read_only(&app.path).unwrap(),
+        );
+        let before = head(&app).revision.id;
+        let r = set_unit(&read_only, &tag).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_DATABASE_READ_ONLY"),
+            "{:?}",
+            r.json()
+        );
+        assert_eq!(head(&app).revision.id, before);
+
+        // SQLite busy (another connection holds the write lock) is 503 E_DATABASE_BUSY.
+        let blocker = rusqlite::Connection::open(&app.path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let store = open_store(&app.path);
+        store.set_busy_timeout(std::time::Duration::ZERO).unwrap();
+        let busy = router_over("main", store, SqliteArtifactStore::open(&app.path).unwrap());
+        let r = set_unit(&busy, &tag).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::SERVICE_UNAVAILABLE, "E_DATABASE_BUSY"),
+            "{:?}",
+            r.json()
+        );
+        blocker.execute_batch("ROLLBACK;").unwrap();
+        drop(blocker);
+
+        // A revision written under another PSG schema version is the typed unsupported-version
+        // error (Fable #3), never E_STORE_CORRUPT.
+        let raw = rusqlite::Connection::open(&app.path).unwrap();
+        raw.execute(
+            "UPDATE graph_revisions SET psg_schema_version = 2 WHERE id = ?1",
+            [before.as_str()],
+        )
+        .unwrap();
+        let r = get(&app, "/api/requirements").await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_STORE_VERSION_UNSUPPORTED")
+        );
+        raw.execute(
+            "UPDATE graph_revisions SET psg_schema_version = 1 WHERE id = ?1",
+            [before.as_str()],
+        )
+        .unwrap();
+        assert_eq!(get(&app, "/api/requirements").await.status, StatusCode::OK);
+
+        // Detected corruption is 500 E_STORE_CORRUPT.
+        raw.execute(
+            "UPDATE revision_nodes SET node_json = 'not json' WHERE revision_id = ?1 \
+             AND node_id = 'req:a'",
+            [before.as_str()],
+        )
+        .unwrap();
+        let r = get(&app, "/api/requirements").await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::INTERNAL_SERVER_ERROR, "E_STORE_CORRUPT")
+        );
+
+        // The complete class table, including artifact corruption (H0.10).
+        use plumb_api::error::ApiError;
+        use plumb_store::StoreErrorClass as C;
+        for (class, status, code) in [
+            (
+                C::BranchNotFound,
+                StatusCode::NOT_FOUND,
+                "E_BRANCH_NOT_FOUND",
+            ),
+            (
+                C::NotInitialized,
+                StatusCode::CONFLICT,
+                "E_DATABASE_NOT_INITIALIZED",
+            ),
+            (C::Busy, StatusCode::SERVICE_UNAVAILABLE, "E_DATABASE_BUSY"),
+            (C::ReadOnly, StatusCode::CONFLICT, "E_DATABASE_READ_ONLY"),
+            (
+                C::Corrupt,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "E_STORE_CORRUPT",
+            ),
+            (
+                C::UnsupportedVersion,
+                StatusCode::CONFLICT,
+                "E_STORE_VERSION_UNSUPPORTED",
+            ),
+        ] {
+            let error = ApiError::store_class(class).unwrap();
+            assert_eq!((error.body().status, error.body().code), (status, code));
+        }
+        assert!(ApiError::store_class(C::Other).is_none());
+        let corrupt = plumb_artifacts::ArtifactStoreError::Corrupt {
+            hash: Hash::content_sha256(b"x"),
+            reason: "the stored bytes do not hash to the artifact key",
+        };
+        assert_eq!(
+            ApiError::artifact_store(&corrupt, "artifact_store")
+                .body()
+                .code,
+            "E_STORE_CORRUPT"
+        );
+        assert_eq!(
+            ApiError::store(&plumb_store::StoreError::DatabaseNotInitialized, "x")
+                .body()
+                .code,
+            "E_DATABASE_NOT_INITIALIZED"
+        );
     }
 }

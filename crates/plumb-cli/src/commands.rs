@@ -10,12 +10,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use plumb_api::application::{
-    bootstrap_project_database, export_artifact, open_application, require_importable, round_size,
-    ApplicationError, ProposalAction,
+    bootstrap_project_database, export_artifact, open_application_in, require_importable,
+    round_size, ApplicationError, ProposalAction,
 };
 use plumb_api::error::ApiError;
 use plumb_api::openapi::{ExportFormat, JobStatus};
-use plumb_api::{serve_blocking, ApiState, ReadyRule, Recipe};
+use plumb_api::{serve_blocking, ApiState, OpenMode, ReadyRule, Recipe};
 use plumb_core::{to_canonical_json, Clock, Id, SystemClock};
 use plumb_import::docx::{check_input_size, DOCX_MAX_INPUT_BYTES};
 use plumb_import::{check_text_input_size, ImportError, SourceKind, TEXT_MAX_INPUT_BYTES};
@@ -36,7 +36,7 @@ pub enum CliError {
     ProviderUnavailable(ConfigError),
     #[error("{0}")]
     Config(ConfigError),
-    #[error("{0}")]
+    #[error("{}", application_message(.0))]
     Application(#[from] ApplicationError),
     #[error("{0}")]
     Usage(String),
@@ -49,6 +49,14 @@ pub enum CliError {
         status: &'static str,
         done: Box<Done>,
     },
+}
+
+/// An application failure, prefixed with its stable code when it has one.
+fn application_message(error: &ApplicationError) -> String {
+    match error.code() {
+        Some(code) => format!("{code}: {error}"),
+        None => error.to_string(),
+    }
 }
 
 impl From<ApiError> for CliError {
@@ -77,6 +85,10 @@ impl CliError {
             CliError::ProviderUnavailable(error) => {
                 json!({ "code": "E_PROVIDER_UNAVAILABLE", "message": error.to_string() })
             }
+            CliError::Application(error) => match error.code() {
+                Some(code) => json!({ "code": code, "message": error.to_string() }),
+                None => json!({ "message": error.to_string() }),
+            },
             other => json!({ "message": other.to_string() }),
         }
     }
@@ -146,12 +158,14 @@ pub fn init(
     Done::new(&result, text)
 }
 
-/// Opens the application over an existing, initialized database.
+/// Opens the application over an existing, initialized database in `mode` (architecture
+/// §33.9: the read-only commands open it read-only).
 pub fn open(
     db: &Path,
     branch: &str,
     config: &CliConfig,
     provider: Provider,
+    mode: OpenMode,
 ) -> Result<ApiState, CliError> {
     if !db.is_file() {
         return Err(CliError::Usage(format!(
@@ -165,7 +179,8 @@ pub fn open(
     let profile = load_builtin_software_profile()
         .map_err(|e| CliError::Usage(format!("validation profile: {e}")))?;
     let runtime = config.runtime(provider)?;
-    Ok(open_application(
+    Ok(open_application_in(
+        mode,
         db,
         branch,
         config.identity()?,

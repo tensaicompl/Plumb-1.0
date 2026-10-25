@@ -1289,7 +1289,7 @@ mod http_workflow {
         );
         // The real pending workflow proposal, bound to the exact baseline revision.
         let stored = workflow(app)
-            .proposal(&id(body["proposal_id"].as_str().unwrap()))
+            .latest_proposal(&id(body["proposal_id"].as_str().unwrap()))
             .unwrap()
             .unwrap();
         assert_eq!(stored.state, WorkflowProposalState::Pending);
@@ -1414,7 +1414,7 @@ mod http_workflow {
         assert_eq!(version(&app).await, before);
         assert_eq!(
             workflow(&app)
-                .proposal(&proposal.id)
+                .latest_proposal(&proposal.id)
                 .unwrap()
                 .unwrap()
                 .state,
@@ -1449,7 +1449,10 @@ mod http_workflow {
                     && e.status == ElementStatus::Accepted
             }));
         }
-        let stored = workflow(&app).proposal(&proposal.id).unwrap().unwrap();
+        let stored = workflow(&app)
+            .latest_proposal(&proposal.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.state, WorkflowProposalState::Accepted);
         // Governance adds the acceptance ResolutionDecision on top of the previewed effect: the
         // decision is not part of the preview diff, and (R0.5) as a proposal-acceptance
@@ -1546,7 +1549,7 @@ mod http_workflow {
         );
         assert_eq!(
             workflow(&app)
-                .proposal(&proposal.id)
+                .latest_proposal(&proposal.id)
                 .unwrap()
                 .unwrap()
                 .state,
@@ -1598,7 +1601,10 @@ mod http_workflow {
             )
             .await;
             assert_error(&r, StatusCode::CONFLICT, "E_PROPOSAL_BASELINE_CHANGED");
-            let stored = workflow(&app).proposal(&id(&proposal_id)).unwrap().unwrap();
+            let stored = workflow(&app)
+                .latest_proposal(&id(&proposal_id))
+                .unwrap()
+                .unwrap();
             assert_eq!(stored.state, WorkflowProposalState::Pending);
             assert_eq!(
                 stored.base_revision_id.to_string(),
@@ -2931,7 +2937,10 @@ mod http_workflow {
             .as_array()
             .unwrap()
             .contains(&json!("human_decision")));
-        let stored = workflow(&app).proposal(&id(&proposal_id)).unwrap().unwrap();
+        let stored = workflow(&app)
+            .latest_proposal(&id(&proposal_id))
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.state, WorkflowProposalState::Pending);
         assert_eq!(stored.origin_kind, WorkflowOrigin::Question);
         assert_eq!(stored.origin_ref, Some(question.clone()));
@@ -2981,7 +2990,10 @@ mod http_workflow {
         assert_eq!(companions[0].1.proposal_ref, Some(id(&proposal_id)));
         assert_eq!(companions[0].1.rationale.as_deref(), Some("HR confirmed."));
         assert_eq!(loaded.revision.decision_refs.len(), 2);
-        let stored = workflow(&app).proposal(&id(&proposal_id)).unwrap().unwrap();
+        let stored = workflow(&app)
+            .latest_proposal(&id(&proposal_id))
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.state, WorkflowProposalState::Accepted);
         assert_eq!(
             stored.resolved_revision_id.unwrap().as_str(),
@@ -3467,7 +3479,10 @@ mod http_workflow {
             assert_eq!(body["patch_preview"]["op"], "Compound");
             assert!(body["intake"].is_object());
             let proposal_id = body["proposal_id"].as_str().unwrap().to_owned();
-            let stored = workflow(&app).proposal(&id(&proposal_id)).unwrap().unwrap();
+            let stored = workflow(&app)
+                .latest_proposal(&id(&proposal_id))
+                .unwrap()
+                .unwrap();
             assert_eq!(stored.state, WorkflowProposalState::Pending);
             assert_eq!(stored.origin_kind, WorkflowOrigin::Question);
             assert_eq!(revision(&app).await, before);
@@ -3481,7 +3496,10 @@ mod http_workflow {
             .await;
             assert_eq!(r.status, StatusCode::OK, "{}", r.text());
             assert_ne!(revision(&app).await, before);
-            let stored = workflow(&app).proposal(&id(&proposal_id)).unwrap().unwrap();
+            let stored = workflow(&app)
+                .latest_proposal(&id(&proposal_id))
+                .unwrap()
+                .unwrap();
             assert_eq!(stored.state, WorkflowProposalState::Accepted);
             let persisted: Proposal = serde_json::from_str(&stored.proposal_json).unwrap();
             decisions.push(persisted);
@@ -4112,7 +4130,7 @@ mod http_workflow {
         // Nothing committed; the pending Question-origin proposal and its artifact persist.
         assert_eq!(head(&app).revision.id, loaded.revision.id);
         let stored = workflow(&app)
-            .proposal(&expected.proposal.id)
+            .latest_proposal(&expected.proposal.id)
             .unwrap()
             .unwrap();
         assert_eq!(stored.state, WorkflowProposalState::Pending);
@@ -4326,7 +4344,7 @@ mod http_workflow {
         // The stored proposal is the authority; reading regenerates nothing.
         let stored: Proposal = serde_json::from_str(
             &workflow(&app)
-                .proposal(&ears_ref)
+                .latest_proposal(&ears_ref)
                 .unwrap()
                 .unwrap()
                 .proposal_json,
@@ -4506,7 +4524,7 @@ mod http_workflow {
         let app = restarted(app, ACTOR);
         assert_eq!(
             workflow(&app)
-                .proposal(&proposal.id)
+                .latest_proposal(&proposal.id)
                 .unwrap()
                 .unwrap()
                 .state,
@@ -4565,7 +4583,7 @@ mod http_workflow {
         assert_eq!(r.status, StatusCode::OK, "{}", r.text());
         assert_eq!(r.json()["revision"], before);
         assert_eq!(r.json()["events"], json!([]));
-        let record = workflow(&app).proposal(&fresh.id).unwrap().unwrap();
+        let record = workflow(&app).latest_proposal(&fresh.id).unwrap().unwrap();
         assert_eq!(record.state, WorkflowProposalState::Rejected);
         assert_eq!(record.resolved_revision_id.unwrap().as_str(), before);
         assert_error(
@@ -4688,7 +4706,10 @@ mod http_workflow {
             StatusCode::CONFLICT,
             "E_PROPOSAL_NOT_PENDING",
         );
-        let record = workflow(&app).proposal(&proposal.id).unwrap().unwrap();
+        let record = workflow(&app)
+            .latest_proposal(&proposal.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(record.state, WorkflowProposalState::Accepted);
         assert_eq!(record.resolved_at, Some(ts(NOW)));
         // Two conflicting acceptance decisions are corrupt workflow state.
@@ -4942,7 +4963,10 @@ mod http_workflow {
         assert_eq!(proposals[0]["kind"], "create");
         assert_eq!(proposals[0]["payload"]["op"], "AddNode");
         let proposal_id = proposals[0]["id"].as_str().unwrap();
-        let stored = workflow(&app).proposal(&id(proposal_id)).unwrap().unwrap();
+        let stored = workflow(&app)
+            .latest_proposal(&id(proposal_id))
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.state, WorkflowProposalState::Pending);
         assert_eq!(
             stored.base_revision_id.as_str(),
@@ -4996,7 +5020,11 @@ mod http_workflow {
         assert_eq!(last.failure.as_deref(), Some("STALE_BASE"));
         for proposal in &last.proposal_ids {
             assert_eq!(
-                workflow(&app).proposal(proposal).unwrap().unwrap().state,
+                workflow(&app)
+                    .latest_proposal(proposal)
+                    .unwrap()
+                    .unwrap()
+                    .state,
                 WorkflowProposalState::Failed
             );
         }
@@ -5219,9 +5247,15 @@ mod http_workflow {
             )
             .unwrap();
             conn.execute(
-                "UPDATE workflow_proposals SET state = 'prepared', base_revision_id = ?1 \
-                 WHERE proposal_id = ?2",
-                [base.as_str(), proposal_id.as_str()],
+                "UPDATE workflow_proposals SET state = 'prepared', base_revision_id = ?1, \
+                 occurrence_id = ?3 WHERE proposal_id = ?2",
+                [
+                    base.as_str(),
+                    proposal_id.as_str(),
+                    plumb_store::occurrence_id(&proposal_id, &base)
+                        .unwrap()
+                        .as_str(),
+                ],
             )
             .unwrap();
         }
@@ -5241,7 +5275,10 @@ mod http_workflow {
             Some(&transcript_revision),
             "the turn records the revision its transcript CAS produced"
         );
-        let stored = workflow(&app).proposal(&proposal_id).unwrap().unwrap();
+        let stored = workflow(&app)
+            .latest_proposal(&proposal_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.state, WorkflowProposalState::Pending);
         assert_eq!(stored.base_revision_id, transcript_revision);
         // Never rebound to the moved head: the proposal is not acceptable there.
@@ -6239,7 +6276,7 @@ mod http_workflow {
         for p in [&link.id, &merge.id, &supersede.id] {
             assert!(proposals.contains(p));
             assert_eq!(
-                workflow(&app).proposal(p).unwrap().unwrap().state,
+                workflow(&app).latest_proposal(p).unwrap().unwrap().state,
                 WorkflowProposalState::Accepted
             );
         }
@@ -6290,7 +6327,7 @@ mod http_workflow {
     }
 
     fn state_of(app: &App, p: &Proposal) -> WorkflowProposalState {
-        workflow(app).proposal(&p.id).unwrap().unwrap().state
+        workflow(app).latest_proposal(&p.id).unwrap().unwrap().state
     }
 
     fn set_error(
@@ -6373,7 +6410,7 @@ mod http_workflow {
             .iter()
             .map(|p| {
                 workflow(&app)
-                    .proposal(&p.id)
+                    .latest_proposal(&p.id)
                     .unwrap()
                     .unwrap()
                     .proposal_json
@@ -6435,7 +6472,7 @@ mod http_workflow {
             .any(|p| matches!(p, SemanticPatch::Compound { patches } if patches.len() == 2)));
         // Every member is accepted on the one revision; stored proposals are unchanged.
         for (p, original) in [&a, &nested, &accept].iter().zip(&originals) {
-            let record = workflow(&app).proposal(&p.id).unwrap().unwrap();
+            let record = workflow(&app).latest_proposal(&p.id).unwrap().unwrap();
             assert_eq!(record.state, WorkflowProposalState::Accepted);
             assert_eq!(record.resolved_revision_id.as_ref(), Some(&after.id));
             assert_eq!(&record.proposal_json, original);

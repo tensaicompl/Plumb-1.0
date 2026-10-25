@@ -39,3 +39,8 @@ pub use relations::{
 };
 pub use standards::{MappingRole, MappingStrength, StandardMapping};
 pub use status::ElementStatus;
+
+/// Version of the persisted PSG interpretation/validation contract a snapshot is written under
+/// (Fable #3). Any change to the serialized form of [`Node`], [`Edge`] or [`NodePayload`] bumps
+/// it; `tests/serde.rs` pins the canonical bytes of a fixture node of every payload variant.
+pub const PSG_SCHEMA_VERSION: u32 = 1;

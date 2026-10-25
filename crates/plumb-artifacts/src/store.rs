@@ -29,6 +29,13 @@ pub enum ArtifactStoreError {
     /// The bytes stored under this hash differ from the supplied bytes.
     #[error("integrity error: stored bytes for {0} differ from the supplied bytes")]
     IntegrityViolation(Hash),
+    /// The stored bytes do not hash to their key (H0.10, architecture §33.11): typed store
+    /// corruption; the artifact is never returned.
+    #[error("corrupt artifact {hash}: {reason}")]
+    Corrupt { hash: Hash, reason: &'static str },
+    /// An existing-database open found no `artifacts` table (architecture §33.9).
+    #[error("the database holds no artifact store")]
+    NotInitialized,
     /// A persisted kind string is not one of the artifact kinds.
     #[error(transparent)]
     UnknownArtifactKind(#[from] UnknownArtifactKind),

@@ -262,6 +262,30 @@ enum RoundsCommand {
 }
 
 impl Command {
+    /// The open mode of this command: the read-only commands of architecture §33.9 open the
+    /// database read-only; every other command opens it interactively.
+    fn open_mode(&self) -> plumb_api::OpenMode {
+        let read_only = matches!(
+            self,
+            Command::Vocab
+                | Command::Questions
+                | Command::Rounds {
+                    command: RoundsCommand::Show { .. }
+                }
+                | Command::Export { .. }
+                | Command::Report { .. }
+                | Command::Proposals { refresh: false }
+                | Command::Findings {
+                    command: FindingsCommand::List
+                }
+        );
+        if read_only {
+            plumb_api::OpenMode::ReadOnly
+        } else {
+            plumb_api::OpenMode::Interactive
+        }
+    }
+
     fn recipe(&self) -> Option<(Recipe, &[String])> {
         let (name, scope) = match self {
             Command::Lint(s) => ("lint", s),
@@ -341,7 +365,7 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
         commands::parse_set_members(members)?;
     }
     let provider = Provider::build(choice)?;
-    let state = commands::open(db, &cli.branch, &config, provider)?;
+    let state = commands::open(db, &cli.branch, &config, provider, cli.command.open_mode())?;
     if let Some((recipe, scope)) = cli.command.recipe() {
         return commands::stage(&state, recipe, scope.to_vec());
     }

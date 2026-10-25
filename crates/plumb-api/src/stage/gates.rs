@@ -185,7 +185,7 @@ fn i0_evidence(
     refs.sort();
     refs.dedup();
     for hash in refs {
-        let stored = state.with_artifact_store(|store| store.get(&hash))?;
+        let stored = state.get_artifact(&hash)?;
         if let Ok(artifact) = stored {
             if matches!(
                 artifact.kind,
@@ -223,15 +223,13 @@ fn f3_decision_artifacts(
         if !kind.is_some_and(|k| S3_RESOLUTION_KINDS.contains(&k) || k == WAIVER_KIND) {
             continue;
         }
-        let artifact = state
-            .with_artifact_store(|store| store.get(&decision.patch_ref))?
-            .map_err(|_| {
-                ApiError::unprocessable(
-                    "E_STAGE_EVALUATION_FAILED",
-                    "a decision artifact is missing",
-                )
-                .with_details(json!({ "gate": "F3", "decision": node.id }))
-            })?;
+        let artifact = state.get_artifact(&decision.patch_ref)?.map_err(|_| {
+            ApiError::unprocessable(
+                "E_STAGE_EVALUATION_FAILED",
+                "a decision artifact is missing",
+            )
+            .with_details(json!({ "gate": "F3", "decision": node.id }))
+        })?;
         out.push(F3DecisionArtifactInput {
             decision_ref: node.id.clone(),
             hash: decision.patch_ref.clone(),
@@ -383,7 +381,7 @@ fn run_artifact(
     let run = load_run(state, run_ref)?;
     for hash in &run.inference_artifacts {
         let stored = state
-            .with_artifact_store(|store| store.get(hash))?
+            .get_artifact(hash)?
             .map_err(|_| ApiError::workflow_corrupt(&format!("stage run artifact {hash}")))?;
         let artifact: InferenceArtifact = serde_json::from_slice(&stored.bytes)
             .map_err(|_| ApiError::workflow_corrupt(&format!("stage run artifact {hash}")))?;
@@ -997,7 +995,7 @@ fn f4_inputs(
                     evaluation_failed(GateId::F4, "a scenario run trace link is invalid")
                 })?;
             let artifact = state
-                .with_artifact_store(|store| store.get(&link))?
+                .get_artifact(&link)?
                 .map_err(|e| evaluation_failed(GateId::F4, e))?;
             runs.push(F4ScenarioRunInput {
                 run: run.clone(),
@@ -1352,7 +1350,10 @@ impl ApiState {
                 let at = self.now();
                 let evaluated =
                     evaluate_gate(self, loaded, gate, &a04.validation_policy, Some(at))?;
-                persist_report(self, loaded, &evaluated, None, at)?;
+                // A read-only instance evaluates in memory and persists nothing (H0.9).
+                if !self.is_read_only() {
+                    persist_report(self, loaded, &evaluated, None, at)?;
+                }
                 Ok(evaluated.report)
             }
             other => other,
