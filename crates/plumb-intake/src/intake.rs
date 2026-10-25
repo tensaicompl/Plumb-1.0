@@ -172,6 +172,30 @@ fn token_set(text: &str) -> BTreeSet<String> {
     tokenize(text).into_iter().collect()
 }
 
+/// The novelty text of one node (Fable #18): its retrieval text, except that a Scenario is
+/// projected to its name and the string leaves of given/when/then only, without the JSON keys
+/// and `scenario_kind` that every Scenario document shares.
+fn novelty_text(
+    payload: &NodePayload,
+) -> Result<Option<(RetrievalDocumentKind, String)>, CoreError> {
+    fn string_leaves<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::String(s) => out.push(s),
+            serde_json::Value::Array(items) => items.iter().for_each(|v| string_leaves(v, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|v| string_leaves(v, out)),
+            _ => {}
+        }
+    }
+    let NodePayload::Scenario(s) = payload else {
+        return document_text(payload);
+    };
+    let mut lines = vec![s.name.as_str()];
+    s.given.iter().for_each(|v| string_leaves(v, &mut lines));
+    string_leaves(&s.when, &mut lines);
+    s.then.iter().for_each(|v| string_leaves(v, &mut lines));
+    Ok(Some((RetrievalDocumentKind::Scenario, lines.join("\n"))))
+}
+
 /// The expression-bearing fields of a payload (compiler architecture §33.1), absent optional
 /// fields omitted.
 fn payload_expressions(payload: &NodePayload) -> Vec<&str> {
@@ -268,6 +292,40 @@ pub fn intake(
         }
     }
 
+    // Scenario scaffolding: the retrieval terms every Accepted base Scenario document carries
+    // (JSON keys, shared kinds). With fewer than two Scenario documents nothing is
+    // scaffolding, so a lone base Scenario still yields candidates.
+    let mut scenario_terms: BTreeMap<&Id, BTreeSet<String>> = BTreeMap::new();
+    for (id, node) in graph.nodes() {
+        if node.status != ElementStatus::Accepted {
+            continue;
+        }
+        if let Some((RetrievalDocumentKind::Scenario, text)) = document_text(&node.payload)? {
+            scenario_terms.insert(id, token_set(&text));
+        }
+    }
+    let scaffolding: BTreeSet<String> = if scenario_terms.len() < 2 {
+        BTreeSet::new()
+    } else {
+        let mut documents = scenario_terms.values();
+        let first = documents.next().cloned().unwrap_or_default();
+        documents.fold(first, |common, terms| {
+            common.intersection(terms).cloned().collect()
+        })
+    };
+    // A Scenario candidate whose only shared terms are scaffolding is no candidate.
+    let shares_content = |subject: &Subject<'_>, candidate: &Id| {
+        if subject.kind != RetrievalDocumentKind::Scenario {
+            return true;
+        }
+        let Some(terms) = scenario_terms.get(candidate) else {
+            return true;
+        };
+        token_set(&subject.text)
+            .intersection(terms)
+            .any(|term| !scaffolding.contains(term))
+    };
+
     // Advisory same-kind lexical candidates from the Accepted base corpus.
     let mut duplicate_candidates = Vec::new();
     for subject in &subjects {
@@ -275,6 +333,7 @@ pub fn intake(
         duplicate_candidates.extend(
             hits.into_iter()
                 .filter(|hit| hit.kind == subject.kind && hit.id != subject.node.id)
+                .filter(|hit| shares_content(subject, &hit.id))
                 .take(INTAKE_DUPLICATE_CANDIDATE_LIMIT)
                 .map(|hit| DuplicateCandidate {
                     subject_ref: subject.node.id.clone(),
@@ -357,14 +416,15 @@ pub fn intake(
         });
     }
 
-    // Jaccard novelty against the Accepted, token-bearing base documents of the same kind.
+    // Jaccard novelty against the Accepted, token-bearing base documents of the same kind, over
+    // the novelty projection (a Scenario's name and string leaves, never its JSON keys).
     let mut base_documents: BTreeMap<RetrievalDocumentKind, Vec<(&Id, BTreeSet<String>)>> =
         BTreeMap::new();
     for (id, node) in graph.nodes() {
         if node.status != ElementStatus::Accepted {
             continue;
         }
-        if let Some((kind, text)) = document_text(&node.payload)? {
+        if let Some((kind, text)) = novelty_text(&node.payload)? {
             let tokens = token_set(&text);
             if !tokens.is_empty() {
                 base_documents.entry(kind).or_default().push((id, tokens));
@@ -373,13 +433,17 @@ pub fn intake(
     }
     let mut subject_novelty = Vec::new();
     for subject in &subjects {
-        let tokens = token_set(&subject.text);
+        let tokens = match novelty_text(&subject.node.payload)? {
+            Some((_, text)) => token_set(&text),
+            None => BTreeSet::new(),
+        };
+        // The nearest document is the first most similar one with any shared term (Fable #21).
         let mut nearest: Option<(&Id, f64)> = None;
         for (id, other) in base_documents.get(&subject.kind).into_iter().flatten() {
             let shared = tokens.intersection(other).count() as f64;
             let union = tokens.union(other).count() as f64;
             let similarity = shared / union;
-            if nearest.is_none_or(|(_, best)| similarity > best) {
+            if similarity > 0.0 && nearest.is_none_or(|(_, best)| similarity > best) {
                 nearest = Some((id, similarity));
             }
         }

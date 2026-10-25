@@ -34,7 +34,7 @@ mod bm25 {
 
     /// Python: RFC 8785 canonical JSON of the representative corpus projection, SHA-256.
     const GOLDEN_CORPUS_HASH: &str =
-        "sha256:8a54b796f4efb288641354fa351750d9261a8bc3b8e7657fbdd2a0df0d891f57";
+        "sha256:41596c57d364a397686b3ee97e9de639189fbcece7e7a915247fe6d91242fc3f";
     /// Python: `"src:" + sha256(b"leave-policy-v1")[:16]` and the derived fragment ID.
     const SOURCE_ID: &str = "src:42d25a85ad17bbff";
     const FRAGMENT_ID: &str = "evd:2a6d670afe6bbb03";
@@ -388,7 +388,7 @@ mod bm25 {
             .collect();
         canonical_hash(
             HashKind::Generic,
-            &json!({"version": 1, "project_id": PROJECT, "profile_id": PROFILE, "documents": entries}),
+            &json!({"version": 2, "project_id": PROJECT, "profile_id": PROFILE, "documents": entries}),
         )
         .unwrap()
     }
@@ -485,7 +485,7 @@ mod bm25 {
 
     #[test]
     fn frozen_constants() {
-        assert_eq!(RETRIEVAL_INDEX_VERSION, 1);
+        assert_eq!(RETRIEVAL_INDEX_VERSION, 2);
         assert_eq!(BM25_K1, 1.2);
         assert_eq!(BM25_B, 0.75);
     }

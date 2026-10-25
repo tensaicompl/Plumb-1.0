@@ -24,7 +24,7 @@ mod intake {
         edge_element_hash, node_element_hash, AuditMeta, Concept, ConceptKind, Edge, ElementStatus,
         Finding, FindingSeverity, Graph, Modality, Node, NodePayload, RelationKind,
         RelationProperties, Requirement, RequirementKind, RequirementLevel, ResolutionDecision,
-        Term,
+        Scenario, ScenarioKind, Term,
     };
     use plumb_psg::{
         Calculation, Invariant, PolicyCondition, ProcessNode, ProcessNodeKind, Rule, RuleKind,
@@ -1329,6 +1329,131 @@ mod intake {
             }
         );
         assert_eq!(report.novelty, Some(0.5));
+    }
+
+    #[test]
+    fn nearest_ref_is_present_exactly_when_similarity_is_positive() {
+        // [Fable #21] A disjoint subject has no nearest document.
+        let g = graph(vec![req("requirement:base", Accepted, "alpha beta")]);
+        let p = proposal(&g, add(req("requirement:disjoint", Proposed, "omega")));
+        let report = run(&g, &p);
+        assert_eq!(
+            novelty_of(&report, "requirement:disjoint"),
+            SubjectNovelty {
+                subject_ref: id("requirement:disjoint"),
+                kind: RetrievalDocumentKind::Requirement,
+                nearest_ref: None,
+                similarity: 0.0,
+                novelty: 1.0,
+            }
+        );
+        // Validation rejects a nearest document at similarity 0.
+        let mut broken = report.clone();
+        broken.subject_novelty[0].nearest_ref = Some(id("requirement:base"));
+        assert!(matches!(
+            broken.validate(),
+            Err(IntakeReportError::SubjectNovelty(_))
+        ));
+        let p = proposal(&g, add(req("requirement:near", Proposed, "alpha")));
+        let mut broken = run(&g, &p);
+        assert_eq!(broken.subject_novelty[0].similarity, 0.5);
+        broken.subject_novelty[0].nearest_ref = None;
+        assert!(matches!(
+            broken.validate(),
+            Err(IntakeReportError::SubjectNovelty(_))
+        ));
+    }
+
+    fn scenario(
+        node_id: &str,
+        status: ElementStatus,
+        name: &str,
+        given: serde_json::Value,
+        when: serde_json::Value,
+        then: serde_json::Value,
+    ) -> Node {
+        let list = |v: serde_json::Value| v.as_array().cloned().unwrap();
+        node(
+            node_id,
+            status,
+            NodePayload::Scenario(Scenario {
+                name: name.into(),
+                scenario_kind: ScenarioKind::Acceptance,
+                given: list(given),
+                when,
+                then: list(then),
+                requirement_refs: None,
+                derived_from_refs: None,
+                confirmation_status: None,
+            }),
+        )
+    }
+
+    fn scenario_base() -> Graph {
+        graph(vec![
+            scenario(
+                "scenario:approve",
+                Accepted,
+                "Approve request",
+                json!([{"employee": "active"}]),
+                json!({"operation": "approve"}),
+                json!([{"status": "approved"}]),
+            ),
+            scenario(
+                "scenario:reject",
+                Accepted,
+                "Reject request",
+                json!([{"employee": "suspended", "days": 3}]),
+                json!({"operation": "reject"}),
+                json!([{"status": "rejected"}]),
+            ),
+        ])
+    }
+
+    #[test]
+    fn scenario_novelty_uses_name_and_string_leaves_only() {
+        // [Fable #18] JSON keys and scenario_kind are scaffolding shared by every scenario.
+        let g = scenario_base();
+        let p = proposal(
+            &g,
+            compound(vec![
+                add(scenario(
+                    "scenario:cancel",
+                    Proposed,
+                    "Cancel booking",
+                    json!([{"room": "free"}]),
+                    json!({"operation": "cancel"}),
+                    json!([{"status": "cancelled"}]),
+                )),
+                add(scenario(
+                    "scenario:resubmit",
+                    Proposed,
+                    "Resubmit request",
+                    json!([{"employee": "active", "days": 3}]),
+                    json!({"operation": "resubmit"}),
+                    json!([{"status": "pending"}]),
+                )),
+            ]),
+        );
+        let report = run(&g, &p);
+        let cancel = novelty_of(&report, "scenario:cancel");
+        assert_eq!(cancel.kind, RetrievalDocumentKind::Scenario);
+        assert_eq!((cancel.nearest_ref, cancel.similarity), (None, 0.0));
+        // {resubmit, request, active, pending} vs {approve, request, active, approved}:
+        // 2 shared of 6; the numeric leaf 3 is not a string leaf.
+        let resubmit = novelty_of(&report, "scenario:resubmit");
+        assert_eq!(resubmit.nearest_ref, Some(id("scenario:approve")));
+        assert_eq!(resubmit.similarity, 2.0 / 6.0);
+        // Scaffolding-only overlap is no duplicate candidate; real shared terms are.
+        assert!(candidates_of(&report, "scenario:cancel").is_empty());
+        let mut resubmit_candidates = candidates_of(&report, "scenario:resubmit");
+        resubmit_candidates.sort();
+        assert_eq!(resubmit_candidates, ["scenario:approve", "scenario:reject"]);
+    }
+
+    #[test]
+    fn retrieval_index_version_is_bumped_for_scenario_novelty() {
+        assert_eq!(plumb_intake::RETRIEVAL_INDEX_VERSION, 2);
     }
 
     // ------------------------------------------------------------------ validation reuse
