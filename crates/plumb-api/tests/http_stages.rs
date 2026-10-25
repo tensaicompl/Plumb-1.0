@@ -363,6 +363,7 @@ mod http_stages {
             calendar_ref: id("cal:office"),
             weekend: vec!["saturday".into(), "sunday".into()],
             holidays: vec![],
+            coverage: None,
         }];
         let managers = vec![DirectManagerFact {
             manager_ref: id("actor:manager"),

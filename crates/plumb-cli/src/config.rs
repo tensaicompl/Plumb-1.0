@@ -463,11 +463,12 @@ pub fn calendar_provider(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        definitions.push(ExprCalendarDefinition::new(
-            calendar.calendar_ref.clone(),
-            weekend,
-            holidays,
-        ));
+        let definition =
+            ExprCalendarDefinition::new(calendar.calendar_ref.clone(), weekend, holidays);
+        definitions.push(match &calendar.coverage {
+            Some(years) => definition.with_coverage(years.iter().copied()),
+            None => definition,
+        });
     }
     ExprStaticCalendarProvider::new(definitions).map_err(|e| ConfigError::Invalid(format!("{e:?}")))
 }
@@ -559,4 +560,87 @@ fn anthropic(key_file: &Path) -> Result<Provider, ConfigError> {
 #[cfg(not(feature = "llm"))]
 fn anthropic(_key_file: &Path) -> Result<Provider, ConfigError> {
     Err(ConfigError::ProviderUnavailable)
+}
+
+#[cfg(test)]
+mod tests {
+    use plumb_functional::{ExprCalendarError, ExprCalendarProvider};
+
+    use super::*;
+
+    fn configured(coverage: Value) -> CalendarConfig {
+        let mut value = serde_json::json!({
+            "calendar_ref": "cal:office",
+            "weekend": ["saturday", "sunday"],
+            "holidays": ["2026-12-25"]
+        });
+        if !coverage.is_null() {
+            value["coverage"] = coverage;
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn day(y: i32, m: u8, d: u8) -> Date {
+        Date::from_calendar_date(y, Month::try_from(m).unwrap(), d).unwrap()
+    }
+
+    fn office() -> Id {
+        "cal:office".parse().unwrap()
+    }
+
+    #[test]
+    fn calendar_without_coverage_keeps_its_wire_form_and_answers_every_date() {
+        let calendar = configured(Value::Null);
+        // Backward compatible: the hash-bound wire form has no coverage member.
+        assert!(serde_json::to_value(&calendar)
+            .unwrap()
+            .get("coverage")
+            .is_none());
+        let provider = calendar_provider(&[calendar]).unwrap();
+        assert_eq!(
+            provider.is_working_day(&office(), day(1999, 6, 1)),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn configured_coverage_is_enforced_by_the_runtime_calendar() {
+        let calendar = configured(serde_json::json!([2026, 2027]));
+        assert_eq!(
+            serde_json::to_value(&calendar).unwrap()["coverage"],
+            serde_json::json!([2026, 2027])
+        );
+        let provider = calendar_provider(&[calendar]).unwrap();
+        assert_eq!(
+            provider.is_working_day(&office(), day(2027, 1, 4)),
+            Ok(true)
+        );
+        assert_eq!(
+            provider.is_working_day(&office(), day(2026, 12, 25)),
+            Ok(false)
+        );
+        assert_eq!(
+            provider.is_working_day(&office(), day(2028, 1, 3)),
+            Err(ExprCalendarError::CoverageUnavailable {
+                calendar_ref: office(),
+                date: day(2028, 1, 3),
+            })
+        );
+    }
+
+    #[test]
+    fn configured_coverage_is_a_closed_ascending_list_of_years() {
+        for (name, coverage) in [
+            ("empty", serde_json::json!([])),
+            ("duplicate", serde_json::json!([2026, 2026])),
+            ("unsorted", serde_json::json!([2027, 2026])),
+            ("out of range", serde_json::json!([10000])),
+            ("negative", serde_json::json!([-1])),
+            // The configured holiday 2026-12-25 lies outside the declared coverage.
+            ("holiday outside", serde_json::json!([2027])),
+        ] {
+            let calendar = configured(coverage);
+            assert!(calendar_provider(&[calendar]).is_err(), "{name}");
+        }
+    }
 }

@@ -91,15 +91,19 @@ impl PredicateProvider for DirectManagerPredicates {
     }
 }
 
-/// One calendar as configured: `calendar_ref`, lowercase English weekday names and
-/// `YYYY-MM-DD` holidays. Its typed `CalendarDefinition` is built by the configuration loader;
-/// this wire form is what the stage configuration hash binds.
+/// One calendar as configured: `calendar_ref`, lowercase English weekday names,
+/// `YYYY-MM-DD` holidays and, optionally, the closed ascending list of covered years
+/// (architecture §33.11). Its typed `CalendarDefinition` is built by the configuration loader;
+/// this wire form is what the stage configuration hash binds. A calendar without `coverage`
+/// keeps its pre-H0.10 wire form (and hash) and answers every date.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CalendarConfig {
     pub calendar_ref: Id,
     pub weekend: Vec<String>,
     pub holidays: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Vec<i32>>,
 }
 
 /// The lowercase English weekday names a calendar may use.
@@ -144,6 +148,31 @@ impl CalendarConfig {
             }
             if !holidays.insert(date) {
                 return Err(invalid(format!("holiday {date} is listed twice")));
+            }
+        }
+        if let Some(years) = &self.coverage {
+            if years.is_empty() {
+                return Err(invalid("coverage lists no year".to_owned()));
+            }
+            if let Some(year) = years.iter().find(|y| !(0..=9999).contains(*y)) {
+                return Err(invalid(format!(
+                    "coverage year {year} is outside 0000..=9999"
+                )));
+            }
+            if years.windows(2).any(|w| w[0] >= w[1]) {
+                return Err(invalid(
+                    "coverage years must be strictly ascending".to_owned(),
+                ));
+            }
+            for date in &self.holidays {
+                let year: i32 = date[..4]
+                    .parse()
+                    .map_err(|_| invalid(format!("{date:?} is not YYYY-MM-DD")))?;
+                if years.binary_search(&year).is_err() {
+                    return Err(invalid(format!(
+                        "holiday {date} is outside the declared coverage"
+                    )));
+                }
             }
         }
         Ok(())

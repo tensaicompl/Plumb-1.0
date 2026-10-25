@@ -3310,6 +3310,7 @@ mod http_workflow {
                 calendar_ref: id("cal:test"),
                 weekend: vec!["saturday".into(), "sunday".into()],
                 holidays: vec![],
+                coverage: None,
             }],
             direct_managers: Vec::new(),
             expression_scopes: Vec::new(),

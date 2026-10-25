@@ -212,6 +212,7 @@ mod directory_contract {
             calendar_ref: id("cal:office"),
             // Configured order, not sorted.
             weekend: vec!["sunday".into(), "saturday".into()],
+            coverage: None,
         }]
     }
 
@@ -343,6 +344,30 @@ mod directory_contract {
         let mut b = vec![fragment(2), fragment(3)];
         b.sort();
         assert_eq!(evidence("calendar:nl"), b);
+    }
+
+    #[test]
+    fn calendar_week_pattern_carries_the_runtime_coverage() {
+        // §33.11: the PSG Calendar material carries the runtime calendar's declared coverage
+        // identically; a calendar without coverage keeps exactly {"weekend": ...} (above).
+        let covered = vec![DirectoryCalendarBinding {
+            calendar_ref: id("cal:office"),
+            weekend: vec!["sunday".into(), "saturday".into()],
+            coverage: Some(vec![2026, 2027]),
+        }];
+        let result = produce_directory(&graph(), &draft(), &covered, &audit()).unwrap();
+        let outcome = result
+            .outcomes
+            .iter()
+            .find(|o| o.element_ref == id("calendar:nl"))
+            .unwrap();
+        let NodePayload::Calendar(calendar) = &added(outcome).1.payload else {
+            panic!("not a calendar");
+        };
+        assert_eq!(
+            calendar.week_pattern,
+            json!({"weekend": ["sunday", "saturday"], "coverage": [2026, 2027]})
+        );
     }
 
     #[test]
