@@ -669,6 +669,49 @@ mod impact_contract {
     }
 
     #[test]
+    fn non_baseline_edge_endpoints_are_never_seeded() {
+        // Fable #85: demote a baseline edge and retarget it to a Proposed node in one patch.
+        // The old baseline endpoints are dirty; the Proposed new endpoint, which participates in
+        // neither graph's baseline, is not.
+        let base = graph(
+            vec![
+                typed("req:a", "Accepted", "Requirement"),
+                typed("con:eu", "Accepted", "Constraint"),
+                typed("req:p", "Proposed", "Requirement"),
+            ],
+            vec![edge(
+                "rel:a-eu",
+                "Accepted",
+                "constrained_by",
+                "req:a",
+                "con:eu",
+            )],
+        );
+        let demote = set_status(
+            &base,
+            "rel:a-eu",
+            ElementStatus::Accepted,
+            ElementStatus::Proposed,
+        );
+        let (demoted, _) = apply(&base, demote.clone());
+        let retarget = SemanticPatch::ReplaceEdge {
+            target: pre(&demoted, "rel:a-eu"),
+            kind: RelationKind::ConstrainedBy,
+            from: id("req:p"),
+            to: id("con:eu"),
+            properties: RelationProperties::None,
+        };
+        let r = impact(
+            &base,
+            SemanticPatch::Compound {
+                patches: vec![demote, retarget],
+            },
+        );
+        assert_eq!(r.dirty.edge_ids, ids(&["rel:a-eu"]));
+        assert_eq!(r.dirty.node_ids, ids(&["con:eu", "req:a"]));
+    }
+
+    #[test]
     fn removed_baseline_nodes_stay_dirty_and_dirty_survivors() {
         let base = chain();
         let (result, delta) = apply(

@@ -415,9 +415,17 @@ pub fn compute_impact(
         let (old, new) = (base.edge(id), result.edge(id));
         if baseline_in(old.map(|e| e.status), new.map(|e| e.status)) {
             dirty.edge_ids.insert(id.clone());
+            // Only endpoints that participate in the base or result baseline are seeds, so the
+            // DirtySet never contains a non-baseline node (Fable #85).
             for edge in old.into_iter().chain(new) {
-                seeds.insert(edge.from.clone());
-                seeds.insert(edge.to.clone());
+                for endpoint in [&edge.from, &edge.to] {
+                    if baseline_in(
+                        base.node(endpoint).map(|n| n.status),
+                        result.node(endpoint).map(|n| n.status),
+                    ) {
+                        seeds.insert(endpoint.clone());
+                    }
+                }
             }
         }
     }

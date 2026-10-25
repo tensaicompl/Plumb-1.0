@@ -229,7 +229,7 @@ mod job {
             }
         }
 
-        fn proposal(&self, patch_set: PatchSet, confidence: Option<f32>) -> Proposal {
+        fn proposal(&self, patch_set: PatchSet, confidence: Option<f64>) -> Proposal {
             Proposal::new(
                 StageId::S1,
                 patch_set,
