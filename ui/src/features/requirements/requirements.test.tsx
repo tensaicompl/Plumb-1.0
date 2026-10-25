@@ -73,7 +73,7 @@ const PAGE_1: RequirementPage = {
       text: "Employees shall submit and cancel leave requests.",
       class: "functional",
       status: "Accepted",
-      smells: ["PLUMB.LINT.COMPOUND"],
+      smells: ["PLUMB.LINT.REQ.COMPOUND_MODAL"],
       coverage: { operations: [], scenarios: [] },
       readiness: 0.42,
       lint_current: true,
@@ -113,7 +113,7 @@ const DETAIL_A: RequirementDetail = {
   text: "Employees shall submit and cancel leave requests.",
   class: "functional",
   status: "Accepted",
-  smells: ["PLUMB.LINT.COMPOUND"],
+  smells: ["PLUMB.LINT.REQ.COMPOUND_MODAL"],
   coverage: { operations: ["op:submit"], scenarios: [] },
   readiness: 0.42,
   spans: ["frag:requirements.docx#p12", "frag:requirements.docx#p13"],
@@ -362,7 +362,7 @@ describe("RequirementDetail", () => {
 
     const lint = screen.getByRole("region", { name: "Lint findings" });
     expect(within(lint).getByTestId("lint-findings").textContent).toBe("fnd:compound-a");
-    expect(within(lint).getByTestId("lint-smells").textContent).toBe("PLUMB.LINT.COMPOUND");
+    expect(within(lint).getByTestId("lint-smells").textContent).toBe("PLUMB.LINT.REQ.COMPOUND_MODAL");
     const linked = screen.getByRole("region", { name: "Linked elements" });
     expect(linked.querySelector("[data-linked=operations]")?.textContent).toBe("op:submit");
     expect(linked.querySelector("[data-linked=processes]")?.textContent).toBe("proc:leave");
