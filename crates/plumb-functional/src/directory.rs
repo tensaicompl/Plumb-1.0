@@ -14,6 +14,11 @@
 //!   [`encode_decision_table`].
 //! - The proposal stage is the stage whose gate is the element type's earliest gate
 //!   (architecture §2 stage table: S1 -> F1, S2 -> F2; [`earliest_gate`]).
+//! - Event and State dispositions (H0.7, architecture §33.7) are not elements: each changed
+//!   disposition of an existing Proposed or Accepted Event/State is one Semantic /
+//!   HUMAN_CONFIRM `SetNodeExtension` proposal of the `plumb_functional:event_disposition` /
+//!   `plumb_functional:state_disposition` extension (wire form owned by
+//!   `plumb_validation::disposition`), outcomes after the elements in target-ID order.
 //!
 //! No clock, configuration file or global is read: the caller supplies the draft, the calendar
 //! bindings and the audit.
@@ -22,15 +27,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use plumb_core::{CoreError, GateId, Id, StageId, Timestamp};
 use plumb_patch::{
-    apply_patch, earliest_gate, AcceptancePolicy, PatchSet, Proposal, ProposalMateriality,
-    SemanticPatch,
+    apply_patch, earliest_gate, AcceptancePolicy, ElementPrecondition, PatchSet, Proposal,
+    ProposalMateriality, SemanticPatch,
 };
 use plumb_psg::{
-    Actor, AuditMeta, BusinessRole, Calendar, ElementStatus, EvidenceRef, Graph, Node, NodePayload,
-    NodeType, Rule, Stakeholder,
+    node_element_hash, Actor, AuditMeta, BusinessRole, Calendar, ElementStatus, EvidenceRef,
+    ExtensionKey, Graph, Node, NodePayload, NodeType, Rule, Stakeholder,
+};
+use plumb_validation::disposition::{
+    TerminalPurpose, DISPOSITION_VERSION, EVENT_DISPOSITION_EXTENSION, STATE_DISPOSITION_EXTENSION,
 };
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use thiserror::Error;
 
 use crate::decision_table::{encode_decision_table, DecisionTableSpec};
@@ -77,7 +85,33 @@ pub struct DirectoryDecisionTableDraft {
     pub grounding_refs: Vec<Id>,
 }
 
-/// The typed directory draft. Every family is a required key (possibly empty).
+/// A governed Event disposition (H0.7, architecture §33.7): written to the existing Event as
+/// the `plumb_functional:event_disposition` extension. `terminal_purpose` is a required key
+/// (it may be `null`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryEventDisposition {
+    pub event_ref: Id,
+    pub external_source: bool,
+    #[serde(deserialize_with = "present_purpose")]
+    pub terminal_purpose: Option<TerminalPurpose>,
+}
+
+/// A governed State disposition (H0.7): written to the existing State as the
+/// `plumb_functional:state_disposition` extension; it declares a state machine's initial
+/// state(s) and the terminal or externally-entered states for STATE.REACHABILITY.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryStateDisposition {
+    pub state_ref: Id,
+    pub initial: bool,
+    pub terminal: bool,
+    pub externally_entered: bool,
+}
+
+/// The typed directory draft. The six element families are required keys (possibly empty);
+/// the H0.7 disposition families default to empty so existing directory configurations stay
+/// valid.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DirectoryDraft {
@@ -87,11 +121,19 @@ pub struct DirectoryDraft {
     pub calendars: Vec<DirectoryCalendarDraft>,
     pub rules: Vec<DirectoryElement<Rule>>,
     pub decision_tables: Vec<DirectoryDecisionTableDraft>,
+    #[serde(default)]
+    pub event_dispositions: Vec<DirectoryEventDisposition>,
+    #[serde(default)]
+    pub state_dispositions: Vec<DirectoryStateDisposition>,
 }
 
 /// A required key whose value may be `null` (a missing key is an error, never `None`).
 fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Option::<String>::deserialize(d)
+}
+
+fn present_purpose<'de, D: Deserializer<'de>>(d: D) -> Result<Option<TerminalPurpose>, D::Error> {
+    Option::<TerminalPurpose>::deserialize(d)
 }
 
 /// The runtime weekend of one configured calendar, in configured order.
@@ -152,6 +194,8 @@ pub enum DirectoryError {
     InvalidElement { element: Id, reason: String },
     #[error("directory element {element} conflicts with the persisted element: {reason}")]
     ElementConflict { element: Id, reason: String },
+    #[error("directory disposition of {target}: {reason}")]
+    InvalidDisposition { target: Id, reason: String },
     #[error("invalid audit: {0}")]
     InvalidAudit(String),
     #[error(transparent)]
@@ -176,7 +220,56 @@ impl DirectoryDraft {
     /// The structural invariants that need no graph: unique element IDs across every family,
     /// unique grounding per element and encodable decision tables.
     pub fn validate(&self) -> Result<(), DirectoryError> {
-        self.planned().map(|_| ())
+        self.planned()?;
+        self.dispositions().map(|_| ())
+    }
+
+    /// Every disposition as `(target, node type, extension key, value)`, events then states,
+    /// each in target-ID order; a target named twice in one family is a duplicate.
+    fn dispositions(&self) -> Result<Vec<(Id, NodeType, &'static str, Value)>, DirectoryError> {
+        // The exact wire form of plumb_validation::disposition::{EventDisposition,
+        // StateDisposition}.
+        let mut events: Vec<(Id, NodeType, &'static str, Value)> = self
+            .event_dispositions
+            .iter()
+            .map(|d| {
+                (
+                    d.event_ref.clone(),
+                    NodeType::Event,
+                    EVENT_DISPOSITION_EXTENSION,
+                    json!({
+                        "version": DISPOSITION_VERSION,
+                        "external_source": d.external_source,
+                        "terminal_purpose": d.terminal_purpose,
+                    }),
+                )
+            })
+            .collect();
+        let mut states: Vec<(Id, NodeType, &'static str, Value)> = self
+            .state_dispositions
+            .iter()
+            .map(|d| {
+                (
+                    d.state_ref.clone(),
+                    NodeType::State,
+                    STATE_DISPOSITION_EXTENSION,
+                    json!({
+                        "version": DISPOSITION_VERSION,
+                        "initial": d.initial,
+                        "terminal": d.terminal,
+                        "externally_entered": d.externally_entered,
+                    }),
+                )
+            })
+            .collect();
+        for family in [&mut events, &mut states] {
+            family.sort_by(|a, b| a.0.cmp(&b.0));
+            if let Some(pair) = family.windows(2).find(|p| p[0].0 == p[1].0) {
+                return Err(DirectoryError::DuplicateElement(pair[0].0.clone()));
+            }
+        }
+        events.extend(states);
+        Ok(events)
     }
 
     fn planned(&self) -> Result<Vec<Planned>, DirectoryError> {
@@ -384,6 +477,64 @@ pub fn produce_directory(
             .map_err(|e| invalid(format!("proposal does not apply: {e}")))?;
         outcomes.push(DirectoryOutcome {
             element_ref: planned.id,
+            node_type,
+            disposition: DirectoryDisposition::Proposed {
+                proposal: Box::new(proposal),
+            },
+        });
+    }
+    // H0.7 dispositions: one SetNodeExtension proposal per changed disposition of an existing
+    // Proposed or Accepted node of the right type; an equal value is Existing.
+    for (target, node_type, key, value) in draft.dispositions()? {
+        let invalid = |reason: String| DirectoryError::InvalidDisposition {
+            target: target.clone(),
+            reason,
+        };
+        let node = graph
+            .node(&target)
+            .filter(|n| {
+                n.payload.node_type() == node_type
+                    && matches!(n.status, ElementStatus::Proposed | ElementStatus::Accepted)
+            })
+            .ok_or_else(|| {
+                invalid(format!(
+                    "no Proposed or Accepted {} has this ID",
+                    node_type.as_str()
+                ))
+            })?;
+        let key: ExtensionKey = key.parse().map_err(|_| invalid("invalid key".into()))?;
+        if node.extensions.get(&key) == Some(&value) {
+            outcomes.push(DirectoryOutcome {
+                element_ref: target,
+                node_type,
+                disposition: DirectoryDisposition::Existing,
+            });
+            continue;
+        }
+        let proposal = Proposal::new(
+            directory_stage(node_type),
+            PatchSet {
+                base_semantic_hash: base_semantic_hash.clone(),
+                patch: SemanticPatch::SetNodeExtension {
+                    target: ElementPrecondition {
+                        id: target.clone(),
+                        expected_hash: node_element_hash(node)?,
+                    },
+                    key,
+                    value,
+                },
+            },
+            node.evidence.clone(),
+            Vec::new(),
+            ProposalMateriality::Semantic,
+            AcceptancePolicy::HumanConfirm,
+            None,
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+        apply_patch(graph, &proposal.patch_set)
+            .map_err(|e| invalid(format!("proposal does not apply: {e}")))?;
+        outcomes.push(DirectoryOutcome {
+            element_ref: target,
             node_type,
             disposition: DirectoryDisposition::Proposed {
                 proposal: Box::new(proposal),

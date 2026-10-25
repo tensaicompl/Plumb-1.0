@@ -3,8 +3,8 @@
 //! The canonical `DecisionTable` payload keeps generic `inputs`, `outputs` and `rows`, and no
 //! encoding of them is frozen, so this module defines no wire format and produces no PSG
 //! proposal. It analyzes a typed [`DecisionTableSpec`]: Bool, Enum, Int and Decimal columns,
-//! `UNIQUE` and `FIRST` hit policies, exact overlap detection and coverage where the pilot
-//! subset is analyzable (finite Bool/Enum products and one numeric column over a declared
+//! `UNIQUE` and the overlap-permitting DMN hit policies (Fable #164), exact overlap detection
+//! and coverage where the pilot subset is analyzable (finite Bool/Enum products and one numeric column over a declared
 //! finite domain). Int intervals are discrete, Decimal intervals continuous and exact; no
 //! floats, solver, approximation, findings, mutation or provider are involved.
 
@@ -40,6 +40,30 @@ impl HitPolicy {
             _ => None,
         }
     }
+}
+
+/// The DMN hit policies whose matches may overlap (Fable #164): `FIRST` and `PRIORITY` choose
+/// one match, `ANY`, `COLLECT`, `RULE ORDER` and `OUTPUT ORDER` accept several. Overlap and
+/// coverage of such a table are still analysed; only `UNIQUE` forbids overlap. Execution
+/// (S4.2) keeps supporting only `UNIQUE` and `FIRST` through [`HitPolicy`].
+pub const OVERLAP_PERMITTING_HIT_POLICIES: [&str; 6] = [
+    "FIRST",
+    "ANY",
+    "PRIORITY",
+    "COLLECT",
+    "RULE ORDER",
+    "OUTPUT ORDER",
+];
+
+/// Whether `hit_policy` (exact, case-sensitive) is a DMN policy that permits overlapping matches.
+pub fn permits_overlap(hit_policy: &str) -> bool {
+    OVERLAP_PERMITTING_HIT_POLICIES.contains(&hit_policy)
+}
+
+/// Whether the structure of a table with `hit_policy` can be analysed: `UNIQUE` or an
+/// overlap-permitting DMN policy.
+fn analyzable_hit_policy(hit_policy: &str) -> bool {
+    hit_policy == "UNIQUE" || permits_overlap(hit_policy)
 }
 
 /// A column type. `Unsupported` names a domain outside the pilot subset (String, Date,
@@ -258,10 +282,27 @@ fn check_output(column: &DecisionColumn, cell: &DecisionOutputCell) -> bool {
         (DecisionType::Enum { members }, DecisionOutputCell::Enum { member }) => {
             members.contains(member)
         }
+        // Scale is checked after normalization, so trailing zeros never count (Fable #162).
         (DecisionType::Decimal { scale }, DecisionOutputCell::Decimal { value }) => {
-            value.scale() <= *scale
+            within_scale(*value, *scale)
         }
         _ => false,
+    }
+}
+
+/// Whether `value` carries at most `scale` fractional digits once trailing zeros are removed.
+fn within_scale(value: Decimal, scale: u32) -> bool {
+    value.normalize().scale() <= scale
+}
+
+/// Whether every bound of a Decimal-column interval fits the column scale (Fable #162).
+fn bounds_within_scale(interval: &NumericInterval, ty: &DecisionType) -> bool {
+    match ty {
+        DecisionType::Decimal { scale } => [interval.lower, interval.upper]
+            .into_iter()
+            .flatten()
+            .all(|b| within_scale(b.value, *scale)),
+        _ => true,
     }
 }
 
@@ -280,7 +321,7 @@ fn check_interval(interval: &NumericInterval) -> Option<bool> {
 fn structure(spec: &DecisionTableSpec) -> Vec<DecisionStructureIssue> {
     use DecisionStructureIssue as I;
     let mut issues = Vec::new();
-    if HitPolicy::parse(&spec.hit_policy).is_none() {
+    if !analyzable_hit_policy(&spec.hit_policy) {
         issues.push(I::UnsupportedHitPolicy {
             hit_policy: spec.hit_policy.clone(),
         });
@@ -346,6 +387,9 @@ fn structure(spec: &DecisionTableSpec) -> Vec<DecisionStructureIssue> {
                     match check_interval(interval) {
                         Some(true) => issues.push(I::InvalidInterval { row: r, column: c }),
                         Some(false) => issues.push(I::EmptyInterval { row: r, column: c }),
+                        None if !bounds_within_scale(interval, ty) => {
+                            issues.push(I::InvalidInterval { row: r, column: c })
+                        }
                         None => {}
                     }
                 }

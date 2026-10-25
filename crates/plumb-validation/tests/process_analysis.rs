@@ -748,6 +748,224 @@ mod process_analysis_contract {
         assert_eq!(reversed.analyze(), three);
     }
 
+    /// H0.7 §33.7 cross-check: a Process is qualified exactly when all four F2 process rules
+    /// (START_END, REACHABLE, TASK_RESOLVES, GATEWAY_BALANCED) pass for it.
+    #[test]
+    fn qualification_matches_process_rules() {
+        use plumb_core::GateId;
+        use plumb_validation::{
+            load_builtin_software_profile, rules, EvaluatorRegistry, F2ValidationInputs,
+            RuleResultState, ValidationContext, ValidationPolicy, ValidationRegistry,
+        };
+        const RULES: [&str; 4] = [
+            "BPMN.F2.PROCESS.START_END",
+            "BPMN.F2.PROCESS.REACHABLE",
+            "PLUMB.F2.PROCESS.TASK_RESOLVES",
+            "PLUMB.F2.PROCESS.GATEWAY_BALANCED",
+        ];
+        let start_with = |f: fn(&mut ProcessNode)| {
+            Fx::new()
+                .pn_in(P, "start", K::Start, f)
+                .task("a", K::ServiceTask, "operation:a")
+                .pn("end", K::End)
+                .chain(&["start", "a", "end"])
+        };
+        let middle = |kind: K, f: fn(&mut ProcessNode)| {
+            Fx::new()
+                .pn("start", K::Start)
+                .pn_in(P, "t", kind, f)
+                .pn("end", K::End)
+                .chain(&["start", "t", "end"])
+        };
+        let fixtures: Vec<(&str, Fx)> = vec![
+            ("linear", linear()),
+            (
+                "event start",
+                start_with(|p| p.message_ref = Some(id("event:e"))).rel(
+                    RelationKind::Consumes,
+                    "pn:start",
+                    "event:e",
+                ),
+            ),
+            (
+                "missing consumes",
+                start_with(|p| p.message_ref = Some(id("event:e"))),
+            ),
+            (
+                "draft message",
+                start_with(|p| p.message_ref = Some(id("event:draft"))),
+            ),
+            (
+                "blank timer",
+                start_with(|p| p.timer_expr = Some(" ".into())),
+            ),
+            (
+                "start operation",
+                start_with(|p| p.operation_ref = Some(id("operation:a"))),
+            ),
+            (
+                "start performer",
+                linear().rel(RelationKind::PerformedBy, "pn:start", "brole:clerk"),
+            ),
+            (
+                "two outgoing start",
+                linear()
+                    .task("b", K::ServiceTask, "operation:b")
+                    .pn("end2", K::End)
+                    .chain(&["start", "b", "end2"]),
+            ),
+            (
+                "no end",
+                Fx::new()
+                    .pn("start", K::Start)
+                    .task("a", K::ServiceTask, "operation:a")
+                    .chain(&["start", "a"]),
+            ),
+            (
+                "no start",
+                Fx::new()
+                    .task("a", K::ServiceTask, "operation:a")
+                    .pn("end", K::End)
+                    .chain(&["a", "end"]),
+            ),
+            (
+                "end field",
+                Fx::new()
+                    .pn("start", K::Start)
+                    .task("a", K::ServiceTask, "operation:a")
+                    .pn_in(P, "end", K::End, |p| p.timer_expr = Some("x".into()))
+                    .chain(&["start", "a", "end"]),
+            ),
+            (
+                "unreachable",
+                linear()
+                    .pn("end2", K::End)
+                    .task("b", K::ServiceTask, "operation:b")
+                    .chain(&["b", "end2"]),
+            ),
+            ("unresolved service", middle(K::ServiceTask, |_| {})),
+            (
+                "service produces",
+                middle(K::ServiceTask, |p| {
+                    p.operation_ref = Some(id("operation:a"))
+                })
+                .rel(RelationKind::Produces, "pn:t", "outcome:done"),
+            ),
+            (
+                "human lane",
+                middle(K::HumanTask, |p| p.operation_ref = Some(id("operation:a"))).rel(
+                    RelationKind::PerformedBy,
+                    "pn:t",
+                    "brole:clerk",
+                ),
+            ),
+            (
+                "human activity",
+                middle(K::HumanTask, |_| {})
+                    .rel(RelationKind::PerformedBy, "pn:t", "brole:clerk")
+                    .rel(RelationKind::Produces, "pn:t", "outcome:done"),
+            ),
+            (
+                "human without outcome",
+                middle(K::HumanTask, |_| {}).rel(RelationKind::PerformedBy, "pn:t", "brole:clerk"),
+            ),
+            (
+                "branchy task",
+                linear().pn("end2", K::End).chain(&["a", "end2"]),
+            ),
+            (
+                "mergy task",
+                linear().pn("start2", K::Start).chain(&["start2", "a"]),
+            ),
+            (
+                "message wait",
+                middle(K::MessageEvent, |p| p.message_ref = Some(id("event:e"))).rel(
+                    RelationKind::Consumes,
+                    "pn:t",
+                    "event:e",
+                ),
+            ),
+            ("wait without message", middle(K::MessageEvent, |_| {})),
+            (
+                "timer wait",
+                middle(K::TimerEvent, |p| p.timer_expr = Some("P2D".into())),
+            ),
+            ("timer without expr", middle(K::TimerEvent, |_| {})),
+            (
+                "wait performer",
+                middle(K::TimerEvent, |p| p.timer_expr = Some("P2D".into())).rel(
+                    RelationKind::PerformedBy,
+                    "pn:t",
+                    "brole:clerk",
+                ),
+            ),
+            ("exclusive gateway", middle(K::ExclusiveGateway, |_| {})),
+            (
+                "condition",
+                middle(K::ServiceTask, |p| {
+                    p.operation_ref = Some(id("operation:a"));
+                    p.condition_expr = Some("amount > 10".into());
+                }),
+            ),
+            ("parallel", parallel(&[&["a"], &["b"]])),
+            ("one branch", parallel(&[&["a"]])),
+            (
+                "split in",
+                parallel(&[&["a"], &["b"]])
+                    .pn("start2", K::Start)
+                    .chain(&["start2", "split"]),
+            ),
+            (
+                "join out",
+                parallel(&[&["a"], &["b"]])
+                    .pn("end2", K::End)
+                    .chain(&["join", "end2"]),
+            ),
+            (
+                "early merge",
+                parallel(&[&["a", "m"], &["b"]]).chain(&["b", "m"]),
+            ),
+            (
+                "cyclic",
+                parallel(&[&["a"], &["b", "c"]]).chain(&["c", "b"]),
+            ),
+            ("unmatched join", linear().pn("j", K::ParallelJoin)),
+        ];
+        let metadata =
+            || ValidationRegistry::new(load_builtin_software_profile().unwrap()).unwrap();
+        let mut registry = EvaluatorRegistry::new(metadata());
+        rules::register_f2_evaluators(&mut registry).unwrap();
+        for (name, mut fx) in fixtures {
+            // One Process per graph, so each rule result is about this Process alone.
+            fx.nodes.retain(|n| n.id != id("process:q"));
+            let graph = fx.graph();
+            let qualified = fx.analyze().is_qualified();
+            let ctx = ValidationContext::new(
+                &graph,
+                &metadata(),
+                ValidationPolicy::default(),
+                graph.evidence_hash().unwrap(),
+                vec![],
+                vec![],
+            )
+            .unwrap()
+            .with_f2_inputs(
+                &graph,
+                F2ValidationInputs::new(vec![], vec![], vec![], vec![]),
+            )
+            .unwrap();
+            let report = registry.evaluate_gate(GateId::F2, &graph, &ctx).unwrap();
+            let states: Vec<RuleResultState> = RULES
+                .iter()
+                .map(|r| report.rules.iter().find(|x| x.rule_id == *r).unwrap().state)
+                .collect();
+            let all_pass = states
+                .iter()
+                .all(|s| matches!(s, RuleResultState::Pass | RuleResultState::NotApplicable));
+            assert_eq!(qualified, all_pass, "{name}: {states:?}");
+        }
+    }
+
     #[test]
     fn process_analysis_parallel_failures() {
         // Missing join: branches end separately.

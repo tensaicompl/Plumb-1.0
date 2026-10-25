@@ -2026,7 +2026,7 @@ mod evaluator_contract {
         let registry = f1_registry();
         let base = context(&graph, registry.metadata(), ValidationPolicy::default());
         let inputs = f1_inputs(&graph, plumb_lint::LintPolicy::default());
-        let expected = inputs.content_hash().unwrap();
+        let expected = inputs.binding_hash().unwrap();
         assert_eq!(expected.kind(), HashKind::Generic);
         let ctx = base.clone().with_f1_inputs(&graph, inputs).unwrap();
         let report = registry.evaluate_gate(GateId::F1, &graph, &ctx).unwrap();
@@ -2041,7 +2041,7 @@ mod evaluator_contract {
             plumb_lint::LintSeverity::Warn,
         );
         let other = f1_inputs(&graph, policy);
-        let other_hash = other.content_hash().unwrap();
+        let other_hash = other.binding_hash().unwrap();
         assert_ne!(other_hash, expected);
         let other_ctx = base.with_f1_inputs(&graph, other).unwrap();
         let other_report = registry

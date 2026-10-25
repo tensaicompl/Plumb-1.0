@@ -522,4 +522,170 @@ mod directory_contract {
             assert_eq!(added(x).1.payload, added(y).1.payload);
         }
     }
+
+    // ------------------------------------------------------------------ dispositions (H0.7)
+
+    /// The base graph plus one Accepted Event and one Accepted State.
+    fn disposition_graph() -> Graph {
+        let mut nodes: Vec<Node> = graph().nodes().values().cloned().collect();
+        nodes.push(node(
+            "event:submitted",
+            Accepted,
+            NodePayload::Event(plumb_psg::Event {
+                name: "Submitted".into(),
+                payload_schema_ref: None,
+                semantic_type: None,
+            }),
+        ));
+        nodes.push(node(
+            "state:draft",
+            Accepted,
+            NodePayload::State(plumb_psg::State {
+                name: "Draft".into(),
+            }),
+        ));
+        Graph::new(id(PROJECT), id(PROFILE), nodes, vec![]).unwrap()
+    }
+
+    fn disposition_draft(extra: Value) -> DirectoryDraft {
+        let mut v = json!({
+            "stakeholders": [], "actors": [], "business_roles": [], "calendars": [],
+            "rules": [], "decision_tables": [],
+            "event_dispositions": [
+                {"event_ref": "event:submitted", "external_source": true, "terminal_purpose": null}
+            ],
+            "state_dispositions": [
+                {"state_ref": "state:draft", "initial": true, "terminal": false,
+                 "externally_entered": false}
+            ]
+        });
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    /// H0.7 (architecture §33.7): event and state dispositions are produced only as governed
+    /// Semantic / HUMAN_CONFIRM SetNodeExtension proposals, never committed or inferred.
+    #[test]
+    fn dispositions_are_governed_set_node_extension_proposals() {
+        use plumb_validation::disposition::{
+            event_disposition, state_disposition, EventDisposition, StateDisposition,
+            EVENT_DISPOSITION_EXTENSION, STATE_DISPOSITION_EXTENSION,
+        };
+        // The six required families still parse without the disposition families.
+        assert!(draft().event_dispositions.is_empty() && draft().state_dispositions.is_empty());
+        let g = disposition_graph();
+        let result = produce(&g, &disposition_draft(json!({}))).unwrap();
+        assert_eq!(result.outcomes.len(), 2);
+        let mut graph = g.clone();
+        for (outcome, (target, node_type, key, value)) in result.outcomes.iter().zip([
+            (
+                "event:submitted",
+                NodeType::Event,
+                EVENT_DISPOSITION_EXTENSION,
+                json!({"version": 1, "external_source": true, "terminal_purpose": null}),
+            ),
+            (
+                "state:draft",
+                NodeType::State,
+                STATE_DISPOSITION_EXTENSION,
+                json!({"version": 1, "initial": true, "terminal": false, "externally_entered": false}),
+            ),
+        ]) {
+            assert_eq!(outcome.element_ref, id(target));
+            assert_eq!(outcome.node_type, node_type);
+            let DirectoryDisposition::Proposed { proposal } = &outcome.disposition else {
+                panic!("{target} is not proposed");
+            };
+            assert_eq!(proposal.acceptance_policy, AcceptancePolicy::HumanConfirm);
+            assert_eq!(proposal.materiality, ProposalMateriality::Semantic);
+            assert_eq!(proposal.stage, StageId::S2);
+            let SemanticPatch::SetNodeExtension {
+                target: precondition,
+                key: patch_key,
+                value: patch_value,
+            } = &proposal.patch_set.patch
+            else {
+                panic!("not a SetNodeExtension");
+            };
+            assert_eq!(precondition.id, id(target));
+            assert_eq!(patch_key.as_str(), key);
+            assert_eq!(patch_value, &value);
+            // Each proposal is independent on the produced base; accumulate their effects.
+            let applied = apply_patch(&g, &proposal.patch_set).unwrap().graph;
+            let changed = applied.node(&id(target)).unwrap().clone();
+            let nodes = graph
+                .nodes()
+                .values()
+                .map(|n| if n.id == changed.id { changed.clone() } else { n.clone() })
+                .collect();
+            graph = Graph::new(id(PROJECT), id(PROFILE), nodes, vec![]).unwrap();
+        }
+        assert_eq!(
+            event_disposition(graph.node(&id("event:submitted")).unwrap()),
+            Ok(Some(EventDisposition {
+                version: 1,
+                external_source: true,
+                terminal_purpose: None,
+            }))
+        );
+        assert_eq!(
+            state_disposition(graph.node(&id("state:draft")).unwrap()),
+            Ok(Some(StateDisposition {
+                version: 1,
+                initial: true,
+                terminal: false,
+                externally_entered: false,
+            }))
+        );
+        // Re-producing on the governed graph proposes nothing.
+        let again = produce(&graph, &disposition_draft(json!({}))).unwrap();
+        assert!(again
+            .outcomes
+            .iter()
+            .all(|o| o.disposition == DirectoryDisposition::Existing));
+        // A changed disposition is a new proposal on the current node.
+        let changed = disposition_draft(json!({"event_dispositions": [
+            {"event_ref": "event:submitted", "external_source": false, "terminal_purpose": "audit"}
+        ]}));
+        let r = produce(&graph, &changed).unwrap();
+        assert!(matches!(
+            r.outcomes[0].disposition,
+            DirectoryDisposition::Proposed { .. }
+        ));
+    }
+
+    #[test]
+    fn dispositions_are_validated() {
+        let g = disposition_graph();
+        let err = |extra: Value| produce(&g, &disposition_draft(extra)).unwrap_err();
+        // terminal_purpose is a required key (null allowed) and closed.
+        for bad in [
+            json!({"event_ref": "event:submitted", "external_source": true}),
+            json!({"event_ref": "event:submitted", "external_source": true, "terminal_purpose": "log"}),
+        ] {
+            let mut v = serde_json::to_value(disposition_draft(json!({}))).unwrap();
+            v["event_dispositions"] = json!([bad]);
+            assert!(serde_json::from_value::<DirectoryDraft>(v).is_err());
+        }
+        assert!(matches!(
+            err(json!({"event_dispositions": [
+                {"event_ref": "event:ghost", "external_source": true, "terminal_purpose": null}
+            ]})),
+            DirectoryError::InvalidDisposition { .. }
+        ));
+        assert!(matches!(
+            err(json!({"state_dispositions": [
+                {"state_ref": "event:submitted", "initial": true, "terminal": false,
+                 "externally_entered": false}
+            ]})),
+            DirectoryError::InvalidDisposition { .. }
+        ));
+        let twice = json!({"event_ref": "event:submitted", "external_source": true, "terminal_purpose": null});
+        assert_eq!(
+            err(json!({"event_dispositions": [twice.clone(), twice]})),
+            DirectoryError::DuplicateElement(id("event:submitted"))
+        );
+    }
 }

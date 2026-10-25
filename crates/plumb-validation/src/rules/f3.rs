@@ -398,9 +398,8 @@ fn no_blocking_open(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) ->
             },
         };
         let (finding_node, finding) = finding;
-        let blocking = accepted(finding_node)
-            && finding.family == "F2"
-            && finding.severity == FindingSeverity::Blocker;
+        // A Question on an Accepted blocker Finding of any family is blocking (Fable #299).
+        let blocking = accepted(finding_node) && finding.severity == FindingSeverity::Blocker;
         if !blocking {
             continue;
         }
@@ -620,7 +619,9 @@ fn assumption_owner(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) ->
                     NodeType::Agent | NodeType::Stakeholder
                 )
         });
-        if !(owner_ok && assumption.expires_at.is_some() && assumption.risk_ref.is_none()) {
+        // Exactly the profile condition (H0.7): owner and expiry/review date. The profile never
+        // marks an assumption permanent, and risk_ref is not part of the condition.
+        if !(owner_ok && assumption.expires_at.is_some()) {
             violating.insert(node.id.clone());
         }
     }

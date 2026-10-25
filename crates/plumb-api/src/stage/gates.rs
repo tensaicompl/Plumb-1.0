@@ -1052,7 +1052,11 @@ pub(crate) fn evaluate_gate(
         GateId::I0 => (ctx, None),
         GateId::F1 => {
             let inputs = f1_inputs(state, loaded, a03, a04)?;
-            let hash = input_hash(&inputs)?;
+            // Fable #298: the binding includes the effective lint registry, so a changed lint
+            // default changes the persisted report's supplemental-input binding.
+            let hash = inputs
+                .binding_hash()
+                .map_err(|_| ApiError::internal("gate_inputs"))?;
             (
                 ctx.with_f1_inputs(graph, inputs)
                     .map_err(|e| evaluation_failed(gate, e))?,

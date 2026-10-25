@@ -328,11 +328,12 @@ fn lineage(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
     )
 }
 
-/// Typed `RequirementKind` and `RequirementLevel` make unknown values unrepresentable.
+/// Typed `RequirementKind` and `RequirementLevel` make unknown values unrepresentable, so the
+/// rule passes by construction; the result declares that in its evidence (Fable #299).
 fn type_known(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
     output(RuleEvaluation::pass(
         ids(&accepted_requirements(graph)),
-        Vec::new(),
+        vec!["pass_by_construction:closed_requirement_kind_and_level".to_owned()],
     ))
 }
 
@@ -347,7 +348,28 @@ fn no_duplicate(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Out
     )
 }
 
+/// H0.7 adjudication: F1 runs no contradiction detector and no deterministic producer of
+/// NO_CONTRADICTION material exists (architecture §R0.4 matrix), so the rule applies only when
+/// contradiction finding material is present — supplemental findings or Accepted Finding nodes
+/// of this code in any finding status. Without any it is NOT_APPLICABLE with that reason
+/// instead of a vacuous PASS.
 fn no_contradiction(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Outcome {
+    let inputs = inputs(ctx)?;
+    let supplied = inputs
+        .analysis_findings
+        .iter()
+        .any(|f| f.payload.code == NO_CONTRADICTION);
+    let governed = graph
+        .node_ids_by_type(NodeType::Finding)
+        .iter()
+        .filter_map(|id| graph.node(id))
+        .filter(|n| accepted(n))
+        .any(|n| matches!(&n.payload, NodePayload::Finding(f) if f.code == NO_CONTRADICTION));
+    if !supplied && !governed {
+        return output(RuleEvaluation::not_applicable(
+            "No contradiction finding material exists: F1 runs no contradiction detector and no deterministic contradiction producer is configured.".to_owned(),
+        ));
+    }
     finding_rule(
         graph,
         ctx,
@@ -447,6 +469,10 @@ fn controlling_modal(statement: &str) -> Option<ModalReading> {
     })
 }
 
+/// H0.7 adjudication: `applies_when` ("expresses an obligation, prohibition or option") holds
+/// for every Accepted Requirement, because its closed typed modality (shall, shall_not, should,
+/// may) always classifies one. `must` is not in the profile modality list (metamodel §Modality;
+/// rulebook pilot note), so a controlling `must` is an unsupported reading and a violation.
 fn modality_explicit(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
     let requirements = accepted_requirements(graph);
     let violating = requirements
@@ -466,16 +492,23 @@ fn modality_explicit(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> 
     )
 }
 
+/// Applies to Accepted functional, interface and security Requirements in implementation scope
+/// (Fable #299): every such Requirement is in scope unless a governed
+/// `outside_implementation_scope` decision takes it out.
 fn criteria_for_behavior(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
+    let outside = marker_targets(graph, |m| match m {
+        Marker::OutsideImplementationScope { requirement_ref } => Some(requirement_ref),
+        _ => None,
+    })?;
     let applicable: Vec<(&Node, &Requirement)> = accepted_requirements(graph)
         .into_iter()
-        .filter(|(_, r)| {
+        .filter(|(node, r)| {
             matches!(
                 r.requirement_kind,
                 RequirementKind::Functional
                     | RequirementKind::Interface
                     | RequirementKind::Security
-            )
+            ) && !outside.contains(&node.id)
         })
         .collect();
     if applicable.is_empty() {
@@ -519,13 +552,27 @@ fn criteria_for_behavior(graph: &Graph, _: &ValidationContext, _: &RuleMetadata)
     )
 }
 
-fn quality_findings_clear(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Outcome {
+/// Lints every Accepted Requirement with a non-blank statement (Fable #126): a blank statement
+/// is owned by STATEMENT_PRESENT and skipped, and a lint error on one Requirement is a violation
+/// of that Requirement, never an evaluator ERROR for the others.
+fn quality_findings_clear(_: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Outcome {
     let inputs = inputs(ctx)?;
+    let mut checked = Vec::new();
     let mut violating = BTreeSet::new();
     let mut evidence = BTreeSet::new();
     for input in &inputs.requirements {
-        let result = lint_requirement(&input.lint_input, &inputs.lint_policy)
-            .map_err(|e| failure("F1_LINT_EVALUATION", e.to_string()))?;
+        if input.lint_input.statement.chars().all(char::is_whitespace) {
+            continue;
+        }
+        checked.push(input.requirement_ref.clone());
+        let result = match lint_requirement(&input.lint_input, &inputs.lint_policy) {
+            Ok(result) => result,
+            Err(_) => {
+                violating.insert(input.requirement_ref.clone());
+                evidence.insert(format!("lint_unavailable:{}", input.requirement_ref));
+                continue;
+            }
+        };
         for d in result
             .diagnostics
             .iter()
@@ -542,7 +589,7 @@ fn quality_findings_clear(graph: &Graph, ctx: &ValidationContext, _: &RuleMetada
         }
     }
     aggregate(
-        ids(&accepted_requirements(graph)),
+        checked,
         violating,
         evidence,
         "accepted_requirement_quality_errors_open",

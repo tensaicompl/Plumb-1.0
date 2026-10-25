@@ -11,7 +11,7 @@ use std::fmt;
 
 use plumb_artifacts::{Artifact, ArtifactKind};
 use plumb_core::{canonical_hash, CoreError, GateId, Hash, HashKind, Id};
-use plumb_lint::{LintInput, LintPolicy, LintTextRange};
+use plumb_lint::{lint_registry, LintInput, LintPolicy, LintRuleId, LintSeverity, LintTextRange};
 use plumb_psg::{
     AgentKind, ElementStatus, FindingSeverity, Graph, NodePayload, NodeType, Scenario,
     ScenarioKind, ScenarioRun,
@@ -975,7 +975,8 @@ pub struct GateReport {
 
     pub summary: GateSummary,
 
-    /// The hash of the F1 supplemental inputs: present exactly for F1 reports.
+    /// The F1 binding hash (`F1ValidationInputs::binding_hash`: the supplemental inputs and the
+    /// effective lint registry, Fable #298): present exactly for F1 reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub f1_input_hash: Option<Hash>,
 }
@@ -1269,7 +1270,7 @@ impl EvaluatorRegistry {
                     "F1 validation inputs are required".into(),
                 ));
             };
-            Some(inputs.content_hash()?)
+            Some(inputs.binding_hash()?)
         } else {
             None
         };
@@ -1437,6 +1438,14 @@ pub struct F1ValidationInputs {
 // Every field compares structurally without floating point, so equality is reflexive.
 impl Eq for F1ValidationInputs {}
 
+/// One rule of the effective lint registry bound into an F1 GateReport (Fable #298).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct F1LintRuleBinding {
+    pub rule_id: LintRuleId,
+    pub default_severity: LintSeverity,
+    pub effective_severity: LintSeverity,
+}
+
 /// The F1 inputs of one Accepted Requirement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1505,6 +1514,37 @@ impl F1ValidationInputs {
     /// Generic SHA-256 of the RFC 8785 canonical JSON of the complete inputs.
     pub fn content_hash(&self) -> Result<Hash, CoreError> {
         canonical_hash(HashKind::Generic, self)
+    }
+
+    /// The effective lint rule registry these inputs are evaluated under: every built-in lint
+    /// rule in registry order with its default and its effective (possibly overridden) severity.
+    pub fn effective_lint_registry(&self) -> Vec<F1LintRuleBinding> {
+        lint_registry()
+            .iter()
+            .map(|r| F1LintRuleBinding {
+                rule_id: r.id,
+                default_severity: r.default_severity,
+                effective_severity: self.lint_policy.effective_severity(r.id),
+            })
+            .collect()
+    }
+
+    /// The hash an F1 GateReport binds (Fable #298): Generic SHA-256 of the canonical JSON of
+    /// `{"inputs": <inputs>, "lint_registry": <effective lint registry>}`, so a changed lint
+    /// default changes the report's input binding even when the inputs are equal.
+    pub fn binding_hash(&self) -> Result<Hash, CoreError> {
+        #[derive(Serialize)]
+        struct Binding<'a> {
+            inputs: &'a F1ValidationInputs,
+            lint_registry: Vec<F1LintRuleBinding>,
+        }
+        canonical_hash(
+            HashKind::Generic,
+            &Binding {
+                inputs: self,
+                lint_registry: self.effective_lint_registry(),
+            },
+        )
     }
 
     /// Requires exact Accepted Requirement coverage, current statements and evidence, valid
@@ -2221,12 +2261,18 @@ pub(crate) enum Marker {
     DeferredVerification {
         requirement_ref: Id,
     },
+    /// Takes a Requirement out of the F1 implementation scope of CRITERIA_FOR_BEHAVIOR
+    /// (H0.7, Fable #299).
+    OutsideImplementationScope {
+        requirement_ref: Id,
+    },
 }
 
-const MARKER_KINDS: [&str; 3] = [
+const MARKER_KINDS: [&str; 4] = [
     "human_requirement_origin",
     "external_vocabulary_identifier",
     "deferred_verification",
+    "outside_implementation_scope",
 ];
 
 /// A governed S1.6 decision marker.

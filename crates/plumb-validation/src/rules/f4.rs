@@ -465,6 +465,21 @@ fn trace_issue(
     if !explained {
         return Some("trace_no_semantic_evidence");
     }
+    // Fable #165: the execution phase ends with its S4.2 terminal step: execution_completed
+    // for a completed execution, semantic_missing for an undecidable one, and a stopped
+    // (failed) execution is only a Fail run whose comparison records no expectation steps.
+    let terminal = execution.last().map(|e| e.1);
+    let stopped = comparison.len() == 2;
+    let ends = match (terminal, result) {
+        (Some("execution_completed"), _) => true,
+        (Some("semantic_missing"), ScenarioRunResult::Undecidable) => true,
+        (Some("semantic_missing"), _) => false,
+        (_, ScenarioRunResult::Fail) => stopped,
+        _ => false,
+    };
+    if !ends {
+        return Some("trace_execution_incomplete");
+    }
     None
 }
 

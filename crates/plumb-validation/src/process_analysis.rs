@@ -115,6 +115,59 @@ pub struct NodeShapeViolation {
     pub violation: ShapeViolation,
 }
 
+/// The F2 process rule that reports a node-shape violation (architecture §33.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessShapeRule {
+    /// The process start/end rule.
+    StartEnd,
+    /// The parallel gateway rule.
+    GatewayBalanced,
+    /// The task resolution rule.
+    TaskResolves,
+    /// The process reachability rule.
+    Reachable,
+}
+
+impl ProcessShapeRule {
+    /// The one exhaustive attribution by node kind: start and end events to START_END,
+    /// gateways to GATEWAY_BALANCED, tasks to TASK_RESOLVES and every other kind to REACHABLE.
+    pub fn for_node_kind(kind: ProcessNodeKind) -> ProcessShapeRule {
+        match kind {
+            ProcessNodeKind::Start | ProcessNodeKind::End => ProcessShapeRule::StartEnd,
+            ProcessNodeKind::ParallelSplit
+            | ProcessNodeKind::ParallelJoin
+            | ProcessNodeKind::ExclusiveGateway => ProcessShapeRule::GatewayBalanced,
+            ProcessNodeKind::ServiceTask | ProcessNodeKind::HumanTask => {
+                ProcessShapeRule::TaskResolves
+            }
+            ProcessNodeKind::MessageEvent
+            | ProcessNodeKind::TimerEvent
+            | ProcessNodeKind::ErrorEvent
+            | ProcessNodeKind::Subprocess => ProcessShapeRule::Reachable,
+        }
+    }
+}
+
+impl ProcessAnalysis {
+    /// The node-shape violations attributed to `rule`, resolving each violating node's kind in
+    /// `graph` (the graph the analysis was computed on). A node that is no ProcessNode any more
+    /// is attributed to REACHABLE, so no violation is ever dropped.
+    pub fn shape_violations_for<'a>(
+        &'a self,
+        graph: &'a Graph,
+        rule: ProcessShapeRule,
+    ) -> impl Iterator<Item = &'a NodeShapeViolation> + 'a {
+        self.node_shape_violations.iter().filter(move |v| {
+            let owner = match graph.node(&v.node_ref).map(|n| &n.payload) {
+                Some(NodePayload::ProcessNode(p)) => ProcessShapeRule::for_node_kind(p.node_kind),
+                _ => ProcessShapeRule::Reachable,
+            };
+            owner == rule
+        })
+    }
+}
+
 /// A parallel-structure problem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
