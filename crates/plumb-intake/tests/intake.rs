@@ -2342,4 +2342,141 @@ mod intake {
         let p = proposal(&g, add(req("req:long", Proposed, long.trim())));
         run(&g, &p);
     }
+
+    // ------------------------------------------------------------------ E0.4 mutation gaps
+
+    #[test]
+    fn scenario_novelty_reads_nested_string_leaves() {
+        // Leaves nested in arrays and objects count; JSON keys do not.
+        let g = scenario_base();
+        let p = proposal(
+            &g,
+            add(scenario(
+                "scenario:cancel",
+                Proposed,
+                "Cancel booking",
+                json!([{"who": ["active", {"grade": "approved"}]}]),
+                json!({"operation": "approve"}),
+                json!([]),
+            )),
+        );
+        let report = run(&g, &p);
+        // {cancel, booking, active, approved, approve} vs {approve, request, active, approved}:
+        // 3 shared of 6.
+        let cancel = novelty_of(&report, "scenario:cancel");
+        assert_eq!(cancel.nearest_ref, Some(id("scenario:approve")));
+        assert_eq!(cancel.similarity, 3.0 / 6.0);
+    }
+
+    #[test]
+    fn a_lone_base_scenario_has_no_scaffolding() {
+        let g = graph(vec![scenario(
+            "scenario:approve",
+            Accepted,
+            "Approve request",
+            json!([{"employee": "active"}]),
+            json!({"operation": "approve"}),
+            json!([{"status": "approved"}]),
+        )]);
+        let p = proposal(
+            &g,
+            add(scenario(
+                "scenario:other",
+                Proposed,
+                "Approve booking",
+                json!([]),
+                json!({"operation": "book"}),
+                json!([]),
+            )),
+        );
+        let report = run(&g, &p);
+        assert_eq!(
+            candidates_of(&report, "scenario:other"),
+            ["scenario:approve"]
+        );
+    }
+
+    #[test]
+    fn term_resolution_status_wire_strings() {
+        use TermResolutionStatus::*;
+        for (status, wire) in [
+            (New, "new"),
+            (Resolved, "resolved"),
+            (Ambiguous, "ambiguous"),
+            (Unsearchable, "unsearchable"),
+        ] {
+            assert_eq!(status.to_string(), wire);
+            assert_eq!(status.as_str(), wire);
+        }
+    }
+
+    #[test]
+    fn report_validation_rejects_inconsistent_term_resolutions() {
+        let g = graph(vec![
+            term("term:leave", Accepted, "leave", &[]),
+            term("term:absence", Accepted, "absence", &[]),
+        ]);
+        let p = proposal(&g, add(term("term:new", Proposed, "Payroll", &[])));
+        let report = checked(run(&g, &p));
+        assert_eq!(report.term_resolutions.len(), 1);
+        use TermResolutionStatus::*;
+        let one = vec![id("term:leave")];
+        let two = vec![id("term:absence"), id("term:leave")];
+        let key = Some("payroll".to_owned());
+        for (status, key, matches) in [
+            (Unsearchable, key.clone(), vec![]),
+            (Unsearchable, None, one.clone()),
+            (New, None, vec![]),
+            (New, key.clone(), one.clone()),
+            (Resolved, None, one.clone()),
+            (Resolved, key.clone(), two.clone()),
+            (Resolved, key.clone(), vec![]),
+            (Ambiguous, None, two.clone()),
+            (Ambiguous, key.clone(), one.clone()),
+        ] {
+            let mut broken = report.clone();
+            broken.term_resolutions[0].status = status;
+            broken.term_resolutions[0].key = key.clone();
+            broken.term_resolutions[0].matched_term_refs = matches.clone();
+            assert_eq!(
+                broken.validate(),
+                Err(IntakeReportError::TermResolution(id("term:new"))),
+                "{status:?} {key:?} {matches:?}"
+            );
+        }
+        // The consistent shapes validate (an Ambiguous one also needs its reason code).
+        for (status, key, matches) in [
+            (Unsearchable, None, vec![]),
+            (New, key.clone(), vec![]),
+            (Resolved, key, one),
+        ] {
+            let mut fine = report.clone();
+            fine.term_resolutions[0].status = status;
+            fine.term_resolutions[0].key = key;
+            fine.term_resolutions[0].matched_term_refs = matches;
+            assert_eq!(fine.validate(), Ok(()), "{status:?}");
+        }
+    }
+
+    #[test]
+    fn report_validation_requires_unit_interval_novelty() {
+        let g = graph(vec![req("requirement:base", Accepted, "alpha beta")]);
+        let p = proposal(&g, add(req("requirement:new", Proposed, "alpha gamma")));
+        let report = checked(run(&g, &p));
+        // Outside [0, 1] although novelty == 1 - similarity still holds.
+        let mut broken = report.clone();
+        broken.subject_novelty[0].similarity = 1.5;
+        broken.subject_novelty[0].novelty = -0.5;
+        broken.novelty = Some(-0.5);
+        assert!(matches!(
+            broken.validate(),
+            Err(IntakeReportError::SubjectNovelty(_))
+        ));
+        let mut broken = report;
+        broken.subject_novelty[0].similarity = f64::NAN;
+        assert!(matches!(
+            broken.validate(),
+            Err(IntakeReportError::SubjectNovelty(_))
+        ));
+    }
 }

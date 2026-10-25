@@ -1,4 +1,4 @@
-.PHONY: check test ui-check ui-test lint placeholders cov mutants openapi e2e all
+.PHONY: check test ui-check ui-test ui-cov lint placeholders cov mutants bench openapi e2e all
 
 check:
 	cargo check --workspace
@@ -14,6 +14,11 @@ ui-check:
 ui-test:
 	cd ui && npm test
 
+# Vitest line/statement/function/branch coverage >= 80% for src/features and src/components
+# (thresholds in ui/vite.config.ts).
+ui-cov:
+	cd ui && npm run test:coverage
+
 lint:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
@@ -26,8 +31,15 @@ cov:
 	cargo llvm-cov --workspace --summary-only > target/coverage-summary.txt
 	python3 scripts/check-coverage.py target/coverage-summary.txt
 
+# cargo-mutants >= 80% caught for the PlumbExpr evaluator, the interpreter (plumb-sim), intake
+# and the validation NOW rules (scripts/run-mutants.sh documents the scopes).
 mutants:
-	cargo mutants --workspace
+	scripts/run-mutants.sh
+
+# Performance release gate (E0.4 item 12): representative scale and customer-zero within the
+# 120 s / 4 GiB / 4 s limits; a failure makes the matching POST.0 item a pre-release blocker.
+bench:
+	scripts/benchmark-representative-scale.sh
 
 # The committed contract must equal the Rust-generated one, and the UI client must match it.
 openapi:
@@ -38,4 +50,4 @@ openapi:
 e2e:
 	scripts/run-pilot-e2e.sh
 
-all: lint check test ui-test placeholders openapi
+all: lint check test ui-cov placeholders openapi

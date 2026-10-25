@@ -1644,4 +1644,39 @@ mod incremental_contract {
         assert!(INCREMENTAL_SRC.contains("run(model, scenario_ref, runtime)"));
         assert!(INCREMENTAL_SRC.contains("compare_run(model, &execution, runtime)"));
     }
+
+    // ------------------------------------------------------------------ E0.4 mutation gaps
+
+    #[test]
+    fn semantic_references_in_the_given_are_dependencies() {
+        // A Given value resolved from another Calculation's semantic key depends on that
+        // Calculation; one resolved from a Calendar (holiday dates) depends on the Calendar.
+        let mut w = selection_world();
+        add_scenario(
+            &mut w,
+            "scenario:by-example",
+            given(&[(START, sem(CALC_UNRELATED, HALF_DAY))]),
+            ScenarioWhen::Calculation(id(LEAVE_BALANCE)),
+            then(),
+            "Confirmed",
+            &[],
+        );
+        add_scenario(
+            &mut w,
+            "scenario:by-rule",
+            given(&[(DUE, sem(CAL, HOLIDAY_DATE_KEY))]),
+            ScenarioWhen::Rule(id(RULE)),
+            then(),
+            "Confirmed",
+            &[],
+        );
+        assert_eq!(
+            selected(&w, &[CALC_UNRELATED], &[]),
+            names(&["scenario:by-example"])
+        );
+        assert_eq!(
+            selected(&w, &[CAL], &[]),
+            names(&["scenario:by-example", "scenario:by-rule", S_HR, S_HOLIDAY])
+        );
+    }
 }

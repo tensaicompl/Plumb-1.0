@@ -2383,4 +2383,96 @@ mod f1_contract {
             serde_json::to_vec(&report).unwrap()
         );
     }
+
+    // ------------------------------------------------------------------ E0.4 mutation gaps
+
+    #[test]
+    fn f1_modality_reads_statements_ending_in_a_word() {
+        let ev = fragments();
+        let modality = |statement: &str, typed: Modality| {
+            let (_, r) = run(
+                vec![req_with(
+                    A,
+                    requirement(
+                        statement,
+                        RequirementKind::Operational,
+                        RequirementLevel::Stakeholder,
+                        typed,
+                    ),
+                    &[&ev[0]],
+                )],
+                vec![],
+            );
+            state(&r, MODALITY)
+        };
+        // The last token runs to the end of the statement; no trailing punctuation needed.
+        assert_eq!(modality("The system shall log", Modality::Shall), Pass);
+        assert_eq!(modality("The system shall not", Modality::ShallNot), Pass);
+        assert_eq!(modality("The system shall not", Modality::Shall), Fail);
+        assert_eq!(modality("Records_shall", Modality::Shall), Fail);
+        assert_eq!(modality("shall", Modality::Shall), Pass);
+    }
+
+    #[test]
+    fn f1_lineage_counts_only_accepted_edges_of_the_relation_kind() {
+        let ev = fragments();
+        let goal = node(
+            "goal:00000000000000g1",
+            Accepted,
+            NodePayload::Goal(Goal {
+                statement: "Keep records.".into(),
+                success_measures: None,
+                priority: None,
+            }),
+        );
+        let child = req_with(
+            A,
+            requirement(
+                "The system shall retain records.",
+                RequirementKind::Operational,
+                RequirementLevel::Software,
+                Modality::Shall,
+            ),
+            &[&ev[0]],
+        );
+        // A stakeholder requirement (outside the rule) that may point at the child.
+        let other = req_node(B, "The operator shall keep records.", &[&ev[1]]);
+        let lineage_of = |kind: RelationKind, from: &str, to: &str, status: ElementStatus| {
+            let (_, r) = run(
+                vec![child.clone(), goal.clone(), other.clone()],
+                vec![edge("rel:00000000000000l1", kind, from, to, status)],
+            );
+            (state(&r, LINEAGE), targets(&r, LINEAGE))
+        };
+        let g1 = "goal:00000000000000g1";
+        assert_eq!(
+            lineage_of(RelationKind::Addresses, A, g1, Accepted),
+            (Pass, vec![A.to_owned()])
+        );
+        // A Proposed addresses edge is not lineage.
+        assert_eq!(lineage_of(RelationKind::Addresses, A, g1, Proposed).0, Fail);
+        // An incoming decomposes_to edge is lineage; an incoming refines edge is not.
+        assert_eq!(
+            lineage_of(RelationKind::DecomposesTo, B, A, Accepted).0,
+            Pass
+        );
+        assert_eq!(lineage_of(RelationKind::Refines, B, A, Accepted).0, Fail);
+    }
+
+    #[test]
+    fn f1_superseded_excluded_counts_only_accepted_supersedes() {
+        let ev = fragments();
+        let new = req_node(B, "The operator shall archive records.", &[&ev[1]]);
+        let old = req_node(A, "The operator shall retain records.", &[&ev[0]]);
+        let superseded = |kind: RelationKind, status: ElementStatus| {
+            let (_, r) = run(
+                vec![old.clone(), new.clone()],
+                vec![edge("rel:00000000000000s1", kind, B, A, status)],
+            );
+            state(&r, SUPERSEDED)
+        };
+        assert_eq!(superseded(RelationKind::Supersedes, Accepted), Fail);
+        assert_eq!(superseded(RelationKind::Supersedes, Proposed), Pass);
+        assert_eq!(superseded(RelationKind::Refines, Accepted), Pass);
+    }
 }

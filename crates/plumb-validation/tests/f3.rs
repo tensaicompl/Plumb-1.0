@@ -1674,6 +1674,21 @@ mod f3_contract {
         );
     }
 
+    /// E0.4 mutation gap: only an assumption whose own lifecycle status is Accepted blocks.
+    #[test]
+    fn retired_assumptions_are_outside_the_owner_rule() {
+        let g = governed();
+        let inputs = || F3ValidationInputs::new(g.artifacts.clone(), vec![]);
+        let retired = edit_node(&g.graph, g.assumption.as_str(), |n| {
+            if let NodePayload::Assumption(a) = &mut n.payload {
+                a.status = "Retired".into();
+                a.expires_at = None;
+            }
+        });
+        // Without an expiry an Accepted assumption fails; a Retired one is not in scope.
+        assert_eq!(state(&evaluate(&retired, inputs()), ASSUMPTION_OWNER), NA);
+    }
+
     #[test]
     fn assumption_not_expired_rule() {
         let g = governed();
