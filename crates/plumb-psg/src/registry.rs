@@ -768,53 +768,113 @@ fn check_cardinality(
     }
 }
 
+/// Reports every cycle of `kind` (Fable #35): one `Cycle` per strongly connected component that
+/// contains a cycle, so each disjoint cycle is reported exactly once. Components are reported in
+/// order of their smallest node ID; each cycle starts at that node and follows a shortest path
+/// back to it, visiting successors in ascending ID order.
 fn check_acyclic(edges: &[&Edge], kind: &RelationKind, violations: &mut Vec<RelationViolation>) {
     let mut adjacency: BTreeMap<&Id, BTreeSet<&Id>> = BTreeMap::new();
+    let mut reverse: BTreeMap<&Id, BTreeSet<&Id>> = BTreeMap::new();
     for edge in edges.iter().filter(|e| &e.kind == kind) {
         adjacency.entry(&edge.from).or_default().insert(&edge.to);
+        reverse.entry(&edge.to).or_default().insert(&edge.from);
     }
-    #[derive(Clone, Copy, PartialEq)]
-    enum Mark {
-        Visiting,
-        Done,
-    }
-    let mut marks: BTreeMap<&Id, Mark> = BTreeMap::new();
-    let starts: Vec<&Id> = adjacency.keys().copied().collect();
-    for start in starts {
-        if marks.contains_key(start) {
+    let mut components = strongly_connected_components(&adjacency, &reverse);
+    components.sort();
+    for component in components {
+        let Some(&start) = component.first() else {
+            continue;
+        };
+        let self_loop = adjacency.get(start).is_some_and(|next| next.contains(start));
+        if component.len() == 1 && !self_loop {
             continue;
         }
-        // Iterative DFS keeping the current path so a found cycle can be reported.
-        let mut path: Vec<&Id> = vec![start];
-        let mut stack: Vec<Vec<&Id>> = vec![successors(&adjacency, start)];
-        marks.insert(start, Mark::Visiting);
-        while let Some(frontier) = stack.last_mut() {
+        violations.push(RelationViolation::Cycle {
+            kind: kind.clone(),
+            nodes: shortest_cycle(&adjacency, &component, start),
+        });
+    }
+}
+
+/// Kosaraju's algorithm, iteratively; every component is returned with its nodes sorted.
+fn strongly_connected_components<'a>(
+    adjacency: &BTreeMap<&'a Id, BTreeSet<&'a Id>>,
+    reverse: &BTreeMap<&'a Id, BTreeSet<&'a Id>>,
+) -> Vec<Vec<&'a Id>> {
+    let mut nodes: BTreeSet<&Id> = adjacency.keys().copied().collect();
+    nodes.extend(reverse.keys().copied());
+    // Pass 1: nodes in increasing DFS finish time.
+    let mut visited: BTreeSet<&Id> = BTreeSet::new();
+    let mut finished: Vec<&Id> = Vec::new();
+    for &root in &nodes {
+        if !visited.insert(root) {
+            continue;
+        }
+        let mut stack: Vec<(&Id, Vec<&Id>)> = vec![(root, successors(adjacency, root))];
+        while let Some((node, frontier)) = stack.last_mut() {
             match frontier.pop() {
-                Some(next) => match marks.get(next) {
-                    Some(Mark::Visiting) => {
-                        let at = path.iter().position(|n| *n == next).unwrap_or(0);
-                        violations.push(RelationViolation::Cycle {
-                            kind: kind.clone(),
-                            nodes: path[at..].iter().map(|n| (*n).clone()).collect(),
-                        });
-                        return;
+                Some(next) => {
+                    if visited.insert(next) {
+                        stack.push((next, successors(adjacency, next)));
                     }
-                    Some(Mark::Done) => {}
-                    None => {
-                        marks.insert(next, Mark::Visiting);
-                        path.push(next);
-                        stack.push(successors(&adjacency, next));
-                    }
-                },
+                }
                 None => {
+                    finished.push(node);
                     stack.pop();
-                    if let Some(done) = path.pop() {
-                        marks.insert(done, Mark::Done);
-                    }
                 }
             }
         }
     }
+    // Pass 2: components of the reverse graph in decreasing finish time.
+    let mut assigned: BTreeSet<&Id> = BTreeSet::new();
+    let mut components = Vec::new();
+    for &root in finished.iter().rev() {
+        if !assigned.insert(root) {
+            continue;
+        }
+        let mut component = vec![root];
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            for &previous in reverse.get(node).into_iter().flatten() {
+                if assigned.insert(previous) {
+                    component.push(previous);
+                    stack.push(previous);
+                }
+            }
+        }
+        component.sort();
+        components.push(component);
+    }
+    components
+}
+
+/// A shortest cycle through `start` inside `component` (breadth-first, ascending successors).
+fn shortest_cycle(
+    adjacency: &BTreeMap<&Id, BTreeSet<&Id>>,
+    component: &[&Id],
+    start: &Id,
+) -> Vec<Id> {
+    let members: BTreeSet<&Id> = component.iter().copied().collect();
+    let mut parent: BTreeMap<&Id, &Id> = BTreeMap::new();
+    let mut queue = std::collections::VecDeque::from([start]);
+    let mut seen: BTreeSet<&Id> = BTreeSet::from([start]);
+    while let Some(node) = queue.pop_front() {
+        for &next in adjacency.get(node).into_iter().flatten() {
+            if next == start {
+                let mut path = vec![node];
+                while let Some(&previous) = parent.get(path[path.len() - 1]) {
+                    path.push(previous);
+                }
+                path.reverse();
+                return path.into_iter().cloned().collect();
+            }
+            if members.contains(next) && seen.insert(next) {
+                parent.insert(next, node);
+                queue.push_back(next);
+            }
+        }
+    }
+    vec![start.clone()]
 }
 
 /// Successors in reverse order so that popping visits them in ascending ID order.

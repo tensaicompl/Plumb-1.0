@@ -2027,4 +2027,37 @@ mod graph_contract {
             }]
         );
     }
+
+    // ------------------------------------------------------------------ cycles (Fable #35)
+
+    fn cycles(v: &[GraphViolation]) -> Vec<BTreeSet<Id>> {
+        v.iter()
+            .filter_map(|v| match v {
+                GraphViolation::Relation(RelationViolation::Cycle { nodes, .. }) => {
+                    Some(nodes.iter().cloned().collect())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_disjoint_cycle_of_an_acyclic_relation_is_reported_once() {
+        let nodes: Vec<Node> = ["req:a", "req:b", "req:c", "req:d", "req:e"]
+            .iter()
+            .map(|r| requirement(r, "Accepted", "The system shall refine."))
+            .collect();
+        let edges = vec![
+            edge("rel:1", "Accepted", "refines", "req:a", "req:b"),
+            edge("rel:2", "Accepted", "refines", "req:b", "req:a"),
+            edge("rel:3", "Accepted", "refines", "req:c", "req:d"),
+            edge("rel:4", "Accepted", "refines", "req:d", "req:e"),
+            edge("rel:5", "Accepted", "refines", "req:e", "req:c"),
+        ];
+        let expected: Vec<BTreeSet<Id>> = vec![
+            [id("req:a"), id("req:b")].into(),
+            [id("req:c"), id("req:d"), id("req:e")].into(),
+        ];
+        assert_eq!(cycles(&violations(nodes, edges)), expected);
+    }
 }
