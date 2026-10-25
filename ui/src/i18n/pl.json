@@ -237,6 +237,7 @@
   "nav.sentences": "Zdania",
   "pagination.next": "Następna strona",
   "pagination.previous": "Poprzednia strona",
+  "pagination.reset": "Lista zmieniła się na serwerze, więc wczytano ją ponownie od pierwszej strony.",
   "preview.action": "Akcja propozycji",
   "preview.baseHash": "Bazowy skrót semantyczny",
   "preview.baseRevision": "Rewizja bazowa",

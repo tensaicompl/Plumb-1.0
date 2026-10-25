@@ -237,6 +237,7 @@
   "nav.sentences": "Sentences",
   "pagination.next": "Next page",
   "pagination.previous": "Previous page",
+  "pagination.reset": "The list changed on the server, so it was reloaded from its first page.",
   "preview.action": "Proposal action",
   "preview.baseHash": "Baseline semantic hash",
   "preview.baseRevision": "Baseline revision",

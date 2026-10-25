@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { apiClient, readReviewed, revisionEtag, type Reviewed } from "../../api/client";
+import { isCursorBaselineChanged, useCursorPages, useCursorRecovery } from "../../api/useCursorPages";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
@@ -50,9 +51,10 @@ function Failure({ error }: { error: Error | null }) {
  */
 export function GlossaryPage() {
   const queryClient = useQueryClient();
-  const [cursors, setCursors] = useState<(string | null)[]>([null]);
-  const cursor = cursors[cursors.length - 1] ?? null;
+  const pages = useCursorPages();
+  const cursor = pages.cursor;
   const page = useQuery({ queryKey: glossaryQueryKey(cursor), queryFn: () => fetchGlossary(cursor) });
+  useCursorRecovery(pages, page.error);
   const [source, setSource] = useState("");
   const [target, setTarget] = useState("");
   const [reason, setReason] = useState("");
@@ -111,7 +113,12 @@ export function GlossaryPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t("glossary.title")}</h1>
-      {page.isError && <ReadFailure error={page.error} messageKey="glossary.loadFailed" />}
+      {pages.recovered && (
+        <p role="status" className="text-sm" data-testid="cursor-reset">
+          {t("pagination.reset")}
+        </p>
+      )}
+      {page.isError && !isCursorBaselineChanged(page.error) && <ReadFailure error={page.error} messageKey="glossary.loadFailed" />}
       {page.data === undefined && !page.isError && <p>{t("glossary.loading")}</p>}
       {page.data !== undefined && (
         <>
@@ -151,12 +158,7 @@ export function GlossaryPage() {
             </table>
           )}
           <div className="flex gap-2">
-            <button
-              type="button"
-              className="rounded border px-3 py-1"
-              disabled={cursors.length === 1}
-              onClick={() => setCursors((current) => current.slice(0, -1))}
-            >
+            <button type="button" className="rounded border px-3 py-1" disabled={pages.isFirst} onClick={pages.previous}>
               {t("pagination.previous")}
             </button>
             <button
@@ -166,7 +168,7 @@ export function GlossaryPage() {
               onClick={() => {
                 const next = page.data.next_cursor ?? null;
                 if (next !== null) {
-                  setCursors((current) => [...current, next]);
+                  pages.next(next);
                 }
               }}
             >

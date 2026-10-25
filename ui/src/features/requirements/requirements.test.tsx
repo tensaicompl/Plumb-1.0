@@ -179,7 +179,7 @@ interface Call {
 }
 
 /** MSW handlers for the shell and every requirement endpoint, recording each call in order. */
-function handlers(calls: Call[], overrides: { create?: () => Response } = {}) {
+function handlers(calls: Call[], overrides: { create?: () => Response; staleCursor?: boolean } = {}) {
   const record = async (request: Request, method: string) => {
     const url = new URL(request.url);
     const text = method === "GET" ? "" : await request.text();
@@ -203,6 +203,12 @@ function handlers(calls: Call[], overrides: { create?: () => Response } = {}) {
     http.get("*/api/requirements", async ({ request }) => {
       await record(request, "GET");
       const cursor = new URL(request.url).searchParams.get("cursor");
+      if (cursor !== null && overrides.staleCursor === true) {
+        return etagJson(
+          { code: "E_CURSOR_BASELINE_CHANGED", message: "the cursor was issued at another branch-head revision or semantic hash", details: {} },
+          { status: 409 },
+        );
+      }
       return etagJson(cursor === "cursor-page-2" ? PAGE_2 : PAGE_1);
     }),
     http.get("*/api/requirements/:id", async ({ request, params }) => {
@@ -277,6 +283,31 @@ describe("RequirementsPage", () => {
     expect((screen.getByRole("button", { name: "Next page" }) as HTMLButtonElement).disabled).toBe(true);
     await user.click(screen.getByRole("button", { name: "Previous page" }));
     expect(await screen.findByText(PAGE_1.items[1]?.text ?? "")).toBeTruthy();
+  });
+
+  it("resets to the first page once when a page-2 cursor's baseline changed, never retrying the cursor (H0.11)", async () => {
+    const calls: Call[] = [];
+    server.use(...handlers(calls, { staleCursor: true }));
+    const client = await import("../../api/client");
+    const queryClient = client.createQueryClient();
+    const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/requirements"] }));
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+    expect(await screen.findByText(PAGE_1.items[0]?.text ?? "")).toBeTruthy();
+    const list = () => calls.filter((c) => c.path === "/api/requirements");
+    expect(list()).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByTestId("cursor-reset")).toBeTruthy();
+    expect(await screen.findByText(PAGE_1.items[0]?.text ?? "")).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // One failed cursor read, never retried; then exactly one refetch of the first page.
+    expect(list().map((c) => c.search.get("cursor"))).toEqual([null, "cursor-page-2", null]);
+    expect((screen.getByRole("button", { name: "Previous page" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByTestId("read-failure")).toBeNull();
   });
 
   it("shows readiness as advisory and null readiness as not calculated", async () => {

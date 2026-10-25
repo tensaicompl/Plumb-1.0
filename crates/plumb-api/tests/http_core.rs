@@ -2985,6 +2985,53 @@ mod http_core {
         Ok((head[0] & 0x0f, payload))
     }
 
+    /// A masked client frame (RFC 6455) with `opcode` and a payload under 126 bytes.
+    fn client_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mask = [0x11u8, 0x22, 0x33, 0x44];
+        let mut frame = vec![0x80 | opcode, 0x80 | payload.len() as u8];
+        frame.extend_from_slice(&mask);
+        frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        frame
+    }
+
+    /// Fable #237: the /api/events forwarder reads the socket while it waits for events, so a Ping
+    /// is answered and a client Close is detected promptly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn events_socket_answers_ping_and_close_promptly() {
+        use std::io::Write;
+        let app = app();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let server = app.router.clone();
+        tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .write_all(
+                b"GET /api/events HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+                  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            )
+            .unwrap();
+        let response = read_until(&mut stream, b"\r\n\r\n").await;
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 101"));
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(&client_frame(0x9, b"hi")).unwrap();
+        let (opcode, payload) = read_frame(&mut stream).expect("a pong without any event");
+        assert_eq!((opcode, payload.as_slice()), (0xA, &b"hi"[..]));
+        stream
+            .write_all(&client_frame(0x8, &1000u16.to_be_bytes()))
+            .unwrap();
+        // The subscription ends promptly: a close frame or the end of the connection, never a
+        // read timeout.
+        match read_frame(&mut stream) {
+            Ok((opcode, _)) => assert_eq!(opcode, 0x8),
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof, "{e}"),
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn http_core_events_websocket_is_forward_only() {
         use std::io::Write;

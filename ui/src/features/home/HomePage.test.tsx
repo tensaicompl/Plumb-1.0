@@ -58,6 +58,15 @@ class FakeWebSocket extends EventTarget {
     this.closed = true;
   }
 
+  open(): void {
+    this.dispatchEvent(new Event("open"));
+  }
+
+  /** The connection ends from the server or network side (e.g. 4001 events missed). */
+  drop(code: number): void {
+    this.dispatchEvent(new CloseEvent("close", { code }));
+  }
+
   deliver(data: unknown): void {
     this.dispatchEvent(new MessageEvent("message", { data }));
   }
@@ -537,6 +546,53 @@ describe("HomePage design events", () => {
 
     view.unmount();
     expect(socket.closed).toBe(true);
+  });
+});
+
+describe("HomePage event stream lifecycle", () => {
+  it("backs off from 1 s doubling to a 30 s cap with jitter", () => {
+    const { reconnectDelay } = app.events;
+    expect([0, 1, 2, 3, 4, 5, 6, 10].map((n) => reconnectDelay(n, () => 1))).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+    expect(reconnectDelay(0, () => 0)).toBe(500);
+    expect(reconnectDelay(10, () => 0)).toBe(15000);
+  });
+
+  it("reconnects after a close or a lag close, invalidates once per reconnect and stops on unmount", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    server.use(...shellHandlers());
+    const { queryClient, view } = renderApp();
+    await screen.findByTestId("home-revision");
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const [first] = FakeWebSocket.instances;
+    if (first === undefined) {
+      throw new Error("the shell opened no event socket");
+    }
+    act(() => first.open());
+    expect(invalidate).not.toHaveBeenCalled();
+
+    // Network loss: no immediate reconnect, a new socket after the first backoff step.
+    act(() => first.drop(1006));
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 2000 });
+    const second = FakeWebSocket.instances[1] as FakeWebSocket;
+    expect(invalidate).not.toHaveBeenCalled();
+    act(() => second.open());
+    expect(invalidate).toHaveBeenCalledTimes(1);
+
+    // The server's events-missed close: one more reconnect and exactly one more invalidation.
+    act(() => second.drop(4001));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(3), { timeout: 2000 });
+    const third = FakeWebSocket.instances[2] as FakeWebSocket;
+    act(() => third.open());
+    expect(invalidate).toHaveBeenCalledTimes(2);
+
+    // Unmounting closes the socket and never reconnects.
+    view.unmount();
+    expect(third.closed).toBe(true);
+    act(() => third.drop(1006));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    vi.restoreAllMocks();
   });
 });
 

@@ -1,7 +1,7 @@
 //! Meta routes (plan A0.2): identity, model version and the forward-only design-event stream;
 //! A0.3 (Hotfix 065) adds lexical search over the existing index of one loaded revision.
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{RawQuery, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -138,19 +138,57 @@ async fn events_websocket(
     upgrade.on_upgrade(move |socket| forward_events(socket, receiver))
 }
 
+/// The WebSocket close code of a subscriber that lagged behind the event stream: events were
+/// missed, so the client must refetch its state (Fable #237).
+pub const EVENTS_MISSED_CLOSE_CODE: u16 = 4001;
+
+/// The close frame of an ended subscription: a lag is the distinct "events missed" close.
+fn closing_frame(lagged: bool) -> Option<CloseFrame> {
+    lagged.then(|| CloseFrame {
+        code: EVENTS_MISSED_CLOSE_CODE,
+        reason: "events_missed".into(),
+    })
+}
+
+/// Forwards committed events while reading the socket concurrently, so a Ping is answered and a
+/// client Close or disconnect ends the subscription promptly (Fable #237).
 async fn forward_events(mut socket: WebSocket, mut receiver: broadcast::Receiver<DesignEvent>) {
-    loop {
-        let event = match receiver.recv().await {
-            Ok(event) => event,
-            Err(broadcast::error::RecvError::Lagged(_))
-            | Err(broadcast::error::RecvError::Closed) => break,
-        };
-        let Ok(text) = serde_json::to_string(&event) else {
-            break;
-        };
-        if socket.send(Message::Text(text.into())).await.is_err() {
-            return;
+    let lagged = loop {
+        tokio::select! {
+            event = receiver.recv() => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(_)) => break true,
+                    Err(broadcast::error::RecvError::Closed) => break false,
+                };
+                let Ok(text) = serde_json::to_string(&event) else {
+                    break false;
+                };
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    return;
+                }
+            }
+            incoming = socket.recv() => match incoming {
+                // Pings are answered by the protocol layer while reading; other client messages
+                // carry no meaning on this server-to-client stream.
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                Some(Ok(_)) => {}
+            },
         }
+    };
+    let _ = socket.send(Message::Close(closing_frame(lagged))).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fable #237: a lagged subscriber is closed with the distinct events-missed code.
+    #[test]
+    fn a_lagged_subscription_closes_as_events_missed() {
+        let frame = closing_frame(true).unwrap();
+        assert_eq!(frame.code, EVENTS_MISSED_CLOSE_CODE);
+        assert_eq!(frame.reason.as_str(), "events_missed");
+        assert!(closing_frame(false).is_none());
     }
-    let _ = socket.send(Message::Close(None)).await;
 }
