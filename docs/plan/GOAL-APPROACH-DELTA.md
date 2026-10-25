@@ -44,9 +44,9 @@ architecture text, so the plan can be updated when it is picked up again.
 | Directory `outcome_selections` | Optional family (`#[serde(default)]`); each selection becomes a HUMAN_CONFIRM `SetNodeExtension` of `plumb_sim:outcome_selection` on the Accepted Outcome. |
 | Content-dependent conditions (Fable #116, #117) | Reported as `Undecidable` with `MissingSemanticKind::ModelCondition` (keys such as `conflicting_transitions`, `decision_input_routing`, `decision_input_mismatch:<i>`); the trace envelope is unchanged. |
 | Calculation result refs (§33.11) | A Then `result:<key>` resolves to the named Calculation's actual execution result; if it did not run, `ScenarioDiff::MissingExecutionResult` (Fail). |
-| Scenario-run staleness | Coarse: `scenario_run_currency` reports any run from an older model baseline as `StaleDependencies`. The API `run_view` still judges currency by `specification_hash` only. |
+| Scenario-run staleness | Fine-grained: `scenario_run_currency_since` compares the scenario's exact dependency set between the run's own baseline and now; the API `run_view` uses it (a stale run shows as not run, no new `stale` flag). Unavailable baseline, runtime or model = stale. |
 | Fable #118 | SCN-019/025/034 attribute-write expectations are a frozen interpreter verdict (Fail); fixtures unchanged. |
-| Holiday question | Answer schema is exact (`holiday_consumes_working_day` const false + calendar enum); the UI typed-answer control cannot render `const` yet. |
+| Holiday question | Answer schema is exact (`holiday_consumes_working_day` const false + calendar enum); the UI renders a scalar `const` as a fixed read-only value that is always in the answer. |
 
 ## H0.8 inference/serving adjudications (lane E)
 
@@ -68,26 +68,38 @@ architecture text, so the plan can be updated when it is picked up again.
 | Artifact integrity | Every artifact read recomputes its hash (`E_STORE_CORRUPT` on mismatch); gate reports are stored as content-addressed artifacts. |
 | Graph-bound payload references | Graph validation rejects missing, wrong-type and wrong-status payload refs (census in `plumb_psg::payload_refs`). Deviations: `Question.context_refs` is external (Hotfix 047); `ResourceScope.resource_ref` also allows Operation (Hotfix 042). Analyzer branches for such refs are now unreachable. |
 | Canonical JSON | Fail-closed: duplicate member names, integers outside +/-(2^53-1) (including u64 locators) are rejected. |
-| Calendar coverage | Enforced in plumb-expr when a calendar declares it; not yet carried by the PSG Calendar payload or CLI config; plumb-sim maps it to `CalendarUnavailable` (Failed) instead of Undecidable. |
+| Calendar coverage | Optional `coverage` years in the CLI calendar config; carried into the PSG Calendar inside `week_pattern` (`"coverage"` key, no new payload field); a date outside coverage makes the scenario Undecidable (`ModelCondition`, key `calendar_coverage:<year>`). |
 | Proposal confidence | f64 (wire form equals identity bytes). |
 | Architecture text | §33.11 census and S2.5 working_days text were edited; `SUPPORTING-DOCS.sha256` was not updated. |
+
+## H0.3 / H0.11 / ID-free configuration adjudications (lanes P, Q, S)
+
+| Item | Contract on this branch |
+|---|---|
+| Store schema | v5 = H0.11 `abandoned` proposal state; v6 = H0.3 recipe-job `attempt`, `owner_id`, `lease_expires_at` and `stage_recipe_job_attempts`. v1-v5 migrate in place. |
+| Inference reuse on retry | Only for retried attempts (attempt > 1); unconditional reuse by request hash broke the recorded-replay harness. |
+| Recovery | `<db>.jobs.lock` still decides: a sole opener recovers every in-flight job at once; otherwise only expired or ownerless leases are interrupted. Graceful shutdown (30 s grace) is wired to `serve` only; the CLI has `retry <JOB_ID>`. |
+| Previews | Never persisted. A preview returns `built_at`; the client resends the split/merge request with `preview {proposal_id, built_at}`, and the server rebuilds and commits only an identical proposal (`E_PREVIEW_MISMATCH` otherwise). Replaces Hotfix 073 "persists it pending". |
+| Discard | `POST /api/proposals/{id}/discard` moves a pending question- or intake-origin proposal to `abandoned` (session/stage: `E_PROPOSAL_NOT_DISCARDABLE`); abandoned is not rejection memory. |
+| Operations | 76 (was 74): `list_proposals` (not paged: the pending set changes without a revision) and `discard_proposal`; UI Proposals screen after Questions. |
+| Stage configuration | Any ID position in the runtime config accepts `{"$one": QUERY}` / `{"$all": QUERY}` selectors (exact payload-field match on Accepted nodes), resolved at stage time and recorded under `inputs.selections`; explicit IDs still work unchanged. An ambiguous or empty `$one` is 422 `E_STAGE_CONFIG_UNRESOLVED` (in keyed entry lists an unmatched entry is dropped). Architecture "F4 in-scope inputs are explicit; never inferred" is read as: a selector is explicit user configuration. |
 
 ## Plan tasks: status on this branch
 
 | Task | Status |
 |---|---|
 | H0.1 | done on main |
-| H0.2 | see lane G (pending merge) |
-| H0.3 | partial: a second process no longer interrupts a live process's jobs (`<db>.jobs.lock`); `ApiState::retry_recipe_job` re-queues a Failed job under its ID (Failed children through `StageJob::retry`; moved head 409 `E_STAGE_RETRY_BASE_MOVED`, other status 409 `E_STAGE_RETRY_NOT_FAILED`) and a rerun of an `E_JOB_INTERRUPTED` job on the same head retries it. No attempt column/table, owner lease or CLI `retry` command; the steps of the failed attempt are replaced |
+| H0.2 | done (ETag = quoted revision ID, If-Match quoted or bare, UI sends the reviewed ETag) |
+| H0.3 | done (attempt history, owner leases with heartbeat, CLI `retry`, graceful `serve` shutdown, transient Anthropic retries, typed failure detail; deviations above) |
 | H0.4 | done (business failure classes, outcome selection, Fable #116/#117/#119, #118 frozen) |
 | H0.5 | done for extract, vocabulary, domain, lifecycle transitions and calculations; analyser dispositions persisted and shown; verification obligations not covered |
 | H0.6 | done (governed blocker rule, waiver actor at evaluation, findings list/materialize/waive, stale Open findings closed by materialize); I0 findings are materialized through the same path |
 | H0.7 | done (see rule adjudications) |
 | H0.8 | done; eager CLI validation of the anthropic policy is part of H0.9 runtime validation |
 | H0.9 | done (open modes, typed store errors, eager runtime validation, durability profile documented in docs/operations.md) |
-| H0.10 | mostly done: canonical JSON, cycles, text ranges, payload-reference census, supersession, numeric/date/calendar integrity, impact seeds, proposal occurrences, artifact integrity, crash settlement, session integrity, gate-report currency, import text fidelity, lint fidelity, intake novelty, scenario dependency invalidation, prompt/schema alignment. Open: calendar coverage in the PSG/config, fine-grained scenario staleness, duplicate-analysis per-decision disposition |
-| H0.11 | see lane G (pending merge) |
+| H0.10 | done (calendar coverage, fine-grained scenario currency and per-decision supersession dispositions closed the last items) |
+| H0.11 | done (preview/discard, `abandoned`, Proposals screen, E_GATE_REPORT_INCOHERENT; deviations above) |
 | R0.7 | done: `crates/plumb-cli/tests/customer_zero.rs` (a second, non-HR domain driven through the CLI from committed replay, with an oracle and a determinism check); lint diagnostics shown by `stage` |
 | E0.1–E0.3 | done as described above |
 | E0.4 | partial: `make all` runs fmt/clippy/tests/UI/openapi/placeholders; `make cov` enforces the line thresholds (all met, 92% overall); mutation testing and UI coverage not done |
-| E0.5 | `docs/pilot/BUILD-REPORT.md`; the standards-alignment report is not written |
+| E0.5 | done: `docs/pilot/BUILD-REPORT.md`, `docs/pilot/STANDARDS-ALIGNMENT-REPORT.md`; POST.0: `docs/plan/POST-PILOT-SCOPE.md` |
