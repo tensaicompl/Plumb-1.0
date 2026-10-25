@@ -21,5 +21,18 @@ export default defineConfig({
     exclude: ["node_modules/**", "e2e/**"],
     // U0.1 owns no unit-test file; once tests exist, failing tests still fail.
     passWithNoTests: true,
+    // E0.4: `npm run test:coverage` (make ui-cov) enforces >= 80% on the feature screens and
+    // shared components; plain `npm test` does not collect coverage.
+    coverage: {
+      provider: "v8",
+      include: ["src/features/**", "src/components/**"],
+      reporter: ["text-summary", "json-summary"],
+      thresholds: {
+        lines: 80,
+        statements: 80,
+        functions: 80,
+        branches: 80,
+      },
+    },
   },
 });
