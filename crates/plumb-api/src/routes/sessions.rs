@@ -22,8 +22,8 @@ use plumb_session::{
     complete_turn, inspect_turn_output, prepare_turn, Session, SessionIntakeInputs, SessionUserTurn,
 };
 use plumb_store::{
-    LoadedRevision, NewWorkflowProposal, NewWorkflowSession, NewWorkflowTurn, StoreError,
-    WorkflowInsert, WorkflowOrigin, WorkflowSession, WorkflowTurn, WorkflowTurnState,
+    LoadedRevision, NewWorkflowProposal, NewWorkflowSession, NewWorkflowTurn, RevisionId,
+    StoreError, WorkflowInsert, WorkflowOrigin, WorkflowSession, WorkflowTurn, WorkflowTurnState,
 };
 use serde_json::json;
 
@@ -186,9 +186,40 @@ fn transcript_present(loaded: &LoadedRevision, id: &Id) -> bool {
         .is_some_and(|n| n.payload.node_type() == expected)
 }
 
+/// The revision a prepared turn's transcript CAS produced (H0.10, §33.11): the turn base when
+/// it already holds every expected transcript node (no CAS was needed), otherwise the revision
+/// on the branch lineage committed directly from the turn base, which must hold them all. The
+/// turn and its proposals are never bound to the head current at read time.
+fn transcript_revision(
+    state: &ApiState,
+    loaded: &LoadedRevision,
+    turn: &WorkflowTurn,
+) -> Result<RevisionId, ApiError> {
+    let corrupt =
+        || ApiError::workflow_corrupt(&format!("turn {}#{}", turn.session_id, turn.turn_index));
+    let holds = |revision: &LoadedRevision| {
+        turn.expected_node_refs
+            .iter()
+            .all(|id| transcript_present(revision, id))
+    };
+    let base = state.load_revision(&turn.base_revision_id)?;
+    if holds(&base) {
+        return Ok(base.revision.id);
+    }
+    let child = state
+        .child_on_branch(&loaded.revision, &turn.base_revision_id)?
+        .ok_or_else(corrupt)?;
+    let committed = state.load_revision(&child.id)?;
+    if !holds(&committed) {
+        return Err(corrupt());
+    }
+    Ok(committed.revision.id)
+}
+
 /// Reconciles every prepared turn of `session` not in flight in this instance: all expected
-/// transcript nodes present promote it (proposals bound to the current revision), none present
-/// fail it, and a partial set is corrupt workflow state. Returns the turns afterwards.
+/// transcript nodes present promote it (proposals bound to the revision the turn's transcript
+/// CAS produced), none present fail it, and a partial set is corrupt workflow state. Returns
+/// the turns afterwards.
 fn reconciled_turns(
     state: &ApiState,
     loaded: &LoadedRevision,
@@ -214,9 +245,8 @@ fn reconciled_turns(
             .count();
         let index = turn.turn_index;
         let updated = if present == turn.expected_node_refs.len() {
-            state.with_workflow_store(|store| {
-                store.commit_turn(session, index, &loaded.revision.id)
-            })?
+            let bound = transcript_revision(state, loaded, &turn)?;
+            state.with_workflow_store(|store| store.commit_turn(session, index, &bound))?
         } else if present == 0 {
             state.with_workflow_store(|store| store.fail_turn(session, index, "INTERRUPTED"))?
         } else {

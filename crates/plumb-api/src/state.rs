@@ -599,6 +599,39 @@ impl ApiState {
         })?
     }
 
+    /// Walks the branch lineage from `head` towards the root and returns the most recent
+    /// revision satisfying `found` (H0.10 crash reconciliation). The walk stops after `stop`
+    /// (inclusive) when given, so it never looks behind the revision work was based on.
+    pub(crate) fn find_on_branch(
+        &self,
+        head: &GraphRevision,
+        stop: Option<&RevisionId>,
+        mut found: impl FnMut(&GraphRevision) -> bool,
+    ) -> Result<Option<GraphRevision>, ApiError> {
+        let mut cursor = head.clone();
+        loop {
+            if found(&cursor) {
+                return Ok(Some(cursor));
+            }
+            if stop.is_some_and(|stop| &cursor.id == stop || cursor.version <= stop.version()) {
+                return Ok(None);
+            }
+            match cursor.parent.clone() {
+                Some(parent) => cursor = self.load_revision(&parent)?.revision,
+                None => return Ok(None),
+            }
+        }
+    }
+
+    /// The revision on the branch lineage of `head` committed directly from `parent`, if any.
+    pub(crate) fn child_on_branch(
+        &self,
+        head: &GraphRevision,
+        parent: &RevisionId,
+    ) -> Result<Option<GraphRevision>, ApiError> {
+        self.find_on_branch(head, Some(parent), |r| r.parent.as_ref() == Some(parent))
+    }
+
     /// Loads an immutable revision by ID; an unknown ID is 404.
     pub(crate) fn load_revision(&self, id: &RevisionId) -> Result<LoadedRevision, ApiError> {
         self.with_revision_store(|store| match store.load_revision(id) {

@@ -20,8 +20,8 @@ use plumb_patch::{
     apply_patch, AcceptancePolicy, PatchSet, Proposal, ProposalMateriality, SemanticPatch,
 };
 use plumb_psg::{
-    evidence_fragment_id, source_artifact_id, AuditMeta, ElementStatus, EvidenceFragment,
-    EvidenceLocator, Graph, Node, NodePayload, SourceArtifact,
+    contributes_to_semantic_hash, evidence_fragment_id, source_artifact_id, AuditMeta,
+    ElementStatus, EvidenceFragment, EvidenceLocator, Graph, Node, NodePayload, SourceArtifact,
 };
 use serde_json::{json, Value};
 
@@ -227,21 +227,27 @@ fn materialize_transcript<S: ArtifactStore>(
     text: &str,
     stage: StageId,
 ) -> Result<Transcript, SessionError> {
+    let (transcript, bytes) =
+        derive_transcript(graph, session_ref, role, actor_ref, timestamp, text, stage)?;
+    persist_transcript(store, &bytes, timestamp)?;
+    Ok(transcript)
+}
+
+/// Derives the transcript of one turn from its canonical bytes and content hash without any
+/// store write (Fable #94): the turn, the proposal adding its nodes and that proposal's intake.
+#[allow(clippy::too_many_arguments)]
+fn derive_transcript(
+    graph: &Graph,
+    session_ref: &Id,
+    role: SessionRole,
+    actor_ref: &Id,
+    timestamp: Timestamp,
+    text: &str,
+    stage: StageId,
+) -> Result<(Transcript, Vec<u8>), SessionError> {
     let bytes = transcript_bytes(session_ref, role, actor_ref, timestamp, text)?;
-    let stored = store.put(
-        ArtifactKind::SourceOriginal,
-        TRANSCRIPT_MEDIA_TYPE,
-        &bytes,
-        timestamp,
-    )?;
     let computed = Hash::content_sha256(&bytes);
-    if stored != computed {
-        return Err(SessionError::TranscriptHashMismatch {
-            returned: stored,
-            computed,
-        });
-    }
-    let turn = transcript_turn(stored, role, actor_ref, timestamp, text)?;
+    let turn = transcript_turn(computed, role, actor_ref, timestamp, text)?;
     let proposal = transcript_proposal(graph, &turn, stage)?;
     let intake = match &proposal {
         None => None,
@@ -255,11 +261,36 @@ fn materialize_transcript<S: ArtifactStore>(
             Some(report)
         }
     };
-    Ok(Transcript {
-        turn,
-        proposal,
-        intake,
-    })
+    Ok((
+        Transcript {
+            turn,
+            proposal,
+            intake,
+        },
+        bytes,
+    ))
+}
+
+/// Stores the canonical transcript bytes; the store must return their content hash.
+fn persist_transcript<S: ArtifactStore>(
+    store: &mut S,
+    bytes: &[u8],
+    timestamp: Timestamp,
+) -> Result<(), SessionError> {
+    let stored = store.put(
+        ArtifactKind::SourceOriginal,
+        TRANSCRIPT_MEDIA_TYPE,
+        bytes,
+        timestamp,
+    )?;
+    let computed = Hash::content_sha256(bytes);
+    if stored != computed {
+        return Err(SessionError::TranscriptHashMismatch {
+            returned: stored,
+            computed,
+        });
+    }
+    Ok(())
 }
 
 /// `graph` with the transcript proposal applied in memory; the semantic hash must not change.
@@ -458,8 +489,7 @@ pub fn prepare_turn<S: ArtifactStore>(
     check_scope(graph, session)?;
 
     let timestamp = clock.now();
-    let transcript = materialize_transcript(
-        store,
+    let (transcript, transcript_bytes) = derive_transcript(
         graph,
         &session.id,
         SessionRole::User,
@@ -502,6 +532,8 @@ pub fn prepare_turn<S: ArtifactStore>(
         material,
     };
     plan.validate(graph)?;
+    // Fable #94: the first store write follows every validation.
+    persist_transcript(store, &transcript_bytes, timestamp)?;
     Ok(plan)
 }
 
@@ -772,6 +804,64 @@ fn check_output(
     Ok(())
 }
 
+/// H0.10 (§33.11): the materiality and acceptance policy of a model proposal recomputed from
+/// its actual semantic delta over `turn_graph`. A proposal that changes the semantic hash is
+/// never NonSemantic / AutoNonSemantic: it becomes Semantic / HumanConfirm and is re-identified.
+/// Every other label is kept; a patch that does not apply is left to intake.
+///
+/// The delta is semantic when it touches a node of a semantic-hash contributing type, or an
+/// edge between two such nodes, in either the base or the result graph: once accepted, that
+/// change is part of the semantic projection whatever status it is proposed with.
+fn relabel_from_delta(turn_graph: &Graph, proposal: Proposal) -> Result<Proposal, SessionError> {
+    let Ok(applied) = apply_patch(turn_graph, &proposal.patch_set) else {
+        return Ok(proposal);
+    };
+    let graphs = [turn_graph, &applied.graph];
+    let semantic_node = |id: &Id| {
+        graphs.iter().any(|g| {
+            g.node(id)
+                .is_some_and(|n| contributes_to_semantic_hash(n.payload.node_type()))
+        })
+    };
+    let semantic_edge = |id: &Id| {
+        graphs.iter().any(|g| {
+            g.edge(id)
+                .is_some_and(|e| semantic_node(&e.from) && semantic_node(&e.to))
+        })
+    };
+    let delta = &applied.delta;
+    if !delta.touched_nodes.iter().any(semantic_node)
+        && !delta.touched_edges.iter().any(semantic_edge)
+    {
+        return Ok(proposal);
+    }
+    let materiality = match proposal.materiality {
+        ProposalMateriality::NonSemantic => ProposalMateriality::Semantic,
+        other => other,
+    };
+    let acceptance_policy = match proposal.acceptance_policy {
+        AcceptancePolicy::AutoNonSemantic => AcceptancePolicy::HumanConfirm,
+        other => other,
+    };
+    if materiality == proposal.materiality && acceptance_policy == proposal.acceptance_policy {
+        return Ok(proposal);
+    }
+    let id = proposal.id.clone();
+    Proposal::new(
+        proposal.stage,
+        proposal.patch_set,
+        proposal.evidence_refs,
+        proposal.derivation_refs,
+        materiality,
+        acceptance_policy,
+        proposal.confidence,
+    )
+    .map_err(|error| SessionError::InvalidProposal {
+        proposal: id,
+        error,
+    })
+}
+
 /// Verifies the externally persisted acquisition of `plan` and validates its typed output.
 /// Mutates nothing and runs no intake.
 pub fn inspect_turn_output<S: ArtifactStore>(
@@ -797,11 +887,24 @@ pub fn inspect_turn_output<S: ArtifactStore>(
         &output.proposals,
         output.asked_question_ref.as_ref(),
     )?;
+    let proposals = output
+        .proposals
+        .into_iter()
+        .map(|proposal| relabel_from_delta(&turn_graph, proposal))
+        .collect::<Result<Vec<_>, _>>()?;
+    check_output(
+        graph,
+        &turn_graph,
+        plan,
+        &output.reply,
+        &proposals,
+        output.asked_question_ref.as_ref(),
+    )?;
     Ok(InspectedSessionOutput {
         request_ref: plan.request.id.clone(),
         persisted_inference: persisted.clone(),
         reply: output.reply,
-        proposals: output.proposals,
+        proposals,
         asked_question_ref: output.asked_question_ref,
     })
 }
