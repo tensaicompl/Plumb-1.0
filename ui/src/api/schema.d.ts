@@ -820,6 +820,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/proposals/{id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["refresh_proposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/proposals/{id}/reject": {
         parameters: {
             query?: never;
@@ -2296,6 +2312,22 @@ export interface components {
         };
         ReasonRequest: {
             reason: string;
+        };
+        /**
+         * @description The result of `refresh_proposal` (S2): the stale answer proposal `refreshed` was re-submitted
+         *     from its recorded decision as the new pending proposal `proposal_id` (of class `action`) and
+         *     then rejected. Nothing is committed: the write fields name the unchanged head.
+         */
+        RefreshProposalResponse: {
+            action: components["schemas"]["ProposalKind"];
+            events: components["schemas"]["DesignEvent"][];
+            /** @description The new pending answer proposal on the head. */
+            proposal_id: string;
+            /** @description The stale proposal that was re-submitted and rejected. */
+            refreshed: string;
+            revision: string;
+            semantic_hash: string;
+            version: string;
         };
         /**
          * @description The closed requirement class vocabulary (`Requirement.requirement_kind`, §7.5).
@@ -6183,6 +6215,75 @@ export interface operations {
                      *     }
                      */
                     "application/json": components["schemas"]["WriteResult"];
+                };
+            };
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": "example",
+                     *       "details": {},
+                     *       "message": "example",
+                     *       "revision": "example",
+                     *       "semantic_hash": "example"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["PreconditionFailedResponse"];
+                };
+            };
+        };
+    };
+    refresh_proposal: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
+                 * @example example
+                 */
+                "If-Match": string;
+            };
+            path: {
+                /**
+                 * @description Proposal ID
+                 * @example example
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stale answer proposal is re-submitted from its recorded decision as a new pending proposal and rejected; nothing is committed (409 E_PROPOSAL_NOT_REFRESHABLE unless it is a stale answer, 409 E_PROPOSAL_REFRESH_FAILED when the answer no longer applies) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "action": "accept",
+                     *       "events": [
+                     *         {
+                     *           "ids": [
+                     *             "example"
+                     *           ],
+                     *           "kind": "example",
+                     *           "version": "example"
+                     *         }
+                     *       ],
+                     *       "proposal_id": "example",
+                     *       "refreshed": "example",
+                     *       "revision": "example",
+                     *       "semantic_hash": "example",
+                     *       "version": "example"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["RefreshProposalResponse"];
                 };
             };
             /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */

@@ -3498,6 +3498,144 @@ mod http_workflow {
         assert_eq!(version(&app).await, before);
     }
 
+    // ------------------------------------------------------------------ S2 Inbox refresh
+
+    /// S2 (UI Inbox "Refresh proposal"): a stale answer proposal is re-submitted from its
+    /// recorded decision on the current head (the CLI `proposals --refresh` for one proposal);
+    /// the stale occurrence is rejected and the fresh one is pending and not stale. Anything
+    /// else is refused before any write.
+    #[tokio::test]
+    async fn refresh_resubmits_one_stale_answer_on_the_head() {
+        let app = app();
+        let question = question_about(&head(&app).graph, "op:approve");
+        let r = answer(&app, &question, json!({"performer_ref": "actor:clerk"})).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let stale_id = r.json()["proposal_id"].as_str().unwrap().to_owned();
+        let uri = format!("/api/proposals/{stale_id}/refresh");
+        // A fresh answer proposal is not refreshable.
+        let r = write(&app, &uri, None).await;
+        assert_error(&r, StatusCode::CONFLICT, "E_PROPOSAL_NOT_REFRESHABLE");
+        assert_eq!(r.json()["details"]["stale"], json!(false));
+        // Another write moves the head: the answer proposal is now stale.
+        let other = requirement_proposal(&app, "req:refresh").await;
+        let r = intake(&app, "create", &other).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let r = write(
+            &app,
+            &format!("/api/proposals/{}/create", other.id),
+            Some(json!({"reason": "Reviewed."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let row =
+            |items: &[Value], id: &str| items.iter().find(|p| p["proposal_id"] == id).cloned();
+        let stale_row = row(&listed(&app).await, &stale_id).unwrap();
+        assert_eq!(stale_row["stale"], json!(true));
+        let stale_base = stale_row["base_revision"].as_str().unwrap().to_owned();
+        // Transport checks come first: If-Match is required and must name the head.
+        assert_error(
+            &post(&app, &uri, None, None).await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        assert_error(
+            &post(&app, &uri, Some("\"rev:stale\""), None).await,
+            StatusCode::PRECONDITION_FAILED,
+            "E_PRECONDITION_FAILED",
+        );
+        assert_error(
+            &write(&app, "/api/proposals/prop:0000000000000000/refresh", None).await,
+            StatusCode::NOT_FOUND,
+            "E_NOT_FOUND",
+        );
+        let before = version(&app).await;
+        let r = write(&app, &uri, None).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let body = r.json();
+        // Nothing is committed: the re-submitted answer is a new pending occurrence on the
+        // head (content-addressed, so it may keep the proposal ID).
+        assert_eq!(body["revision"], before["revision"]);
+        assert_eq!(body["events"], json!([]));
+        assert_eq!(body["refreshed"], json!(stale_id));
+        assert_eq!(body["action"], "create");
+        let fresh_id = body["proposal_id"].as_str().unwrap().to_owned();
+        let items = listed(&app).await;
+        assert_eq!(
+            items
+                .iter()
+                .filter(|p| p["origin_ref"] == json!(question.to_string()))
+                .count(),
+            1
+        );
+        let fresh = row(&items, &fresh_id).unwrap();
+        assert_eq!(fresh["stale"], json!(false));
+        assert_eq!(fresh["origin"], "question");
+        assert_eq!(fresh["base_revision"], before["revision"]);
+        assert_ne!(fresh["base_revision"], json!(stale_base));
+        let old = workflow(&app)
+            .proposal(&id(&stale_id), &stale_base.parse().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(old.state, WorkflowProposalState::Rejected);
+        // The fresh occurrence is not stale, so it is not refreshable.
+        assert_error(
+            &write(&app, &format!("/api/proposals/{fresh_id}/refresh"), None).await,
+            StatusCode::CONFLICT,
+            "E_PROPOSAL_NOT_REFRESHABLE",
+        );
+        // Once every occurrence is resolved, it is not pending.
+        let r = write(
+            &app,
+            &format!("/api/proposals/{fresh_id}/reject"),
+            Some(json!({"reason": "Not now."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_error(
+            &write(&app, &format!("/api/proposals/{fresh_id}/refresh"), None).await,
+            StatusCode::CONFLICT,
+            "E_PROPOSAL_NOT_PENDING",
+        );
+    }
+
+    /// S2: only stale answer proposals are refreshable; a stale intake proposal keeps its own
+    /// governance (reject or discard).
+    #[tokio::test]
+    async fn refresh_is_refused_outside_stale_answers() {
+        let app = app();
+        let proposal = requirement_proposal(&app, "req:intake").await;
+        let r = intake(&app, "create", &proposal).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let mut other = requirement_proposal(&app, "req:other").await;
+        other = pending_on_head(&app, "create", other).await;
+        let r = write(
+            &app,
+            &format!("/api/proposals/{}/create", other.id),
+            Some(json!({"reason": "Reviewed."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let before = version(&app).await;
+        let r = write(
+            &app,
+            &format!("/api/proposals/{}/refresh", proposal.id),
+            None,
+        )
+        .await;
+        assert_error(&r, StatusCode::CONFLICT, "E_PROPOSAL_NOT_REFRESHABLE");
+        assert_eq!(r.json()["details"]["origin"], "intake");
+        assert_eq!(r.json()["details"]["stale"], json!(true));
+        assert_eq!(version(&app).await, before);
+        assert_eq!(
+            workflow(&app)
+                .latest_proposal(&proposal.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            WorkflowProposalState::Pending
+        );
+    }
+
     // ------------------------------------------------------------------ Hotfix 083
 
     const STAGE_ACTOR: &str = "agent:stage";

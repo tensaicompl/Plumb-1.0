@@ -1,7 +1,7 @@
 //! The pilot HTTP API contract (plan A0.1, Hotfix 062): compatibility DTOs, contract-only
-//! utoipa operation stubs for the 84 NOW operations (the 72 of Hotfix 062, the two U2.1
+//! utoipa operation stubs for the 85 NOW operations (the 72 of Hotfix 062, the two U2.1
 //! semantic change previews of Hotfix 073, the two H0.11 proposal-governance operations, the
-//! three B1 Inbox operations and the five B2 UI pipeline operations),
+//! three B1 Inbox operations, the five B2 UI pipeline operations and the S2 Inbox refresh),
 //! deterministic compatibility patches,
 //! HR-fixture-seeded and schema-fallback examples, and the rendered OpenAPI document and API
 //! reference.
@@ -84,13 +84,13 @@ const fn op(
     }
 }
 
-/// The 84 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
+/// The 85 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
 /// accept (01-72, Hotfix 062), the two U2.1 semantic change previews (73-74, Hotfix 073),
 /// proposal discovery and discard (75-76, H0.11, architecture §33.12), the B1 Inbox proposal
 /// detail, set acceptance and governed confirmation (77-79), then the B2 UI pipeline operations
 /// (80-84: pipeline state, job retry, question generation, finding materialization and the
-/// source list).
-pub const OPERATIONS: [OperationSpec; 84] = [
+/// source list), then the S2 Inbox refresh of a stale answer (85).
+pub const OPERATIONS: [OperationSpec; 85] = [
     op(1, "GET", "/api/me", "get_me", "meta", false, "A0.2"),
     op(
         2,
@@ -832,6 +832,16 @@ pub const OPERATIONS: [OperationSpec; 84] = [
         "sources",
         false,
         "B2",
+    ),
+    // S2 (UI Inbox): the "Refresh proposal" of a stale answer.
+    op(
+        85,
+        "POST",
+        "/api/proposals/{id}/refresh",
+        "refresh_proposal",
+        "proposals",
+        false,
+        "S2",
     ),
 ];
 
@@ -2310,6 +2320,23 @@ pub struct AcceptProposalSetResponse {
     pub confirmed: Vec<String>,
 }
 
+/// The result of `refresh_proposal` (S2): the stale answer proposal `refreshed` was re-submitted
+/// from its recorded decision as the new pending proposal `proposal_id` (of class `action`) and
+/// then rejected. Nothing is committed: the write fields name the unchanged head.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshProposalResponse {
+    pub version: String,
+    pub revision: String,
+    pub semantic_hash: String,
+    pub events: Vec<DesignEvent>,
+    /// The stale proposal that was re-submitted and rejected.
+    pub refreshed: String,
+    /// The new pending answer proposal on the head.
+    pub proposal_id: String,
+    pub action: ProposalKind,
+}
+
 /// The governed confirmation of explicitly listed Proposed elements (B1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -3072,9 +3099,16 @@ mod stubs {
     #[utoipa::path(get, path = "/api/sources", operation_id = "list_sources", tag = "sources",
         responses((status = 200, description = "Every imported source", body = SourceList)))]
     pub fn list_sources() {}
+
+    // S2 (UI Inbox).
+
+    #[utoipa::path(post, path = "/api/proposals/{id}/refresh", operation_id = "refresh_proposal", tag = "proposals",
+        params(("id" = String, Path, description = "Proposal ID")),
+        responses((status = 200, description = "The stale answer proposal is re-submitted from its recorded decision as a new pending proposal and rejected; nothing is committed (409 E_PROPOSAL_NOT_REFRESHABLE unless it is a stale answer, 409 E_PROPOSAL_REFRESH_FAILED when the answer no longer applies)", body = RefreshProposalResponse)))]
+    pub fn refresh_proposal() {}
 }
 
-/// The utoipa base contract of the 84 operations.
+/// The utoipa base contract of the 85 operations.
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Plumb Modeller API"),
@@ -3104,7 +3138,7 @@ mod stubs {
         stubs::preview_glossary_merge, stubs::list_proposals, stubs::discard_proposal,
         stubs::get_proposal, stubs::accept_proposal_set, stubs::confirm_elements,
         stubs::get_pipeline, stubs::retry_job, stubs::generate_questions,
-        stubs::materialize_findings, stubs::list_sources,
+        stubs::materialize_findings, stubs::list_sources, stubs::refresh_proposal,
     ),
     components(schemas(
         DesignEvent, PreconditionFailedResponse, CursorConflictResponse, CursorErrorCode, StageName,
@@ -3629,7 +3663,7 @@ fn check_inventory(doc: &Value) -> Result<(), OpenApiContractError> {
     expected.sort();
     if found != expected {
         return Err(invariant(
-            "operations differ from the frozen 84-operation inventory",
+            "operations differ from the frozen 85-operation inventory",
         ));
     }
     Ok(())
@@ -3874,7 +3908,7 @@ pub fn openapi_document() -> Result<Value, OpenApiContractError> {
     let mut api = ApiDoc::openapi();
     api.info.version = env!("CARGO_PKG_VERSION").to_owned();
     api.info.description = Some(
-        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79) and B2 (the UI pipeline operations 80-84)."
+        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79), B2 (the UI pipeline operations 80-84) and S2 (the Inbox refresh of a stale answer, operation 85)."
             .to_owned(),
     );
     api.info.license = None;
@@ -3915,7 +3949,7 @@ The machine-readable contract is `api/modeller.openapi.json`, the source of the 
         OPERATIONS.len()
     ));
     out.push_str(
-        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 B1 those of operations 77-79 and B2 those of operations 80-84. \
+        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 B1 those of operations 77-79, B2 those of operations 80-84 and S2 that of operation 85. \
 An operation listed here is not operational until its handler task is done.\n\n",
     );
     out.push_str("## Conventions\n\n");
@@ -3953,7 +3987,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
             .count()
     };
     out.push_str("\n## Implementation ownership\n\n");
-    for owner in ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2"] {
+    for owner in ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2", "S2"] {
         out.push_str(&format!(
             "- {owner}: {} operations ({} POST, {} GET).\n",
             owned(owner, ""),
@@ -3969,6 +4003,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
         "H0.11 appends operations 75 and 76: `GET /api/proposals` lists every pending workflow proposal (not paged), and `POST /api/proposals/{id}/discard` moves a pending answer or intake proposal to the terminal state `abandoned` without a revision. Accepted, rejected and abandoned proposals are kept as history.",
         "B1 (UI Inbox, UI-SPEC §5.2) appends operations 77 to 79: `GET /api/proposals/{id}` is one pending proposal with its facts, evidence passages (UTF-8 byte highlight offsets) and model change; `POST /api/proposals/accept-set` accepts pending proposals atomically in one revision through the R0.3 set acceptance and, unless `confirm` is false, then confirms the Proposed elements they created; `POST /api/model/confirm` is the governed confirmation of the CLI `confirm`. List items gain `title`, `element_kind`, `created_at` and `stage`.",
         "B2 appends operations 80 to 84 for the UI (UI-SPEC §9): `GET /api/pipeline` derives every stage recipe's state from its latest recipe job and the pending proposals; `POST /api/jobs/{id}/retry` re-queues a failed recipe job through the H0.3 retry service; `POST /api/questions/generate` is the CLI `ask` (optionally with a stakeholder round); `POST /api/findings/materialize` is the CLI `findings materialize`; `GET /api/sources` lists every imported source. `directory` becomes a `run_stage` recipe, `get_me` gains `inference_model` and `get_model_version` gains `created_at` and `created_by`.",
+        "S2 (UI Inbox, UI-SPEC §5.2) appends operation 85: `POST /api/proposals/{id}/refresh` re-submits one stale answer proposal from its recorded decision on the head (the CLI `proposals --refresh` for one proposal) and rejects the stale occurrence; nothing is committed.",
     ] {
         out.push_str(&format!("- {line}\n"));
     }
