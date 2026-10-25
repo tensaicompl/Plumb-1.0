@@ -1,7 +1,7 @@
 //! The pilot HTTP API contract (plan A0.1, Hotfix 062): compatibility DTOs, contract-only
-//! utoipa operation stubs for the 84 NOW operations (the 72 of Hotfix 062, the two U2.1
+//! utoipa operation stubs for the 85 NOW operations (the 72 of Hotfix 062, the two U2.1
 //! semantic change previews of Hotfix 073, the two H0.11 proposal-governance operations, the
-//! three B1 Inbox operations and the five B2 UI pipeline operations),
+//! three B1 Inbox operations, the five B2 UI pipeline operations and the S4 element labels),
 //! deterministic compatibility patches,
 //! HR-fixture-seeded and schema-fallback examples, and the rendered OpenAPI document and API
 //! reference.
@@ -84,13 +84,13 @@ const fn op(
     }
 }
 
-/// The 84 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
+/// The 85 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
 /// accept (01-72, Hotfix 062), the two U2.1 semantic change previews (73-74, Hotfix 073),
 /// proposal discovery and discard (75-76, H0.11, architecture §33.12), the B1 Inbox proposal
 /// detail, set acceptance and governed confirmation (77-79), then the B2 UI pipeline operations
 /// (80-84: pipeline state, job retry, question generation, finding materialization and the
-/// source list).
-pub const OPERATIONS: [OperationSpec; 84] = [
+/// source list), then the S4 element labels of the Model and Scenarios screens (85).
+pub const OPERATIONS: [OperationSpec; 85] = [
     op(1, "GET", "/api/me", "get_me", "meta", false, "A0.2"),
     op(
         2,
@@ -833,6 +833,16 @@ pub const OPERATIONS: [OperationSpec; 84] = [
         false,
         "B2",
     ),
+    // S4 (UI Model and Scenarios, UI-SPEC §5.4 and §5.5): the names of referenced elements.
+    op(
+        85,
+        "GET",
+        "/api/model/labels",
+        "resolve_labels",
+        "entities",
+        false,
+        "S4",
+    ),
 ];
 
 /// The WebSocket compatibility operation.
@@ -1570,6 +1580,8 @@ pub struct Calculation {
     pub id: String,
     pub name: String,
     pub expr: String,
+    /// The node ElementStatus wire string (S4): `Proposed` until `confirm_calculation`.
+    pub status: String,
 }
 page!(CalculationPage, Calculation);
 
@@ -1611,6 +1623,9 @@ pub struct Rule {
     pub name: String,
     pub kind: RuleViewKind,
     pub conditions: Vec<String>,
+    /// The canonical output columns of a DecisionTable (S4); `null` for a scalar Rule.
+    #[schema(required = true)]
+    pub outputs: Option<Vec<String>>,
     /// `null` means not applicable or not analyzable, not empty (Hotfix 065).
     #[schema(required = true)]
     pub rows: Option<Vec<RuleRow>>,
@@ -2610,6 +2625,27 @@ pub struct SourceList {
     pub items: Vec<SourceListItem>,
 }
 
+// ============================================================================ element labels (S4)
+
+/// The plain-language name of one model element (S4): a node's name (a Transition is
+/// "<from> → <to>", a Requirement its source identifier) or a relation's
+/// "<from> <relation> <to>".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ElementLabel {
+    pub id: String,
+    /// The lower snake_case node type (e.g. `operation`, `state`) or a relation kind.
+    pub kind: String,
+    pub label: String,
+}
+
+/// The labels of the requested elements that exist at the head, sorted by ID. Not paged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ElementLabelList {
+    pub items: Vec<ElementLabel>,
+}
+
 // ============================================================================ operation stubs
 //
 // Contract-only: each function exists solely to carry its #[utoipa::path] metadata. If-Match,
@@ -3072,9 +3108,16 @@ mod stubs {
     #[utoipa::path(get, path = "/api/sources", operation_id = "list_sources", tag = "sources",
         responses((status = 200, description = "Every imported source", body = SourceList)))]
     pub fn list_sources() {}
+
+    // S4 (UI Model and Scenarios).
+
+    #[utoipa::path(get, path = "/api/model/labels", operation_id = "resolve_labels", tag = "entities",
+        params(("ids" = String, Query, description = "Comma-separated element IDs (1 to 200); unknown IDs are omitted")),
+        responses((status = 200, description = "The plain-language labels of the requested elements that exist at the head, sorted by ID", body = ElementLabelList)))]
+    pub fn resolve_labels() {}
 }
 
-/// The utoipa base contract of the 84 operations.
+/// The utoipa base contract of the 85 operations.
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Plumb Modeller API"),
@@ -3104,7 +3147,7 @@ mod stubs {
         stubs::preview_glossary_merge, stubs::list_proposals, stubs::discard_proposal,
         stubs::get_proposal, stubs::accept_proposal_set, stubs::confirm_elements,
         stubs::get_pipeline, stubs::retry_job, stubs::generate_questions,
-        stubs::materialize_findings, stubs::list_sources,
+        stubs::materialize_findings, stubs::list_sources, stubs::resolve_labels,
     ),
     components(schemas(
         DesignEvent, PreconditionFailedResponse, CursorConflictResponse, CursorErrorCode, StageName,
@@ -3629,7 +3672,7 @@ fn check_inventory(doc: &Value) -> Result<(), OpenApiContractError> {
     expected.sort();
     if found != expected {
         return Err(invariant(
-            "operations differ from the frozen 84-operation inventory",
+            "operations differ from the frozen 85-operation inventory",
         ));
     }
     Ok(())
@@ -3874,7 +3917,7 @@ pub fn openapi_document() -> Result<Value, OpenApiContractError> {
     let mut api = ApiDoc::openapi();
     api.info.version = env!("CARGO_PKG_VERSION").to_owned();
     api.info.description = Some(
-        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79) and B2 (the UI pipeline operations 80-84)."
+        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79) B2 (the UI pipeline operations 80-84) and S4 (the element labels of the Model and Scenarios screens, operation 85)."
             .to_owned(),
     );
     api.info.license = None;
@@ -3915,7 +3958,7 @@ The machine-readable contract is `api/modeller.openapi.json`, the source of the 
         OPERATIONS.len()
     ));
     out.push_str(
-        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 B1 those of operations 77-79 and B2 those of operations 80-84. \
+        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 B1 those of operations 77-79, B2 those of operations 80-84 and S4 that of operation 85. \
 An operation listed here is not operational until its handler task is done.\n\n",
     );
     out.push_str("## Conventions\n\n");
@@ -3953,7 +3996,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
             .count()
     };
     out.push_str("\n## Implementation ownership\n\n");
-    for owner in ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2"] {
+    for owner in ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2", "S4"] {
         out.push_str(&format!(
             "- {owner}: {} operations ({} POST, {} GET).\n",
             owned(owner, ""),
@@ -3969,6 +4012,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
         "H0.11 appends operations 75 and 76: `GET /api/proposals` lists every pending workflow proposal (not paged), and `POST /api/proposals/{id}/discard` moves a pending answer or intake proposal to the terminal state `abandoned` without a revision. Accepted, rejected and abandoned proposals are kept as history.",
         "B1 (UI Inbox, UI-SPEC §5.2) appends operations 77 to 79: `GET /api/proposals/{id}` is one pending proposal with its facts, evidence passages (UTF-8 byte highlight offsets) and model change; `POST /api/proposals/accept-set` accepts pending proposals atomically in one revision through the R0.3 set acceptance and, unless `confirm` is false, then confirms the Proposed elements they created; `POST /api/model/confirm` is the governed confirmation of the CLI `confirm`. List items gain `title`, `element_kind`, `created_at` and `stage`.",
         "B2 appends operations 80 to 84 for the UI (UI-SPEC §9): `GET /api/pipeline` derives every stage recipe's state from its latest recipe job and the pending proposals; `POST /api/jobs/{id}/retry` re-queues a failed recipe job through the H0.3 retry service; `POST /api/questions/generate` is the CLI `ask` (optionally with a stakeholder round); `POST /api/findings/materialize` is the CLI `findings materialize`; `GET /api/sources` lists every imported source. `directory` becomes a `run_stage` recipe, `get_me` gains `inference_model` and `get_model_version` gains `created_at` and `created_by`.",
+        "S4 (UI Model and Scenarios, UI-SPEC §5.4 and §5.5) appends operation 85: `GET /api/model/labels?ids=...` names the elements the screens reference by ID (states, operations, performers, transitions, relations). `Calculation` gains `status`; `Rule` gains `outputs`; `set_rule_cell` also accepts `uncovered:<witness>:output:0`, which covers one uncovered point of a single-output DecisionTable with a new row.",
     ] {
         out.push_str(&format!("- {line}\n"));
     }

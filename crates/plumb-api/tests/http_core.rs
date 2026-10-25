@@ -1028,7 +1028,7 @@ mod http_core {
                     || (reply.status == StatusCode::METHOD_NOT_ALLOWED
                         && !allow.split(',').any(|m| m.trim() == spec.method)));
             assert!(
-                ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2"].contains(&spec.owner),
+                ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2", "S4"].contains(&spec.owner),
                 "{}",
                 spec.operation_id
             );
@@ -1114,7 +1114,16 @@ mod http_core {
             ),
             (5, 3, 2)
         );
-        assert_eq!(routed.len(), 84);
+        // S4 routes the element labels of the Model and Scenarios screens.
+        assert_eq!(
+            (
+                count(&routed, "S4", None),
+                count(&routed, "S4", Some("POST")),
+                count(&routed, "S4", Some("GET"))
+            ),
+            (1, 0, 1)
+        );
+        assert_eq!(routed.len(), 85);
         // An unregistered path is the typed 404 (H0.11 replaces the former empty body).
         let r = get(&app, "/api/nowhere").await;
         assert_eq!(
@@ -1725,7 +1734,12 @@ mod http_core {
         );
         assert_eq!(
             get(&app, "/api/model/calculations").await.json()["items"][0],
-            json!({"id": "calc:days", "name": "Days", "expr": "1 + 1"})
+            json!({"id": "calc:days", "name": "Days", "expr": "1 + 1", "status": "Accepted"})
+        );
+        // S4: the lifecycle status tells the UI whether Confirm calculation applies.
+        assert_eq!(
+            get(&app, "/api/model/calculations").await.json()["items"][1]["status"],
+            "Proposed"
         );
         // Processes use the existing analyzer.
         let leave = get(&app, "/api/processes/proc:leave").await.json();
@@ -2102,6 +2116,56 @@ mod http_core {
         )
         .await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    }
+
+    /// S4 (UI Model and Scenarios screens): `resolve_labels` names the elements the views
+    /// reference by ID, sorted by ID; unknown and malformed IDs are omitted, never invented.
+    #[tokio::test]
+    async fn http_core_model_labels_name_referenced_elements() {
+        let app = app();
+        let r = get(
+            &app,
+            "/api/model/labels?ids=trans:submit,state:draft,op:submit,actor:employee,rel:perf,state:nowhere,not-an-id,op:submit",
+        )
+        .await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{:?}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        assert_eq!(r.etag(), Some(etag(&app)));
+        assert_eq!(
+            r.json(),
+            json!({"items": [
+                {"id": "actor:employee", "kind": "actor", "label": "Employee"},
+                {"id": "op:submit", "kind": "operation", "label": "Submit leave"},
+                {"id": "rel:perf", "kind": "performed_by", "label": "Submit leave performed by Employee"},
+                {"id": "state:draft", "kind": "state", "label": "Draft"},
+                {"id": "trans:submit", "kind": "transition", "label": "Draft → Submitted"}
+            ]})
+        );
+        for uri in [
+            "/api/model/labels",
+            "/api/model/labels?ids=",
+            "/api/model/labels?ids=a:b&other=1",
+        ] {
+            let r = get(&app, uri).await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST"),
+                "{uri}"
+            );
+        }
+        let many = (0..=200)
+            .map(|i| format!("state:s{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let r = get(&app, &format!("/api/model/labels?ids={many}")).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
+        );
     }
 
     // ------------------------------------------------------------------ sources

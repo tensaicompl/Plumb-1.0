@@ -22,8 +22,8 @@ use plumb_core::{to_canonical_json, Id, StageId, Timestamp};
 use plumb_functional::decision_table::DecisionOutputCell;
 use plumb_functional::waiver::{create_waiver, WaiverError};
 use plumb_functional::{
-    analyze_decision_table, calculation_example, decode_decision_table, encode_decision_table,
-    linear_process_steps, linear_step_key, propose_assumption_resolution,
+    analyze_decision_table, calculation_example, cover_uncovered_point, decode_decision_table,
+    encode_decision_table, linear_process_steps, linear_step_key, propose_assumption_resolution,
     propose_linear_process_import, propose_process_step_change, propose_term_merge,
     set_output_cell, AssumptionResolutionError, CalculationExampleError, DecisionCellError,
     DecisionCoverage, ExactValue, LinearInterchangeError, PilotDataClass, ProcessStepChange,
@@ -50,12 +50,12 @@ use crate::error::ApiError;
 use crate::openapi::{
     Assumption, AssumptionPage, AttributeClassRequest, AttributeTypeRequest, AttributeUnitRequest,
     Calculation, CalculationExample, CalculationPage, CalculationValue, CrudCell, CrudMatrix,
-    Decision, DecisionPage, Entity, EntityAttribute, EntityPage, EntityRelationship,
-    EntityTransition, ExportFormat, FindingPage, GlossaryEditRequest, GlossaryMergeRequest,
-    GlossaryPage, ModelDiff, PreviewConfirmation, Process, ProcessFlowView, ProcessFormat,
-    ProcessImportRequest, ProcessNodeView, ProcessNodeViewKind, ProcessPage, ProcessStepRequest,
-    ProposalKind, ReasonRequest, Rule, RuleCellRequest, RulePage, RuleRow, RuleViewKind,
-    ScalarValue, SemanticChangePreviewResponse, SemanticElementDiff, WriteResult,
+    Decision, DecisionPage, ElementLabelList, Entity, EntityAttribute, EntityPage,
+    EntityRelationship, EntityTransition, ExportFormat, FindingPage, GlossaryEditRequest,
+    GlossaryMergeRequest, GlossaryPage, ModelDiff, PreviewConfirmation, Process, ProcessFlowView,
+    ProcessFormat, ProcessImportRequest, ProcessNodeView, ProcessNodeViewKind, ProcessPage,
+    ProcessStepRequest, ProposalKind, ReasonRequest, Rule, RuleCellRequest, RulePage, RuleRow,
+    RuleViewKind, ScalarValue, SemanticChangePreviewResponse, SemanticElementDiff, WriteResult,
 };
 use crate::state::{
     check_if_match, health_marker, is_clean_text, paginate, paginate_projected, parse_body,
@@ -107,6 +107,38 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/processes/{id}/export", get(export_process))
         .route("/api/findings/{id}/waive", post(waive_finding))
         .route("/api/assumptions/{id}/resolve", post(resolve_assumption))
+        .route("/api/model/labels", get(resolve_labels))
+}
+
+/// The most element IDs one `resolve_labels` request may name.
+const MAX_LABEL_IDS: usize = 200;
+
+/// `resolve_labels` (S4): the plain-language names of the requested elements at the head.
+/// Malformed and unknown IDs are omitted; nothing is invented.
+async fn resolve_labels(
+    State(state): State<ApiState>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let query = QueryParams::parse(query.as_deref(), &["ids"], false)?;
+    let ids: Vec<&str> = query
+        .get("ids")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|id| !id.is_empty())
+        .collect();
+    if ids.is_empty() || ids.len() > MAX_LABEL_IDS {
+        return Err(ApiError::invalid(format!(
+            "ids must name 1 to {MAX_LABEL_IDS} comma-separated element IDs"
+        )));
+    }
+    let ids: Vec<Id> = ids.iter().filter_map(|id| id.parse().ok()).collect();
+    let loaded = state.load_head()?;
+    Ok(read_json(
+        &loaded,
+        ElementLabelList {
+            items: crate::inbox::element_labels(&loaded.graph, &ids),
+        },
+    ))
 }
 
 fn active(status: ElementStatus) -> bool {
@@ -537,6 +569,7 @@ async fn list_calculations(
                 id: node.id.to_string(),
                 name: c.name.clone(),
                 expr: c.expression.clone(),
+                status: wire(&node.status)?,
             },
         ));
     }
@@ -1417,6 +1450,7 @@ fn rule_view(node: &Node) -> Result<Option<Rule>, ApiError> {
             name: rule.name.clone(),
             kind: RuleViewKind::Rule,
             conditions: rule.condition_expr.iter().cloned().collect(),
+            outputs: None,
             rows: None,
             uncovered_cells: None,
             overlaps: None,
@@ -1471,6 +1505,12 @@ fn rule_view(node: &Node) -> Result<Option<Rule>, ApiError> {
                 name: table.name.clone(),
                 kind: RuleViewKind::DecisionTable,
                 conditions,
+                outputs: Some(
+                    spec.outputs
+                        .iter()
+                        .map(canonical_text)
+                        .collect::<Result<_, _>>()?,
+                ),
                 rows: Some(rows),
                 uncovered_cells,
                 overlaps,
@@ -1534,6 +1574,22 @@ async fn get_rule(
     Ok(read_json(&loaded, view))
 }
 
+/// The target of a `set_rule_cell` request.
+enum CellAddress {
+    /// `row:<row>:output:<column>`: an existing output cell.
+    Row(usize, usize),
+    /// `uncovered:<witness>:output:<column>` (S4): a new row covering an uncovered point.
+    Uncovered(usize, usize),
+}
+
+/// Parses a cell address with canonical zero-based indexes.
+fn parse_cell_address(cell: &str) -> Option<CellAddress> {
+    match cell.strip_prefix("uncovered:") {
+        Some(rest) => parse_cell(&format!("row:{rest}")).map(|(w, c)| CellAddress::Uncovered(w, c)),
+        None => parse_cell(cell).map(|(r, c)| CellAddress::Row(r, c)),
+    }
+}
+
 /// Parses `row:<row>:output:<column>` with canonical zero-based indexes.
 fn parse_cell(cell: &str) -> Option<(usize, usize)> {
     let rest = cell.strip_prefix("row:")?;
@@ -1557,8 +1613,11 @@ async fn set_rule_cell(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let request: RuleCellRequest = parse_body(&body)?;
-    let (row, column) = parse_cell(&request.cell)
-        .ok_or_else(|| ApiError::invalid("cell must be row:<row>:output:<column>"))?;
+    let address = parse_cell_address(&request.cell).ok_or_else(|| {
+        ApiError::invalid(
+            "cell must be row:<row>:output:<column> or uncovered:<witness>:output:<column>",
+        )
+    })?;
     let outcome: DecisionOutputCell = serde_json::from_str(&request.outcome)
         .map_err(|e| ApiError::invalid(format!("outcome is not a decision output cell: {e}")))?;
     if canonical_text(&outcome)? != request.outcome {
@@ -1581,8 +1640,17 @@ async fn set_rule_cell(
         .with_details(json!({ "rule": node.id })));
     };
     let spec = decode_decision_table(table).map_err(|e| encoding_invalid(&node.id, e))?;
-    let changed = set_output_cell(&spec, row, column, outcome).map_err(|error| match error {
-        DecisionCellError::RowOutOfRange { .. } | DecisionCellError::ColumnOutOfRange { .. } => {
+    let changed = match address {
+        CellAddress::Row(row, column) => set_output_cell(&spec, row, column, outcome),
+        CellAddress::Uncovered(witness, column) => {
+            cover_uncovered_point(&spec, witness, column, outcome)
+        }
+    }
+    .map_err(|error| match error {
+        DecisionCellError::RowOutOfRange { .. }
+        | DecisionCellError::ColumnOutOfRange { .. }
+        | DecisionCellError::WitnessOutOfRange { .. }
+        | DecisionCellError::NotSingleOutput => {
             ApiError::invalid(format!("cell {}: {error}", request.cell))
         }
         DecisionCellError::NoChange => {

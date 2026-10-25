@@ -35,6 +35,10 @@ pub enum DecisionCellError {
     InvalidOutputCell { column: usize },
     #[error("the cell already has this outcome")]
     NoChange,
+    #[error("uncovered point {witness} does not exist")]
+    WitnessOutOfRange { witness: usize },
+    #[error("only a single-output table can cover a point with one cell")]
+    NotSingleOutput,
 }
 
 /// Decodes one persisted element and requires it to be exactly the serde encoding of the typed
@@ -155,6 +159,52 @@ pub fn set_output_cell(
             if *r == row && *c == column)
     }) {
         return Err(DecisionCellError::InvalidOutputCell { column });
+    }
+    Ok(candidate)
+}
+
+/// Covers the uncovered finite point `witness` (zero-based, in the canonical order of
+/// [`DecisionCoverage::Incomplete`]) of a single-output table with one new row: its inputs are
+/// exactly the point's values (an enum member as a one-member set) and its output is `cell`.
+/// Existing rows never change.
+pub fn cover_uncovered_point(
+    spec: &DecisionTableSpec,
+    witness: usize,
+    column: usize,
+    cell: DecisionOutputCell,
+) -> Result<DecisionTableSpec, DecisionCellError> {
+    if spec.outputs.len() != 1 {
+        return Err(DecisionCellError::NotSingleOutput);
+    }
+    if column != 0 {
+        return Err(DecisionCellError::ColumnOutOfRange { column });
+    }
+    let point = match analyze_decision_table(spec).coverage {
+        DecisionCoverage::Incomplete { witnesses } => witnesses.into_iter().nth(witness),
+        _ => None,
+    }
+    .ok_or(DecisionCellError::WitnessOutOfRange { witness })?;
+    let inputs = point
+        .into_iter()
+        .map(|value| match value {
+            DecisionPointValue::Bool { value } => DecisionInputCell::Bool { value },
+            DecisionPointValue::Enum { member } => DecisionInputCell::EnumSet {
+                members: vec![member],
+            },
+        })
+        .collect();
+    let mut candidate = spec.clone();
+    candidate.rows.push(DecisionRow {
+        inputs,
+        outputs: vec![cell],
+    });
+    let row = candidate.rows.len() - 1;
+    let analysis = analyze_decision_table(&candidate);
+    if analysis.structure.iter().any(|issue| {
+        matches!(issue, DecisionStructureIssue::InvalidOutputCell { row: Some(r), column: 0 }
+            if *r == row)
+    }) {
+        return Err(DecisionCellError::InvalidOutputCell { column: 0 });
     }
     Ok(candidate)
 }

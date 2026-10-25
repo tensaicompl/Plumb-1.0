@@ -452,6 +452,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/model/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["resolve_labels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/model/rules": {
         parameters: {
             query?: never;
@@ -1437,6 +1453,8 @@ export interface components {
             expr: string;
             id: string;
             name: string;
+            /** @description The node ElementStatus wire string (S4): `Proposed` until `confirm_calculation`. */
+            status: string;
         };
         CalculationExample: {
             expr: string;
@@ -1603,6 +1621,21 @@ export interface components {
             /** Format: double */
             score: number;
             subject_ref: string;
+        };
+        /**
+         * @description The plain-language name of one model element (S4): a node's name (a Transition is
+         *     "<from> → <to>", a Requirement its source identifier) or a relation's
+         *     "<from> <relation> <to>".
+         */
+        ElementLabel: {
+            id: string;
+            /** @description The lower snake_case node type (e.g. `operation`, `state`) or a relation kind. */
+            kind: string;
+            label: string;
+        };
+        /** @description The labels of the requested elements that exist at the head, sorted by ID. Not paged. */
+        ElementLabelList: {
+            items: components["schemas"]["ElementLabel"][];
         };
         Entity: {
             attributes: components["schemas"]["EntityAttribute"][];
@@ -2385,6 +2418,8 @@ export interface components {
             id: string;
             kind: components["schemas"]["RuleViewKind"];
             name: string;
+            /** @description The canonical output columns of a DecisionTable (S4); `null` for a scalar Rule. */
+            outputs: string[] | null;
             overlaps: string[] | null;
             /** @description `null` means not applicable or not analyzable, not empty (Hotfix 065). */
             rows: components["schemas"]["RuleRow"][] | null;
@@ -4086,7 +4121,8 @@ export interface operations {
                      *         {
                      *           "expr": "if leave_type == Annual then RequestedWorkingDays else 0",
                      *           "id": "AnnualBalanceDelta",
-                     *           "name": "AnnualBalanceDelta"
+                     *           "name": "AnnualBalanceDelta",
+                     *           "status": "example"
                      *         }
                      *       ]
                      *     }
@@ -4578,6 +4614,48 @@ export interface operations {
             };
         };
     };
+    resolve_labels: {
+        parameters: {
+            query: {
+                /**
+                 * @description Comma-separated element IDs (1 to 200); unknown IDs are omitted
+                 * @example example
+                 */
+                ids: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The plain-language labels of the requested elements that exist at the head, sorted by ID */
+            200: {
+                headers: {
+                    /**
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
+                     * @example example
+                     */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "items": [
+                     *         {
+                     *           "id": "example",
+                     *           "kind": "example",
+                     *           "label": "example"
+                     *         }
+                     *       ]
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ElementLabelList"];
+                };
+            };
+        };
+    };
     list_rules: {
         parameters: {
             query?: {
@@ -4626,6 +4704,9 @@ export interface operations {
                      *           "id": "AnnualLeaveEligibility",
                      *           "kind": "decision_table",
                      *           "name": "AnnualLeaveEligibility",
+                     *           "outputs": [
+                     *             "example"
+                     *           ],
                      *           "overlaps": [
                      *             "example"
                      *           ],
@@ -4701,6 +4782,9 @@ export interface operations {
                      *       "id": "AnnualLeaveEligibility",
                      *       "kind": "decision_table",
                      *       "name": "AnnualLeaveEligibility",
+                     *       "outputs": [
+                     *         "example"
+                     *       ],
                      *       "overlaps": [
                      *         "example"
                      *       ],

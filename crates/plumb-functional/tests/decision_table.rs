@@ -796,6 +796,56 @@ mod decision_table_contract {
         );
     }
 
+    /// S4: an uncovered point becomes one new row whose inputs are exactly the point's values
+    /// and whose single output is the chosen cell; nothing else changes.
+    #[test]
+    fn covering_an_uncovered_point_appends_exactly_one_row() {
+        let spec = table(
+            "UNIQUE",
+            vec![
+                enum_col("contract", &["Contractor", "Employee"]),
+                bool_col("full_time"),
+            ],
+            vec![row(vec![set(&["Employee"]), any()])],
+        );
+        let witnesses = match analyze_decision_table(&spec).coverage {
+            DecisionCoverage::Incomplete { witnesses } => witnesses,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(witnesses[0], vec![pe("Contractor"), pb(false)]);
+        let changed = cover_uncovered_point(&spec, 0, 0, out(false)).unwrap();
+        let mut expected = spec.clone();
+        expected.rows.push(DecisionRow {
+            inputs: vec![set(&["Contractor"]), b(false)],
+            outputs: vec![out(false)],
+        });
+        assert_eq!(changed, expected);
+        assert_eq!(
+            cover_uncovered_point(&spec, 9, 0, out(false)),
+            Err(DecisionCellError::WitnessOutOfRange { witness: 9 })
+        );
+        assert_eq!(
+            cover_uncovered_point(&spec, 0, 1, out(false)),
+            Err(DecisionCellError::ColumnOutOfRange { column: 1 })
+        );
+        assert_eq!(
+            cover_uncovered_point(&spec, 0, 0, DecisionOutputCell::Int { value: 1 }),
+            Err(DecisionCellError::InvalidOutputCell { column: 0 })
+        );
+        let mut two = spec.clone();
+        two.outputs.push(bool_col("other"));
+        two.rows[0].outputs.push(out(true));
+        assert_eq!(
+            cover_uncovered_point(&two, 0, 0, out(false)),
+            Err(DecisionCellError::NotSingleOutput)
+        );
+        let complete = table("UNIQUE", vec![bool_col("x")], vec![row(vec![any()])]);
+        assert_eq!(
+            cover_uncovered_point(&complete, 0, 0, out(false)),
+            Err(DecisionCellError::WitnessOutOfRange { witness: 0 })
+        );
+    }
+
     #[test]
     fn decision_table_source_guard() {
         let source = include_str!("../src/decision_table.rs");
