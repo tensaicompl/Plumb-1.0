@@ -453,7 +453,7 @@ mod cli {
             process_scope: None,
             authorization_draft: None,
             scenario_derivation: None,
-            verification_applicability: Some(VerificationApplicabilityInputs::default()),
+            verification_applicability: Some(VerificationApplicabilityInputs::default().into()),
             gates: serde_json::from_value(config["gates"].clone()).unwrap(),
             directory: config
                 .get("directory")
@@ -2389,6 +2389,133 @@ mod cli {
             assert_eq!(recipe_jobs(&env.db), 0, "{field}");
             assert_eq!(head_graph(&env.db).revision.id, head, "{field}");
         }
+    }
+
+    /// A stage configuration that names generated elements by selector instead of by ID
+    /// (`$one` / `$all`): every selectable field in its ID-free form.
+    fn selector_config() -> Value {
+        let attr = |name: &str| json!({"$one": {"type": "Attribute", "where": {"name": name}}});
+        let mut c = config(json!({
+            "f1": f1_inputs(),
+            "f4": {
+                "in_scope_scenario_refs": {"$all": {"type": "Scenario",
+                                                    "where": {"confirmation_status": "Confirmed"}}},
+                "required_scenario_kinds": [
+                    {"source_ref": {"$one": {"type": "Operation", "where": {"name": "Submit"}}},
+                     "required_scenario_kinds": []}
+                ],
+                "visible_assumption_refs": []
+            }
+        }));
+        c["operation_scope"] = json!({
+            "performer_refs": {"$all": {"type": ["BusinessRole", "Actor"]}},
+            "domain_refs": {"$all": {"type": ["Entity", "Attribute"]}},
+            "calculation_refs": [], "governor_refs": {"$all": {"type": "Rule"}},
+            "event_refs": [], "data_schema_refs": [], "event_payload_attribute_refs": [],
+            "support_refs": []
+        });
+        c["process_scope"] = json!({
+            "operation_refs": [], "performer_refs": {"$all": {"type": ["BusinessRole", "Actor"]}},
+            "event_refs": [], "outcome_refs": [], "transition_refs": []
+        });
+        c["calculation_scope"] = json!({
+            "bindings": [{"node_ref": attr("start date"), "symbol": "start_date",
+                          "exposure": {"kind": "root"}}],
+            "calendar_refs": {"$all": {"type": "Calendar"}}
+        });
+        c["verification_applicability"] = json!({"sources": [
+            {"source_ref": {"$one": {"type": "Operation", "where": {"name": "Submit"}}},
+             "mode": "executable_scenario", "blocking": true}
+        ]});
+        c["expression_scopes"] = json!([
+            {"owner_ref": {"$one": {"type": "Operation", "where": {"name": "Submit"}}},
+             "bindings": [{"node_ref": attr("start date"), "symbol": "start_date",
+                           "exposure": {"kind": "root"}}]}
+        ]);
+        c
+    }
+
+    #[test]
+    fn selector_configuration_is_accepted_and_validated_eagerly() {
+        // The ID-free form is a valid configuration: commands start normally.
+        let env = env_with(selector_config());
+        let (code, out, err) = env.run(&["vocab"]);
+        assert_eq!(code, 0, "{out} {err}");
+        // A malformed or inadmissible selector is E_RUNTIME_CONFIG_INVALID naming its field,
+        // before any stage or write.
+        let edits: Vec<ConfigEdit> = vec![
+            (
+                "operation_scope",
+                Box::new(|c| {
+                    c["operation_scope"]["domain_refs"] = json!({"$all": {"type": "BusinessRole"}})
+                }),
+            ),
+            (
+                "calculation_scope",
+                Box::new(|c| {
+                    c["calculation_scope"]["bindings"][0]["node_ref"] =
+                        json!({"$one": {"type": "Nonsense"}})
+                }),
+            ),
+            (
+                "process_scope",
+                Box::new(|c| c["process_scope"]["operation_refs"] = json!({"$any": {}})),
+            ),
+            (
+                "gates.f4",
+                Box::new(|c| {
+                    c["gates"]["f4"]["in_scope_scenario_refs"] =
+                        json!({"$all": {"type": "Operation"}})
+                }),
+            ),
+            (
+                "verification_applicability",
+                Box::new(|c| {
+                    c["verification_applicability"]["sources"][0]["extra"] = json!(1);
+                }),
+            ),
+            (
+                "expression_scopes",
+                Box::new(|c| {
+                    c["expression_scopes"][0]["owner_ref"] =
+                        json!({"$one": {"type": "Operation", "where": 7}})
+                }),
+            ),
+        ];
+        for (field, edit) in edits {
+            let mut value = selector_config();
+            edit(&mut value);
+            let env = env_with(value);
+            let head = head_graph(&env.db).revision.id;
+            for args in [&["lint"][..], &["vocab"][..]] {
+                let (code, out, err) = env.run(&[args, &["--json"]].concat());
+                assert_eq!(code, 1, "{field} {args:?}: {out} {err}");
+                assert!(err.contains("E_RUNTIME_CONFIG_INVALID"), "{field}: {err}");
+                assert!(err.contains(field), "{field}: {err}");
+            }
+            assert_eq!(recipe_jobs(&env.db), 0, "{field}");
+            assert_eq!(head_graph(&env.db).revision.id, head, "{field}");
+        }
+        // Duplicate keys stay rejected inside a selector.
+        let text = serde_json::to_string(&selector_config()).unwrap();
+        let duplicated = text.replacen(
+            "\"type\":\"Calendar\"",
+            "\"type\":\"Calendar\",\"type\":\"Rule\"",
+            1,
+        );
+        assert_ne!(duplicated, text);
+        let env = env_with(selector_config());
+        let config = env.write("duplicate.json", duplicated.as_bytes());
+        let (code, _, err) = output(
+            bin()
+                .arg("--db")
+                .arg(&env.db)
+                .arg("--config")
+                .arg(&config)
+                .arg("vocab"),
+        );
+        assert_eq!(code, 1);
+        assert!(err.contains("duplicate"), "{err}");
     }
 
     #[test]

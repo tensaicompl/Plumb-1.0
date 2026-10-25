@@ -434,6 +434,11 @@ pub const ERROR_CATALOGUE: &[CatalogueEntry] = &[
         "The recipe needs configuration that is absent.",
     ),
     entry(
+        "E_STAGE_CONFIG_UNRESOLVED",
+        422,
+        "A configured selector cannot be resolved against the graph the stage runs on.",
+    ),
+    entry(
         "E_STAGE_EVALUATION_FAILED",
         422,
         "A phase or gate cannot be evaluated; details.error names the typed error.",

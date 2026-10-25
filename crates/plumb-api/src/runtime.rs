@@ -19,6 +19,8 @@ use plumb_validation::{F1ValidationInputs, F4ExecutableCoverageInput, Validation
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::selector::Selectable;
+
 /// Why an A0.4 runtime value is invalid.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RuntimeConfigError {
@@ -196,6 +198,8 @@ impl F1GateConfig {
 /// The genuinely external F4 material (R0.4): the explicit in-scope Scenarios, the required
 /// Scenario kinds per executable source and the visible Assumptions. Sources, executable
 /// sources and blocking Scenarios come from the S4.5 verification applicability and the graph.
+/// It is configured as a [`Selectable`]: its IDs may be given by selector and are resolved
+/// against the graph the gate evaluates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct F4GateConfig {
@@ -210,7 +214,8 @@ pub struct F4GateConfig {
 #[serde(deny_unknown_fields)]
 pub struct GateInputsConfig {
     pub f1: Option<F1GateConfig>,
-    pub f4: Option<F4GateConfig>,
+    /// The F4 inputs, in their explicit form or naming elements by selector.
+    pub f4: Option<Selectable<F4GateConfig>>,
 }
 
 /// How the inference provider of the A0.3 runtime was constructed (bound into stage
@@ -258,12 +263,12 @@ pub struct A04RuntimeConfig {
     pub calendars: Vec<CalendarConfig>,
     /// The configured direct-manager facts (already built into the A0.3 predicate provider).
     pub direct_managers: Vec<DirectManagerFact>,
-    pub calculation_scope: Option<CalculationScope>,
-    pub operation_scope: Option<OperationScope>,
-    pub process_scope: Option<ProcessScope>,
-    pub authorization_draft: Option<AuthorizationDraft>,
-    pub scenario_derivation: Option<ScenarioDerivationInputs>,
-    pub verification_applicability: Option<VerificationApplicabilityInputs>,
+    pub calculation_scope: Option<Selectable<CalculationScope>>,
+    pub operation_scope: Option<Selectable<OperationScope>>,
+    pub process_scope: Option<Selectable<ProcessScope>>,
+    pub authorization_draft: Option<Selectable<AuthorizationDraft>>,
+    pub scenario_derivation: Option<Selectable<ScenarioDerivationInputs>>,
+    pub verification_applicability: Option<Selectable<VerificationApplicabilityInputs>>,
     pub gates: GateInputsConfig,
     /// The configured semantic directory (R0.6); absent means not configured.
     pub directory: Option<DirectoryDraft>,

@@ -11,6 +11,7 @@ pub mod error_catalogue;
 pub mod openapi;
 pub mod routes;
 pub mod runtime;
+pub mod selector;
 pub mod server;
 pub mod stage;
 pub mod state;

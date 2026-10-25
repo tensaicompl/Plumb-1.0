@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::ApiError;
+use crate::selector::Selections;
 use crate::stage::acquire::{derivation_ref, inference_of};
 use crate::stage::recipe::Phase;
 use crate::stage::scenario_execution::{
@@ -144,11 +145,13 @@ impl<'a> PhaseStage<'a> {
         self.a03.provider_policy.clone()
     }
 
-    /// The typed inputs bound into the child configuration (Hotfix 067).
-    pub(crate) fn inputs(&self) -> Result<Value, ApiError> {
+    /// The typed inputs bound into the child configuration (Hotfix 067), resolved against
+    /// the phase's input `graph`, with the configured selector forms under `selections`.
+    pub(crate) fn inputs(&self, graph: &Graph) -> Result<Value, ApiError> {
         let a04 = self.a04;
         let a03 = self.a03;
-        Ok(match self.phase {
+        let mut selections = Selections::default();
+        let inputs = match self.phase {
             Phase::Classification => {
                 let (hash, segmentation) = self
                     .segmentation
@@ -160,27 +163,54 @@ impl<'a> PhaseStage<'a> {
                 "vocabulary_policy": to_value(&a04.vocabulary_policy)?,
                 "duplicate_policy": to_value(&a04.duplicate_policy)?,
             }),
-            Phase::Calc => json!({ "calculation_scope": to_value(&a04.calculation_scope)? }),
-            Phase::Flows => json!({
-                "operation_scope": to_value(&a04.operation_scope)?,
-                "process_scope": to_value(&a04.process_scope)?,
-                "authorization_draft": to_value(&a04.authorization_draft)?,
-            }),
-            Phase::Scenarios => {
-                json!({ "scenario_derivation": to_value(&a04.scenario_derivation)? })
+            Phase::Calc => {
+                selections.record("calculation_scope", a04.calculation_scope.as_ref());
+                json!({ "calculation_scope": to_value(&a04.calculation_scope_for(graph)?)? })
             }
-            Phase::Execute => json!({
-                "calendars": to_value(&a04.calendars)?,
-                "direct_managers": to_value(&a04.direct_managers)?,
-                "expression_scopes": to_value(&a03.expression_scopes)?,
-                "calculation_scope_overrides": to_value(&a03.calculation_scope_overrides)?,
-                "runtime_semantic_values": to_value(&a03.runtime_semantic_values)?,
-            }),
-            Phase::Verification => json!({
-                "verification_applicability": to_value(&a04.verification_applicability)?,
-            }),
+            Phase::Flows => {
+                selections.record("operation_scope", a04.operation_scope.as_ref());
+                selections.record("process_scope", a04.process_scope.as_ref());
+                selections.record("authorization_draft", a04.authorization_draft.as_ref());
+                json!({
+                    "operation_scope": to_value(&a04.operation_scope_for(graph)?)?,
+                    "process_scope": to_value(&a04.process_scope_for(graph)?)?,
+                    "authorization_draft": to_value(&a04.authorization_draft_for(graph)?)?,
+                })
+            }
+            Phase::Scenarios => {
+                selections.record("scenario_derivation", a04.scenario_derivation.as_ref());
+                json!({ "scenario_derivation": to_value(&a04.scenario_derivation_for(graph)?)? })
+            }
+            Phase::Execute => {
+                selections.record_entries("expression_scopes", &a03.expression_scopes);
+                selections.record_entries(
+                    "calculation_scope_overrides",
+                    &a03.calculation_scope_overrides,
+                );
+                selections.record_entries("runtime_semantic_values", &a03.runtime_semantic_values);
+                json!({
+                    "calendars": to_value(&a04.calendars)?,
+                    "direct_managers": to_value(&a04.direct_managers)?,
+                    "expression_scopes": to_value(&a03.expression_scopes_for(graph)?)?,
+                    "calculation_scope_overrides":
+                        to_value(&a03.calculation_scope_overrides_for(graph)?)?,
+                    "runtime_semantic_values":
+                        to_value(&a03.runtime_semantic_values_for(graph)?)?,
+                })
+            }
+            Phase::Verification => {
+                selections.record(
+                    "verification_applicability",
+                    a04.verification_applicability.as_ref(),
+                );
+                json!({
+                    "verification_applicability":
+                        to_value(&a04.verification_applicability_for(graph)?)?,
+                })
+            }
             _ => json!({}),
-        })
+        };
+        Ok(selections.into_inputs(inputs))
     }
 
     fn fragments(&self, graph: &Graph) -> Vec<Node> {
@@ -268,10 +298,9 @@ impl<'a> PhaseStage<'a> {
             Phase::Calc => {
                 let scope = self
                     .a04
-                    .calculation_scope
-                    .as_ref()
+                    .calculation_scope_for(graph)?
                     .ok_or_else(|| ApiError::internal("calculation_scope"))?;
-                let r = build_calculation_request(graph, &self.targets, scope, self.policy())
+                let r = build_calculation_request(graph, &self.targets, &scope, self.policy())
                     .map_err(|e| fail(&e))?;
                 planned.push(Self::planned(
                     phase,
@@ -299,15 +328,13 @@ impl<'a> PhaseStage<'a> {
             Phase::Flows => {
                 let op = self
                     .a04
-                    .operation_scope
-                    .as_ref()
+                    .operation_scope_for(graph)?
                     .ok_or_else(|| ApiError::internal("operation_scope"))?;
                 let pr = self
                     .a04
-                    .process_scope
-                    .as_ref()
+                    .process_scope_for(graph)?
                     .ok_or_else(|| ApiError::internal("process_scope"))?;
-                let o = build_operation_request(graph, &self.targets, op, self.policy())
+                let o = build_operation_request(graph, &self.targets, &op, self.policy())
                     .map_err(|e| fail(&e))?;
                 planned.push(Self::planned(
                     phase,
@@ -315,7 +342,7 @@ impl<'a> PhaseStage<'a> {
                     m(o.inference_material().map_err(|e| e.to_string())),
                     InferenceAbsencePolicy::Required,
                 )?);
-                let p = build_process_request(graph, &self.targets, pr, self.policy())
+                let p = build_process_request(graph, &self.targets, &pr, self.policy())
                     .map_err(|e| fail(&e))?;
                 planned.push(Self::planned(
                     phase,
@@ -325,10 +352,9 @@ impl<'a> PhaseStage<'a> {
                 )?);
             }
             Phase::Scenarios => {
-                let inputs = self
+                let inputs = &self
                     .a04
-                    .scenario_derivation
-                    .as_ref()
+                    .scenario_derivation_for(graph)?
                     .ok_or_else(|| ApiError::internal("scenario_derivation"))?;
                 for r in scenario_requests(graph, inputs, &self.policy()).map_err(|e| fail(&e))? {
                     planned.push(Self::planned(
@@ -474,10 +500,9 @@ impl<'a> PhaseStage<'a> {
             Phase::Calc => {
                 let scope = self
                     .a04
-                    .calculation_scope
-                    .as_ref()
+                    .calculation_scope_for(graph)?
                     .ok_or_else(|| ApiError::internal("calculation_scope"))?;
-                let r = build_calculation_request(graph, &self.targets, scope, self.policy())
+                let r = build_calculation_request(graph, &self.targets, &scope, self.policy())
                     .map_err(|e| fail(&e))?;
                 let (artifact, derivation_ref) = acquired(&r.request)?;
                 let audit = CalculationAudit {
@@ -538,15 +563,13 @@ impl<'a> PhaseStage<'a> {
             Phase::Flows => {
                 let op = self
                     .a04
-                    .operation_scope
-                    .as_ref()
+                    .operation_scope_for(graph)?
                     .ok_or_else(|| ApiError::internal("operation_scope"))?;
                 let pr = self
                     .a04
-                    .process_scope
-                    .as_ref()
+                    .process_scope_for(graph)?
                     .ok_or_else(|| ApiError::internal("process_scope"))?;
-                let o = build_operation_request(graph, &self.targets, op, self.policy())
+                let o = build_operation_request(graph, &self.targets, &op, self.policy())
                     .map_err(|e| fail(&e))?;
                 let (artifact, derivation_ref) = acquired(&o.request)?;
                 let audit = OperationAudit {
@@ -561,7 +584,7 @@ impl<'a> PhaseStage<'a> {
                     analyze_operations(graph, &o, Some(inference), &audit).map_err(|e| fail(&e))?;
                 report("operations", "issue", to_json(&result.issues));
                 proposals.extend(result.proposals);
-                let p = build_process_request(graph, &self.targets, pr, self.policy())
+                let p = build_process_request(graph, &self.targets, &pr, self.policy())
                     .map_err(|e| fail(&e))?;
                 let (artifact, derivation_ref) = acquired(&p.request)?;
                 let audit = ProcessAudit {
@@ -576,7 +599,7 @@ impl<'a> PhaseStage<'a> {
                     analyze_processes(graph, &p, Some(inference), &audit).map_err(|e| fail(&e))?;
                 report("processes", "issue", to_json(&result.issues));
                 proposals.extend(result.proposals);
-                if let Some(draft) = &self.a04.authorization_draft {
+                if let Some(draft) = &self.a04.authorization_draft_for(graph)? {
                     let audit = AuthorizationAudit {
                         created_by: actor,
                         created_at: at,
@@ -589,10 +612,9 @@ impl<'a> PhaseStage<'a> {
                 }
             }
             Phase::Scenarios => {
-                let inputs = self
+                let inputs = &self
                     .a04
-                    .scenario_derivation
-                    .as_ref()
+                    .scenario_derivation_for(graph)?
                     .ok_or_else(|| ApiError::internal("scenario_derivation"))?;
                 let requests =
                     scenario_requests(graph, inputs, &self.policy()).map_err(|e| fail(&e))?;
@@ -647,9 +669,11 @@ impl<'a> PhaseStage<'a> {
                         actor_ref: &actor,
                         calendars: self.a03.calendars.as_ref(),
                         predicates: self.a03.predicates.as_ref(),
-                        expression_scopes: &self.a03.expression_scopes,
-                        calculation_scope_overrides: &self.a03.calculation_scope_overrides,
-                        runtime_semantic_values: &self.a03.runtime_semantic_values,
+                        expression_scopes: &self.a03.expression_scopes_for(graph)?,
+                        calculation_scope_overrides: &self
+                            .a03
+                            .calculation_scope_overrides_for(graph)?,
+                        runtime_semantic_values: &self.a03.runtime_semantic_values_for(graph)?,
                     },
                 )?;
                 let mut updates = Vec::with_capacity(executed.len());
@@ -663,10 +687,9 @@ impl<'a> PhaseStage<'a> {
                 );
             }
             Phase::Verification => {
-                let inputs = self
+                let inputs = &self
                     .a04
-                    .verification_applicability
-                    .as_ref()
+                    .verification_applicability_for(graph)?
                     .ok_or_else(|| ApiError::internal("verification_applicability"))?;
                 let audit = VerificationAudit {
                     created_by: actor,

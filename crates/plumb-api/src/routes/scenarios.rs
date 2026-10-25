@@ -502,9 +502,9 @@ async fn run_scenarios(
             actor_ref: state.actor_ref(),
             calendars: runtime.calendars.as_ref(),
             predicates: runtime.predicates.as_ref(),
-            expression_scopes: &runtime.expression_scopes,
-            calculation_scope_overrides: &runtime.calculation_scope_overrides,
-            runtime_semantic_values: &runtime.runtime_semantic_values,
+            expression_scopes: &runtime.expression_scopes_for(graph)?,
+            calculation_scope_overrides: &runtime.calculation_scope_overrides_for(graph)?,
+            runtime_semantic_values: &runtime.runtime_semantic_values_for(graph)?,
         },
     )?;
     let mut updates = Vec::with_capacity(executed.len());

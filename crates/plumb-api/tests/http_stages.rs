@@ -346,6 +346,13 @@ mod http_stages {
         scenario_derivation: Option<plumb_functional::ScenarioDerivationInputs>,
         /// The S4.5 verification applicability (default: no sources).
         verification: Option<plumb_functional::VerificationApplicabilityInputs>,
+        /// Stage configuration in its configured JSON form (explicit IDs or selectors); the
+        /// `*_json` values take precedence over the typed `f4` and `verification`.
+        calculation_scope: Option<Value>,
+        operation_scope: Option<Value>,
+        process_scope: Option<Value>,
+        f4_json: Option<Value>,
+        verification_json: Option<Value>,
     }
 
     /// The replay mode of the test provider (R0.2: only `null` declares absence).
@@ -353,6 +360,13 @@ mod http_stages {
         ProviderMode::Replay {
             fixtures_hash: Hash::content_sha256(b"http_stages test provider"),
         }
+    }
+
+    /// A configured runtime value decoded from its JSON form, exactly as the CLI decodes it.
+    fn configured<T: serde::de::DeserializeOwned>(value: &Option<Value>) -> Option<T> {
+        value
+            .as_ref()
+            .map(|v| serde_json::from_value(v.clone()).unwrap_or_else(|e| panic!("{v}: {e}")))
     }
 
     fn runtime(
@@ -408,15 +422,18 @@ mod http_stages {
                 json!({"jaccard_threshold": "0.8"}),
             )
             .unwrap(),
-            calculation_scope: None,
-            operation_scope: None,
-            process_scope: None,
+            calculation_scope: configured(&gates.calculation_scope),
+            operation_scope: configured(&gates.operation_scope),
+            process_scope: configured(&gates.process_scope),
             authorization_draft: None,
-            scenario_derivation: gates.scenario_derivation.clone(),
-            verification_applicability: Some(gates.verification.clone().unwrap_or_default()),
+            scenario_derivation: gates.scenario_derivation.clone().map(Into::into),
+            verification_applicability: Some(
+                configured(&gates.verification_json)
+                    .unwrap_or_else(|| gates.verification.clone().unwrap_or_default().into()),
+            ),
             gates: GateInputsConfig {
                 f1: gates.f1.clone(),
-                f4: gates.f4.clone(),
+                f4: configured(&gates.f4_json).or_else(|| gates.f4.clone().map(Into::into)),
             },
             directory: None,
             question_routing: None,
@@ -3326,5 +3343,276 @@ mod http_stages {
         drop(again);
         f.assert_finalised(&revision);
         assert_eq!(head(&f.app).revision.id, revision);
+    }
+
+    // ------------------------------------------------------------------ ID-free configuration
+
+    /// The recorded configuration of a recipe job.
+    fn recipe_config(app: &App, job_id: &Hash) -> Value {
+        let record = stage_store(app).recipe_job(job_id).unwrap().unwrap();
+        serde_json::from_str(&record.config_json).unwrap()
+    }
+
+    fn one(node_type: &str, name: &str) -> Value {
+        json!({"$one": {"type": node_type, "where": {"name": name}}})
+    }
+
+    /// The F4 inputs of the run graph by selector: the Confirmed Scenarios and the Operation
+    /// named `op:submit`, never their IDs.
+    fn selected_run_gates() -> Gates {
+        Gates {
+            f4_json: Some(json!({
+                "in_scope_scenario_refs": {"$all": {"type": "Scenario",
+                                                    "where": {"confirmation_status": "Confirmed"}}},
+                "required_scenario_kinds": [
+                    {"source_ref": one("Operation", "op:submit"), "required_scenario_kinds": []}
+                ],
+                "visible_assumption_refs": []
+            })),
+            verification_json: Some(json!({"sources": [
+                {"source_ref": one("Operation", "op:submit"), "mode": "executable_scenario",
+                 "blocking": true}
+            ]})),
+            ..Gates::default()
+        }
+    }
+
+    fn explicit_run_gates() -> Gates {
+        Gates {
+            f4_json: Some(json!({
+                "in_scope_scenario_refs": ["scn:fail", "scn:pass"],
+                "required_scenario_kinds": [
+                    {"source_ref": "op:submit", "required_scenario_kinds": []}
+                ],
+                "visible_assumption_refs": []
+            })),
+            verification_json: Some(json!({"sources": [
+                {"source_ref": "op:submit", "mode": "executable_scenario", "blocking": true}
+            ]})),
+            ..Gates::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn http_stages_run_resolves_selectors_to_the_explicit_ids_and_records_them() {
+        let explicit = app_with(run_graph(), &[], explicit_run_gates());
+        let selected = app_with(run_graph(), &[], selected_run_gates());
+        let explicit_job = run_inline(&explicit, Recipe::Run, None);
+        let selected_job = run_inline(&selected, Recipe::Run, None);
+        assert_eq!(job(&explicit, &explicit_job)["status"], "committed");
+        assert_eq!(
+            job(&selected, &selected_job)["status"],
+            "committed",
+            "{}",
+            job(&selected, &selected_job)
+        );
+        // The same graph yields the same F4 inputs and therefore the same F4 report.
+        assert_eq!(
+            selected.state.recipe_gate_results(&selected_job).unwrap(),
+            vec![("F4".to_owned(), "fail".to_owned())]
+        );
+        let report = |app: &App| {
+            stage_store(app)
+                .gate_reports()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.gate == "F4")
+                .unwrap()
+                .report_hash
+        };
+        assert_eq!(report(&selected), report(&explicit));
+        // The stage inputs record the resolved IDs (exactly the explicit form) and, for the
+        // selector form only, what was configured.
+        let e = recipe_config(&explicit, &explicit_job);
+        let s = recipe_config(&selected, &selected_job);
+        assert_eq!(s["inputs"]["f4"], e["inputs"]["f4"]);
+        assert_eq!(
+            s["inputs"]["verification_applicability"],
+            e["inputs"]["verification_applicability"]
+        );
+        assert_eq!(
+            s["inputs"]["f4"]["in_scope_scenario_refs"],
+            json!(["scn:fail", "scn:pass"])
+        );
+        assert!(e["inputs"].get("selections").is_none(), "{e}");
+        assert_eq!(
+            s["inputs"]["selections"]["f4"],
+            selected_run_gates().f4_json.unwrap()
+        );
+        assert_eq!(
+            s["inputs"]["selections"]["verification_applicability"],
+            selected_run_gates().verification_json.unwrap()
+        );
+        // Resolution is stable: the same graph captures the same job.
+        let again = selected.state.run_stage(Recipe::Run, None, None).unwrap();
+        let rerun = recipe_config(&selected, &again.job_id);
+        assert_eq!(rerun["inputs"], s["inputs"]);
+    }
+
+    #[tokio::test]
+    async fn http_stages_an_unresolvable_selector_is_rejected_at_capture() {
+        // `$one` over the two Scenarios is ambiguous: rejected synchronously, nothing queued.
+        let mut gates = selected_run_gates();
+        gates.f4_json.as_mut().unwrap()["in_scope_scenario_refs"] =
+            json!([{"$one": {"type": "Scenario"}}]);
+        let app = app_with(run_graph(), &[], gates);
+        let r = run_stage(&app, "run", Value::Null).await;
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        assert_eq!(r.code(), "E_STAGE_CONFIG_UNRESOLVED");
+        let details = &r.json()["details"];
+        assert_eq!(details["field"], "gates.f4");
+        assert_eq!(details["path"], "in_scope_scenario_refs[]");
+        assert_eq!(details["kind"], "ambiguous");
+        assert_eq!(details["matches"], json!(["scn:fail", "scn:pass"]));
+        assert!(stage_store(&app).recipe_jobs().unwrap().is_empty());
+        // A `$one` matching nothing in a keyed entry list is ignored, like an explicit ID that
+        // names no element: only the named Scenario is in scope.
+        let mut gates = selected_run_gates();
+        gates.f4_json.as_mut().unwrap()["in_scope_scenario_refs"] =
+            json!([one("Scenario", "scn:pass"), one("Scenario", "scn:missing")]);
+        let app = app_with(run_graph(), &[], gates);
+        let job_id = run_inline(&app, Recipe::Run, Some(vec!["scn:pass".into()]));
+        assert_eq!(
+            recipe_config(&app, &job_id)["inputs"]["f4"]["in_scope_scenario_refs"],
+            json!(["scn:pass"])
+        );
+    }
+
+    /// Records the ID of every request it is asked to execute, then refuses it.
+    struct RequestRecorder(Mutex<Vec<(String, Hash)>>);
+
+    impl InferenceProvider for RequestRecorder {
+        fn execute(
+            &self,
+            request: &InferenceRequest,
+            material: &InferenceRequestMaterial,
+        ) -> Result<ProviderExecution, ProviderError> {
+            validate_binding(request, material)?;
+            self.0
+                .lock()
+                .unwrap()
+                .push((request.task_kind.to_string(), request.id.clone()));
+            Err(ProviderError::ProviderDisabled)
+        }
+    }
+
+    /// A Requirement and an Entity with typed Attributes, a Rule and a BusinessRole: the
+    /// material calc and flows plan their requests from.
+    fn scope_graph() -> Graph {
+        let mut nodes = agents();
+        nodes.extend(sourced_requirements(&[(
+            "req:a",
+            "Accepted",
+            "Leave duration is the working days from the start date to the end date.",
+        )]));
+        nodes.push(node(
+            "entity:leave",
+            "Accepted",
+            "Entity",
+            json!({"name": "LeaveRequest", "description": null, "aggregate_root": null}),
+        ));
+        let mut edges = Vec::new();
+        for (i, name) in ["start date", "end date"].iter().enumerate() {
+            nodes.push(node(
+                &format!("attr:{i}"),
+                "Accepted",
+                "Attribute",
+                json!({"name": name, "value_type": "Date", "nullable": false, "unit": null,
+                       "precision": null, "enum_values": null, "data_classification": null}),
+            ));
+            edges.push(edge(
+                &format!("rel:attr{i}"),
+                "has_attribute",
+                "entity:leave",
+                &format!("attr:{i}"),
+            ));
+        }
+        nodes.push(node(
+            "brole:employee",
+            "Accepted",
+            "BusinessRole",
+            json!({"name": "Employee"}),
+        ));
+        nodes.push(node(
+            "rule:overlap",
+            "Accepted",
+            "Rule",
+            json!({"name": "Overlap", "rule_kind": "business", "condition_expr": null,
+                   "action_expr": null}),
+        ));
+        Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap()
+    }
+
+    /// The request IDs `recipe` plans over the scope graph with `gates`.
+    fn planned_requests(gates: Gates, recipe: Recipe) -> (Vec<(String, Hash)>, Value) {
+        let recorder = Arc::new(RequestRecorder(Mutex::new(Vec::new())));
+        let app = app_using(scope_graph(), &[], gates, Some(recorder.clone()));
+        let job_id = run_inline(&app, recipe, None);
+        let config = recipe_config(&app, &job_id);
+        let requests = recorder.0.lock().unwrap().clone();
+        (requests, config)
+    }
+
+    #[tokio::test]
+    async fn http_stages_calc_and_flows_selectors_plan_the_explicit_requests() {
+        let binding = |node_ref: Value, symbol: &str| json!({"node_ref": node_ref, "symbol": symbol, "exposure": {"kind": "root"}});
+        let explicit = Gates {
+            calculation_scope: Some(json!({
+                "bindings": [binding(json!("attr:0"), "start_date"),
+                             binding(json!("attr:1"), "end_date")],
+                "calendar_refs": []
+            })),
+            operation_scope: Some(json!({
+                "performer_refs": ["brole:employee"],
+                "domain_refs": ["attr:0", "attr:1", "entity:leave"],
+                "calculation_refs": [], "governor_refs": ["rule:overlap"], "event_refs": [],
+                "data_schema_refs": [], "event_payload_attribute_refs": [], "support_refs": []
+            })),
+            process_scope: Some(json!({
+                "operation_refs": [], "performer_refs": ["brole:employee"], "event_refs": [],
+                "outcome_refs": [], "transition_refs": []
+            })),
+            ..Gates::default()
+        };
+        let selected = Gates {
+            calculation_scope: Some(json!({
+                "bindings": [binding(one("Attribute", "start date"), "start_date"),
+                             binding(one("Attribute", "end date"), "end_date")],
+                "calendar_refs": {"$all": {"type": "Calendar"}}
+            })),
+            operation_scope: Some(json!({
+                "performer_refs": {"$all": {"type": ["BusinessRole", "Actor"]}},
+                "domain_refs": {"$all": {"type": ["Entity", "Attribute"]}},
+                "calculation_refs": [], "governor_refs": {"$all": {"type": "Rule"}},
+                "event_refs": [], "data_schema_refs": [], "event_payload_attribute_refs": [],
+                "support_refs": []
+            })),
+            process_scope: Some(json!({
+                "operation_refs": {"$all": {"type": "Operation"}},
+                "performer_refs": {"$all": {"type": ["BusinessRole", "Actor"]}},
+                "event_refs": [], "outcome_refs": [], "transition_refs": []
+            })),
+            ..Gates::default()
+        };
+        for (recipe, fields) in [
+            (Recipe::Calc, &["calculation_scope"][..]),
+            (Recipe::Flows, &["operation_scope", "process_scope"][..]),
+        ] {
+            let (explicit_requests, e) = planned_requests(explicit.clone(), recipe);
+            let (selected_requests, s) = planned_requests(selected.clone(), recipe);
+            assert!(!explicit_requests.is_empty(), "{recipe:?}: {e}");
+            // The same graph resolves to the same IDs: the same requests and request hashes.
+            assert_eq!(selected_requests, explicit_requests, "{recipe:?}");
+            for field in fields {
+                assert_eq!(s["inputs"][field], e["inputs"][field], "{recipe:?} {field}");
+                assert!(s["inputs"]["selections"][field].is_object(), "{s}");
+            }
+            assert!(e["inputs"].get("selections").is_none(), "{e}");
+        }
     }
 }

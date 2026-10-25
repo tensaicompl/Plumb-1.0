@@ -29,7 +29,7 @@ use plumb_intake::{
     IntakeValidationInput,
 };
 use plumb_patch::{PatchSet, Proposal, SemanticPatch};
-use plumb_psg::{ElementStatus, NodePayload};
+use plumb_psg::{ElementStatus, Graph, NodePayload};
 use plumb_session::SessionTurnConfig;
 use plumb_sim::{
     ExecutionCalculationScopeOverride, ExecutionExpressionScopeInput, RuntimeSemanticValue,
@@ -49,6 +49,7 @@ use crate::openapi::{DesignEvent, ItemHealth, WriteResult};
 use crate::runtime::{
     A04RuntimeConfig, CalendarConfig, DirectManagerFact, GateInputsConfig, ProviderMode,
 };
+use crate::selector::{resolve_entries, resolve_field, Selectable};
 use plumb_functional::{
     AuthorizationDraft, CalculationScope, DuplicatePolicy, OperationScope, ProcessScope,
     ScenarioDerivationInputs, VerificationApplicabilityInputs, VocabularyPolicy,
@@ -98,10 +99,11 @@ pub struct A03RuntimeConfig {
     pub assistant_actor_ref: Id,
     pub calendars: Arc<dyn CalendarProvider + Send + Sync>,
     pub predicates: Arc<dyn PredicateProvider + Send + Sync>,
-    /// Explicit expression scopes, unique by `owner_ref`.
-    pub expression_scopes: Vec<ExecutionExpressionScopeInput>,
-    pub calculation_scope_overrides: Vec<ExecutionCalculationScopeOverride>,
-    pub runtime_semantic_values: Vec<RuntimeSemanticValue>,
+    /// Explicit expression scopes, unique by `owner_ref`; an entry may name its elements by
+    /// selector (resolved against the graph each consumer reads).
+    pub expression_scopes: Vec<Selectable<ExecutionExpressionScopeInput>>,
+    pub calculation_scope_overrides: Vec<Selectable<ExecutionCalculationScopeOverride>>,
+    pub runtime_semantic_values: Vec<Selectable<RuntimeSemanticValue>>,
 }
 
 /// The validated A0.3 runtime held by the state.
@@ -113,9 +115,9 @@ pub(crate) struct A03Runtime {
     pub(crate) assistant_actor_ref: Id,
     pub(crate) calendars: Arc<dyn CalendarProvider + Send + Sync>,
     pub(crate) predicates: Arc<dyn PredicateProvider + Send + Sync>,
-    pub(crate) expression_scopes: Vec<ExecutionExpressionScopeInput>,
-    pub(crate) calculation_scope_overrides: Vec<ExecutionCalculationScopeOverride>,
-    pub(crate) runtime_semantic_values: Vec<RuntimeSemanticValue>,
+    pub(crate) expression_scopes: Vec<Selectable<ExecutionExpressionScopeInput>>,
+    pub(crate) calculation_scope_overrides: Vec<Selectable<ExecutionCalculationScopeOverride>>,
+    pub(crate) runtime_semantic_values: Vec<Selectable<RuntimeSemanticValue>>,
     /// Sessions with turns being processed by this instance, whose prepared turns are not
     /// reconciled meanwhile (a concurrency guard only; workflow state stays durable).
     in_flight_sessions: Mutex<BTreeMap<Id, usize>>,
@@ -131,12 +133,12 @@ pub(crate) struct A04Runtime {
     pub(crate) duplicate_policy: DuplicatePolicy,
     pub(crate) calendars: Vec<CalendarConfig>,
     pub(crate) direct_managers: Vec<DirectManagerFact>,
-    pub(crate) calculation_scope: Option<CalculationScope>,
-    pub(crate) operation_scope: Option<OperationScope>,
-    pub(crate) process_scope: Option<ProcessScope>,
-    pub(crate) authorization_draft: Option<AuthorizationDraft>,
-    pub(crate) scenario_derivation: Option<ScenarioDerivationInputs>,
-    pub(crate) verification_applicability: Option<VerificationApplicabilityInputs>,
+    pub(crate) calculation_scope: Option<Selectable<CalculationScope>>,
+    pub(crate) operation_scope: Option<Selectable<OperationScope>>,
+    pub(crate) process_scope: Option<Selectable<ProcessScope>>,
+    pub(crate) authorization_draft: Option<Selectable<AuthorizationDraft>>,
+    pub(crate) scenario_derivation: Option<Selectable<ScenarioDerivationInputs>>,
+    pub(crate) verification_applicability: Option<Selectable<VerificationApplicabilityInputs>>,
     pub(crate) gates: GateInputsConfig,
     pub(crate) directory: Option<plumb_functional::DirectoryDraft>,
     pub(crate) question_routing: Option<plumb_functional::StakeholderRoutingConfig>,
@@ -239,6 +241,129 @@ impl Drop for InFlightTurn<'_> {
     }
 }
 
+/// The configured stage values resolved against one graph (422 `E_STAGE_CONFIG_UNRESOLVED`
+/// when a selector cannot be resolved). An explicit value is returned unchanged.
+impl A04Runtime {
+    pub(crate) fn calculation_scope_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Option<CalculationScope>, ApiError> {
+        resolve_field("calculation_scope", self.calculation_scope.as_ref(), graph)
+    }
+
+    pub(crate) fn operation_scope_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Option<OperationScope>, ApiError> {
+        resolve_field("operation_scope", self.operation_scope.as_ref(), graph)
+    }
+
+    pub(crate) fn process_scope_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Option<ProcessScope>, ApiError> {
+        resolve_field("process_scope", self.process_scope.as_ref(), graph)
+    }
+
+    pub(crate) fn authorization_draft_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Option<AuthorizationDraft>, ApiError> {
+        resolve_field(
+            "authorization_draft",
+            self.authorization_draft.as_ref(),
+            graph,
+        )
+    }
+
+    pub(crate) fn scenario_derivation_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Option<ScenarioDerivationInputs>, ApiError> {
+        resolve_field(
+            "scenario_derivation",
+            self.scenario_derivation.as_ref(),
+            graph,
+        )
+    }
+
+    /// The verification applicability; a resolved source listed twice is rejected exactly as
+    /// the explicit form is at startup.
+    pub(crate) fn verification_applicability_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Option<VerificationApplicabilityInputs>, ApiError> {
+        const FIELD: &str = "verification_applicability";
+        let resolved = resolve_field(FIELD, self.verification_applicability.as_ref(), graph)?;
+        if let Some(inputs) = &resolved {
+            let mut sources = BTreeSet::new();
+            for source in &inputs.sources {
+                if !sources.insert(&source.source_ref) {
+                    return Err(crate::selector::SelectorError::duplicate(
+                        "sources[].source_ref",
+                        &source.source_ref,
+                    )
+                    .api_error(FIELD));
+                }
+            }
+        }
+        Ok(resolved)
+    }
+
+    pub(crate) fn f4_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Option<crate::runtime::F4GateConfig>, ApiError> {
+        resolve_field("gates.f4", self.gates.f4.as_ref(), graph)
+    }
+}
+
+/// The configured A0.3 entry lists resolved against one graph: an entry whose selector names
+/// no element is left out, as an explicit entry naming an absent element is ignored.
+impl A03Runtime {
+    /// The expression scopes, still unique by owner once resolved.
+    pub(crate) fn expression_scopes_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Vec<ExecutionExpressionScopeInput>, ApiError> {
+        const FIELD: &str = "expression_scopes";
+        let scopes = resolve_entries(FIELD, &self.expression_scopes, graph)?;
+        let mut owners = BTreeSet::new();
+        for scope in &scopes {
+            if !owners.insert(&scope.owner_ref) {
+                return Err(crate::selector::SelectorError::duplicate(
+                    "owner_ref",
+                    &scope.owner_ref,
+                )
+                .api_error(FIELD));
+            }
+        }
+        Ok(scopes)
+    }
+
+    pub(crate) fn calculation_scope_overrides_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Vec<ExecutionCalculationScopeOverride>, ApiError> {
+        resolve_entries(
+            "calculation_scope_overrides",
+            &self.calculation_scope_overrides,
+            graph,
+        )
+    }
+
+    pub(crate) fn runtime_semantic_values_for(
+        &self,
+        graph: &Graph,
+    ) -> Result<Vec<RuntimeSemanticValue>, ApiError> {
+        resolve_entries(
+            "runtime_semantic_values",
+            &self.runtime_semantic_values,
+            graph,
+        )
+    }
+}
+
 impl A03Runtime {
     /// Marks `session` as having a turn in flight in this instance.
     pub(crate) fn begin_turn(&self, session: &Id) -> Result<InFlightTurn<'_>, ApiError> {
@@ -271,7 +396,11 @@ impl A03Runtime {
     }
     fn new(config: A03RuntimeConfig) -> Result<A03Runtime, ApiStateError> {
         let mut owners = BTreeSet::new();
-        for scope in &config.expression_scopes {
+        for scope in config
+            .expression_scopes
+            .iter()
+            .filter_map(Selectable::explicit)
+        {
             if !owners.insert(&scope.owner_ref) {
                 return Err(ApiStateError::DuplicateExpressionScope(
                     scope.owner_ref.clone(),

@@ -122,3 +122,84 @@ No other code exists. An accepted Scenario whose `given` or `then` contains a no
 ### Schema dialect
 
 `schemas/functional-v2.schema.json` declares JSON Schema draft 2020-12 and is compiled and evaluated with the draft 2020-12 validator of the workspace `jsonschema` 0.18 (built with its `draft202012` feature). No reference is resolved over the network.
+
+## CLI configuration — ID-free stage configuration (selectors)
+
+The `--config` file (one strict JSON object, duplicate keys rejected; compiler architecture
+§33.9) carries the stage inputs. Several of them name PSG elements that earlier stages generate
+(Entities, Attributes, Operations, Calculations, Scenarios, Requirements, ...), whose IDs cannot
+be known before those stages run. Any ID position of the values below may therefore hold a
+**selector** instead of an ID:
+
+| Field | Selectable |
+|---|---|
+| `operation_scope`, `process_scope`, `calculation_scope`, `authorization_draft`, `scenario_derivation`, `verification_applicability`, `gates.f4` | the whole value |
+| `expression_scopes`, `calculation_scope_overrides`, `runtime_semantic_values` | each entry |
+
+Selector forms (an object with exactly one key):
+
+- `{"$one": QUERY}` is the ID of exactly one matching element.
+- `{"$all": QUERY}` is the sorted list of every matching element. As the value of an ID list it is
+  that list; as an element of an ID list its IDs are spliced in, next to explicit IDs.
+
+`QUERY` is `{"type": NodeType | [NodeType, ...], "where": {field: value, ...}}` (`where` is
+optional): the **Accepted** nodes of those types whose payload `data` fields equal the given JSON
+values exactly (for example `name`, `source_identifier`, `confirmation_status`). Nothing else is
+matched: no text search, prefixes or inference. A position that admits only certain node types
+(for example `operation_scope.domain_refs`: Entity or Attribute; `gates.f4.in_scope_scenario_refs`:
+Scenario) rejects a selector of another type.
+
+```json
+"calculation_scope": {
+  "bindings": [
+    {"node_ref": {"$one": {"type": "Attribute", "where": {"name": "start date"}}},
+     "symbol": "start_date", "exposure": {"kind": "root"}}
+  ],
+  "calendar_refs": {"$all": {"type": "Calendar"}}
+},
+"operation_scope": {
+  "performer_refs": {"$all": {"type": ["BusinessRole", "Actor"]}},
+  "domain_refs": {"$all": {"type": ["Entity", "Attribute"]}},
+  "calculation_refs": [], "governor_refs": {"$all": {"type": "Rule"}},
+  "event_refs": [], "data_schema_refs": [], "event_payload_attribute_refs": [], "support_refs": []
+},
+"gates": {
+  "f1": {"lint_policy": {"severity_overrides": {}}},
+  "f4": {
+    "in_scope_scenario_refs": {"$all": {"type": "Scenario", "where": {"confirmation_status": "Confirmed"}}},
+    "required_scenario_kinds": [
+      {"source_ref": {"$one": {"type": "Operation", "where": {"name": "SubmitLeaveRequest"}}},
+       "required_scenario_kinds": []}
+    ],
+    "visible_assumption_refs": []
+  }
+}
+```
+
+Semantics:
+
+- **Explicit form unchanged.** A value without selectors is decoded strictly as before and its
+  stage inputs, job IDs and request hashes are exactly those of earlier releases.
+- **Resolved when the stage runs.** Selectors are resolved against the graph the stage reads (the
+  captured base revision of a recipe, the input revision of each phase, the revision a gate or
+  scenario run evaluates). Resolution is a pure function of that graph: the same graph always
+  selects the same IDs, and the stage builds its inference requests from the resolved typed value,
+  so a selector that selects the IDs an explicit configuration names produces the same requests
+  and replay request hashes.
+- **Recorded.** The stage inputs (`config_json` of the recipe job and each child
+  `CompileContext.config`) hold the resolved value under the field's usual key and, only when a
+  selector is configured, the configured form under `inputs.selections.<field>`.
+- **Errors.** A malformed selector, a selector of an inadmissible node type, or a selector form
+  that would not have its typed shape is `E_RUNTIME_CONFIG_INVALID` naming the field, before any
+  store opens (an explicit value is decoded strictly when the file is read, as before). A `$one`
+  that matches several elements, or no element, is `E_STAGE_CONFIG_UNRESOLVED` (422, details
+  `{field, path, kind, selector, matches}`): a recipe is rejected when it is captured, before any
+  job is queued; a gate or scenario run that reads the value fails with the same error. The one
+  exception mirrors the explicit form, where an entry naming an absent element is ignored: in the
+  keyed entry lists (`expression_scopes`, `calculation_scope_overrides`, `runtime_semantic_values`
+  entries, `verification_applicability.sources`, and `gates.f4` `in_scope_scenario_refs`,
+  `required_scenario_kinds`, `visible_assumption_refs`) an entry whose `$one` matches nothing is
+  left out. Resolved values are canonicalized where their consumer requires an order
+  (`scenario_derivation` entries); a resolved duplicate where uniqueness is required (an
+  expression-scope owner, a verification source) is `E_STAGE_CONFIG_UNRESOLVED`.
+- **Reserved keys.** Object keys starting with `$` are reserved for selectors inside these values.

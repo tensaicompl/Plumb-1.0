@@ -32,6 +32,7 @@ use thiserror::Error;
 use crate::runtime::{
     A04RuntimeConfig, CalendarConfig, DirectManagerFact, GateInputsConfig, ProviderMode,
 };
+use crate::selector::{Selectable, SelectorSchema};
 use crate::state::{A03RuntimeConfig, ApiIdentity, ApiState, ApiStateError, OpenMode};
 
 /// Why the application cannot be opened or initialized.
@@ -108,18 +109,21 @@ pub struct ApplicationRuntime {
     pub predicates: Arc<dyn PredicateProvider + Send + Sync>,
     pub calendar_configs: Vec<CalendarConfig>,
     pub direct_managers: Vec<DirectManagerFact>,
-    pub expression_scopes: Vec<ExecutionExpressionScopeInput>,
-    pub calculation_scope_overrides: Vec<ExecutionCalculationScopeOverride>,
-    pub runtime_semantic_values: Vec<RuntimeSemanticValue>,
+    /// The A0.3 entry lists; an entry may name its elements by selector (`crate::selector`).
+    pub expression_scopes: Vec<Selectable<ExecutionExpressionScopeInput>>,
+    pub calculation_scope_overrides: Vec<Selectable<ExecutionCalculationScopeOverride>>,
+    pub runtime_semantic_values: Vec<Selectable<RuntimeSemanticValue>>,
     pub validation_policy: ValidationPolicy,
     pub vocabulary_policy: VocabularyPolicy,
     pub duplicate_policy: DuplicatePolicy,
-    pub calculation_scope: Option<CalculationScope>,
-    pub operation_scope: Option<OperationScope>,
-    pub process_scope: Option<ProcessScope>,
-    pub authorization_draft: Option<AuthorizationDraft>,
-    pub scenario_derivation: Option<ScenarioDerivationInputs>,
-    pub verification_applicability: Option<VerificationApplicabilityInputs>,
+    /// The stage inputs, each in its explicit form or naming elements by selector, resolved
+    /// against the graph each stage runs on.
+    pub calculation_scope: Option<Selectable<CalculationScope>>,
+    pub operation_scope: Option<Selectable<OperationScope>>,
+    pub process_scope: Option<Selectable<ProcessScope>>,
+    pub authorization_draft: Option<Selectable<AuthorizationDraft>>,
+    pub scenario_derivation: Option<Selectable<ScenarioDerivationInputs>>,
+    pub verification_applicability: Option<Selectable<VerificationApplicabilityInputs>>,
     pub gates: GateInputsConfig,
     /// The configured semantic directory (R0.6); `None` when not configured.
     pub directory: Option<DirectoryDraft>,
@@ -202,8 +206,14 @@ pub fn validate_runtime(
     }
     crate::runtime::DirectManagerPredicates::new(&runtime.direct_managers)
         .map_err(|e| invalid("direct_managers", e.to_string()))?;
+    validate_selectors(runtime)?;
+    // The explicit forms are checked here; a selector form is checked once resolved.
     let mut owners = BTreeSet::new();
-    for scope in &runtime.expression_scopes {
+    for scope in runtime
+        .expression_scopes
+        .iter()
+        .filter_map(Selectable::explicit)
+    {
         if !owners.insert(&scope.owner_ref) {
             return Err(invalid(
                 "expression_scopes",
@@ -211,7 +221,11 @@ pub fn validate_runtime(
             ));
         }
     }
-    if let Some(inputs) = &runtime.scenario_derivation {
+    if let Some(inputs) = runtime
+        .scenario_derivation
+        .as_ref()
+        .and_then(Selectable::explicit)
+    {
         let tables: Vec<&Id> = inputs
             .decision_tables
             .iter()
@@ -235,7 +249,11 @@ pub fn validate_runtime(
             ));
         }
     }
-    if let Some(inputs) = &runtime.verification_applicability {
+    if let Some(inputs) = runtime
+        .verification_applicability
+        .as_ref()
+        .and_then(Selectable::explicit)
+    {
         let mut sources = BTreeSet::new();
         for source in &inputs.sources {
             if !sources.insert(&source.source_ref) {
@@ -247,6 +265,45 @@ pub fn validate_runtime(
         }
     }
     Ok(())
+}
+
+/// Every selector-form stage value is well formed, selects only node types its position
+/// admits and has the shape of its typed value (`E_RUNTIME_CONFIG_INVALID` naming the field).
+fn validate_selectors(runtime: &ApplicationRuntime) -> Result<(), ApplicationError> {
+    fn check<T: SelectorSchema>(
+        field: &'static str,
+        value: Option<&Selectable<T>>,
+    ) -> Result<(), ApplicationError> {
+        match value.map(Selectable::validate) {
+            Some(Err(e)) => Err(ApplicationError::InvalidRuntime {
+                field,
+                reason: e.to_string(),
+            }),
+            _ => Ok(()),
+        }
+    }
+    fn entries<T: SelectorSchema>(
+        field: &'static str,
+        values: &[Selectable<T>],
+    ) -> Result<(), ApplicationError> {
+        values.iter().try_for_each(|v| check(field, Some(v)))
+    }
+    entries("expression_scopes", &runtime.expression_scopes)?;
+    entries(
+        "calculation_scope_overrides",
+        &runtime.calculation_scope_overrides,
+    )?;
+    entries("runtime_semantic_values", &runtime.runtime_semantic_values)?;
+    check("calculation_scope", runtime.calculation_scope.as_ref())?;
+    check("operation_scope", runtime.operation_scope.as_ref())?;
+    check("process_scope", runtime.process_scope.as_ref())?;
+    check("authorization_draft", runtime.authorization_draft.as_ref())?;
+    check("scenario_derivation", runtime.scenario_derivation.as_ref())?;
+    check(
+        "verification_applicability",
+        runtime.verification_applicability.as_ref(),
+    )?;
+    check("gates.f4", runtime.gates.f4.as_ref())
 }
 
 /// [`open_application`] in `mode` (architecture §33.9): the runtime is validated first; every
@@ -1656,15 +1713,15 @@ mod services {
                 .ok_or_else(|| ApiError::not_found(format!("question {question_id} not found")))?;
             // Invariant bindings come only from injected scopes owned by Accepted Invariants.
             let invariant_bindings: std::collections::BTreeMap<Id, Vec<_>> = runtime
-                .expression_scopes
-                .iter()
+                .expression_scopes_for(&loaded.graph)?
+                .into_iter()
                 .filter(|scope| {
                     loaded.graph.node(&scope.owner_ref).is_some_and(|n| {
                         n.status == ElementStatus::Accepted
                             && n.payload.node_type() == NodeType::Invariant
                     })
                 })
-                .map(|scope| (scope.owner_ref.clone(), scope.bindings.clone()))
+                .map(|scope| (scope.owner_ref, scope.bindings))
                 .collect();
             let result = resolve_question(
                 &loaded.graph,
