@@ -13,8 +13,8 @@ use plumb_psg::{
 };
 use plumb_sim::{
     build_execution_model, compare_run, run, scenario_run_id, ExecutionCalculationScopeOverride,
-    ExecutionExpressionScopeInput, ExecutionInputs, ExecutionRuntime, RuntimeSemanticValue,
-    SCENARIO_TRACE_LINK_EXTENSION,
+    ExecutionExpressionScopeInput, ExecutionInputs, ExecutionModel, ExecutionRuntime,
+    RuntimeSemanticValue, SCENARIO_TRACE_LINK_EXTENSION,
 };
 use serde_json::json;
 
@@ -123,14 +123,12 @@ pub(crate) struct ExecutedScenario {
     pub(crate) update: ScenarioRunUpdate,
 }
 
-/// Runs `selected` (already admitted runnable Scenarios) over `graph`: strict decoding of every
-/// Accepted decision table, the execution model, one run and comparison per Scenario and its
-/// stable run update linking the trace artifact. Nothing is persisted here.
-pub(crate) fn execute_scenarios(
-    graph: &Graph,
-    selected: &[Id],
+/// The execution model of `graph`: strict decoding of every Accepted decision table and the
+/// configured scopes and overrides of `execution`.
+pub(crate) fn execution_model<'g>(
+    graph: &'g Graph,
     execution: &ScenarioExecution<'_>,
-) -> Result<Vec<ExecutedScenario>, ApiError> {
+) -> Result<ExecutionModel<'g>, ApiError> {
     let mut decision_tables = Vec::new();
     for id in graph.node_ids_by_type(NodeType::DecisionTable) {
         let Some(node) = graph.node(id) else {
@@ -154,9 +152,7 @@ pub(crate) fn execute_scenarios(
             spec,
         });
     }
-    let simulation =
-        |e: &dyn std::fmt::Debug, text: String| ApiError::semantic(&error_name(&e), text);
-    let model = build_execution_model(
+    build_execution_model(
         graph,
         ExecutionInputs {
             decision_tables,
@@ -164,7 +160,22 @@ pub(crate) fn execute_scenarios(
             expression_scopes: execution.expression_scopes.to_vec(),
         },
     )
-    .map_err(|e| simulation(&e, e.to_string()))?;
+    .map_err(|e| simulation(&e, e.to_string()))
+}
+
+fn simulation(e: &dyn std::fmt::Debug, text: String) -> ApiError {
+    ApiError::semantic(&error_name(&e), text)
+}
+
+/// Runs `selected` (already admitted runnable Scenarios) over `graph`: the execution model, one
+/// run and comparison per Scenario and its stable run update linking the trace artifact.
+/// Nothing is persisted here.
+pub(crate) fn execute_scenarios(
+    graph: &Graph,
+    selected: &[Id],
+    execution: &ScenarioExecution<'_>,
+) -> Result<Vec<ExecutedScenario>, ApiError> {
+    let model = execution_model(graph, execution)?;
     let execution_runtime = ExecutionRuntime {
         actor_ref: Some(execution.actor_ref.clone()),
         semantic_values: execution.runtime_semantic_values.to_vec(),

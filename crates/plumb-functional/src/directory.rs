@@ -10,6 +10,7 @@
 //! - A Calendar draft names a configured runtime `calendar_ref`; its `week_pattern` is exactly
 //!   `{"weekend": <the runtime weekend weekday names in configured order>}` from the supplied
 //!   [`DirectoryCalendarBinding`], so the PSG Calendar and the runtime provider cannot disagree.
+//!   A runtime calendar that declares coverage (§33.11) adds `"coverage": <its covered years>`.
 //! - A DecisionTable draft is a typed [`DecisionTableSpec`] encoded only through
 //!   [`encode_decision_table`].
 //! - The proposal stage is the stage whose gate is the element type's earliest gate
@@ -159,11 +160,14 @@ fn present_purpose<'de, D: Deserializer<'de>>(d: D) -> Result<Option<TerminalPur
     Option::<TerminalPurpose>::deserialize(d)
 }
 
-/// The runtime weekend of one configured calendar, in configured order.
+/// The runtime weekend (in configured order) and declared coverage of one configured calendar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectoryCalendarBinding {
     pub calendar_ref: Id,
     pub weekend: Vec<String>,
+    /// The runtime calendar's declared covered years (§33.11), in configured order; `None`
+    /// when the calendar declares no coverage.
+    pub coverage: Option<Vec<i32>>,
 }
 
 /// The caller-supplied audit of every produced node; outside every identity.
@@ -421,7 +425,10 @@ pub fn produce_directory(
                 })?;
                 NodePayload::Calendar(Calendar {
                     time_zone: c.time_zone,
-                    week_pattern: json!({ "weekend": binding.weekend }),
+                    week_pattern: match &binding.coverage {
+                        None => json!({ "weekend": binding.weekend }),
+                        Some(years) => json!({ "weekend": binding.weekend, "coverage": years }),
+                    },
                     region: c.region,
                     holiday_source: c.holiday_source,
                 })

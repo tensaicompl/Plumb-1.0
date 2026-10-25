@@ -1158,18 +1158,20 @@ mod duplicates_contract {
             );
             assert!(supersede(&g).unwrap().proposals.is_empty(), "{status:?}");
         }
-        assert!(invalid(&supersession_graph(
-            Governance::default(),
-            Accepted,
-            Proposed,
-            vec![]
-        )));
-        assert!(invalid(&supersession_graph(
-            Governance::default(),
-            Proposed,
-            Accepted,
-            vec![]
-        )));
+        // H0.10 (§33.11): a governed decision whose requirements are no longer both Accepted
+        // no longer applies: a per-decision disposition, never a failed batch.
+        for (old_status, new_status) in [(Accepted, Proposed), (Proposed, Accepted)] {
+            let g = supersession_graph(Governance::default(), old_status, new_status, vec![]);
+            let result = supersede(&g).unwrap();
+            assert!(result.proposals.is_empty());
+            assert!(matches!(
+                &result.decisions[..],
+                [SupersessionDecisionOutcome {
+                    disposition: SupersessionDisposition::NotApplicable { .. },
+                    ..
+                }]
+            ));
+        }
         // Already carried out: no new proposal.
         let done = supersession_graph(
             Governance::default(),
@@ -1178,6 +1180,94 @@ mod duplicates_contract {
             vec![],
         );
         assert!(supersede(&done).unwrap().proposals.is_empty());
+    }
+
+    #[test]
+    fn governed_supersession_that_no_longer_applies_has_a_per_decision_disposition() {
+        // H0.10 (architecture §33.11): every governed requirement-supersession decision gets
+        // exactly one disposition; one that no longer applies never fails the batch.
+        let outcome = |decision: SupersessionDisposition| SupersessionDecisionOutcome {
+            decision_ref: id(DECISION),
+            old_ref: id(OLD),
+            new_ref: id(NEW),
+            disposition: decision,
+        };
+        // Applicable: the dry-validated proposal.
+        let g = supersession_graph(Governance::default(), Accepted, Accepted, vec![]);
+        let result = supersede(&g).unwrap();
+        let DuplicateResolutionProposal::Supersede { proposal, .. } = &result.proposals[0] else {
+            panic!("expected supersede");
+        };
+        assert_eq!(
+            result.decisions,
+            vec![outcome(SupersessionDisposition::Proposed {
+                proposal_ref: proposal.id.clone()
+            })]
+        );
+        // Carried out: the old requirement is already Superseded.
+        let done = supersession_graph(
+            Governance::default(),
+            ElementStatus::Superseded,
+            Accepted,
+            vec![],
+        );
+        assert_eq!(
+            supersede(&done).unwrap().decisions,
+            vec![outcome(SupersessionDisposition::AlreadyApplied)]
+        );
+        // No longer applicable: the replacement was deprecated after the decision.
+        let deprecated = supersession_graph(
+            Governance::default(),
+            Accepted,
+            ElementStatus::Deprecated,
+            vec![],
+        );
+        let result = supersede(&deprecated).unwrap();
+        assert!(result.proposals.is_empty());
+        let [SupersessionDecisionOutcome {
+            disposition: SupersessionDisposition::NotApplicable { reason },
+            ..
+        }] = &result.decisions[..]
+        else {
+            panic!(
+                "expected one not-applicable disposition: {:?}",
+                result.decisions
+            );
+        };
+        assert!(reason.contains(NEW), "{reason}");
+        // No longer applicable: the canonical patch engine rejects it (a supersedes cycle).
+        let cycle = supersession_graph(
+            Governance::default(),
+            Accepted,
+            Accepted,
+            vec![edge(
+                "rel:00000000000000c9",
+                RelationKind::Supersedes,
+                OLD,
+                NEW,
+                Accepted,
+            )],
+        );
+        let result = supersede(&cycle).unwrap();
+        assert!(result.proposals.is_empty());
+        assert!(matches!(
+            &result.decisions[..],
+            [SupersessionDecisionOutcome {
+                disposition: SupersessionDisposition::NotApplicable { .. },
+                ..
+            }]
+        ));
+        // Non-supersession decisions have no disposition.
+        let other = supersession_graph(
+            Governance {
+                answer: json!({"kind": "waiver", "rule_id": "x"}),
+                ..Governance::default()
+            },
+            Accepted,
+            Accepted,
+            vec![],
+        );
+        assert!(supersede(&other).unwrap().decisions.is_empty());
     }
 
     #[test]
@@ -1257,8 +1347,18 @@ mod duplicates_contract {
             NEW,
             Accepted,
         );
+        // H0.10 (§33.11): the patch engine rejecting the governed decision makes it no longer
+        // applicable (a per-decision disposition), not a failed batch.
         let g = supersession_graph(Governance::default(), Accepted, Accepted, vec![existing]);
-        assert!(invalid(&g));
+        let result = supersede(&g).unwrap();
+        assert!(result.proposals.is_empty());
+        assert!(matches!(
+            &result.decisions[..],
+            [SupersessionDecisionOutcome {
+                disposition: SupersessionDisposition::NotApplicable { .. },
+                ..
+            }]
+        ));
     }
 
     // ------------------------------------------------------------------ determinism

@@ -18,7 +18,10 @@ use plumb_functional::{
     propose_scenario_correction, propose_scenario_run_updates, ScenarioLifecycleError,
 };
 use plumb_psg::{Graph, Node, NodePayload, NodeType, Scenario as PsgScenario};
+use plumb_sim::{scenario_run_currency_since, ScenarioRunCurrency};
+use plumb_store::LoadedRevision;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 use crate::error::ApiError;
 use crate::openapi::{
@@ -26,7 +29,8 @@ use crate::openapi::{
     ScenarioPage, ScenarioRun, ScenarioRunRequest, ScenarioRunResult, ScenarioStatus, WriteResult,
 };
 use crate::stage::scenario_execution::{
-    current_run, execute_scenarios, link_key, run_collision, runnable, ScenarioExecution,
+    current_run, execute_scenarios, execution_model, link_key, run_collision, runnable,
+    ScenarioExecution,
 };
 use crate::state::{
     check_if_match, paginate_projected, parse_body, parse_id, parse_wire, project, read_json, wire,
@@ -87,11 +91,98 @@ fn missing_entries(trace: &[Value]) -> Result<Vec<String>, ApiError> {
     Ok(out)
 }
 
+/// The run currency of one read (H0.10, architecture §33.11): the loaded head and, per recorded
+/// model baseline, the graph of the most recent revision on the branch lineage with exactly
+/// that semantic hash (`None` when no such revision is found).
+pub(crate) struct RunCurrency<'a> {
+    state: &'a ApiState,
+    loaded: &'a LoadedRevision,
+    recorded: BTreeMap<Hash, Option<Graph>>,
+}
+
+impl<'a> RunCurrency<'a> {
+    pub(crate) fn new(state: &'a ApiState, loaded: &'a LoadedRevision) -> RunCurrency<'a> {
+        RunCurrency {
+            state,
+            loaded,
+            recorded: BTreeMap::new(),
+        }
+    }
+
+    fn recorded_graph(&mut self, baseline: &Hash) -> Result<Option<&Graph>, ApiError> {
+        if !self.recorded.contains_key(baseline) {
+            let found = self
+                .state
+                .find_on_branch(&self.loaded.revision, None, |r| {
+                    &r.semantic_hash == baseline
+                })?;
+            let graph = match found {
+                Some(revision) => Some(self.state.load_revision(&revision.id)?.graph),
+                None => None,
+            };
+            self.recorded.insert(baseline.clone(), graph);
+        }
+        Ok(self.recorded.get(baseline).and_then(Option::as_ref))
+    }
+
+    /// Whether a run of `scenario` with `specification_hash`, computed over the baseline
+    /// `baseline`, is current: the same baseline, or (fine-grained) a baseline on which every
+    /// exact dependency of the Scenario had its current state. Without the recorded baseline or
+    /// the scenario runtime the run is stale, never current.
+    fn is_current(
+        &mut self,
+        scenario: &Id,
+        specification_hash: &Hash,
+        baseline: &Hash,
+    ) -> Result<bool, ApiError> {
+        if baseline == &self.loaded.revision.semantic_hash {
+            return Ok(true);
+        }
+        let Ok(runtime) = self.state.runtime("scenario_runtime") else {
+            return Ok(false);
+        };
+        let state = self.state;
+        let head = &self.loaded.graph;
+        let Some(recorded) = self.recorded_graph(baseline)? else {
+            return Ok(false);
+        };
+        let execution = ScenarioExecution {
+            actor_ref: state.actor_ref(),
+            calendars: runtime.calendars.as_ref(),
+            predicates: runtime.predicates.as_ref(),
+            expression_scopes: &runtime.expression_scopes,
+            calculation_scope_overrides: &runtime.calculation_scope_overrides,
+            runtime_semantic_values: &runtime.runtime_semantic_values,
+        };
+        // A model that cannot be built cannot establish currency: stale, never current.
+        let (Ok(model), Ok(recorded)) = (
+            execution_model(head, &execution),
+            execution_model(recorded, &execution),
+        ) else {
+            return Ok(false);
+        };
+        Ok(matches!(
+            scenario_run_currency_since(
+                &model,
+                &recorded,
+                scenario,
+                specification_hash,
+                baseline,
+                Some(state.actor_ref()),
+            ),
+            Ok(ScenarioRunCurrency::Current)
+        ))
+    }
+}
+
 /// The validated projection of the current ScenarioRun of `scenario`: the trace link and the
 /// linked artifact must exist, have the frozen kind, media type and canonical bytes, and agree
-/// with the node. Fail diffs come only from the artifact. Nothing is ever repaired.
+/// with the node. Fail diffs come only from the artifact. Nothing is ever repaired. A run whose
+/// own dependencies changed since its baseline is not current (H0.10, §33.11) and shows as not
+/// run, exactly like a run of an earlier specification.
 fn run_view(
     state: &ApiState,
+    currency: &mut RunCurrency<'_>,
     graph: &Graph,
     scenario: &Id,
 ) -> Result<Option<ScenarioRun>, ApiError> {
@@ -157,6 +248,14 @@ fn run_view(
     if !agrees {
         return Err(mismatch("the artifact disagrees with the scenario run"));
     }
+    let baseline: Hash = body
+        .get("model_semantic_hash")
+        .and_then(Value::as_str)
+        .and_then(|text| text.parse().ok())
+        .ok_or_else(|| mismatch("the artifact has no model baseline"))?;
+    if !currency.is_current(scenario, &payload.specification_hash, &baseline)? {
+        return Ok(None);
+    }
     let result: ScenarioRunResult = parse_wire(&wire(&payload.result)?, "result")
         .map_err(|e| ApiError::internal_cause("scenario_run_result", &e))?;
     let trace = payload
@@ -194,6 +293,7 @@ fn run_view(
 /// The Scenario view; a confirmation status outside Derived and Confirmed is a typed conflict.
 fn scenario_view(
     state: &ApiState,
+    currency: &mut RunCurrency<'_>,
     graph: &Graph,
     node: &Node,
     scenario: &PsgScenario,
@@ -232,7 +332,7 @@ fn scenario_view(
             .flatten()
             .map(Id::to_string)
             .collect(),
-        run: run_view(state, graph, &node.id)?,
+        run: run_view(state, currency, graph, &node.id)?,
     })
 }
 
@@ -261,6 +361,7 @@ async fn list_scenarios(
         Some(_) => return Err(ApiError::invalid("derived must be true or false")),
     };
     let loaded = state.load_head()?;
+    let mut currency = RunCurrency::new(&state, &loaded);
     let mut items = Vec::new();
     for id in loaded.graph.node_ids_by_type(NodeType::Scenario) {
         let Some(node) = loaded.graph.node(id) else {
@@ -288,7 +389,10 @@ async fn list_scenarios(
             }
         }
         let id = node.id.to_string();
-        let view = project(&id, scenario_view(&state, &loaded.graph, node, scenario))?;
+        let view = project(
+            &id,
+            scenario_view(&state, &mut currency, &loaded.graph, node, scenario),
+        )?;
         items.push((id, view));
     }
     let request = PageRequest {
@@ -550,7 +654,8 @@ async fn get_scenario_run(
 ) -> Result<Response, ApiError> {
     let loaded = state.load_head()?;
     let node = scenario_node(&loaded.graph, &id)?;
-    let view = run_view(&state, &loaded.graph, &node.id)?
+    let mut currency = RunCurrency::new(&state, &loaded);
+    let view = run_view(&state, &mut currency, &loaded.graph, &node.id)?
         .ok_or_else(|| ApiError::not_found(format!("scenario {id} has no run")))?;
     Ok(read_json(&loaded, view))
 }

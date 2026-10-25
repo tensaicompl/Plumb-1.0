@@ -152,6 +152,12 @@ pub mod missing_keys {
         format!("{CALCULATION_EXAMPLE}:{key}")
     }
 
+    /// `calendar_coverage:<year>` (owner: the Calendar): a business-day evaluation needs a
+    /// year outside the calendar's declared coverage (§33.11).
+    pub fn calendar_coverage(year: i32) -> String {
+        format!("calendar_coverage:{year}")
+    }
+
     /// `semantic_contradiction:<key>`: a Given value contradicts the accepted semantics.
     pub fn semantic_contradiction(key: &str) -> String {
         format!("semantic_contradiction:{key}")

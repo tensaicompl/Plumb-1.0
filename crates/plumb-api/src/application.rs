@@ -1744,6 +1744,7 @@ mod services {
                 .map(|c| DirectoryCalendarBinding {
                     calendar_ref: c.calendar_ref.clone(),
                     weekend: c.weekend.clone(),
+                    coverage: c.coverage.clone(),
                 })
                 .collect();
             let result = produce_directory(

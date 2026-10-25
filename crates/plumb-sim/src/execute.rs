@@ -87,11 +87,10 @@ fn failure_kind(e: &EvalError) -> Option<EvaluationFailureKind> {
         EvalError::NonIntegralDateDuration => EvaluationFailureKind::NonIntegralDateDuration,
         EvalError::DateOutOfRange => EvaluationFailureKind::DateOutOfRange,
         EvalError::EmptyAggregate { .. } => EvaluationFailureKind::EmptyAggregate,
-        EvalError::Calendar(_) | EvalError::CalendarCoverageUnavailable { .. } => {
-            EvaluationFailureKind::CalendarUnavailable
-        }
+        EvalError::Calendar(_) => EvaluationFailureKind::CalendarUnavailable,
         EvalError::Predicate(_) => EvaluationFailureKind::PredicateUnavailable,
-        EvalError::Type(_)
+        EvalError::CalendarCoverageUnavailable { .. }
+        | EvalError::Type(_)
         | EvalError::MissingValue { .. }
         | EvalError::ValueTypeMismatch { .. }
         | EvalError::UnitMismatch { .. } => return None,
@@ -219,6 +218,20 @@ impl Executor<'_, '_, '_> {
         });
     }
 
+    /// A data-dependent evaluator failure is Failed and a type contradiction is a model error;
+    /// a date outside the calendar's declared coverage makes the run Undecidable (§33.11).
+    fn eval_stop(&mut self, owner_ref: &Id, e: &EvalError) -> Stop {
+        if let EvalError::CalendarCoverageUnavailable { calendar_ref, date } = e {
+            self.miss(
+                calendar_ref,
+                missing_keys::calendar_coverage(date.year()),
+                MissingSemanticKind::ModelCondition,
+            );
+            return Stop::Undecidable;
+        }
+        eval_stop(owner_ref, e)
+    }
+
     /// Ends the current phase: any collected missing value makes the run Undecidable.
     fn checkpoint(&self) -> Step<()> {
         if self.missing.is_empty() {
@@ -272,7 +285,7 @@ impl Executor<'_, '_, '_> {
             self.runtime.predicates,
         )
         .map_err(|e| match e {
-            CalculationEvalError::Eval(e) => eval_stop(calculation_ref, &e),
+            CalculationEvalError::Eval(e) => self.eval_stop(calculation_ref, &e),
             CalculationEvalError::Rounding { .. } => {
                 Stop::Failed(ExecutionFailure::EvaluationFailed {
                     owner_ref: calculation_ref.clone(),
@@ -388,7 +401,7 @@ impl Executor<'_, '_, '_> {
                 predicates: self.runtime.predicates,
             },
         )
-        .map_err(|e| eval_stop(owner_ref, &e))?;
+        .map_err(|e| self.eval_stop(owner_ref, &e))?;
         match value {
             ExprValue::Bool(b) => Ok(Some(b)),
             _ => Err(Stop::Error(SimulationError::Evaluation {

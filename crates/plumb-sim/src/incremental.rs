@@ -16,7 +16,8 @@ use plumb_functional::{
 };
 use plumb_patch::DirtySet;
 use plumb_psg::{
-    ElementStatus, Finding, FindingSeverity, Graph, NodePayload, NodeType, RelationKind,
+    node_element_hash, ElementStatus, Finding, FindingSeverity, Graph, NodePayload, NodeType,
+    RelationKind,
 };
 use plumb_validation::{finding_id, finding_key, EvaluationError, GeneratedFinding};
 use thiserror::Error;
@@ -81,6 +82,8 @@ pub enum IncrementalError {
     Finding(#[from] EvaluationError),
     #[error("dependencies of {scenario_ref} cannot be derived: {reason}")]
     Dependency { scenario_ref: Id, reason: String },
+    #[error("the recorded model has baseline {actual}, not the run's baseline {expected}")]
+    RecordedModelMismatch { expected: Hash, actual: Hash },
 }
 
 fn confirmed_scenario(graph: &Graph, id: &Id) -> bool {
@@ -506,9 +509,11 @@ pub enum ScenarioRunCurrency {
     StaleDependencies,
 }
 
-/// The currency of a run recorded with `specification_hash` over the model baseline
-/// `model_semantic_hash` (both from its ScenarioTrace artifact). The trace envelope binds the
-/// whole baseline, so a run of any older dependency state is stale, never current.
+/// The coarse currency of a run recorded with `specification_hash` over the model baseline
+/// `model_semantic_hash` (both from its ScenarioTrace artifact), used when the recorded
+/// baseline is not available: the trace envelope binds the whole baseline, so a run of any
+/// older baseline is stale, never current. [`scenario_run_currency_since`] is the
+/// fine-grained form.
 pub fn scenario_run_currency(
     model: &ExecutionModel<'_>,
     scenario_ref: &Id,
@@ -523,6 +528,63 @@ pub fn scenario_run_currency(
     } else {
         ScenarioRunCurrency::Current
     })
+}
+
+/// The element hash of every dependency of `scenario_ref` in `model`: the dependency state a
+/// run over `model` observes.
+fn dependency_state(
+    model: &ExecutionModel<'_>,
+    scenario_ref: &Id,
+    actor: Option<&Id>,
+) -> Result<BTreeMap<Id, Hash>, IncrementalError> {
+    let mut state = BTreeMap::new();
+    for id in scenario_dependencies(model, scenario_ref, actor)? {
+        if let Some(node) = model.graph.node(&id) {
+            let hash = node_element_hash(node).map_err(|e| IncrementalError::Dependency {
+                scenario_ref: scenario_ref.clone(),
+                reason: e.to_string(),
+            })?;
+            state.insert(id, hash);
+        }
+    }
+    Ok(state)
+}
+
+/// The fine-grained currency of a run recorded with `specification_hash` over the baseline
+/// `model_semantic_hash` (both from its ScenarioTrace artifact), given `recorded`, the model of
+/// exactly that baseline (H0.10, architecture §33.11). The run is current when its own exact
+/// dependency set ([`select_dirty_scenarios`]' set, with the runtime `actor`) and the element
+/// hash of each dependency are the same in `recorded` and `model`; an edit elsewhere in the
+/// model never makes it stale. The trace envelope is unchanged: the recorded dependency state
+/// is recomputed from the recorded baseline.
+pub fn scenario_run_currency_since(
+    model: &ExecutionModel<'_>,
+    recorded: &ExecutionModel<'_>,
+    scenario_ref: &Id,
+    specification_hash: &Hash,
+    model_semantic_hash: &Hash,
+    actor: Option<&Id>,
+) -> Result<ScenarioRunCurrency, IncrementalError> {
+    if recorded.semantic_hash() != model_semantic_hash {
+        return Err(IncrementalError::RecordedModelMismatch {
+            expected: model_semantic_hash.clone(),
+            actual: recorded.semantic_hash().clone(),
+        });
+    }
+    let coarse =
+        scenario_run_currency(model, scenario_ref, specification_hash, model_semantic_hash)?;
+    if coarse != ScenarioRunCurrency::StaleDependencies {
+        return Ok(coarse);
+    }
+    Ok(
+        if dependency_state(model, scenario_ref, actor)?
+            == dependency_state(recorded, scenario_ref, actor)?
+        {
+            ScenarioRunCurrency::Current
+        } else {
+            ScenarioRunCurrency::StaleDependencies
+        },
+    )
 }
 
 /// Reruns the selected Scenarios through the unchanged run and compare_run and returns their

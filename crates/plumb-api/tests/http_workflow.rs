@@ -3310,6 +3310,7 @@ mod http_workflow {
                 calendar_ref: id("cal:test"),
                 weekend: vec!["saturday".into(), "sunday".into()],
                 holidays: vec![],
+                coverage: None,
             }],
             direct_managers: Vec::new(),
             expression_scopes: Vec::new(),
@@ -5998,6 +5999,72 @@ mod http_workflow {
             get(&app, "/api/scenarios/scn:fail/run").await.json()["result"],
             "pass"
         );
+    }
+
+    /// Replaces the statement of the Requirement `requirement` by a direct commit.
+    fn edit_statement(app: &App, requirement: &str, statement: &str) {
+        let node = head(app).graph.node(&id(requirement)).unwrap().clone();
+        let NodePayload::Requirement(mut payload) = node.payload.clone() else {
+            panic!("{requirement} is not a requirement");
+        };
+        payload.statement = statement.to_owned();
+        direct_commit(
+            app,
+            SemanticPatch::ReplacePayload {
+                target: plumb_patch::ElementPrecondition {
+                    id: node.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(&node).unwrap(),
+                },
+                payload: NodePayload::Requirement(payload),
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn scenario_run_is_stale_only_when_its_own_dependencies_changed() {
+        // H0.10 (architecture §33.11): a run computed for an older dependency state is never
+        // shown as current; a run whose dependencies are unchanged stays current on a newer
+        // baseline.
+        let app = run_app();
+        let r = write(&app, "/api/scenarios/run", Some(json!({"scope": []}))).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let pass = get(&app, "/api/scenarios/scn:pass/run").await;
+        assert_eq!(pass.status, StatusCode::OK, "{}", pass.text());
+        let pass = pass.json();
+        // req:b is not a dependency of scn:pass: its run stays current.
+        let before = semantic(&app).await;
+        edit_statement(&app, "req:b", "Managers shall approve every leave request.");
+        assert_ne!(semantic(&app).await, before);
+        let r = get(&app, "/api/scenarios/scn:pass/run").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_eq!(r.json(), pass);
+        // req:a is a dependency of scn:pass (its requirement_refs): the run is stale.
+        edit_statement(&app, "req:a", "Employees shall submit every leave request.");
+        assert_error(
+            &get(&app, "/api/scenarios/scn:pass/run").await,
+            StatusCode::NOT_FOUND,
+            "E_NOT_FOUND",
+        );
+        let listed = get(&app, "/api/scenarios?limit=4").await.json();
+        let listed_pass = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == "scn:pass")
+            .unwrap()
+            .clone();
+        assert_eq!(listed_pass["run"], Value::Null);
+        // Re-running makes it current again.
+        let r = write(
+            &app,
+            "/api/scenarios/run",
+            Some(json!({"scope": ["scn:pass"]})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let r = get(&app, "/api/scenarios/scn:pass/run").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_eq!(r.json()["result"], "pass");
     }
 
     #[tokio::test]

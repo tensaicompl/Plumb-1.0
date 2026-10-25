@@ -482,6 +482,45 @@ describe("shared TypedAnswerControl", () => {
     expect(isAnswerComplete(SCHEMAS.Number, { value: 400 })).toBe(false);
   });
 
+  it("renders a const property as a fixed, non-editable value that is always in the answer", async () => {
+    const user = userEvent.setup();
+    // The HR holiday-policy question (f2.calculation.holiday-policy.v1): only `false` is recordable.
+    const schema = closed({ holiday_consumes_working_day: { const: false }, calendar_ref: enumOf("cal:office", "cal:nl") });
+    expect(parseAnswerSchema(schema)).toEqual([
+      { name: "holiday_consumes_working_day", type: "const", value: false },
+      { name: "calendar_ref", type: "enum", choices: ["cal:office", "cal:nl"] },
+    ]);
+    const onChange = vi.fn();
+    const { container } = render(<AnswerHarness kind="YesNo" schema={schema} onChange={onChange} />);
+    const control = container.querySelector("[data-renderer]") as HTMLElement;
+    expect(control.getAttribute("data-answer-state")).toBe("ready");
+    const fixed = container.querySelector('[data-field="holiday_consumes_working_day"]') as HTMLElement;
+    expect(fixed.getAttribute("data-field-type")).toBe("const");
+    const shown = within(fixed).getByRole("textbox", { name: "holiday_consumes_working_day" }) as HTMLInputElement;
+    expect(shown.readOnly).toBe(true);
+    expect(shown.value).toBe("No");
+    // No editable control exists for the fixed value.
+    expect(within(fixed).queryByRole("radio")).toBeNull();
+    await user.type(shown, "Yes");
+    expect(shown.value).toBe("No");
+    await user.selectOptions(within(control).getByRole("combobox", { name: "calendar_ref" }), "cal:nl");
+    expect(lastValue(onChange)).toEqual({ holiday_consumes_working_day: false, calendar_ref: "cal:nl" });
+    // Completeness requires exactly the const value.
+    expect(isAnswerComplete(schema, { holiday_consumes_working_day: false, calendar_ref: "cal:nl" })).toBe(true);
+    expect(isAnswerComplete(schema, { holiday_consumes_working_day: true, calendar_ref: "cal:nl" })).toBe(false);
+    expect(isAnswerComplete(schema, { calendar_ref: "cal:nl" })).toBe(false);
+    // A const-only schema is answered without any interaction.
+    cleanup();
+    const only = closed({ acknowledged: { const: true } });
+    const onlyChange = vi.fn();
+    render(<AnswerHarness kind="YesNo" schema={only} onChange={onlyChange} />);
+    await waitFor(() => expect(lastValue(onlyChange)).toEqual({ acknowledged: true }));
+    // Only scalar consts with no other keywords are renderable.
+    for (const unsafe of [{ const: { a: 1 } }, { const: [1] }, { const: null }, { const: false, type: "string" }, { const: "x", enum: ["x"] }]) {
+      expect(parseAnswerSchema(closed({ fixed: unsafe }))).toBeNull();
+    }
+  });
+
   it("shows an unsupported state and produces no answer for null or unsafe schemas", () => {
     const unsafe: unknown[] = [
       null,

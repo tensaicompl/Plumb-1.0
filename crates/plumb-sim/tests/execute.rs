@@ -1682,6 +1682,59 @@ mod execute_contract {
     }
 
     #[test]
+    fn date_outside_calendar_coverage_makes_the_run_undecidable() {
+        // §33.11: business-day evaluation outside the declared coverage is Undecidable, never a
+        // Failed run and never an assumed working day.
+        let mut w = hr_world("working_days([start_date, end_date], calendar, true)", None);
+        w.scenario(
+            given(&[
+                (START, lit(date("2026-12-28"))),
+                (END, lit(date("2027-01-08"))),
+            ]),
+            ScenarioWhen::Calculation(id(CALC)),
+        );
+        let day = |s: &str| ts(&format!("{s}T00:00:00Z")).as_offset_datetime().date();
+        let weekend = [day("2026-01-03").weekday(), day("2026-01-04").weekday()];
+        let covered = StaticCalendarProvider::new([
+            CalendarDefinition::new(id(CAL), weekend, []).with_coverage([2026])
+        ])
+        .unwrap();
+        let result = try_run(
+            &w,
+            ExecutionInputs::default(),
+            &runtime(&covered, &NO_MANAGERS, None, Vec::new()),
+        )
+        .unwrap()
+        .result;
+        assert_eq!(
+            missing_of(&result),
+            pairs(&[(CAL, "calendar_coverage:2027")])
+        );
+        match &result {
+            ExecutionResult::Undecidable { missing, .. } => assert!(missing
+                .iter()
+                .all(|m| m.kind == MissingSemanticKind::ModelCondition)),
+            other => panic!("expected Undecidable, got {other:?}"),
+        }
+        // Covering both years answers the same scenario.
+        let both = StaticCalendarProvider::new([
+            CalendarDefinition::new(id(CAL), weekend, []).with_coverage([2026, 2027])
+        ])
+        .unwrap();
+        let result = try_run(
+            &w,
+            ExecutionInputs::default(),
+            &runtime(&both, &NO_MANAGERS, None, Vec::new()),
+        )
+        .unwrap()
+        .result;
+        assert_eq!(
+            calc_result(&result, CALC),
+            decimal("10", Some("working_day"))
+        );
+    }
+
+    #[test]
     fn calculation_examples_are_not_generic_inputs() {
         // The example binds day_fraction, but a missing start date is not filled from it.
         let mut w = hr_world(HR_EXPRESSION, Some(vec![half_day_example("0.5")]));
