@@ -1321,7 +1321,7 @@ export interface components {
             type: "enum";
         };
         ClassifyRequest: {
-            class: string;
+            class: components["schemas"]["RequirementClass"];
         };
         ConfirmDerivedRequest: {
             table_id: string;
@@ -1863,12 +1863,17 @@ export interface components {
         ReasonRequest: {
             reason: string;
         };
+        /**
+         * @description The closed requirement class vocabulary (`Requirement.requirement_kind`, §7.5).
+         * @enum {string}
+         */
+        RequirementClass: "functional" | "quality" | "interface" | "data" | "security" | "operational" | "compliance" | "transition" | "constraint";
         RequirementCoverage: {
             operations: string[];
             scenarios: string[];
         };
         RequirementDetail: {
-            class: string;
+            class: components["schemas"]["RequirementClass"];
             coverage: components["schemas"]["RequirementCoverage"];
             /**
              * @description The ID of that pending S1.2 EARS WorkflowProposal, accepted through the governed
@@ -1910,7 +1915,7 @@ export interface components {
             next_cursor?: string | null;
         };
         RequirementSummary: {
-            class: string;
+            class: components["schemas"]["RequirementClass"];
             coverage: components["schemas"]["RequirementCoverage"];
             id: string;
             /**
@@ -5876,7 +5881,7 @@ export interface operations {
             content: {
                 /**
                  * @example {
-                 *       "class": "example"
+                 *       "class": "compliance"
                  *     }
                  */
                 "application/json": components["schemas"]["ClassifyRequest"];

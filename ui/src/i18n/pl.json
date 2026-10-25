@@ -391,6 +391,7 @@
   "requirement.waive.submit": "Uchyl",
   "requirement.waive.title": "Uchyl ustalenie lintera",
   "requirement.ears.reject": "Odrzuć sugestię",
+  "requirement.classify.choose": "Wybierz klasę",
   "requirements.column.class": "Klasa",
   "requirements.column.id": "ID",
   "requirements.column.readiness": "Gotowość (pomocniczo)",

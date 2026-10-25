@@ -463,7 +463,7 @@
         "additionalProperties": false,
         "properties": {
           "class": {
-            "type": "string"
+            "$ref": "#/components/schemas/RequirementClass"
           }
         },
         "required": [
@@ -2404,6 +2404,21 @@
         ],
         "type": "object"
       },
+      "RequirementClass": {
+        "description": "The closed requirement class vocabulary (`Requirement.requirement_kind`, §7.5).",
+        "enum": [
+          "functional",
+          "quality",
+          "interface",
+          "data",
+          "security",
+          "operational",
+          "compliance",
+          "transition",
+          "constraint"
+        ],
+        "type": "string"
+      },
       "RequirementCoverage": {
         "additionalProperties": false,
         "properties": {
@@ -2430,7 +2445,7 @@
         "additionalProperties": false,
         "properties": {
           "class": {
-            "type": "string"
+            "$ref": "#/components/schemas/RequirementClass"
           },
           "coverage": {
             "$ref": "#/components/schemas/RequirementCoverage"
@@ -2561,7 +2576,7 @@
         "additionalProperties": false,
         "properties": {
           "class": {
-            "type": "string"
+            "$ref": "#/components/schemas/RequirementClass"
           },
           "coverage": {
             "$ref": "#/components/schemas/RequirementCoverage"
@@ -4036,6 +4051,11 @@
         "code": "E_SOURCE_CONFLICT",
         "meaning": "A different source with this identity already exists.",
         "status": 409
+      },
+      {
+        "code": "E_SOURCE_EMPTY",
+        "meaning": "The uploaded file yields no evidence fragments; nothing was written.",
+        "status": 400
       },
       {
         "code": "E_SOURCE_EXISTS",
@@ -8365,7 +8385,7 @@
           "content": {
             "application/json": {
               "example": {
-                "class": "example"
+                "class": "compliance"
               },
               "schema": {
                 "$ref": "#/components/schemas/ClassifyRequest"

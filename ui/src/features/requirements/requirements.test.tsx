@@ -445,7 +445,7 @@ describe("RequirementDetail", () => {
     const user = userEvent.setup();
     await screen.findByTestId("requirement-text");
 
-    await user.type(screen.getByTestId("classify-class"), "quality");
+    await user.selectOptions(screen.getByTestId("classify-class"), "quality");
     await user.click(screen.getByRole("button", { name: "Reclassify" }));
     await waitFor(() => expect(posts(calls, "/classify")).toHaveLength(1));
 

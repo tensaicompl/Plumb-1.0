@@ -372,6 +372,11 @@ pub const ERROR_CATALOGUE: &[CatalogueEntry] = &[
         409,
         "A different source with this identity already exists.",
     ),
+    entry(
+        "E_SOURCE_EMPTY",
+        400,
+        "The uploaded file yields no evidence fragments; nothing was written.",
+    ),
     entry("E_SOURCE_EXISTS", 409, "This exact source already exists."),
     entry(
         "E_STAGE_CHILD_FAILED",

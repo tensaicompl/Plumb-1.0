@@ -5448,7 +5448,13 @@ mod http_workflow {
         direct_commit(
             &app,
             SemanticPatch::AddNode {
-                node: scenario("scn:odd", "Accepted", "Pending", "state:submitted", "trans:submit"),
+                node: scenario(
+                    "scn:odd",
+                    "Accepted",
+                    "Pending",
+                    "state:submitted",
+                    "trans:submit",
+                ),
             },
         );
         let page = get(&app, "/api/scenarios").await.json();
@@ -5484,7 +5490,11 @@ mod http_workflow {
         let page = r.json();
         assert_eq!(page["health"][0]["id"], question.to_string());
         assert_eq!(page["health"][0]["code"], "E_QUESTION_PROJECTION_INVALID");
-        assert!(page["items"].as_array().unwrap().iter().all(|q| q["id"] != question.to_string()));
+        assert!(page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|q| q["id"] != question.to_string()));
     }
 
     /// Commits `patch` directly to the store (another writer).

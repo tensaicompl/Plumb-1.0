@@ -3788,7 +3788,14 @@ mod http_core {
     async fn source_reupload_exists_under_another_clock_instant() {
         let app = app();
         let md = b"# Leave\n\nEmployees request leave.\n";
-        let r = upload(&app, Some(&etag(&app)), Some("leave.md"), "text/markdown", md).await;
+        let r = upload(
+            &app,
+            Some(&etag(&app)),
+            Some("leave.md"),
+            "text/markdown",
+            md,
+        )
+        .await;
         assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
         let id = r.json()["id"].as_str().unwrap().to_owned();
         // The same database served by a state whose clock reads another instant.
@@ -3805,7 +3812,14 @@ mod http_core {
             state: later,
         };
         let before = revision_count(&later);
-        let r = upload(&later, Some(&etag(&later)), Some("leave.md"), "text/markdown", md).await;
+        let r = upload(
+            &later,
+            Some(&etag(&later)),
+            Some("leave.md"),
+            "text/markdown",
+            md,
+        )
+        .await;
         assert_eq!(
             (r.status, r.code().as_str()),
             (StatusCode::CONFLICT, "E_SOURCE_EXISTS"),
@@ -3815,7 +3829,14 @@ mod http_core {
         assert_eq!(r.json()["details"]["id"], id);
         // Fable #235: the same content under another display name is the same identity with
         // another persisted payload: E_SOURCE_CONFLICT.
-        let r = upload(&later, Some(&etag(&later)), Some("other.md"), "text/markdown", md).await;
+        let r = upload(
+            &later,
+            Some(&etag(&later)),
+            Some("other.md"),
+            "text/markdown",
+            md,
+        )
+        .await;
         assert_eq!(
             (r.status, r.code().as_str()),
             (StatusCode::CONFLICT, "E_SOURCE_CONFLICT"),
@@ -3823,5 +3844,31 @@ mod http_core {
             r.json()
         );
         assert_eq!(revision_count(&later), before);
+    }
+
+    /// Fable #321: a source yielding zero EvidenceFragments is a typed 400 before any artifact or
+    /// revision is written.
+    #[tokio::test]
+    async fn empty_source_is_rejected_before_any_write() {
+        let app = app();
+        let before = revision_count(&app);
+        for (name, media, bytes) in [
+            ("empty.md", "text/markdown", &b""[..]),
+            ("blank.md", "text/markdown", &b"\n\n   \n"[..]),
+            ("blank.txt", "text/plain", &b"   "[..]),
+        ] {
+            let r = upload(&app, Some(&etag(&app)), Some(name), media, bytes).await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (StatusCode::BAD_REQUEST, "E_SOURCE_EMPTY"),
+                "{name}: {:?}",
+                r.json()
+            );
+            assert!(
+                !artifact_exists(&app, &Hash::content_sha256(bytes)),
+                "{name}"
+            );
+        }
+        assert_eq!(revision_count(&app), before);
     }
 }

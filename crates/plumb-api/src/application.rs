@@ -784,6 +784,14 @@ mod services {
                 ApiError::invalid("the uploaded file cannot be imported as its declared media type")
                     .with_details(json!({ "import_error": e.to_string() }))
             })?;
+            // Fable #321: a source without any EvidenceFragment carries no evidence; refused
+            // before any artifact or revision is written.
+            if imported.fragments.is_empty() {
+                return Err(ApiError::bad_request(
+                    "E_SOURCE_EMPTY",
+                    "the uploaded file yields no evidence fragments",
+                ));
+            }
             if let Some(existing) = loaded.graph.node(&imported.source.id) {
                 // Fable #314: identity is the payload and extensions; audit metadata (who and
                 // when) differs between uploads of the same source.

@@ -1155,6 +1155,7 @@ pub struct RequirementCoverage {
 pub struct RequirementSummary {
     pub id: String,
     pub text: String,
+    #[schema(value_type = RequirementClass)]
     pub class: String,
     pub status: String,
     /// Error-severity lint rule IDs recorded for this requirement by the current F1 gate report
@@ -1183,6 +1184,7 @@ pub struct RequirementLinks {
 pub struct RequirementDetail {
     pub id: String,
     pub text: String,
+    #[schema(value_type = RequirementClass)]
     pub class: String,
     pub status: String,
     pub smells: Vec<String>,
@@ -1204,9 +1206,25 @@ pub struct RequirementDetail {
     pub lint_current: bool,
 }
 
+/// The closed requirement class vocabulary (`Requirement.requirement_kind`, §7.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementClass {
+    Functional,
+    Quality,
+    Interface,
+    Data,
+    Security,
+    Operational,
+    Compliance,
+    Transition,
+    Constraint,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClassifyRequest {
+    #[schema(value_type = RequirementClass)]
     pub class: String,
 }
 

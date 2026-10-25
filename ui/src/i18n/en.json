@@ -391,6 +391,7 @@
   "requirement.waive.submit": "Waive",
   "requirement.waive.title": "Waive a lint finding",
   "requirement.ears.reject": "Reject suggestion",
+  "requirement.classify.choose": "Choose a class",
   "requirements.column.class": "Class",
   "requirements.column.id": "ID",
   "requirements.column.readiness": "Readiness (advisory)",

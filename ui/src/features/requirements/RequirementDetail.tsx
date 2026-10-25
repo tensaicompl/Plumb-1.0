@@ -14,6 +14,10 @@ export type RequirementDetailView = components["schemas"]["RequirementDetail"];
 export type SemanticChangePreview = components["schemas"]["SemanticChangePreviewResponse"];
 export type SemanticElementDiff = components["schemas"]["SemanticElementDiff"];
 type WriteResult = components["schemas"]["WriteResult"];
+type RequirementClass = components["schemas"]["RequirementClass"];
+
+/** The closed requirement class vocabulary (RequirementClass), in metamodel order. */
+const REQUIREMENT_KINDS: readonly RequirementClass[] = ["functional", "quality", "interface", "data", "security", "operational", "compliance", "transition", "constraint"];
 
 /** The query key of one requirement (GET /api/requirements/{id}). */
 export function requirementQueryKey(id: string) {
@@ -306,7 +310,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
     queryFn: () => fetchRequirement(requirementId),
   });
   const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const [classValue, setClassValue] = useState("");
+  const [classValue, setClassValue] = useState<RequirementClass | "">("");
   const [waiveFinding, setWaiveFinding] = useState("");
   const [waiveReason, setWaiveReason] = useState("");
   const [duplicateOf, setDuplicateOf] = useState("");
@@ -316,7 +320,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
   const onWritten = { onSuccess: () => void queryClient.invalidateQueries() };
   const path = { id: requirementId };
   const reviewed = requirement.data?.etag;
-  const classify = useVersionedMutation<WriteResult, string>(
+  const classify = useVersionedMutation<WriteResult, RequirementClass>(
     (value, ifMatch) => apiClient.POST("/api/requirements/{id}/classify", { params: { path, header: { "If-Match": ifMatch } }, body: { class: value } }),
     reviewed,
   );
@@ -526,12 +530,22 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
           className="space-y-2 rounded border p-3"
           onSubmit={(event) => {
             event.preventDefault();
-            classify.mutate(classValue, onWritten);
+            if (classValue !== "") {
+              classify.mutate(classValue, onWritten);
+            }
           }}
         >
           <label className="block text-sm">
             {t("requirement.classify.class")}
-            <input className="ml-2 rounded border p-1" value={classValue} data-testid="classify-class" onChange={(event) => setClassValue(event.target.value)} />
+            {/* The closed class vocabulary (Fable #321); the current class is not offered. */}
+            <select className="ml-2 rounded border" value={classValue} data-testid="classify-class" onChange={(event) => setClassValue(event.target.value as RequirementClass | "")}>
+              <option value="">{t("requirement.classify.choose")}</option>
+              {REQUIREMENT_KINDS.filter((kind) => kind !== detail.class).map((kind) => (
+                <option key={kind} value={kind}>
+                  {kind}
+                </option>
+              ))}
+            </select>
           </label>
           <button type="submit" className="rounded border px-3 py-1" disabled={classify.isPending || classValue === ""}>
             {t("requirement.classify.submit")}

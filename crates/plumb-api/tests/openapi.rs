@@ -2008,8 +2008,8 @@ mod openapi {
         // ProcessNodeView, ProcessNodeViewKind and ProcessFlowView; Hotfix 080 adds
         // FindingRuleClass; Hotfix 082 adds GateRuleState, GateRuleApplicabilityState,
         // GateRuleApplicability, GateRuleError, GateRuleResult, GateWaiver and GateSummaryView;
-        // H0.11 adds GateEvaluationState, GateStateReason and ItemHealth.
-        assert_eq!(schemas.len(), 131);
+        // H0.11 adds GateEvaluationState, GateStateReason, ItemHealth and RequirementClass.
+        assert_eq!(schemas.len(), 132);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -2191,6 +2191,28 @@ mod openapi {
             query_param(&doc, "GET", "/api/search", "scope")["schema"],
             component_ref("SearchScope")
         );
+        // Fable #321: closed-enum wire fields reference their closed enum schema.
+        assert_eq!(
+            enum_of(&doc, "RequirementClass"),
+            json!([
+                "functional",
+                "quality",
+                "interface",
+                "data",
+                "security",
+                "operational",
+                "compliance",
+                "transition",
+                "constraint"
+            ])
+        );
+        for name in ["ClassifyRequest", "RequirementSummary", "RequirementDetail"] {
+            assert_eq!(
+                schema(&doc, name)["properties"]["class"],
+                component_ref("RequirementClass"),
+                "{name}"
+            );
+        }
         // Fable #269 / #350: q is required, and only Accepted elements are searchable.
         let q = query_param(&doc, "GET", "/api/search", "q");
         assert_eq!(q["required"], true);
