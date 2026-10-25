@@ -5,9 +5,7 @@ use std::collections::BTreeMap;
 use plumb_core::{Hash, HashKind};
 
 use crate::model::{InferenceRequest, ProviderExecution};
-use crate::provider::{
-    validate_binding, InferenceProvider, InferenceRequestMaterial, ProviderError,
-};
+use crate::provider::{verify_binding, InferenceProvider, InferenceRequestMaterial, ProviderError};
 
 /// Replays exactly the executions registered for exact request IDs, after validating the
 /// request/material binding of each call (the material comes from the request owner, never from
@@ -68,7 +66,7 @@ impl InferenceProvider for MockProvider {
         request: &InferenceRequest,
         material: &InferenceRequestMaterial,
     ) -> Result<ProviderExecution, ProviderError> {
-        validate_binding(request, material)?;
+        let material = verify_binding(request, material)?;
         let execution = self
             .fixtures
             .get(&request.id)
@@ -76,6 +74,9 @@ impl InferenceProvider for MockProvider {
         execution
             .validate_for(request)
             .map_err(ProviderError::InvalidFixture)?;
+        // A replay fixture is never a schema bypass (architecture §33.8): its validated output
+        // satisfies the request's task output schema exactly as live output must.
+        material.validate_output(execution.artifact.validated_output.as_value())?;
         Ok(execution.clone())
     }
 }

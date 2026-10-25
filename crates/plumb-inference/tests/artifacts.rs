@@ -14,21 +14,21 @@ const H3: &str = "sha256:3333333333333333333333333333333333333333333333333333333
 const T1: &str = "2026-09-29T12:00:00.000000000Z";
 const T2: &str = "2026-09-29T13:00:00.000000000Z";
 
-const GOLDEN_PROJECTION: &str = r#"{"context_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","evidence_refs":["evd:0123456789abcdef"],"input_refs":["req:HR-001","src:0123456789abcdef"],"prompt_template_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","provider_policy":{"config":{"max_tokens":4096,"temperature":0},"provider":"anthropic"},"schema_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","stage":"S2","task_kind":"extract-requirements"}"#;
+const GOLDEN_PROJECTION: &str = r#"{"context_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","evidence_refs":["evd:0123456789abcdef"],"input_refs":["req:HR-001","src:0123456789abcdef"],"prompt_template_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","provider_policy":{"config":{"adapter_version":1,"api_version":"2023-06-01","max_tokens":4096,"model":"claude-opus-5-5"},"provider":"anthropic"},"schema_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","stage":"S2","task_kind":"extract-requirements"}"#;
 const GOLDEN_REQUEST_ID: &str =
-    "sha256:b122087c03c50cb6f4ae9814bcdac2cd43ff9c8e419ac191a0230f25a521f274";
-const GOLDEN_REQUEST_JSON: &str = r#"{"context_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","evidence_refs":["evd:0123456789abcdef"],"id":"sha256:b122087c03c50cb6f4ae9814bcdac2cd43ff9c8e419ac191a0230f25a521f274","input_refs":["req:HR-001","src:0123456789abcdef"],"prompt_template_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","provider_policy":{"config":{"max_tokens":4096,"temperature":0},"provider":"anthropic"},"schema_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","stage":"S2","task_kind":"extract-requirements"}"#;
+    "sha256:09187a8f27c4047e7b6ce1d696f5fd076938ad0f116e580b3a323b8bfe47ae65";
+const GOLDEN_REQUEST_JSON: &str = r#"{"context_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","evidence_refs":["evd:0123456789abcdef"],"id":"sha256:09187a8f27c4047e7b6ce1d696f5fd076938ad0f116e580b3a323b8bfe47ae65","input_refs":["req:HR-001","src:0123456789abcdef"],"prompt_template_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","provider_policy":{"config":{"adapter_version":1,"api_version":"2023-06-01","max_tokens":4096,"model":"claude-opus-5-5"},"provider":"anthropic"},"schema_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","stage":"S2","task_kind":"extract-requirements"}"#;
 const GOLDEN_REQUEST_REF: &str =
-    "sha256:d63507c2581d78d86f845a5f6bf10abd6c36783e3a782a5f30c4021265d6a5b7";
+    "sha256:a3e6e0baf714660582045ac517b19915abef9437e4847ca299b203cbb1e0a6e6";
 const RAW_RESPONSE: &[u8] = br#"{"id":"msg_01","content":[{"type":"text","text":"ok"}]}"#;
 const GOLDEN_RAW_HASH: &str =
     "sha256:25a8da9bfa43244bd47a40b7026057fb63c62e088a838507cf9662f628898cd3";
 const GOLDEN_OUTPUT_HASH: &str =
     "sha256:999749231adb93766b104854ad9e37c9fd852fbf55163f4528f206ebd0a6cd27";
-const GOLDEN_ARTIFACT_JSON: &str = r#"{"model":"claude-opus-5-5","parameters":{"max_tokens":4096,"temperature":0},"provider":"anthropic","raw_response_hash":"sha256:25a8da9bfa43244bd47a40b7026057fb63c62e088a838507cf9662f628898cd3","request_hash":"sha256:b122087c03c50cb6f4ae9814bcdac2cd43ff9c8e419ac191a0230f25a521f274","validated_output":{"requirements":[{"id":"req:HR-001","statement":"Employees shall submit leave requests."}]},"validated_output_hash":"sha256:999749231adb93766b104854ad9e37c9fd852fbf55163f4528f206ebd0a6cd27"}"#;
+const GOLDEN_ARTIFACT_JSON: &str = r#"{"model":"claude-opus-5-5","parameters":{"max_tokens":4096,"model":"claude-opus-5-5"},"provider":"anthropic","raw_response_hash":"sha256:25a8da9bfa43244bd47a40b7026057fb63c62e088a838507cf9662f628898cd3","request_hash":"sha256:09187a8f27c4047e7b6ce1d696f5fd076938ad0f116e580b3a323b8bfe47ae65","validated_output":{"requirements":[{"id":"req:HR-001","statement":"Employees shall submit leave requests."}]},"validated_output_hash":"sha256:999749231adb93766b104854ad9e37c9fd852fbf55163f4528f206ebd0a6cd27"}"#;
 const GOLDEN_VALIDATED_REF: &str =
-    "sha256:bb1d811ba68148e9195aad5612f5b81dd6a825f6ebe87851884bbc492f4031e8";
-const GOLDEN_DRV_ID: &str = "drv:48d777dc5cc38d3c";
+    "sha256:a6b7c4a9f3b74b36a40efb7388d99cb521fd7c30c056164c9250fe163a7dc0d6";
+const GOLDEN_DRV_ID: &str = "drv:cae5dd222aaff422";
 
 // ---------------------------------------------------------------------------- builders
 
@@ -44,10 +44,36 @@ fn ts(s: &str) -> Timestamp {
     s.parse().unwrap()
 }
 
+/// The golden "anthropic" policy config: exactly an adapter-version-1 config the real adapter
+/// accepts (Fable #66).
+fn golden_anthropic_config() -> Value {
+    json!({
+        "adapter_version": 1,
+        "api_version": "2023-06-01",
+        "max_tokens": 4096,
+        "model": "claude-opus-5-5",
+    })
+}
+
+#[cfg(feature = "anthropic")]
+#[test]
+fn golden_anthropic_policy_is_accepted_by_the_real_adapter() {
+    plumb_inference::anthropic::validate_config(&golden_anthropic_config()).unwrap();
+    assert_eq!(
+        plumb_inference::anthropic::request_parameters(&golden_anthropic_config()).unwrap(),
+        execution(&request()).artifact.parameters
+    );
+    // The previous golden (a sampling parameter) is not adapter configuration.
+    assert!(plumb_inference::anthropic::validate_config(
+        &json!({"temperature": 0, "max_tokens": 4096})
+    )
+    .is_err());
+}
+
 fn policy(provider: &str) -> ProviderPolicy {
     ProviderPolicy {
         provider: provider.to_owned(),
-        config: CanonicalJson::new(json!({"temperature": 0, "max_tokens": 4096})),
+        config: CanonicalJson::new(golden_anthropic_config()),
     }
 }
 
@@ -78,7 +104,7 @@ fn execution(request: &InferenceRequest) -> ProviderExecution {
             request_hash: request.id.clone(),
             provider: "anthropic".to_owned(),
             model: "claude-opus-5-5".to_owned(),
-            parameters: CanonicalJson::new(json!({"temperature": 0, "max_tokens": 4096})),
+            parameters: CanonicalJson::new(json!({"max_tokens": 4096, "model": "claude-opus-5-5"})),
             raw_response_hash: Hash::content_sha256(RAW_RESPONSE),
             validated_output: output(),
             validated_output_hash: output().content_hash().unwrap(),
@@ -710,7 +736,7 @@ fn derivation_record_materialization_is_deterministic_and_exact() {
     assert_eq!(record.context_hash, Some(hash(H1)));
     assert_eq!(
         record.parameters,
-        Some(json!({"max_tokens": 4096, "temperature": 0}))
+        Some(json!({"max_tokens": 4096, "model": "claude-opus-5-5"}))
     );
     assert_eq!(record.raw_response_hash, Some(hash(GOLDEN_RAW_HASH)));
     assert_eq!(record.validated_output_hash, Some(hash(GOLDEN_OUTPUT_HASH)));

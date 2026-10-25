@@ -36,13 +36,13 @@ mod process_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:a8dd9ca29824bcef9b59fbdacc2abee131fd2d3f4e1183f8eb8ec779a2d4419f";
+        "sha256:e0d91b76a7c8bb49062c929f7fdefebc5bcd15b55defc9679ddfc99f01e8e733";
     const SCHEMA_HASH: &str =
-        "sha256:a4b0c6e1727e85d997c758e00fc86707935c26a683ce67d700ed10ec2afc39b3";
+        "sha256:458d2fb079751f559bc6166101112645775e0c2731bc04cf6cd9bc63375a062c";
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:aa37d26fb9772847592ef6d3a10377e37245b864b1316b5e0e7b02236dc355ee";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:b894cf52f9354e42cc11d10e04940136b6fd88c5f92348a5110dfc05b74828a6";
+        "sha256:5c989cfa28f7f3932e6925753b24c64ff08bec0cb29e366d11551ea3dc4d4be6";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and
@@ -825,7 +825,14 @@ mod process_contract {
         let mut timer_wait = pnode("wait", "timer_event");
         timer_wait["timer_expr"] = json!("P2D");
         assert!(issues(linear_with(timer_wait.clone())).is_empty());
+        // H0.8 (Fable #65): the schema itself rejects an empty timer_expr; a blank one still
+        // reaches the deterministic node-shape check.
         timer_wait["timer_expr"] = json!("");
+        assert!(matches!(
+            run(&base_graph(), vec![linear_with(timer_wait.clone())]),
+            Err(ProcessError::SchemaInvalid { .. })
+        ));
+        timer_wait["timer_expr"] = json!("   ");
         assert!(issues(linear_with(timer_wait))
             .iter()
             .any(|i| matches!(i, ProcessIssue::InvalidNodeShape { .. })));
@@ -869,24 +876,16 @@ mod process_contract {
 
     #[test]
     fn process_deferred_kinds_and_parallel() {
-        for (kind, check) in [
-            (
-                "exclusive_gateway",
-                (|i: &ProcessIssue| {
-                    matches!(i, ProcessIssue::ExclusiveGatewayUnrepresentable { .. })
-                }) as fn(&ProcessIssue) -> bool,
-            ),
-            ("error_event", |i| {
-                matches!(i, ProcessIssue::ErrorEventUnrepresentable { .. })
-            }),
-            ("subprocess", |i| {
-                matches!(i, ProcessIssue::SubprocessUnrepresentable { .. })
-            }),
-        ] {
-            let (c, proposals) = one(&base_graph(), linear_with(pnode("x", kind)));
-            assert!(c.issues.iter().any(check), "{kind}: {:?}", c.issues);
-            assert!(proposals.is_empty());
-            assert_eq!(c.disposition, ProcessDisposition::Ineligible);
+        // H0.8 (Fable #65): the schema encodes the pilot contract its prompt states, so the
+        // deferred node kinds are rejected as schema-invalid output, not analysed.
+        for kind in ["exclusive_gateway", "error_event", "subprocess"] {
+            assert!(
+                matches!(
+                    run(&base_graph(), vec![linear_with(pnode("x", kind))]),
+                    Err(ProcessError::SchemaInvalid { .. })
+                ),
+                "{kind}"
+            );
         }
         // The schema never exposes condition_expr.
         let mut conditioned = pnode("a", "service_task");

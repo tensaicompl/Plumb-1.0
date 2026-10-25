@@ -161,6 +161,24 @@ impl ApiError {
         ApiError::new(StatusCode::FORBIDDEN, code, message)
     }
 
+    /// 403 `E_FORBIDDEN_HOST`: the request has no loopback `Host` (architecture §33.8). The
+    /// rejected value is not echoed.
+    pub fn forbidden_host() -> ApiError {
+        ApiError::forbidden(
+            "E_FORBIDDEN_HOST",
+            "the request Host must be 127.0.0.1, [::1] or localhost",
+        )
+    }
+
+    /// 403 `E_FORBIDDEN_ORIGIN`: the request carries an `Origin` that is not an `http`
+    /// loopback origin (architecture §33.8). The rejected value is not echoed.
+    pub fn forbidden_origin() -> ApiError {
+        ApiError::forbidden(
+            "E_FORBIDDEN_ORIGIN",
+            "the request Origin must be an http origin of 127.0.0.1, [::1] or localhost",
+        )
+    }
+
     /// 502 `E_INFERENCE_FAILED`: provider execution or provider-output inspection failed;
     /// `error` is the stable error name.
     pub fn inference_failed(error: &str) -> ApiError {

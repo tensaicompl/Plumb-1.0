@@ -36,7 +36,7 @@ mod vocabulary_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:5aa872f42a4cbb0a896bc11a6432c7fdad4339f91864414061d79caec36b86fb";
+        "sha256:7619dc03026e887eb3a27a8184e9a2aed9dc44d46681f07f2e1028ca9a62fd1f";
     const SCHEMA_HASH: &str =
         "sha256:611ce010870a1642d6c213b12783ac6e38b17424b0db557d60bcef495936a78c";
     const TERM_ID: &str = "term:ac50ff756b24a007";
@@ -46,7 +46,7 @@ mod vocabulary_contract {
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:629abc4db318b963b7ec633721dd9f7c957060bcbd3323737b40928ee5ff0374";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:9acfe1b9f39db91694be61f0e961fdfb72f4bc8235cfdff86c9e0c3e598e96a5";
+        "sha256:e76d68079c2fe731d666fc5f9c92c4d594a286007adfdcc66dfa6544e45ba8e3";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and

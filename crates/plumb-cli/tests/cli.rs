@@ -551,6 +551,43 @@ mod cli {
         assert!(out.contains("[default: 127.0.0.1:8080]"), "{out}");
     }
 
+    /// H0.8 (architecture §33.8): the pilot has no user authentication, so `serve` refuses any
+    /// non-loopback bind address with a typed configuration error before it opens anything.
+    #[test]
+    fn serve_refuses_non_loopback_bind() {
+        let env = env();
+        let before = std::fs::read(&env.db).unwrap();
+        for listen in [
+            "0.0.0.0:0",
+            "[::]:0",
+            "127.0.0.2:0",
+            "192.168.1.10:0",
+            "10.0.0.1:8080",
+            "[fe80::1]:0",
+        ] {
+            let out = env
+                .cmd()
+                .args(["serve", "--listen", listen, "--json"])
+                .timeout(std::time::Duration::from_secs(30))
+                .output()
+                .unwrap();
+            let err = String::from_utf8(out.stderr).unwrap();
+            assert_eq!(out.status.code(), Some(1), "{listen}: {err}");
+            let value: Value = serde_json::from_str(err.trim())
+                .unwrap_or_else(|_| panic!("{listen}: stderr {err:?}"));
+            assert_eq!(value["code"], "E_NON_LOOPBACK_BIND", "{listen}: {value}");
+            assert!(
+                value["message"].as_str().unwrap().contains("loopback"),
+                "{value}"
+            );
+        }
+        // Refused before any database or configuration is touched: no --db needed either.
+        let (code, _, err) = output(bin().args(["serve", "--listen", "0.0.0.0:8080"]));
+        assert_eq!(code, 1);
+        assert!(err.contains("E_NON_LOOPBACK_BIND"), "{err}");
+        assert_eq!(std::fs::read(&env.db).unwrap(), before);
+    }
+
     #[test]
     fn cli_rounds_create_requires_an_explicit_max() {
         let env = env();

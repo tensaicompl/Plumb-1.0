@@ -81,6 +81,10 @@ pub enum ConfigError {
     /// The key file is unusable; the message never contains key material.
     #[error("anthropic key file: {0}")]
     KeyFile(&'static str),
+    /// `serve --listen` names a non-loopback address (`E_NON_LOOPBACK_BIND`, architecture
+    /// §33.8): the pilot has no user authentication and binds only to 127.0.0.1 or [::1].
+    #[error("E_NON_LOOPBACK_BIND: serve --listen {0} is not a loopback address: the pilot server binds only to 127.0.0.1 or [::1]")]
+    NonLoopbackBind(std::net::SocketAddr),
 }
 
 /// The configured identity.

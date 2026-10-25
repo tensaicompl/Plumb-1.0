@@ -12,7 +12,10 @@
     }
   },
   "$defs": {
-    "id": { "type": "string", "minLength": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+    },
     "node_key": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" },
     "range": {
       "type": "object",
@@ -62,20 +65,17 @@
             "end",
             "human_task",
             "service_task",
-            "exclusive_gateway",
             "parallel_split",
             "parallel_join",
             "message_event",
-            "timer_event",
-            "error_event",
-            "subprocess"
+            "timer_event"
           ]
         },
         "operation": { "$ref": "#/$defs/optional_grounded_ref" },
         "performers": { "type": "array", "items": { "$ref": "#/$defs/grounded_ref" } },
         "produces": { "type": "array", "items": { "$ref": "#/$defs/grounded_ref" } },
         "message_ref": { "$ref": "#/$defs/optional_grounded_ref" },
-        "timer_expr": { "oneOf": [{ "type": "null" }, { "type": "string" }] },
+        "timer_expr": { "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }] },
         "evidence": { "$ref": "#/$defs/evidence" }
       }
     },

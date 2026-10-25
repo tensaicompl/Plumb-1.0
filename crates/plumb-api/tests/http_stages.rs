@@ -507,7 +507,13 @@ mod http_stages {
         }
     }
 
-    async fn send(app: &App, request: Request<Body>) -> Reply {
+    /// Sends `request` with the loopback `Host` a real HTTP/1.1 client always sends
+    /// (architecture §33.8: a request without a loopback Host is 403).
+    async fn send(app: &App, mut request: Request<Body>) -> Reply {
+        request
+            .headers_mut()
+            .entry(axum::http::header::HOST)
+            .or_insert(axum::http::HeaderValue::from_static("127.0.0.1:8080"));
         let response = app.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let etag = response

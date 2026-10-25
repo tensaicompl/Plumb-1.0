@@ -1,7 +1,7 @@
 [
   {
     "artifact": {
-      "request_hash": "sha256:59fd12cd4be95200ffbad2ca5c7c92e1e4d28c9afedf08a35d1b61980684d66f",
+      "request_hash": "sha256:40a6438dcf8019fd458aa08f7335cab4e52d81a9dfeabe9eb8298305facba8e2",
       "provider": "test",
       "model": "scripted-hr",
       "parameters": {},
@@ -4584,7 +4584,7 @@
   },
   {
     "artifact": {
-      "request_hash": "sha256:fd210da6b0004400959ac0e03dd6892bb17f54c2e7a3de7fce8c79f412f88475",
+      "request_hash": "sha256:846377a8205f1c516614372e286d04df060b09cd0e9ac240a71b0dd1ca00b9df",
       "provider": "test",
       "model": "scripted-hr",
       "parameters": {},

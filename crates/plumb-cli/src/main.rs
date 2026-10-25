@@ -329,6 +329,10 @@ fn provider_choice(cli: &Cli) -> Result<ProviderChoice<'_>, CliError> {
 }
 
 fn execute(cli: Cli) -> Result<Done, CliError> {
+    // A non-loopback serve address is refused before anything is read or opened (§33.8).
+    if let Command::Serve { listen } = &cli.command {
+        commands::require_loopback_listen(*listen)?;
+    }
     let choice = provider_choice(&cli)?;
     let config_path = cli
         .config

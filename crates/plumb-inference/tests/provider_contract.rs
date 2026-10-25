@@ -306,6 +306,45 @@ mod provider_contract {
         }
     }
 
+    /// H0.8 (architecture §33.8): a replay fixture is never a schema bypass. The fixture's
+    /// validated output is checked against the request material's compiled task output schema,
+    /// exactly as the live provider checks model output before admission.
+    #[test]
+    fn replay_fixture_must_satisfy_schema() {
+        let (request, material) = standard("mock");
+        let mut invalid = mock_execution(&request);
+        let raw = br#"{"answer":"maybe"}"#.to_vec();
+        let output = CanonicalJson::new(json!({"answer": "maybe"}));
+        invalid.artifact.raw_response_hash = Hash::content_sha256(&raw);
+        invalid.artifact.validated_output_hash = output.content_hash().unwrap();
+        invalid.artifact.validated_output = output;
+        invalid.raw_response = raw;
+        // The fixture is structurally valid, so registration (which has no schema) accepts it.
+        let mock = MockProvider::with_fixtures([(request.id.clone(), invalid)]).unwrap();
+        let err = mock.execute(&request, &material).unwrap_err();
+        assert!(
+            matches!(&err, ProviderError::SchemaInvalidOutput { errors } if !errors.is_empty()),
+            "{err:?}"
+        );
+        // An extra property the closed schema forbids is rejected the same way.
+        let mut extra = mock_execution(&request);
+        let raw = br#"{"answer":"yes","note":"x"}"#.to_vec();
+        let output = CanonicalJson::new(json!({"answer": "yes", "note": "x"}));
+        extra.artifact.raw_response_hash = Hash::content_sha256(&raw);
+        extra.artifact.validated_output_hash = output.content_hash().unwrap();
+        extra.artifact.validated_output = output;
+        extra.raw_response = raw;
+        let mock = MockProvider::with_fixtures([(request.id.clone(), extra)]).unwrap();
+        assert!(matches!(
+            mock.execute(&request, &material),
+            Err(ProviderError::SchemaInvalidOutput { .. })
+        ));
+        // A schema-valid fixture still replays unchanged.
+        let valid = mock_execution(&request);
+        let mock = MockProvider::with_fixtures([(request.id.clone(), valid.clone())]).unwrap();
+        assert_eq!(mock.execute(&request, &material).unwrap(), valid);
+    }
+
     #[test]
     fn provider_execution_serde_is_strict_and_validated() {
         let (request, _) = standard("mock");
@@ -340,6 +379,10 @@ mod provider_contract {
         use std::thread;
 
         use plumb_core::{to_canonical_json, CanonicalJson, Hash};
+        use plumb_inference::anthropic::{
+            default_request_timeout_ms, ANTHROPIC_DEFAULT_CONNECT_TIMEOUT_MS,
+            ANTHROPIC_MAX_REQUEST_TIMEOUT_MS, ANTHROPIC_MAX_TOKENS_LIMIT,
+        };
         use plumb_inference::{AnthropicProvider, InferenceProvider, ProviderError};
         use serde_json::{json, Value};
 
@@ -422,6 +465,22 @@ mod provider_contract {
             }
         }
 
+        /// The exact header set of every Messages API request (H0.8, architecture §33.8):
+        /// x-api-key authentication, the configured anthropic-version, the JSON content type
+        /// and the transport headers; never `authorization`.
+        const EXACT_HEADERS: [&str; 6] = [
+            "accept",
+            "anthropic-version",
+            "content-length",
+            "content-type",
+            "host",
+            "x-api-key",
+        ];
+
+        fn header_names(captured: &Captured) -> Vec<&str> {
+            captured.headers.keys().map(String::as_str).collect()
+        }
+
         fn message(model: &str, stop_reason: &str, content: Value) -> Vec<u8> {
             serde_json::to_vec(&json!({
                 "id": "msg_local_1",
@@ -475,8 +534,12 @@ mod provider_contract {
             assert_eq!(a.request_hash, request.id);
             assert_eq!(a.provider, "anthropic");
             assert_eq!(a.model, "test-model-returned");
-            assert_eq!(a.parameters, request.provider_policy.config);
-            assert_eq!(a.parameters.as_value()["model"], "test-model-configured");
+            // Fable #66: the recorded parameters are exactly the generation parameters of the
+            // request body actually sent (model and max_tokens; no sampling parameters).
+            assert_eq!(
+                a.parameters.as_value(),
+                &json!({"model": "test-model-configured", "max_tokens": 256})
+            );
             assert_eq!(a.validated_output.as_value(), &json!({"answer": "yes"}));
             assert_eq!(
                 a.validated_output_hash,
@@ -490,11 +553,18 @@ mod provider_contract {
             // The exact outbound request.
             let sent = server.captured.lock().unwrap()[0].clone();
             assert_eq!(sent.request_line, "POST /v1/messages HTTP/1.1");
-            assert_eq!(sent.headers["authorization"], format!("Bearer {KEY}"));
+            assert_eq!(sent.headers["x-api-key"], KEY);
+            assert!(!sent.headers.contains_key("authorization"));
             assert_eq!(sent.headers["anthropic-version"], "2023-06-01");
             assert_eq!(sent.headers["content-type"], "application/json");
             assert!(!sent.headers.contains_key("anthropic-workspace-id"));
+            assert_eq!(header_names(&sent), EXACT_HEADERS.to_vec());
             let body: Value = serde_json::from_slice(&sent.body).unwrap();
+            // The persisted parameters are exactly the body's generation parameters.
+            let mut sent_parameters = body.as_object().unwrap().clone();
+            sent_parameters.remove("system");
+            sent_parameters.remove("messages");
+            assert_eq!(&Value::Object(sent_parameters), a.parameters.as_value());
             let schema: Value = serde_json::from_str(SCHEMA).unwrap();
             let context: Value = serde_json::from_slice(&context_bytes()).unwrap();
             let user = String::from_utf8(
@@ -510,7 +580,7 @@ mod provider_contract {
                     "messages": [{"role": "user", "content": user}],
                 })
             );
-            // The secret is confined to the Authorization header.
+            // The secret is confined to the x-api-key header.
             let sent_text = String::from_utf8_lossy(&sent.body);
             assert!(!sent_text.contains(KEY));
             assert!(!format!("{p:?}").contains(KEY));
@@ -575,11 +645,126 @@ mod provider_contract {
                 SCHEMA.as_bytes(),
             );
             let material = material_for(&request, &context, PROMPT.as_bytes(), SCHEMA.as_bytes());
-            provider(&server).execute(&request, &material).unwrap();
+            let execution = provider(&server).execute(&request, &material).unwrap();
+            let sent = server.captured.lock().unwrap()[0].clone();
+            assert_eq!(sent.headers["anthropic-workspace-id"], "wrkspc_local");
+            assert_eq!(sent.headers["x-api-key"], KEY);
+            let mut expected = EXACT_HEADERS.to_vec();
+            expected.insert(2, "anthropic-workspace-id");
+            assert_eq!(header_names(&sent), expected);
+            // The workspace is routing configuration, not a generation parameter.
             assert_eq!(
-                server.captured.lock().unwrap()[0].headers["anthropic-workspace-id"],
-                "wrkspc_local"
+                execution.artifact.parameters.as_value(),
+                &json!({"model": "test-model-configured", "max_tokens": 256})
             );
+        }
+
+        #[test]
+        fn timeouts_are_validated_identity_bound_config() {
+            let body = message("m", "end_turn", json!([text(r#"{"answer":"yes"}"#)]));
+            let server = serve("200 OK", &[], &body);
+            let context = context_bytes();
+            let attempt = |config: Value| {
+                let request = request_for(
+                    policy("anthropic", config),
+                    &context,
+                    PROMPT.as_bytes(),
+                    SCHEMA.as_bytes(),
+                );
+                let material =
+                    material_for(&request, &context, PROMPT.as_bytes(), SCHEMA.as_bytes());
+                (
+                    request.id.clone(),
+                    provider(&server).execute(&request, &material),
+                )
+            };
+            for (key, value) in [
+                ("request_timeout_ms", json!(0)),
+                ("request_timeout_ms", json!(-1)),
+                ("request_timeout_ms", json!(1.5)),
+                ("request_timeout_ms", json!("60000")),
+                (
+                    "request_timeout_ms",
+                    json!(ANTHROPIC_MAX_REQUEST_TIMEOUT_MS + 1),
+                ),
+                ("request_timeout_ms", Value::Null),
+                ("connect_timeout_ms", json!(0)),
+                ("connect_timeout_ms", Value::Null),
+                // The connect timeout cannot exceed the total timeout.
+                (
+                    "connect_timeout_ms",
+                    json!(ANTHROPIC_MAX_REQUEST_TIMEOUT_MS),
+                ),
+            ] {
+                let mut c = anthropic_config();
+                c[key] = value.clone();
+                assert!(
+                    matches!(
+                        attempt(c).1,
+                        Err(ProviderError::InvalidProviderConfig { .. })
+                    ),
+                    "{key}={value}"
+                );
+            }
+            assert_eq!(
+                server.connections.load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            // Explicit timeouts are accepted and bound into the request identity.
+            let mut explicit = anthropic_config();
+            explicit["request_timeout_ms"] = json!(30_000);
+            explicit["connect_timeout_ms"] = json!(5_000);
+            let (explicit_id, result) = attempt(explicit);
+            result.unwrap();
+            let (default_id, result) = attempt(anthropic_config());
+            result.unwrap();
+            assert_ne!(explicit_id, default_id);
+        }
+
+        #[test]
+        fn default_timeout_is_sized_for_max_tokens() {
+            let small = default_request_timeout_ms(256);
+            let large = default_request_timeout_ms(ANTHROPIC_MAX_TOKENS_LIMIT);
+            assert!(small >= 120_000, "{small}");
+            assert!(large > small);
+            // A full-size non-streaming generation is not cut off by the old fixed 120 s.
+            assert!(large >= 3_600_000, "{large}");
+            assert!(large <= ANTHROPIC_MAX_REQUEST_TIMEOUT_MS);
+            assert!(ANTHROPIC_DEFAULT_CONNECT_TIMEOUT_MS < small);
+        }
+
+        #[test]
+        fn a_timeout_is_typed_and_distinct_from_transport_failure() {
+            // A local server that accepts the connection and never answers.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            thread::spawn(move || {
+                let mut held = Vec::new();
+                for stream in listener.incoming() {
+                    held.push(stream);
+                }
+            });
+            let mut config = anthropic_config();
+            config["request_timeout_ms"] = json!(300);
+            config["connect_timeout_ms"] = json!(200);
+            let context = context_bytes();
+            let request = request_for(
+                policy("anthropic", config),
+                &context,
+                PROMPT.as_bytes(),
+                SCHEMA.as_bytes(),
+            );
+            let material = material_for(&request, &context, PROMPT.as_bytes(), SCHEMA.as_bytes());
+            let p = AnthropicProvider::with_endpoint(
+                KEY,
+                &format!("http://127.0.0.1:{port}/v1/messages"),
+            )
+            .unwrap();
+            let started = std::time::Instant::now();
+            let err = p.execute(&request, &material).unwrap_err();
+            assert!(matches!(err, ProviderError::Timeout { .. }), "{err:?}");
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            assert!(!format!("{err} {err:?}").contains(KEY));
         }
 
         #[test]

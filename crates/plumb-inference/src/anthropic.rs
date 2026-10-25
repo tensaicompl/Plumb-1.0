@@ -7,12 +7,19 @@
 //! the single user message, and validates the model's strict-JSON text locally against the exact
 //! Draft 2020-12 Plumb schema. It never translates schemas into vendor constrained output,
 //! repairs output, retries, reads files or the environment, or touches a graph or store.
+//!
+//! H0.8 (architecture §33.8): it authenticates with `x-api-key` (never `Authorization`), sends
+//! the configured `anthropic-version` and `anthropic-workspace-id` exactly when configured,
+//! follows no redirect, marks the key header sensitive and never shows the key. The total and
+//! connect timeouts are validated policy values (bound into the request identity), and an
+//! elapsed timeout is [`ProviderError::Timeout`], distinct from other transport failures.
 
 use std::fmt;
 use std::time::Duration;
 
 use plumb_core::{to_canonical_json, CanonicalJson, Hash};
 use reqwest::blocking::Client;
+use reqwest::header::HeaderValue;
 use reqwest::{redirect, Url};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -29,10 +36,28 @@ pub const ANTHROPIC_ADAPTER_VERSION: u64 = 1;
 /// The largest accepted `max_tokens`.
 pub const ANTHROPIC_MAX_TOKENS_LIMIT: u64 = 131_072;
 
-const TIMEOUT: Duration = Duration::from_secs(120);
+/// The largest accepted total request timeout (`request_timeout_ms`): two hours.
+pub const ANTHROPIC_MAX_REQUEST_TIMEOUT_MS: u64 = 7_200_000;
+/// The connect timeout used when `connect_timeout_ms` is not configured.
+pub const ANTHROPIC_DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
+/// The fixed allowance of the default total timeout (connection, queueing, input processing).
+const DEFAULT_TIMEOUT_BASE_MS: u64 = 120_000;
+/// The per-output-token allowance of the default total timeout (a conservative ~33 tokens/s).
+const DEFAULT_TIMEOUT_PER_TOKEN_MS: u64 = 30;
 const MAX_DIAGNOSTIC_CHARS: usize = 1000;
 
-/// The exact `ProviderPolicy.config` of adapter version 1.
+/// The total request timeout used when `request_timeout_ms` is not configured: sized for the
+/// configured `max_tokens` of a non-streaming request, so a long generation is not discarded
+/// by the client after it was billed (Fable #63).
+pub fn default_request_timeout_ms(max_tokens: u64) -> u64 {
+    DEFAULT_TIMEOUT_BASE_MS
+        .saturating_add(max_tokens.saturating_mul(DEFAULT_TIMEOUT_PER_TOKEN_MS))
+        .min(ANTHROPIC_MAX_REQUEST_TIMEOUT_MS)
+}
+
+/// The exact `ProviderPolicy.config` of adapter version 1. The timeouts are part of the
+/// policy, so they are bound into the request identity; omitted, they take their documented
+/// defaults (which depend only on the other policy values).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AnthropicConfig {
@@ -42,6 +67,20 @@ struct AnthropicConfig {
     api_version: String,
     #[serde(default)]
     workspace_id: Option<String>,
+    #[serde(default)]
+    request_timeout_ms: Option<u64>,
+    #[serde(default)]
+    connect_timeout_ms: Option<u64>,
+}
+
+/// The validated adapter configuration with its effective timeouts.
+struct EffectiveConfig {
+    model: String,
+    max_tokens: u64,
+    api_version: String,
+    workspace_id: Option<String>,
+    request_timeout: Duration,
+    connect_timeout: Duration,
 }
 
 fn is_clean(text: &str) -> bool {
@@ -54,9 +93,15 @@ fn config_error(reason: impl Into<String>) -> ProviderError {
     }
 }
 
-fn decode_config(config: &Value) -> Result<AnthropicConfig, ProviderError> {
-    if config.get("workspace_id").is_some_and(Value::is_null) {
-        return Err(config_error("workspace_id must be a string when present"));
+fn decode_config(config: &Value) -> Result<EffectiveConfig, ProviderError> {
+    for (field, kind) in [
+        ("workspace_id", "a string"),
+        ("request_timeout_ms", "an integer"),
+        ("connect_timeout_ms", "an integer"),
+    ] {
+        if config.get(field).is_some_and(Value::is_null) {
+            return Err(config_error(format!("{field} must be {kind} when present")));
+        }
     }
     let decoded: AnthropicConfig =
         serde_json::from_value(config.clone()).map_err(|e| config_error(e.to_string()))?;
@@ -79,7 +124,54 @@ fn decode_config(config: &Value) -> Result<AnthropicConfig, ProviderError> {
     {
         return Err(config_error("workspace_id must be clean non-empty text"));
     }
-    Ok(decoded)
+    let request_timeout_ms = decoded
+        .request_timeout_ms
+        .unwrap_or_else(|| default_request_timeout_ms(decoded.max_tokens));
+    if !(1..=ANTHROPIC_MAX_REQUEST_TIMEOUT_MS).contains(&request_timeout_ms) {
+        return Err(config_error(
+            "request_timeout_ms must be within 1..=7200000",
+        ));
+    }
+    let connect_timeout_ms = decoded
+        .connect_timeout_ms
+        .unwrap_or(ANTHROPIC_DEFAULT_CONNECT_TIMEOUT_MS.min(request_timeout_ms));
+    if !(1..=request_timeout_ms).contains(&connect_timeout_ms) {
+        return Err(config_error(
+            "connect_timeout_ms must be within 1..=request_timeout_ms",
+        ));
+    }
+    Ok(EffectiveConfig {
+        model: decoded.model,
+        max_tokens: decoded.max_tokens,
+        api_version: decoded.api_version,
+        workspace_id: decoded.workspace_id,
+        request_timeout: Duration::from_millis(request_timeout_ms),
+        connect_timeout: Duration::from_millis(connect_timeout_ms),
+    })
+}
+
+impl EffectiveConfig {
+    /// The generation parameters of the request body: exactly `model` and `max_tokens`. No
+    /// sampling parameter is ever sent, and these are exactly what the artifact records as its
+    /// `parameters` (Fable #66).
+    fn parameters(&self) -> Value {
+        json!({
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+        })
+    }
+}
+
+/// Validates an adapter-version-1 `ProviderPolicy.config` without any I/O (for eager
+/// configuration checks and tests).
+pub fn validate_config(config: &Value) -> Result<(), ProviderError> {
+    decode_config(config).map(|_| ())
+}
+
+/// The generation parameters a valid `config` sends in the request body, as recorded in the
+/// inference artifact.
+pub fn request_parameters(config: &Value) -> Result<CanonicalJson, ProviderError> {
+    decode_config(config).map(|c| CanonicalJson::new(c.parameters()))
 }
 
 fn bounded(text: &str) -> String {
@@ -92,11 +184,42 @@ fn malformed(reason: impl Into<String>) -> ProviderError {
     }
 }
 
-/// The Anthropic Messages API provider.
+/// The Anthropic Messages API provider. It holds the credential and endpoint only; each call
+/// builds its HTTP client from the request's validated policy (connect timeout, redirects
+/// disabled), so every timeout is bound into the request identity.
 pub struct AnthropicProvider {
-    client: Client,
     api_key: String,
     endpoint: Url,
+}
+
+/// A reqwest failure as a typed provider error: a timeout is distinct from other transport
+/// failures. The URL (and so any proxy or endpoint detail) is dropped; the key is never in it.
+fn transport_error(error: reqwest::Error) -> ProviderError {
+    let timed_out = is_timeout(&error);
+    let reason = error.without_url().to_string();
+    if timed_out {
+        ProviderError::Timeout { reason }
+    } else {
+        ProviderError::Transport { reason }
+    }
+}
+
+/// Whether a reqwest error (or any error in its source chain) is a timeout.
+fn is_timeout(error: &reqwest::Error) -> bool {
+    if error.is_timeout() {
+        return true;
+    }
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        if cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::TimedOut)
+        {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
 }
 
 impl fmt::Debug for AnthropicProvider {
@@ -136,18 +259,15 @@ impl AnthropicProvider {
         if endpoint.host_str().is_none_or(str::is_empty) {
             return Err(invalid("missing host"));
         }
-        let client = Client::builder()
-            .timeout(TIMEOUT)
-            .redirect(redirect::Policy::none())
-            .build()
-            .map_err(|e| ProviderError::Transport {
-                reason: e.without_url().to_string(),
-            })?;
-        Ok(AnthropicProvider {
-            client,
-            api_key,
-            endpoint,
-        })
+        Ok(AnthropicProvider { api_key, endpoint })
+    }
+
+    /// The credential as a sensitive header value (redacted from reqwest's own debug output).
+    fn key_header(&self) -> Result<HeaderValue, ProviderError> {
+        let mut value =
+            HeaderValue::from_str(&self.api_key).map_err(|_| ProviderError::InvalidSecret)?;
+        value.set_sensitive(true);
+        Ok(value)
     }
 }
 
@@ -191,34 +311,34 @@ impl InferenceProvider for AnthropicProvider {
         }))
         .map_err(|e| config_error(e.to_string()))?;
         let user = String::from_utf8(envelope).map_err(|e| config_error(e.to_string()))?;
-        let body = to_canonical_json(&json!({
-            "model": config.model,
-            "max_tokens": config.max_tokens,
-            "system": material.prompt,
-            "messages": [{"role": "user", "content": user}],
-        }))
-        .map_err(|e| config_error(e.to_string()))?;
+        let parameters = config.parameters();
+        let mut body = parameters.clone();
+        body["system"] = json!(material.prompt);
+        body["messages"] = json!([{"role": "user", "content": user}]);
+        let body = to_canonical_json(&body).map_err(|e| config_error(e.to_string()))?;
 
-        let mut http = self
-            .client
+        let client = Client::builder()
+            .connect_timeout(config.connect_timeout)
+            .timeout(config.request_timeout)
+            .redirect(redirect::Policy::none())
+            .build()
+            .map_err(transport_error)?;
+        let mut http = client
             .post(self.endpoint.clone())
-            .header("authorization", format!("Bearer {}", self.api_key))
+            .header("x-api-key", self.key_header()?)
             .header("anthropic-version", &config.api_version)
             .header("content-type", JSON_MEDIA_TYPE);
         if let Some(workspace) = &config.workspace_id {
             http = http.header("anthropic-workspace-id", workspace);
         }
-        let transport = |e: reqwest::Error| ProviderError::Transport {
-            reason: e.without_url().to_string(),
-        };
-        let response = http.body(body).send().map_err(transport)?;
+        let response = http.body(body).send().map_err(transport_error)?;
         let status = response.status();
         let header_request_id = response
             .headers()
             .get("request-id")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let raw = response.bytes().map_err(transport)?.to_vec();
+        let raw = response.bytes().map_err(transport_error)?.to_vec();
         if !status.is_success() {
             return Err(remote_error(status.as_u16(), header_request_id, &raw));
         }
@@ -273,11 +393,7 @@ impl InferenceProvider for AnthropicProvider {
             serde_json::from_str(text).map_err(|e| ProviderError::InvalidOutputJson {
                 reason: e.to_string(),
             })?;
-        if let Err(errors) = material.compiled.validate(&output) {
-            let mut errors: Vec<String> = errors.map(|e| e.to_string()).collect();
-            errors.sort();
-            return Err(ProviderError::SchemaInvalidOutput { errors });
-        }
+        material.validate_output(&output)?;
 
         let validated_output = CanonicalJson::new(output);
         let validated_output_hash =
@@ -291,7 +407,7 @@ impl InferenceProvider for AnthropicProvider {
                 request_hash: request.id.clone(),
                 provider: policy.provider.clone(),
                 model,
-                parameters: policy.config.clone(),
+                parameters: CanonicalJson::new(parameters),
                 raw_response_hash: Hash::content_sha256(&raw),
                 validated_output,
                 validated_output_hash,

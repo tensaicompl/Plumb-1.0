@@ -12,7 +12,10 @@
     }
   },
   "$defs": {
-    "id": { "type": "string", "minLength": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$"
+    },
     "name": { "type": "string", "minLength": 1 },
     "range": {
       "type": "object",

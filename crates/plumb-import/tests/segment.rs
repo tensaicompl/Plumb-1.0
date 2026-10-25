@@ -27,17 +27,17 @@ mod segment_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:d7d6267608a65e754431056bed329885b7678380f46edc917f36b24caa6b7a70";
+        "sha256:4cd83f31891aa81c8a15d2613092724281f375672e3f97d886ba770dbb6758fa";
     const SCHEMA_HASH: &str =
         "sha256:ac038cd92a869a46205ec01d3a5cdedfec0b5a413f80ac002a2548c3785212d7";
     const CONTEXT_HASH: &str =
         "sha256:330dab252a7e50b0464183707ec478b881e525e422d53d3137e227a18f778ac6";
     const REQUEST_ID: &str =
-        "sha256:52434ff8f22ef4078d2987def95e2045a5e9428f507d0d3210b8664d28d3897b";
+        "sha256:96cce9dbd27a9992195723e85283a94614009e61779604d285e3d2493d6621c1";
     const SEG_A_REQ: &str = "seg:260f48b32b3c004b";
     const SEG_A_NON: &str = "seg:bd9fa27f867f85e9";
     const SEG_B_REQ: &str = "seg:4b37133ddf60126f";
-    const DRV_ID: &str = "drv:7aa33fdb91ceeeb4";
+    const DRV_ID: &str = "drv:fe1b747c30ecc346";
 
     const A: &str = "evd:00000000000000a1";
     const B: &str = "evd:00000000000000b2";

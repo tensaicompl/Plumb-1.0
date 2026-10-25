@@ -15,6 +15,7 @@ use plumb_api::application::{
 };
 use plumb_api::error::ApiError;
 use plumb_api::openapi::{ExportFormat, JobStatus};
+use plumb_api::server::require_loopback_bind;
 use plumb_api::{serve_blocking, ApiState, OpenMode, ReadyRule, Recipe};
 use plumb_core::{to_canonical_json, Clock, Id, SystemClock};
 use plumb_import::docx::{check_input_size, DOCX_MAX_INPUT_BYTES};
@@ -84,6 +85,9 @@ impl CliError {
             }
             CliError::ProviderUnavailable(error) => {
                 json!({ "code": "E_PROVIDER_UNAVAILABLE", "message": error.to_string() })
+            }
+            CliError::Config(error @ ConfigError::NonLoopbackBind(_)) => {
+                json!({ "code": "E_NON_LOOPBACK_BIND", "message": error.to_string() })
             }
             CliError::Application(error) => match error.code() {
                 Some(code) => json!({ "code": code, "message": error.to_string() }),
@@ -800,8 +804,15 @@ pub fn report(state: &ApiState, out: &Path) -> Result<Done, CliError> {
     })
 }
 
+/// Refuses a non-loopback `serve --listen` address (architecture §33.8); checked before any
+/// configuration, database or provider is opened.
+pub fn require_loopback_listen(listen: SocketAddr) -> Result<(), CliError> {
+    require_loopback_bind(listen).map_err(|_| ConfigError::NonLoopbackBind(listen).into())
+}
+
 /// `serve --listen`: the HTTP server of `plumb-api` over this state until Ctrl-C.
 pub fn serve(state: ApiState, listen: SocketAddr) -> Result<Done, CliError> {
+    require_loopback_listen(listen)?;
     serve_blocking(state, listen).map_err(|e| CliError::Io(format!("serve: {e}")))?;
     Ok(Done {
         json: json!({ "listen": listen.to_string() }),
