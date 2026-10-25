@@ -25,6 +25,42 @@ pub trait InferenceProvider {
         request: &InferenceRequest,
         material: &InferenceRequestMaterial,
     ) -> Result<ProviderExecution, ProviderError>;
+
+    /// [`InferenceProvider::execute`] that, on failure, also hands back the exact raw answer
+    /// the provider returned and the adapter rejected (H0.3, Fable #253), for acquisition to
+    /// store as a content-addressed InferenceResponse artifact. The default has none.
+    fn execute_detailed(
+        &self,
+        request: &InferenceRequest,
+        material: &InferenceRequestMaterial,
+    ) -> Result<ProviderExecution, ProviderFailure> {
+        self.execute(request, material)
+            .map_err(ProviderFailure::from)
+    }
+}
+
+/// A raw provider answer that was received and rejected (malformed, refused, truncated, not
+/// JSON or schema-invalid). It is evidence of the failure only, never validated output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedResponse {
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// A failed provider call: the typed error and, when the provider answered, the rejected answer.
+#[derive(Debug)]
+pub struct ProviderFailure {
+    pub error: ProviderError,
+    pub rejected_response: Option<Box<RejectedResponse>>,
+}
+
+impl From<ProviderError> for ProviderFailure {
+    fn from(error: ProviderError) -> ProviderFailure {
+        ProviderFailure {
+            error,
+            rejected_response: None,
+        }
+    }
 }
 
 /// Validates `request` and that `material` belongs to it exactly (request ID, context, prompt

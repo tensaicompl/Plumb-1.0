@@ -1033,6 +1033,37 @@ mod provider_contract {
             );
         }
 
+        /// H0.3 (Fable #253): an answer the adapter rejects keeps its exact raw bytes for the
+        /// caller to store; `execute` keeps returning the same typed error.
+        #[test]
+        fn rejected_answers_carry_their_raw_response() {
+            let body = message("m", "end_turn", json!([text(r#"{"answer":1}"#)]));
+            let server = serve("200 OK", &[("content-type", "application/json")], &body);
+            let (request, material) = standard("anthropic");
+            let failure = provider(&server)
+                .execute_detailed(&request, &material)
+                .unwrap_err();
+            assert!(matches!(
+                failure.error,
+                ProviderError::SchemaInvalidOutput { .. }
+            ));
+            let rejected = failure.rejected_response.unwrap();
+            assert_eq!(rejected.bytes, body);
+            assert_eq!(rejected.media_type, "application/json");
+            let err = provider(&server).execute(&request, &material).unwrap_err();
+            assert!(matches!(err, ProviderError::SchemaInvalidOutput { .. }));
+            // A non-success status is a typed remote error without a stored answer.
+            let server = serve("400 Bad Request", &[], b"{}");
+            let failure = provider(&server)
+                .execute_detailed(&request, &material)
+                .unwrap_err();
+            assert!(matches!(
+                failure.error,
+                ProviderError::Remote { status: 400, .. }
+            ));
+            assert!(failure.rejected_response.is_none());
+        }
+
         #[test]
         fn redirects_are_not_followed() {
             let server = serve(

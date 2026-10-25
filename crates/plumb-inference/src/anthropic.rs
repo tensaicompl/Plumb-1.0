@@ -26,7 +26,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::model::{InferenceArtifact, InferenceRequest, ProviderExecution, JSON_MEDIA_TYPE};
-use crate::provider::{verify_binding, InferenceProvider, InferenceRequestMaterial, ProviderError};
+use crate::provider::{
+    verify_binding, InferenceProvider, InferenceRequestMaterial, ProviderError, ProviderFailure,
+    RejectedResponse,
+};
 
 /// The provider identifier this adapter serves.
 pub const ANTHROPIC_PROVIDER: &str = "anthropic";
@@ -353,13 +356,24 @@ impl InferenceProvider for AnthropicProvider {
         request: &InferenceRequest,
         material: &InferenceRequestMaterial,
     ) -> Result<ProviderExecution, ProviderError> {
+        self.execute_detailed(request, material)
+            .map_err(|failure| failure.error)
+    }
+
+    /// Fable #253: an answered call whose answer is rejected keeps the exact raw answer.
+    fn execute_detailed(
+        &self,
+        request: &InferenceRequest,
+        material: &InferenceRequestMaterial,
+    ) -> Result<ProviderExecution, ProviderFailure> {
         // The binding is validated before any provider-specific work and before any network.
         let material = verify_binding(request, material)?;
         let policy = &request.provider_policy;
         if policy.provider != ANTHROPIC_PROVIDER {
             return Err(ProviderError::UnsupportedProvider {
                 provider: policy.provider.clone(),
-            });
+            }
+            .into());
         }
         let config = decode_config(policy.config.as_value())?;
 
@@ -382,7 +396,7 @@ impl InferenceProvider for AnthropicProvider {
             .build()
             .map_err(transport_error)?;
         let mut attempt = 0;
-        let raw = loop {
+        let (raw, content_type) = loop {
             attempt += 1;
             let mut http = client
                 .post(self.endpoint.clone())
@@ -403,9 +417,10 @@ impl InferenceProvider for AnthropicProvider {
             };
             let header_request_id = header("request-id");
             let retry_after = header("retry-after");
+            let content_type = header("content-type");
             let raw = response.bytes().map_err(transport_error)?.to_vec();
             if status.is_success() {
-                break raw;
+                break (raw, content_type);
             }
             let error = remote_error(status.as_u16(), header_request_id, &raw);
             match is_transient(status.as_u16())
@@ -413,85 +428,98 @@ impl InferenceProvider for AnthropicProvider {
                 .flatten()
             {
                 Some(wait) => std::thread::sleep(wait),
-                None => return Err(error),
+                None => return Err(error.into()),
             }
         };
-
-        let message: Value =
-            serde_json::from_slice(&raw).map_err(|_| malformed("response is not JSON"))?;
-        if message.get("type").and_then(Value::as_str) != Some("message") {
-            return Err(malformed("type is not message"));
-        }
-        if message.get("role").and_then(Value::as_str) != Some("assistant") {
-            return Err(malformed("role is not assistant"));
-        }
-        let model = message
-            .get("model")
-            .and_then(Value::as_str)
-            .filter(|m| is_clean(m))
-            .ok_or_else(|| malformed("model is missing or not clean text"))?
-            .to_owned();
-        let content = message
-            .get("content")
-            .and_then(Value::as_array)
-            .ok_or_else(|| malformed("content is not an array"))?;
-        let stop_reason = message
-            .get("stop_reason")
-            .and_then(Value::as_str)
-            .ok_or_else(|| malformed("stop_reason is missing"))?;
-        match stop_reason {
-            "end_turn" => {}
-            "refusal" => return Err(ProviderError::Refusal),
-            "max_tokens" => return Err(ProviderError::IncompleteOutput),
-            other => {
-                return Err(ProviderError::UnexpectedStopReason {
-                    stop_reason: bounded(other),
-                })
-            }
-        }
-        let texts: Vec<&Value> = content
-            .iter()
-            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-            .collect();
-        let [text_block] = texts.as_slice() else {
-            return Err(malformed(format!(
-                "expected exactly one text block, found {}",
-                texts.len()
-            )));
+        let media_type = content_type
+            .and_then(|t| t.split(';').next().map(|t| t.trim().to_ascii_lowercase()))
+            .filter(|t| !t.is_empty() && is_clean(t))
+            .unwrap_or_else(|| "application/octet-stream".to_owned());
+        let rejected = |error: ProviderError| ProviderFailure {
+            error,
+            rejected_response: Some(Box::new(RejectedResponse {
+                media_type: media_type.clone(),
+                bytes: raw.clone(),
+            })),
         };
-        let text = text_block
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| malformed("text block has no text"))?;
-        let output: Value =
-            serde_json::from_str(text).map_err(|e| ProviderError::InvalidOutputJson {
-                reason: e.to_string(),
-            })?;
-        material.validate_output(&output)?;
-
-        let validated_output = CanonicalJson::new(output);
-        let validated_output_hash =
-            validated_output
-                .content_hash()
-                .map_err(|e| ProviderError::InvalidOutputJson {
+        let inspect = || -> Result<ProviderExecution, ProviderError> {
+            let message: Value =
+                serde_json::from_slice(&raw).map_err(|_| malformed("response is not JSON"))?;
+            if message.get("type").and_then(Value::as_str) != Some("message") {
+                return Err(malformed("type is not message"));
+            }
+            if message.get("role").and_then(Value::as_str) != Some("assistant") {
+                return Err(malformed("role is not assistant"));
+            }
+            let model = message
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|m| is_clean(m))
+                .ok_or_else(|| malformed("model is missing or not clean text"))?
+                .to_owned();
+            let content = message
+                .get("content")
+                .and_then(Value::as_array)
+                .ok_or_else(|| malformed("content is not an array"))?;
+            let stop_reason = message
+                .get("stop_reason")
+                .and_then(Value::as_str)
+                .ok_or_else(|| malformed("stop_reason is missing"))?;
+            match stop_reason {
+                "end_turn" => {}
+                "refusal" => return Err(ProviderError::Refusal),
+                "max_tokens" => return Err(ProviderError::IncompleteOutput),
+                other => {
+                    return Err(ProviderError::UnexpectedStopReason {
+                        stop_reason: bounded(other),
+                    })
+                }
+            }
+            let texts: Vec<&Value> = content
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .collect();
+            let [text_block] = texts.as_slice() else {
+                return Err(malformed(format!(
+                    "expected exactly one text block, found {}",
+                    texts.len()
+                )));
+            };
+            let text = text_block
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| malformed("text block has no text"))?;
+            let output: Value =
+                serde_json::from_str(text).map_err(|e| ProviderError::InvalidOutputJson {
                     reason: e.to_string(),
                 })?;
-        let execution = ProviderExecution {
-            artifact: InferenceArtifact {
-                request_hash: request.id.clone(),
-                provider: policy.provider.clone(),
-                model,
-                parameters: CanonicalJson::new(parameters),
-                raw_response_hash: Hash::content_sha256(&raw),
-                validated_output,
-                validated_output_hash,
-            },
-            raw_response_media_type: JSON_MEDIA_TYPE.to_owned(),
-            raw_response: raw,
+            material.validate_output(&output)?;
+
+            let validated_output = CanonicalJson::new(output);
+            let validated_output_hash =
+                validated_output
+                    .content_hash()
+                    .map_err(|e| ProviderError::InvalidOutputJson {
+                        reason: e.to_string(),
+                    })?;
+            let execution = ProviderExecution {
+                artifact: InferenceArtifact {
+                    request_hash: request.id.clone(),
+                    provider: policy.provider.clone(),
+                    model,
+                    parameters: CanonicalJson::new(parameters),
+                    raw_response_hash: Hash::content_sha256(&raw),
+                    validated_output,
+                    validated_output_hash,
+                },
+                raw_response_media_type: JSON_MEDIA_TYPE.to_owned(),
+                raw_response: raw.clone(),
+            };
+            execution
+                .validate_for(request)
+                .map_err(ProviderError::InvalidProviderExecution)?;
+            Ok(execution)
         };
-        execution
-            .validate_for(request)
-            .map_err(ProviderError::InvalidProviderExecution)?;
-        Ok(execution)
+        inspect().map_err(rejected)
     }
 }

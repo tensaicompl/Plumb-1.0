@@ -3283,6 +3283,109 @@ mod http_stages {
         }
     }
 
+    /// Answers every request with one scripted failure, optionally with the rejected raw answer.
+    struct Rejecting {
+        failure: fn() -> ProviderError,
+        raw: Option<&'static [u8]>,
+    }
+
+    impl InferenceProvider for Rejecting {
+        fn execute(
+            &self,
+            request: &InferenceRequest,
+            material: &InferenceRequestMaterial,
+        ) -> Result<ProviderExecution, ProviderError> {
+            self.execute_detailed(request, material)
+                .map_err(|f| f.error)
+        }
+
+        fn execute_detailed(
+            &self,
+            _request: &InferenceRequest,
+            _material: &InferenceRequestMaterial,
+        ) -> Result<ProviderExecution, plumb_inference::provider::ProviderFailure> {
+            Err(plumb_inference::provider::ProviderFailure {
+                error: (self.failure)(),
+                rejected_response: self.raw.map(|bytes| {
+                    Box::new(plumb_inference::provider::RejectedResponse {
+                        media_type: "application/json".to_owned(),
+                        bytes: bytes.to_vec(),
+                    })
+                }),
+            })
+        }
+    }
+
+    /// H0.3 (Fable #253): a failed inference acquisition records in the job error and its
+    /// failed attempt a bounded typed detail (provider error class, HTTP status and provider
+    /// request ID when present, request ID, task kind, sorted schema errors) and stores the
+    /// rejected raw provider answer as a content-addressed InferenceResponse artifact.
+    #[tokio::test]
+    async fn failed_inference_records_typed_detail_and_rejected_response() {
+        const RAW: &[u8] = br#"{"classifications":"nope"}"#;
+        let rejecting = Arc::new(Rejecting {
+            failure: || ProviderError::SchemaInvalidOutput {
+                errors: vec![
+                    "/version: missing".into(),
+                    "/classifications: not an array".into(),
+                ],
+            },
+            raw: Some(RAW),
+        });
+        let app = app_using(
+            data_graph(&["Email"]),
+            &[],
+            Gates::default(),
+            Some(rejecting),
+        );
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        let view = job(&app, &job_id);
+        assert_eq!(view["status"], "failed", "{view}");
+        let details = failure_details(&view);
+        let response_ref = Hash::content_sha256(RAW);
+        assert_eq!(details["error"], "SchemaInvalidOutput");
+        assert_eq!(details["task_kind"], "data_classification");
+        assert!(details["request_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert_eq!(
+            details["schema_errors"],
+            json!(["/classifications: not an array", "/version: missing"])
+        );
+        assert_eq!(details["response_ref"], response_ref.as_str());
+        let stored = SqliteArtifactStore::open(&app.path)
+            .unwrap()
+            .get(&response_ref)
+            .unwrap();
+        assert_eq!(stored.kind, ArtifactKind::InferenceResponse);
+        assert_eq!(stored.bytes, RAW);
+        // The failed attempt records the same detail.
+        let attempts = stage_store(&app).recipe_job_attempts(&job_id).unwrap();
+        let error = attempts[0].error.as_deref().unwrap();
+        assert!(error.contains(response_ref.as_str()), "{error}");
+        assert!(error.contains("SchemaInvalidOutput"), "{error}");
+
+        // A remote failure names its HTTP status and provider request ID.
+        let remote = Arc::new(Rejecting {
+            failure: || ProviderError::Remote {
+                status: 529,
+                error_type: Some("overloaded_error".into()),
+                message: Some("Overloaded".into()),
+                request_id: Some("req_1".into()),
+            },
+            raw: None,
+        });
+        let app = app_using(data_graph(&["Email"]), &[], Gates::default(), Some(remote));
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        let details = failure_details(&job(&app, &job_id));
+        assert_eq!(details["error"], "Remote");
+        assert_eq!(details["http_status"], 529);
+        assert_eq!(details["provider_request_id"], "req_1");
+        assert!(details.get("response_ref").is_none());
+        assert!(details.get("schema_errors").is_none());
+    }
+
     #[tokio::test]
     async fn replay_missing_fixture_still_fails_with_inference_failed() {
         let graph = || data_graph(&["Email", "Notes"]);
@@ -3313,6 +3416,7 @@ mod http_stages {
                 calls: Mutex::new(0),
             })
         };
+        let request_id = executions[0].artifact.request_hash.clone();
         let hit = mock(executions);
         let app = app_using(graph(), &[], Gates::default(), Some(hit.clone()));
         let job_id = run_inline(&app, Recipe::Tags, None);
@@ -3333,7 +3437,12 @@ mod http_stages {
             .as_str()
             .unwrap()
             .starts_with("E_INFERENCE_FAILED: "));
-        assert_eq!(failure_details(&view), json!({"error": "FixtureNotFound"}));
+        // Fable #253: the failure names its provider error class, request and task kind.
+        assert_eq!(
+            failure_details(&view),
+            json!({"error": "FixtureNotFound", "request_id": request_id,
+                "task_kind": "data_classification"})
+        );
         assert_eq!(*miss.calls.lock().unwrap(), 1, "the provider was called");
         assert_eq!(
             stage_store(&app).steps(&job_id).unwrap()[0].compile_run_ref,
