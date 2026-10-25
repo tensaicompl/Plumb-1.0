@@ -4852,6 +4852,28 @@ mod http_workflow {
             StatusCode::NOT_FOUND,
             "E_NOT_FOUND",
         );
+        // Fable #235: a persisted member without a canonical priority no longer reproduces the
+        // round: E_ROUND_INCONSISTENT from persisted data.
+        let node = head(&app).graph.node(&id(member)).unwrap().clone();
+        let NodePayload::Question(mut payload) = node.payload.clone() else {
+            panic!("a question");
+        };
+        payload.priority = None;
+        direct_commit(
+            &app,
+            SemanticPatch::ReplacePayload {
+                target: plumb_patch::ElementPrecondition {
+                    id: node.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(&node).unwrap(),
+                },
+                payload: NodePayload::Question(payload),
+            },
+        );
+        assert_error(
+            &get(&app, &format!("/api/rounds/{round_id}")).await,
+            StatusCode::CONFLICT,
+            "E_ROUND_INCONSISTENT",
+        );
     }
 
     // ------------------------------------------------------------------ sessions
@@ -5422,6 +5444,47 @@ mod http_workflow {
             StatusCode::CONFLICT,
             "E_SCENARIO_RUN_TRACE_LINK_INVALID",
         );
+        // Fable #235: a persisted scenario outside the projection (no Derived/Confirmed status).
+        direct_commit(
+            &app,
+            SemanticPatch::AddNode {
+                node: scenario("scn:odd", "Accepted", "Pending", "state:submitted", "trans:submit"),
+            },
+        );
+        let page = get(&app, "/api/scenarios").await.json();
+        let odd: Vec<&Value> = page["health"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|h| h["id"] == "scn:odd")
+            .collect();
+        assert_eq!(odd.len(), 1, "{page}");
+        assert_eq!(odd[0]["code"], "E_SCENARIO_PROJECTION_INVALID");
+
+        // Questions: a persisted Question whose status is outside the projection.
+        let app = waiver_app();
+        let question = question_about(&head(&app).graph, "op:approve");
+        let node = head(&app).graph.node(&question).unwrap().clone();
+        let NodePayload::Question(mut payload) = node.payload.clone() else {
+            panic!("a question");
+        };
+        payload.status = "Unheard".into();
+        direct_commit(
+            &app,
+            SemanticPatch::ReplacePayload {
+                target: plumb_patch::ElementPrecondition {
+                    id: node.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(&node).unwrap(),
+                },
+                payload: NodePayload::Question(payload),
+            },
+        );
+        let r = get(&app, "/api/questions").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let page = r.json();
+        assert_eq!(page["health"][0]["id"], question.to_string());
+        assert_eq!(page["health"][0]["code"], "E_QUESTION_PROJECTION_INVALID");
+        assert!(page["items"].as_array().unwrap().iter().all(|q| q["id"] != question.to_string()));
     }
 
     /// Commits `patch` directly to the store (another writer).
