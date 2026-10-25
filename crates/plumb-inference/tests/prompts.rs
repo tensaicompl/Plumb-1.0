@@ -204,6 +204,28 @@ mod prompts {
         );
     }
 
+    /// Real-model run: the model returned one state entry per mention (Plumb derives one
+    /// State per owner and name, so the repeats were duplicate candidates and the stage
+    /// failed). The prompt says each distinct state is returned once.
+    #[test]
+    fn s2_lifecycle_returns_each_state_once() {
+        let (_, prompt, _) = PAIRS.iter().find(|(p, _, _)| *p == "s2-lifecycle").unwrap();
+        assert!(prompt.contains(
+            "Return each distinct state of an owner exactly once, grounded at one of its mentions;"
+        ));
+    }
+
+    /// Real-model run: "When nullability is not stated, omit the Attribute" made the model
+    /// omit every attribute of the HR corpus, where "shall identify the ..., start date, and
+    /// end date" states that those fields are required. The prompt names that grounding.
+    #[test]
+    fn s2_domain_names_the_obligation_that_grounds_a_required_attribute() {
+        let (_, prompt, _) = PAIRS.iter().find(|(p, _, _)| *p == "s2-domain").unwrap();
+        assert!(prompt.contains(
+            "An obligation that a record shall identify, include or record a field states that the field is required"
+        ));
+    }
+
     // ------------------------------------------------------------------ Fable #65
 
     fn process_with_node(node: Value) -> Value {

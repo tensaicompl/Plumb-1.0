@@ -37,7 +37,9 @@ The fields are:
 Return an Attribute only when its owner, its value type and its
 nullable semantics are all grounded in the supplied Requirements.
 Do not default nullable. When nullability is not stated, omit the
-Attribute instead.
+Attribute instead. An obligation that a record shall identify, include or record a field states that the field is required
+(nullable false); ground that nullable value at the obligation wording
+(such as "shall identify").
 
 For each DomainRelationship endpoint cardinality return null or
 `{"value", "grounding"}` with value exactly one of:

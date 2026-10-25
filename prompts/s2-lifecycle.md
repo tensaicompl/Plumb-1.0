@@ -22,9 +22,14 @@ zero-based UTF-8 byte offsets into that Requirement statement, end
 exclusive. Do not return state names; Plumb derives the canonical
 State.name from the grounded text.
 
+Return each distinct state of an owner exactly once, grounded at one of its mentions;
+Plumb identifies a state by its owner and its grounded name, so a second entry for the
+same state is a duplicate.
+
 For transitions, return stateful_ref, the grounding of the transition
 occurrence and the from_state and to_state groundings of its state
-mentions. Every from/to state must also be returned as a state.
+mentions. Every from/to state must also be returned as a state (once,
+as above; a transition's own groundings may be other mentions).
 
 Use trigger_ref only from the supplied Operation/Event trigger list.
 If no supplied Operation/Event is supported as the trigger, return null.

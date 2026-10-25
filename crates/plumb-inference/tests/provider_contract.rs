@@ -684,6 +684,35 @@ mod provider_contract {
                                     "required": ["v"], "properties": {"v": {"type": "number"}}}}
                 }))
             );
+            // Grammar size (measured: the EARS schema's per-pattern variants were "too large"):
+            // object variants that all require exactly the same keys merge into one object whose
+            // properties take the union of the variants' schemas; variants with different keys,
+            // and non-object branches, stay alternatives.
+            let variants = json!({"anyOf": [
+                {"type": "null"},
+                {"type": "object", "additionalProperties": false, "required": ["p", "a"],
+                 "properties": {"p": {"const": "one"}, "a": {"type": "null"}}},
+                {"type": "object", "additionalProperties": false, "required": ["p", "a"],
+                 "properties": {"p": {"const": "two"}, "a": {"anyOf": [{"type": "string"},
+                                                                        {"type": "null"}]}}}
+            ]});
+            assert_eq!(
+                api_output_schema(&variants),
+                Some(json!({"anyOf": [
+                    {"type": "null"},
+                    {"type": "object", "additionalProperties": false, "required": ["p", "a"],
+                     "properties": {
+                         "a": {"anyOf": [{"type": "null"}, {"type": "string"}]},
+                         "p": {"anyOf": [{"const": "one"}, {"const": "two"}]}}}
+                ]}))
+            );
+            let distinct = json!({"anyOf": [
+                {"type": "object", "additionalProperties": false, "required": ["g"],
+                 "properties": {"g": {"const": 1}}},
+                {"type": "object", "additionalProperties": false, "required": ["n", "s"],
+                 "properties": {"n": {"const": 2}, "s": {"type": "string"}}}
+            ]});
+            assert_eq!(api_output_schema(&distinct), Some(distinct.clone()));
             // Property *names* that look like keywords are data, never dropped.
             let named = json!({"type": "object", "additionalProperties": false,
                 "required": ["minimum"], "properties": {"minimum": {"type": "string"}}});
@@ -697,6 +726,36 @@ mod provider_contract {
             ] {
                 assert_eq!(api_output_schema(&open), None, "{open}");
             }
+        }
+
+        /// Constrained decoding follows the schema's property order, so the constraint keeps
+        /// the authored order of the committed schema bytes (real-model run: with sorted keys a
+        /// variant whose first sorted key differs from the model's natural first key was ruled
+        /// out mid-object, which forced filler such as "x:y" into the other variant).
+        #[test]
+        fn output_constraint_keeps_the_authored_property_order() {
+            let body = message(
+                "m",
+                "end_turn",
+                json!([text(r#"{"zeta":"z","alpha":"a"}"#)]),
+            );
+            let server = serve("200 OK", &[("content-type", "application/json")], &body);
+            let schema = r#"{"type":"object","additionalProperties":false,"required":["zeta","alpha"],
+                "properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}}}"#;
+            let (request, material) = super::with_schema("anthropic", schema);
+            provider(&server)
+                .execute(&request, &material)
+                .unwrap()
+                .validate_for(&request)
+                .unwrap();
+            let sent = server.captured.lock().unwrap()[0].clone();
+            let raw = String::from_utf8(sent.body).unwrap();
+            let constraint = &raw[raw.find(r#""output_config""#).unwrap()..];
+            let zeta = constraint.find(r#""zeta":{"#).unwrap();
+            let alpha = constraint.find(r#""alpha":{"#).unwrap();
+            assert!(zeta < alpha, "{constraint}");
+            let required = constraint.find(r#""required":["zeta","alpha"]"#);
+            assert!(required.is_some(), "{constraint}");
         }
 
         /// A schema the API subset cannot express is sent without `output_config`; the answer

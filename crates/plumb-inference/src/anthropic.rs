@@ -15,6 +15,7 @@
 //! connect timeouts are validated policy values (bound into the request identity), and an
 //! elapsed timeout is [`ProviderError::Timeout`], distinct from other transport failures.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
@@ -213,57 +214,307 @@ const UNSUPPORTED_SCHEMA_KEYWORDS: [&str; 7] = [
     "uniqueItems",
 ];
 
-/// The structured-outputs constraint for `schema`: the bound output schema reduced to the
-/// subset the Messages API accepts (`oneOf` becomes `anyOf`, a `minItems` above 1 and every
-/// keyword of [`UNSUPPORTED_SCHEMA_KEYWORDS`] are dropped), or `None` when the schema has an
-/// object the subset cannot express (every object must set `additionalProperties: false`).
-/// The reduction only widens what the API admits; [`InferenceRequestMaterial`] validation of
-/// the answer against the full schema is unchanged.
-pub fn api_output_schema(schema: &Value) -> Option<Value> {
-    fn reduce(node: &Value) -> Option<Value> {
-        match node {
-            Value::Object(map) => {
-                let is_object = map.get("type").and_then(Value::as_str) == Some("object")
-                    || map.contains_key("properties");
-                if is_object && map.get("additionalProperties") != Some(&Value::Bool(false)) {
-                    return None;
-                }
-                let mut out = serde_json::Map::new();
-                for (key, value) in map {
-                    let key = key.as_str();
-                    if UNSUPPORTED_SCHEMA_KEYWORDS.contains(&key)
-                        || (key == "minItems" && value.as_u64().is_some_and(|n| n > 1))
-                    {
-                        continue;
-                    }
-                    let value = match key {
-                        // Property names and definition names are data, not keywords.
-                        "properties" | "$defs" | "definitions" => {
-                            let Value::Object(members) = value else {
-                                return None;
-                            };
-                            let mut reduced = serde_json::Map::new();
-                            for (name, member) in members {
-                                reduced.insert(name.clone(), reduce(member)?);
-                            }
-                            Value::Object(reduced)
-                        }
-                        _ => reduce(value)?,
-                    };
-                    let key = if key == "oneOf" { "anyOf" } else { key };
-                    out.insert(key.to_owned(), value);
-                }
-                Some(Value::Object(out))
-            }
-            Value::Array(items) => items
-                .iter()
-                .map(reduce)
-                .collect::<Option<Vec<_>>>()
-                .map(Value::Array),
-            other => Some(other.clone()),
+/// A JSON value whose objects keep their member order. Constrained decoding follows a
+/// schema's property order, so the structured-output constraint is built from the committed
+/// schema bytes in their authored order (never from a key-sorted [`Value`]).
+#[derive(Debug, Clone, PartialEq)]
+enum Ordered {
+    Null,
+    Bool(bool),
+    Number(serde_json::Number),
+    String(String),
+    Array(Vec<Ordered>),
+    Object(Vec<(String, Ordered)>),
+}
+
+impl Ordered {
+    fn get(&self, key: &str) -> Option<&Ordered> {
+        match self {
+            Ordered::Object(members) => members.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
         }
     }
-    reduce(schema)
+
+    fn keys(&self) -> Option<Vec<String>> {
+        match self {
+            Ordered::Object(members) => Some(members.iter().map(|(k, _)| k.clone()).collect()),
+            _ => None,
+        }
+    }
+
+    fn strings(&self) -> Option<Vec<String>> {
+        match self {
+            Ordered::Array(items) => items
+                .iter()
+                .map(|v| match v {
+                    Ordered::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        }
+    }
+
+    fn from_value(value: &Value) -> Ordered {
+        match value {
+            Value::Null => Ordered::Null,
+            Value::Bool(b) => Ordered::Bool(*b),
+            Value::Number(n) => Ordered::Number(n.clone()),
+            Value::String(s) => Ordered::String(s.clone()),
+            Value::Array(items) => Ordered::Array(items.iter().map(Ordered::from_value).collect()),
+            Value::Object(map) => Ordered::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), Ordered::from_value(v)))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        match self {
+            Ordered::Null => Value::Null,
+            Ordered::Bool(b) => Value::Bool(*b),
+            Ordered::Number(n) => Value::Number(n.clone()),
+            Ordered::String(s) => Value::String(s.clone()),
+            Ordered::Array(items) => Value::Array(items.iter().map(Ordered::to_value).collect()),
+            Ordered::Object(members) => Value::Object(
+                members
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.to_value()))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl serde::Serialize for Ordered {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        match self {
+            Ordered::Null => serializer.serialize_unit(),
+            Ordered::Bool(b) => serializer.serialize_bool(*b),
+            Ordered::Number(n) => n.serialize(serializer),
+            Ordered::String(s) => serializer.serialize_str(s),
+            Ordered::Array(items) => {
+                let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                for item in items {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+            Ordered::Object(members) => {
+                let mut map = serializer.serialize_map(Some(members.len()))?;
+                for (k, v) in members {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Ordered {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Ordered, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Ordered;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a JSON value")
+            }
+            fn visit_unit<E>(self) -> Result<Ordered, E> {
+                Ok(Ordered::Null)
+            }
+            fn visit_bool<E>(self, b: bool) -> Result<Ordered, E> {
+                Ok(Ordered::Bool(b))
+            }
+            fn visit_i64<E>(self, n: i64) -> Result<Ordered, E> {
+                Ok(Ordered::Number(n.into()))
+            }
+            fn visit_u64<E>(self, n: u64) -> Result<Ordered, E> {
+                Ok(Ordered::Number(n.into()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, n: f64) -> Result<Ordered, E> {
+                serde_json::Number::from_f64(n)
+                    .map(Ordered::Number)
+                    .ok_or_else(|| E::custom("non-finite number"))
+            }
+            fn visit_str<E>(self, s: &str) -> Result<Ordered, E> {
+                Ok(Ordered::String(s.to_owned()))
+            }
+            fn visit_string<E>(self, s: String) -> Result<Ordered, E> {
+                Ok(Ordered::String(s))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Ordered, A::Error> {
+                let mut items = Vec::new();
+                while let Some(item) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(Ordered::Array(items))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Ordered, A::Error> {
+                let mut members = Vec::new();
+                while let Some((k, v)) = map.next_entry::<String, Ordered>()? {
+                    members.push((k, v));
+                }
+                Ok(Ordered::Object(members))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+/// The structured-outputs constraint for `schema`: the bound output schema reduced to the
+/// subset the Messages API accepts (`oneOf` becomes `anyOf`, a `minItems` above 1 and every
+/// keyword of [`UNSUPPORTED_SCHEMA_KEYWORDS`] are dropped, and object variants that require
+/// the same keys are merged), or `None` when the schema has an object the subset cannot
+/// express (every object must set `additionalProperties: false`). The reduction only widens
+/// what the API admits; validation of the answer against the full schema is unchanged. A
+/// [`Value`] has no member order, so the adapter itself reduces the committed schema bytes.
+pub fn api_output_schema(schema: &Value) -> Option<Value> {
+    reduce_schema(&Ordered::from_value(schema)).map(|o| o.to_value())
+}
+
+/// [`api_output_schema`] over the committed schema bytes, keeping their member order.
+fn api_output_constraint(schema_json: &[u8]) -> Option<Ordered> {
+    reduce_schema(&serde_json::from_slice::<Ordered>(schema_json).ok()?)
+}
+
+fn reduce_schema(node: &Ordered) -> Option<Ordered> {
+    match node {
+        Ordered::Object(members) => {
+            let is_object = matches!(node.get("type"), Some(Ordered::String(t)) if t == "object")
+                || node.get("properties").is_some();
+            if is_object && node.get("additionalProperties") != Some(&Ordered::Bool(false)) {
+                return None;
+            }
+            let mut out = Vec::with_capacity(members.len());
+            for (key, value) in members {
+                let key = key.as_str();
+                if UNSUPPORTED_SCHEMA_KEYWORDS.contains(&key)
+                    || (key == "minItems"
+                        && matches!(value, Ordered::Number(n) if n.as_u64().is_some_and(|n| n > 1)))
+                {
+                    continue;
+                }
+                let value = match key {
+                    // Property names and definition names are data, not keywords.
+                    "properties" | "$defs" | "definitions" => {
+                        let Ordered::Object(entries) = value else {
+                            return None;
+                        };
+                        Ordered::Object(
+                            entries
+                                .iter()
+                                .map(|(name, member)| Some((name.clone(), reduce_schema(member)?)))
+                                .collect::<Option<Vec<_>>>()?,
+                        )
+                    }
+                    "oneOf" | "anyOf" => {
+                        let Ordered::Array(branches) = value else {
+                            return None;
+                        };
+                        let branches = branches
+                            .iter()
+                            .map(reduce_schema)
+                            .collect::<Option<Vec<_>>>()?;
+                        Ordered::Array(merge_same_required(branches))
+                    }
+                    _ => reduce_schema(value)?,
+                };
+                let key = if key == "oneOf" { "anyOf" } else { key };
+                out.push((key.to_owned(), value));
+            }
+            Some(Ordered::Object(out))
+        }
+        Ordered::Array(items) => items
+            .iter()
+            .map(reduce_schema)
+            .collect::<Option<Vec<_>>>()
+            .map(Ordered::Array),
+        other => Some(other.clone()),
+    }
+}
+
+/// The alternatives of an `anyOf` with every closed object variant that requires exactly its
+/// own property keys merged into one object when all such variants share the same key set
+/// (each property takes the union of the variants' schemas, in the first variant's property
+/// order). This keeps the compiled grammar within the API's limits without making any
+/// property optional; other variants are kept.
+fn merge_same_required(branches: Vec<Ordered>) -> Vec<Ordered> {
+    let shape = |branch: &Ordered| -> Option<BTreeSet<String>> {
+        let required: BTreeSet<String> = branch.get("required")?.strings()?.into_iter().collect();
+        let properties: BTreeSet<String> = branch.get("properties")?.keys()?.into_iter().collect();
+        (properties == required).then_some(required)
+    };
+    let shapes: Vec<Option<BTreeSet<String>>> = branches.iter().map(shape).collect();
+    let objects: Vec<&BTreeSet<String>> = shapes.iter().flatten().collect();
+    if objects.len() < 2 || objects.iter().any(|k| *k != objects[0]) {
+        return branches;
+    }
+    let mut order: Vec<String> = Vec::new();
+    let mut required: Vec<String> = Vec::new();
+    let mut alternatives: BTreeMap<String, Vec<Ordered>> = BTreeMap::new();
+    let mut kept = Vec::new();
+    for (branch, shape) in branches.into_iter().zip(&shapes) {
+        if shape.is_none() {
+            kept.push(branch);
+            continue;
+        }
+        if required.is_empty() {
+            required = branch
+                .get("required")
+                .and_then(Ordered::strings)
+                .unwrap_or_default();
+        }
+        if let Some(Ordered::Object(properties)) = branch.get("properties") {
+            for (name, schema) in properties {
+                if !order.contains(name) {
+                    order.push(name.clone());
+                }
+                let entry = alternatives.entry(name.clone()).or_default();
+                let flattened = match schema {
+                    Ordered::Object(m) if m.len() == 1 && m[0].0 == "anyOf" => match &m[0].1 {
+                        Ordered::Array(items) => items.clone(),
+                        _ => vec![schema.clone()],
+                    },
+                    _ => vec![schema.clone()],
+                };
+                for alternative in flattened {
+                    if !entry.contains(&alternative) {
+                        entry.push(alternative);
+                    }
+                }
+            }
+        }
+    }
+    let properties = order
+        .into_iter()
+        .map(|name| {
+            let mut options = alternatives.remove(&name).unwrap_or_default();
+            let schema = if options.len() == 1 {
+                options.remove(0)
+            } else {
+                Ordered::Object(vec![("anyOf".to_owned(), Ordered::Array(options))])
+            };
+            (name, schema)
+        })
+        .collect();
+    kept.push(Ordered::Object(vec![
+        ("type".to_owned(), Ordered::String("object".to_owned())),
+        ("additionalProperties".to_owned(), Ordered::Bool(false)),
+        (
+            "required".to_owned(),
+            Ordered::Array(required.into_iter().map(Ordered::String).collect()),
+        ),
+        ("properties".to_owned(), Ordered::Object(properties)),
+    ]));
+    kept
 }
 
 fn bounded(text: &str) -> String {
@@ -455,6 +706,7 @@ impl InferenceProvider for AnthropicProvider {
         material: &InferenceRequestMaterial,
     ) -> Result<ProviderExecution, ProviderFailure> {
         // The binding is validated before any provider-specific work and before any network.
+        let schema_json = &material.schema_json;
         let material = verify_binding(request, material)?;
         let policy = &request.provider_policy;
         if policy.provider != ANTHROPIC_PROVIDER {
@@ -476,11 +728,28 @@ impl InferenceProvider for AnthropicProvider {
         body["system"] = json!(material.prompt);
         body["messages"] = json!([{"role": "user", "content": user}]);
         // Structured outputs: the bound output schema constrains decoding, so the answer is
-        // JSON of that shape (never fenced prose); it is still validated in full below.
-        if let Some(constraint) = api_output_schema(&material.schema) {
-            body["output_config"]["format"] = json!({"type": "json_schema", "schema": constraint});
+        // JSON of that shape (never fenced prose); it is still validated in full below. The
+        // constraint keeps the committed schema's member order (decoding follows it), so the
+        // body is written from an order-preserving value rather than canonicalized.
+        let mut body = Ordered::from_value(&body);
+        if let (Some(constraint), Ordered::Object(members)) =
+            (api_output_constraint(schema_json), &mut body)
+        {
+            let format = Ordered::Object(vec![
+                ("type".to_owned(), Ordered::String("json_schema".to_owned())),
+                ("schema".to_owned(), constraint),
+            ]);
+            match members.iter_mut().find(|(k, _)| k == "output_config") {
+                Some((_, Ordered::Object(output_config))) => {
+                    output_config.push(("format".to_owned(), format));
+                }
+                _ => members.push((
+                    "output_config".to_owned(),
+                    Ordered::Object(vec![("format".to_owned(), format)]),
+                )),
+            }
         }
-        let body = to_canonical_json(&body).map_err(|e| config_error(e.to_string()))?;
+        let body = serde_json::to_vec(&body).map_err(|e| config_error(e.to_string()))?;
 
         let client = Client::builder()
             .connect_timeout(config.connect_timeout)
