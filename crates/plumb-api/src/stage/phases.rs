@@ -375,7 +375,7 @@ impl<'a> PhaseStage<'a> {
                 )?);
             }
             Phase::Execute | Phase::Verification => {}
-            Phase::I0 | Phase::F1 | Phase::F2 | Phase::F4 | Phase::Rules => {
+            Phase::I0 | Phase::F1 | Phase::F2 | Phase::F4 | Phase::Rules | Phase::Directory => {
                 return Err(ApiError::internal("phase_without_child"));
             }
         }
@@ -699,7 +699,7 @@ impl<'a> PhaseStage<'a> {
                     .map_err(|e| fail(&e))?
                     .proposals;
             }
-            Phase::I0 | Phase::F1 | Phase::F2 | Phase::F4 | Phase::Rules => {
+            Phase::I0 | Phase::F1 | Phase::F2 | Phase::F4 | Phase::Rules | Phase::Directory => {
                 return Err(ApiError::internal("phase_without_child"));
             }
         }

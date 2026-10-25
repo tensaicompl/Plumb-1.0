@@ -1244,4 +1244,28 @@ mod stages {
         inserted(store.insert_recipe_job(&directory_job(&db, "7")).unwrap());
         store.insert_step(&directory_step(&db, "7")).unwrap();
     }
+
+    /// The pipeline's "latest job of a recipe": recipe jobs in insertion order, independent of
+    /// their content-addressed IDs and of a clock that may not advance.
+    #[test]
+    fn stages_recipe_jobs_in_creation_order() {
+        let db = Db::new();
+        let mut store = db.store();
+        for job in ["3", "1", "2"] {
+            inserted(store.insert_recipe_job(&db.recipe(job)).unwrap());
+        }
+        let ids: Vec<Hash> = store
+            .recipe_jobs_in_creation_order()
+            .unwrap()
+            .into_iter()
+            .map(|j| j.recipe_job_id)
+            .collect();
+        assert_eq!(ids, vec![generic("3"), generic("1"), generic("2")]);
+        // Reused (existing) jobs keep their position.
+        store.insert_recipe_job(&db.recipe("3")).unwrap();
+        assert_eq!(
+            store.recipe_jobs_in_creation_order().unwrap()[0].recipe_job_id,
+            generic("3")
+        );
+    }
 }

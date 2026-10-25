@@ -1005,7 +1005,7 @@ mod http_core {
     }
 
     #[tokio::test]
-    async fn http_core_routes_all_76_operations() {
+    async fn http_core_routes_all_81_operations() {
         let app = app();
         let mut routed: Vec<(&str, &str, &str)> = Vec::new();
         for spec in OPERATIONS.iter() {
@@ -1028,7 +1028,7 @@ mod http_core {
                     || (reply.status == StatusCode::METHOD_NOT_ALLOWED
                         && !allow.split(',').any(|m| m.trim() == spec.method)));
             assert!(
-                ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11"].contains(&spec.owner),
+                ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B2"].contains(&spec.owner),
                 "{}",
                 spec.operation_id
             );
@@ -1087,7 +1087,7 @@ mod http_core {
             ),
             (2, 2, 0)
         );
-        // H0.11 routes the proposal list and discard: all 76 operations.
+        // H0.11 routes the proposal list and discard.
         assert_eq!(
             (
                 count(&routed, "H0.11", None),
@@ -1096,7 +1096,16 @@ mod http_core {
             ),
             (2, 1, 1)
         );
-        assert_eq!(routed.len(), 76);
+        // B2 routes the five UI pipeline operations: all 81 operations.
+        assert_eq!(
+            (
+                count(&routed, "B2", None),
+                count(&routed, "B2", Some("POST")),
+                count(&routed, "B2", Some("GET"))
+            ),
+            (5, 3, 2)
+        );
+        assert_eq!(routed.len(), 81);
         // An unregistered path is the typed 404 (H0.11 replaces the former empty body).
         let r = get(&app, "/api/nowhere").await;
         assert_eq!(
@@ -1348,7 +1357,7 @@ mod http_core {
         let me = get(&app, "/api/me").await.json();
         assert_eq!(
             me,
-            json!({"user": "alice", "roles": ["analyst", "reviewer"], "mode": "pilot", "inference_available": true})
+            json!({"user": "alice", "roles": ["analyst", "reviewer"], "mode": "pilot", "inference_available": true, "inference_model": null})
         );
         let version = get(&app, "/api/model/version").await.json();
         let h = head(&app).revision;
@@ -1357,6 +1366,10 @@ mod http_core {
         assert_eq!(version["hash"], h.semantic_hash.to_string());
         assert_eq!(version["semantic_hash"], h.semantic_hash.to_string());
         assert_eq!(version["evidence_hash"], h.evidence_hash.to_string());
+        // The head revision's provenance (UI: "Updated ... by ...").
+        assert_eq!(version["created_at"], h.created_at.to_string());
+        assert_eq!(version["created_at"], T0);
+        assert_eq!(version["created_by"], "agent:other");
         // Current reports in gate order; the current I0 FAIL is still current.
         let gates = current_gates(&get(&app, "/api/gates").await.json());
         let names: Vec<&str> = gates
@@ -4272,6 +4285,66 @@ mod http_core {
         assert_eq!(
             (r.status, r.code().as_str()),
             (StatusCode::NOT_FOUND, "E_ROUTE_NOT_FOUND")
+        );
+    }
+
+    /// `list_sources`: every imported source with its name, import time and passage count, by
+    /// ID; the same projection as `get_source` plus those three fields.
+    #[tokio::test]
+    async fn http_core_list_sources_reports_every_imported_source() {
+        let app = app();
+        let r = get(&app, "/api/sources").await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        assert_eq!(r.etag(), Some(etag(&app)));
+        let existing = head(&app)
+            .graph
+            .node_ids_by_type(plumb_psg::NodeType::SourceArtifact)
+            .len();
+        assert_eq!(r.json()["items"].as_array().unwrap().len(), existing);
+        let md: &[u8] = b"# Leave\n\nEmployees request leave.\n\nManagers approve leave.\n";
+        let uploaded = upload(
+            &app,
+            Some(&etag(&app)),
+            Some("leave.md"),
+            "text/markdown",
+            md,
+        )
+        .await;
+        assert_eq!(uploaded.status, StatusCode::OK, "{:?}", uploaded.json());
+        let source = uploaded.json()["id"].as_str().unwrap().to_owned();
+        let listed = get(&app, "/api/sources").await.json();
+        let items = listed["items"].as_array().unwrap();
+        assert_eq!(items.len(), existing + 1);
+        let ids: Vec<&str> = items.iter().map(|i| i["id"].as_str().unwrap()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+        let item = items.iter().find(|i| i["id"] == source.as_str()).unwrap();
+        let single = get(&app, &format!("/api/sources/{source}")).await.json();
+        for field in ["id", "hash", "media_type", "source_kind"] {
+            assert_eq!(item[field], single[field], "{field}");
+        }
+        assert_eq!(item["name"], "leave.md");
+        assert_eq!(item["imported_at"], NOW);
+        let spans = get(&app, &format!("/api/sources/{source}/spans"))
+            .await
+            .json();
+        assert_eq!(
+            item["spans_count"],
+            spans["items"].as_array().unwrap().len()
+        );
+        assert_eq!(item["spans_count"], uploaded.json()["spans_count"]);
+        assert_eq!(
+            item.as_object().unwrap().keys().collect::<Vec<_>>(),
+            [
+                "hash",
+                "id",
+                "imported_at",
+                "media_type",
+                "name",
+                "source_kind",
+                "spans_count"
+            ]
         );
     }
 }

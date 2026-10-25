@@ -96,7 +96,8 @@ async fn search_model(
     Ok(read_json(&loaded, SearchPage { items, next_cursor }))
 }
 
-/// `get_me`: the injected identity without its provenance actor.
+/// `get_me`: the injected identity without its provenance actor; `inference_model` is the
+/// provider policy's `model` while inference is available (B2).
 async fn get_me(State(state): State<ApiState>) -> Result<Response, ApiError> {
     let loaded = state.load_head()?;
     let identity = state.identity();
@@ -107,11 +108,13 @@ async fn get_me(State(state): State<ApiState>) -> Result<Response, ApiError> {
             roles: identity.roles().to_vec(),
             mode: identity.mode().to_owned(),
             inference_available: state.inference_available(),
+            inference_model: state.inference_model(),
         },
     ))
 }
 
-/// `get_model_version`: the head revision and its hashes; `version` and `hash` are aliases.
+/// `get_model_version`: the head revision, its hashes and its provenance (B2); `version` and
+/// `hash` are aliases.
 async fn get_model_version(State(state): State<ApiState>) -> Result<Response, ApiError> {
     let loaded = state.load_head()?;
     let revision = loaded.revision.id.to_string();
@@ -122,6 +125,8 @@ async fn get_model_version(State(state): State<ApiState>) -> Result<Response, Ap
         revision,
         semantic_hash,
         evidence_hash: loaded.revision.evidence_hash.to_string(),
+        created_at: loaded.revision.created_at.to_string(),
+        created_by: loaded.revision.created_by.to_string(),
     };
     Ok(read_json(&loaded, body))
 }

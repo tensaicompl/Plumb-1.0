@@ -712,6 +712,21 @@ impl ApiState {
         )
     }
 
+    /// The configured model name (the provider policy's `model`) while inference is available
+    /// (B2); `None` without an A0.3 runtime or a model name.
+    pub(crate) fn inference_model(&self) -> Option<String> {
+        if !self.inference_available() {
+            return None;
+        }
+        let policy = &self.inner.runtime.as_ref()?.provider_policy;
+        policy
+            .config
+            .as_value()
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+
     /// The A0.4 stage runtime, or 503 naming the missing `capability`.
     pub(crate) fn stage_runtime(&self, capability: &str) -> Result<&A04Runtime, ApiError> {
         self.inner

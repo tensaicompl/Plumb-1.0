@@ -1405,6 +1405,73 @@
         ],
         "type": "object"
       },
+      "GenerateQuestionsRequest": {
+        "additionalProperties": false,
+        "description": "`generate_questions`: with `stakeholder`, also the round of at most `max` (default 1000)\nof that stakeholder's eligible unassigned questions.",
+        "properties": {
+          "max": {
+            "format": "int64",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "stakeholder": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "GenerateQuestionsResponse": {
+        "additionalProperties": false,
+        "description": "The questions of the current gate reports (new, existing and updated) and, when requested\nand the stakeholder had eligible unassigned questions, its new round.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DesignEvent"
+            },
+            "type": "array"
+          },
+          "question_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "round": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Round"
+              }
+            ]
+          },
+          "semantic_hash": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "semantic_hash",
+          "events",
+          "question_ids"
+        ],
+        "type": "object"
+      },
       "GlossaryEditRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1738,12 +1805,59 @@
         ],
         "type": "object"
       },
+      "MaterializeFindingsRequest": {
+        "additionalProperties": false,
+        "description": "`materialize_findings` takes no parameters.",
+        "type": "object"
+      },
+      "MaterializeFindingsResponse": {
+        "additionalProperties": false,
+        "description": "The newly materialized Finding nodes (stale open findings it closed are in `events`).",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DesignEvent"
+            },
+            "type": "array"
+          },
+          "finding_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "semantic_hash": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "semantic_hash",
+          "events",
+          "finding_ids"
+        ],
+        "type": "object"
+      },
       "MeResponse": {
         "additionalProperties": false,
         "properties": {
           "inference_available": {
             "description": "Whether this server can run inference (sessions and inference-requiring recipes): false\nexactly when the configured provider mode is `null` (H0.11, Fable #355).",
             "type": "boolean"
+          },
+          "inference_model": {
+            "description": "The configured model name (the provider policy's `model`) while inference is available;\nnull when inference is off or no model name is configured (B2).",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "mode": {
             "type": "string"
@@ -1808,6 +1922,14 @@
         "additionalProperties": false,
         "description": "Model identity. `version` == `revision` and `hash` == `semantic_hash` (compatibility\naliases).",
         "properties": {
+          "created_at": {
+            "description": "When the head revision was written (B2).",
+            "type": "string"
+          },
+          "created_by": {
+            "description": "The actor that wrote the head revision (B2).",
+            "type": "string"
+          },
           "evidence_hash": {
             "type": "string"
           },
@@ -1831,7 +1953,9 @@
           "hash",
           "revision",
           "semantic_hash",
-          "evidence_hash"
+          "evidence_hash",
+          "created_at",
+          "created_by"
         ],
         "type": "object"
       },
@@ -1912,6 +2036,142 @@
           "items"
         ],
         "type": "object"
+      },
+      "PipelineError": {
+        "additionalProperties": false,
+        "description": "The typed failure of a failed step's latest job.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "PipelineResponse": {
+        "additionalProperties": false,
+        "description": "`get_pipeline`: every stage recipe in pipeline order with the Overview counts. `next` is the\nfirst step that is not `done` and whose configuration is complete; null when there is none.",
+        "properties": {
+          "next": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StageName"
+              }
+            ]
+          },
+          "open_questions": {
+            "description": "Accepted Questions whose status is open.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sources": {
+            "description": "Imported sources (SourceArtifact nodes) on the head.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineStep"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "steps",
+          "sources",
+          "open_questions"
+        ],
+        "type": "object"
+      },
+      "PipelineStep": {
+        "additionalProperties": false,
+        "description": "One stage recipe of the pipeline, from its latest recipe job.",
+        "properties": {
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PipelineError"
+              }
+            ]
+          },
+          "job_id": {
+            "description": "The latest recipe job of this recipe; null when it never ran.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "missing_config": {
+            "description": "The configuration the recipe needs and that is absent (`run_stage` would be 409\n`E_STAGE_CONFIG_MISSING`); empty when it can run.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pending_proposals": {
+            "description": "Pending workflow proposals produced by any job of this recipe (stale ones included).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "progress": {
+            "description": "The latest job's status-derived progress; null when it never ran.",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "recipe": {
+            "$ref": "#/components/schemas/StageName"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PipelineStepStatus"
+          },
+          "updated_at": {
+            "description": "When the latest job last changed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "recipe",
+          "status",
+          "pending_proposals",
+          "missing_config"
+        ],
+        "type": "object"
+      },
+      "PipelineStepStatus": {
+        "description": "The derived state of one pipeline step (B2): `queued` a captured job not started yet;\n`running` acquiring or evaluating; `needs_review` its latest job is ready on the head with\npending proposals of that job; `done` committed, or ready with nothing pending; `stale` its\nlatest job is stale, or ready with pending proposals built on another revision.",
+        "enum": [
+          "not_started",
+          "queued",
+          "running",
+          "needs_review",
+          "done",
+          "failed",
+          "stale"
+        ],
+        "type": "string"
       },
       "PreconditionFailedResponse": {
         "additionalProperties": false,
@@ -2772,6 +3032,11 @@
         ],
         "type": "object"
       },
+      "RetryJobRequest": {
+        "additionalProperties": false,
+        "description": "`retry_job` takes no parameters.",
+        "type": "object"
+      },
       "Round": {
         "additionalProperties": false,
         "properties": {
@@ -3598,6 +3863,61 @@
         ],
         "type": "object"
       },
+      "SourceList": {
+        "additionalProperties": false,
+        "description": "Every imported source, by ID. Not paged.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SourceListItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "SourceListItem": {
+        "additionalProperties": false,
+        "description": "One imported source: the `get_source` projection plus its display name, import time and\npassage (span) count.",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "imported_at": {
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "spans_count": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "hash",
+          "media_type",
+          "source_kind",
+          "name",
+          "imported_at",
+          "spans_count"
+        ],
+        "type": "object"
+      },
       "SourceUpload": {
         "description": "Multipart source upload.",
         "properties": {
@@ -3758,7 +4078,8 @@
           "flows",
           "scenarios",
           "tags",
-          "run"
+          "run",
+          "directory"
         ],
         "type": "string"
       },
@@ -3855,7 +4176,7 @@
     }
   },
   "info": {
-    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74) and H0.11 (proposal discovery and discard, operations 75-76).",
+    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) and B2 (the UI pipeline operations 77-81).",
     "title": "Plumb Modeller API",
     "version": "0.1.0",
     "x-plumb-error-codes": [
@@ -4803,6 +5124,83 @@
         ]
       }
     },
+    "/api/findings/materialize": {
+      "post": {
+        "operationId": "materialize_findings",
+        "parameters": [
+          {
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
+            "example": "example",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {},
+              "schema": {
+                "$ref": "#/components/schemas/MaterializeFindingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "events": [
+                    {
+                      "ids": [
+                        "example"
+                      ],
+                      "kind": "example",
+                      "version": "example"
+                    }
+                  ],
+                  "finding_ids": [
+                    "example"
+                  ],
+                  "revision": "example",
+                  "semantic_hash": "example",
+                  "version": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MaterializeFindingsResponse"
+                }
+              }
+            },
+            "description": "Actionable current gate findings persisted as Finding nodes; stale open ones closed"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "example",
+                  "details": {},
+                  "message": "example",
+                  "revision": "example",
+                  "semantic_hash": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PreconditionFailedResponse"
+                }
+              }
+            },
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
+          }
+        },
+        "tags": [
+          "findings"
+        ]
+      }
+    },
     "/api/findings/{id}/waive": {
       "post": {
         "operationId": "waive_finding",
@@ -5500,6 +5898,91 @@
                 }
               }
             }
+          }
+        },
+        "tags": [
+          "stages"
+        ]
+      }
+    },
+    "/api/jobs/{id}/retry": {
+      "post": {
+        "operationId": "retry_job",
+        "parameters": [
+          {
+            "description": "Job ID",
+            "example": "example",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
+            "example": "example",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {},
+              "schema": {
+                "$ref": "#/components/schemas/RetryJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "events": [
+                    {
+                      "ids": [
+                        "example"
+                      ],
+                      "kind": "example",
+                      "version": "example"
+                    }
+                  ],
+                  "job_id": "example",
+                  "revision": "example",
+                  "semantic_hash": "example",
+                  "version": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/StageRunResponse"
+                }
+              }
+            },
+            "description": "The failed job is queued again as its next attempt under the same ID (the run_stage response); 409 E_STAGE_RETRY_NOT_FAILED or E_STAGE_RETRY_BASE_MOVED otherwise"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "example",
+                  "details": {},
+                  "message": "example",
+                  "revision": "example",
+                  "semantic_hash": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PreconditionFailedResponse"
+                }
+              }
+            },
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -6943,6 +7426,8 @@
             "content": {
               "application/json": {
                 "example": {
+                  "created_at": "example",
+                  "created_by": "example",
                   "evidence_hash": "example",
                   "hash": "example",
                   "revision": "example",
@@ -6968,6 +7453,49 @@
         },
         "tags": [
           "meta"
+        ]
+      }
+    },
+    "/api/pipeline": {
+      "get": {
+        "operationId": "get_pipeline",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "open_questions": 0,
+                  "sources": 0,
+                  "steps": [
+                    {
+                      "missing_config": [
+                        "example"
+                      ],
+                      "pending_proposals": 0,
+                      "recipe": "analyse",
+                      "status": "done"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineResponse"
+                }
+              }
+            },
+            "description": "Every stage recipe in pipeline order (extract, consolidate, lint, directory, analyse, flows, calc, rules, scenarios, tags, run), derived from its latest recipe job and the pending workflow proposals",
+            "headers": {
+              "ETag": {
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
+                "example": "example",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "stages"
         ]
       }
     },
@@ -8254,6 +8782,83 @@
               }
             },
             "description": "Conflict: the cursor was issued at another branch-head revision or semantic_hash (E_CURSOR_BASELINE_CHANGED)."
+          }
+        },
+        "tags": [
+          "questions"
+        ]
+      }
+    },
+    "/api/questions/generate": {
+      "post": {
+        "operationId": "generate_questions",
+        "parameters": [
+          {
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
+            "example": "example",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {},
+              "schema": {
+                "$ref": "#/components/schemas/GenerateQuestionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "events": [
+                    {
+                      "ids": [
+                        "example"
+                      ],
+                      "kind": "example",
+                      "version": "example"
+                    }
+                  ],
+                  "question_ids": [
+                    "example"
+                  ],
+                  "revision": "example",
+                  "semantic_hash": "example",
+                  "version": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateQuestionsResponse"
+                }
+              }
+            },
+            "description": "Questions materialized from the current gate reports with the configured routing, and the optional stakeholder round"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "example",
+                  "details": {},
+                  "message": "example",
+                  "revision": "example",
+                  "semantic_hash": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PreconditionFailedResponse"
+                }
+              }
+            },
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -10324,6 +10929,46 @@
       }
     },
     "/api/sources": {
+      "get": {
+        "operationId": "list_sources",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "items": [
+                    {
+                      "hash": "example",
+                      "id": "example",
+                      "imported_at": "example",
+                      "media_type": "example",
+                      "name": "example",
+                      "source_kind": "example",
+                      "spans_count": 0
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/SourceList"
+                }
+              }
+            },
+            "description": "Every imported source",
+            "headers": {
+              "ETag": {
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
+                "example": "example",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "sources"
+        ]
+      },
       "post": {
         "operationId": "create_source",
         "parameters": [

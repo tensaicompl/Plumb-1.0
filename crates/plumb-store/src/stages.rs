@@ -344,6 +344,18 @@ impl SqliteStageStore {
         raws.into_iter().map(RawRecipe::decode).collect()
     }
 
+    /// Every recipe job in insertion order (the UI pipeline's latest job of a recipe is its
+    /// last): a reused job keeps its position, and the order never depends on the clock.
+    pub fn recipe_jobs_in_creation_order(&self) -> Result<Vec<StageRecipeJobRecord>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {RECIPE_COLUMNS} FROM stage_recipe_jobs ORDER BY rowid"
+        ))?;
+        let raws = stmt
+            .query_map([], raw_recipe)?
+            .collect::<Result<Vec<_>, _>>()?;
+        raws.into_iter().map(RawRecipe::decode).collect()
+    }
+
     /// Starts a queued recipe job without an owner (see [`Self::claim_recipe_job_leased`]).
     pub fn claim_recipe_job(&mut self, id: &Hash, at: Timestamp) -> Result<bool, StoreError> {
         self.claim_with(id, None, at)

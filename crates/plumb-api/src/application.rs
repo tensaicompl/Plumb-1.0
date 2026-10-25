@@ -600,8 +600,9 @@ mod services {
 
     use crate::error::{echo, ApiError};
     use crate::openapi::{
-        AnswerResponse, CreateRoundResponse, ExportFormat, GlossaryTerm, ProposalKind, Question,
-        QuestionKind, QuestionStatus, Round, SourceUploadResponse, WriteResult,
+        AnswerResponse, CreateRoundResponse, ExportFormat, GenerateQuestionsResponse, GlossaryTerm,
+        ProposalKind, Question, QuestionKind, QuestionStatus, Round, SourceUploadResponse,
+        WriteResult,
     };
     use crate::stage::acceptance as stage_acceptance;
     use crate::stage::recipe::Phase;
@@ -2356,6 +2357,15 @@ mod services {
             &self,
             loaded: &LoadedRevision,
         ) -> Result<Option<WriteResult>, ApiError> {
+            Ok(self.materialize_gate_findings_detailed(loaded)?.0)
+        }
+
+        /// [`Self::materialize_gate_findings`] with the IDs of the Finding nodes it added, in ID
+        /// order (`materialize_findings`, B2).
+        pub fn materialize_gate_findings_detailed(
+            &self,
+            loaded: &LoadedRevision,
+        ) -> Result<(Option<WriteResult>, Vec<Id>), ApiError> {
             let a04 = self.stage_runtime("materialize_gate_findings")?;
             let created_at = self.now();
             let audit = AuditMeta::new(a04.stage_actor_ref.clone(), created_at, None, None)
@@ -2420,7 +2430,7 @@ mod services {
                 });
             }
             if patches.is_empty() {
-                return Ok(None);
+                return Ok((None, Vec::new()));
             }
             let patch = if patches.len() == 1 {
                 patches.remove(0)
@@ -2440,15 +2450,15 @@ mod services {
                 None,
             )
             .map_err(|e| ApiError::internal_cause("proposal", &e))?;
-            self.write(
+            let write = self.write(
                 loaded,
                 &proposal,
                 false,
                 None,
                 created_at,
                 "materialize_gate_findings",
-            )
-            .map(Some)
+            )?;
+            Ok((Some(write), added.into_iter().collect()))
         }
 
         /// `waive_finding` (HTTP and CLI): the governed waiver of one current, materialized
@@ -2490,6 +2500,74 @@ mod services {
                 }
             }
             self.materialize_questions(loaded, &QuestionGenerationInput { findings, routing })
+        }
+
+        /// `generate_questions` (B2): [`Self::ask`] on `loaded` and, with `stakeholder`, the
+        /// round of at most `size` of that stakeholder's eligible unassigned questions through
+        /// [`Self::create_round`] on the resulting head. The stakeholder is checked before
+        /// anything is committed (404 when absent, 409 `E_ROUND_STAKEHOLDER_INVALID` when not an
+        /// Accepted Stakeholder); a stakeholder without an eligible unassigned question gets no
+        /// round (`round: null`). The result names the last revision written.
+        pub fn generate_questions(
+            &self,
+            loaded: &LoadedRevision,
+            stakeholder: Option<&Id>,
+            size: usize,
+        ) -> Result<GenerateQuestionsResponse, ApiError> {
+            if let Some(stakeholder) = stakeholder {
+                let node = loaded.graph.node(stakeholder).ok_or_else(|| {
+                    ApiError::not_found(format!("stakeholder {stakeholder} not found"))
+                })?;
+                if !matches!(node.payload, NodePayload::Stakeholder(_))
+                    || node.status != ElementStatus::Accepted
+                {
+                    return Err(ApiError::conflict(
+                        "E_ROUND_STAKEHOLDER_INVALID",
+                        "the stakeholder is not an Accepted Stakeholder",
+                    )
+                    .with_details(json!({ "stakeholder": stakeholder })));
+                }
+            }
+            let materialized = self.ask(loaded)?;
+            let question_ids = materialized
+                .generation
+                .questions
+                .iter()
+                .map(|q| q.question_ref.to_string())
+                .collect();
+            let revision = loaded.revision.id.to_string();
+            let mut result = match materialized.write {
+                Some(write) => write,
+                None => WriteResult {
+                    version: revision.clone(),
+                    revision,
+                    semantic_hash: loaded.revision.semantic_hash.to_string(),
+                    events: Vec::new(),
+                },
+            };
+            let mut round = None;
+            if let Some(stakeholder) = stakeholder {
+                let head = self.load_head()?;
+                match self.create_round(&head, stakeholder, size) {
+                    Ok(created) => {
+                        result.events.extend(created.events);
+                        result.version = created.version;
+                        result.revision = created.revision;
+                        result.semantic_hash = created.semantic_hash;
+                        round = Some(created.round);
+                    }
+                    Err(error) if error.body().code == "E_NO_QUESTIONS_FOR_ROUND" => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(GenerateQuestionsResponse {
+                version: result.version,
+                revision: result.revision,
+                semantic_hash: result.semantic_hash,
+                events: result.events,
+                question_ids,
+                round,
+            })
         }
 
         /// Every pending workflow proposal (R0.6 proposal discovery), sorted by proposal ID,

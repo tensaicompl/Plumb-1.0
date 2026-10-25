@@ -36,6 +36,8 @@ pub enum Phase {
     Tags,
     Execute,
     Verification,
+    /// The configured directory (B2): pending proposals only, no child.
+    Directory,
 }
 
 impl Phase {
@@ -56,6 +58,7 @@ impl Phase {
             Phase::Tags => "tags",
             Phase::Execute => "execute",
             Phase::Verification => "verification",
+            Phase::Directory => "directory",
         }
     }
 
@@ -71,7 +74,8 @@ impl Phase {
             | Phase::Rules
             | Phase::Analyse
             | Phase::Flows
-            | Phase::Tags => StageId::S2,
+            | Phase::Tags
+            | Phase::Directory => StageId::S2,
             Phase::F4 | Phase::Scenarios | Phase::Execute | Phase::Verification => StageId::S4,
         }
     }
@@ -80,7 +84,7 @@ impl Phase {
     pub fn has_child(self) -> bool {
         !matches!(
             self,
-            Phase::I0 | Phase::F1 | Phase::F2 | Phase::F4 | Phase::Rules
+            Phase::I0 | Phase::F1 | Phase::F2 | Phase::F4 | Phase::Rules | Phase::Directory
         )
     }
 }
@@ -114,10 +118,12 @@ pub enum Recipe {
     Scenarios,
     Tags,
     Run,
+    /// The configured directory (B2), persisted as pending proposals.
+    Directory,
 }
 
 impl Recipe {
-    pub const ALL: [Recipe; 11] = [
+    pub const ALL: [Recipe; 12] = [
         Recipe::Intake,
         Recipe::Lint,
         Recipe::Extract,
@@ -129,6 +135,7 @@ impl Recipe {
         Recipe::Scenarios,
         Recipe::Tags,
         Recipe::Run,
+        Recipe::Directory,
     ];
 
     pub fn from_stage_name(name: StageName) -> Recipe {
@@ -144,6 +151,7 @@ impl Recipe {
             StageName::Scenarios => Recipe::Scenarios,
             StageName::Tags => Recipe::Tags,
             StageName::Run => Recipe::Run,
+            StageName::Directory => Recipe::Directory,
         }
     }
 
@@ -161,6 +169,7 @@ impl Recipe {
             Recipe::Scenarios => "scenarios",
             Recipe::Tags => "tags",
             Recipe::Run => "run",
+            Recipe::Directory => "directory",
         }
     }
 
@@ -170,9 +179,12 @@ impl Recipe {
 
     pub fn scope_kind(self) -> ScopeKind {
         match self {
-            Recipe::Intake | Recipe::Lint | Recipe::Analyse | Recipe::Scenarios | Recipe::Tags => {
-                ScopeKind::Whole
-            }
+            Recipe::Intake
+            | Recipe::Lint
+            | Recipe::Analyse
+            | Recipe::Scenarios
+            | Recipe::Tags
+            | Recipe::Directory => ScopeKind::Whole,
             Recipe::Extract => ScopeKind::EvidenceFragments,
             Recipe::Consolidate | Recipe::Calc | Recipe::Flows => ScopeKind::Requirements,
             Recipe::Rules => ScopeKind::DecisionTables,
@@ -211,6 +223,7 @@ impl Recipe {
             Recipe::Scenarios if a04.scenario_derivation.is_none() => {
                 missing.push("scenario_derivation")
             }
+            Recipe::Directory if a04.directory.is_none() => missing.push("directory"),
             Recipe::Run => {
                 if a04.verification_applicability.is_none() {
                     missing.push("verification_applicability");
@@ -244,6 +257,11 @@ impl Recipe {
                 "duplicate_policy": v(&a04.duplicate_policy)?,
             }),
             Recipe::Extract | Recipe::Rules | Recipe::Tags => json!({}),
+            // The directory production is bound to its draft and the runtime calendars.
+            Recipe::Directory => json!({
+                "directory": v(&a04.directory)?,
+                "calendars": v(&a04.calendars)?,
+            }),
             Recipe::Consolidate => json!({
                 "vocabulary_policy": v(&a04.vocabulary_policy)?,
                 "duplicate_policy": v(&a04.duplicate_policy)?,
