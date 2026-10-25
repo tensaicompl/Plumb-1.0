@@ -330,6 +330,14 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
       }),
     reviewed,
   );
+  const rejectEars = useVersionedMutation<WriteResult, { proposal: string; reason: string | null }>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/proposals/{id}/reject", {
+        params: { path: { id: body.proposal }, header: { "If-Match": ifMatch } },
+        body: { reason: body.reason },
+      }),
+    reviewed,
+  );
   const waive = useVersionedMutation<WriteResult, { finding_id: string; reason: string }>(
     (body, ifMatch) => apiClient.POST("/api/requirements/{id}/waive-finding", { params: { path, header: { "If-Match": ifMatch } }, body }),
     reviewed,
@@ -416,8 +424,20 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
             >
               {t("requirement.ears.accept")}
             </button>
+            <button
+              type="button"
+              className="mt-2 ml-2 rounded border px-3 py-1"
+              data-testid="ears-reject"
+              disabled={rejectEars.isPending || acceptEars.isPending}
+              onClick={() => {
+                rejectEars.mutate({ proposal: earsProposal, reason: earsReason === "" ? null : earsReason }, onWritten);
+              }}
+            >
+              {t("requirement.ears.reject")}
+            </button>
             </RoleGate>
             <WriteError error={acceptEars.error} />
+            <WriteError error={rejectEars.error} />
           </>
         )}
       </section>

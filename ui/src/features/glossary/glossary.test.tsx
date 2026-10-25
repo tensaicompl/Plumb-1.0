@@ -144,6 +144,14 @@ function handlers(calls: Call[], merge: () => Response = () => etagJson(WRITE)) 
       await record(request, "POST");
       return merge();
     }),
+    http.post("*/api/glossary/:id/confirm", async ({ request }) => {
+      await record(request, "POST");
+      return etagJson(WRITE);
+    }),
+    http.post("*/api/glossary/:id/edit", async ({ request }) => {
+      await record(request, "POST");
+      return etagJson(WRITE);
+    }),
   ];
 }
 
@@ -200,6 +208,35 @@ describe("GlossaryPage", () => {
     expect(await screen.findByText("Urlaub")).toBeTruthy();
     expect(calls.at(-1)?.search.get("cursor")).toBe("cursor-page-2");
     expect((screen.getByRole("button", { name: "Next page" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+// ------------------------------------------------------------------ confirm and edit
+
+describe("Glossary confirmation and edit (H0.11)", () => {
+  it("confirms only a Proposed term and edits aliases with the unchanged term, with the reviewed ETag", async () => {
+    const calls: Call[] = [];
+    server.use(...handlers(calls));
+    renderGlossary();
+    const user = userEvent.setup();
+    const proposed = (await screen.findByText("vacation")).closest("tr") as HTMLElement;
+    const accepted = screen.getByText("leave request").closest("tr") as HTMLElement;
+    // Confirmation is offered only where the backend accepts it.
+    expect(within(accepted).queryByRole("button", { name: "Confirm" })).toBeNull();
+    await user.click(within(proposed).getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(posts(calls, "/api/glossary/term:vacation/confirm")).toHaveLength(1));
+    expect(posts(calls, "/api/glossary/term:vacation/confirm")[0]?.ifMatch).toBe(TEST_ETAG);
+
+    await user.click(within(accepted).getByRole("button", { name: "Edit aliases" }));
+    const input = within(accepted).getByRole("textbox", { name: "Aliases (comma-separated)" }) as HTMLInputElement;
+    expect(input.value).toBe("absence");
+    await user.clear(input);
+    await user.type(input, "absence, time off");
+    await user.click(within(accepted).getByRole("button", { name: "Save aliases" }));
+    await waitFor(() => expect(posts(calls, "/api/glossary/term:leave/edit")).toHaveLength(1));
+    expect(posts(calls, "/api/glossary/term:leave/edit").map((c) => [c.ifMatch, c.body])).toEqual([
+      [TEST_ETAG, { term: "leave request", aliases: ["absence", "time off"] }],
+    ]);
   });
 });
 

@@ -11,6 +11,7 @@ import { ReadFailure } from "../../components/ReadFailure";
 import { RoleGate } from "../../components/RoleGate";
 
 type GlossaryPage = components["schemas"]["GlossaryPage"];
+type GlossaryTerm = components["schemas"]["GlossaryTerm"];
 type WriteResult = components["schemas"]["WriteResult"];
 
 /** The glossary page size requested from the server. */
@@ -27,6 +28,73 @@ function fetchGlossary(cursor: string | null): Promise<Reviewed<GlossaryPage>> {
     query.cursor = cursor;
   }
   return readReviewed(apiClient.GET("/api/glossary", { params: { query } }));
+}
+
+/** Parses comma-separated aliases: trimmed, blanks dropped. */
+function parseAliases(text: string): string[] {
+  return text
+    .split(",")
+    .map((alias) => alias.trim())
+    .filter((alias) => alias !== "");
+}
+
+/**
+ * The per-term writes (H0.11 glossary confirmation and edit): Confirm is offered only for a
+ * Proposed term (the backend rejects any other lifecycle state); Edit changes only the aliases,
+ * sending the unchanged term as its identity key.
+ */
+function TermActions({ term, etag }: { term: GlossaryTerm; etag: string | null }) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [aliases, setAliases] = useState(term.aliases.join(", "));
+  const onWritten = { onSuccess: () => void queryClient.invalidateQueries() };
+  const confirmTerm = useVersionedMutation<WriteResult>(
+    (_, ifMatch) => apiClient.POST("/api/glossary/{id}/confirm", { params: { path: { id: term.id }, header: { "If-Match": ifMatch } } }),
+    etag,
+  );
+  const edit = useVersionedMutation<WriteResult, string[]>(
+    (next, ifMatch) =>
+      apiClient.POST("/api/glossary/{id}/edit", {
+        params: { path: { id: term.id }, header: { "If-Match": ifMatch } },
+        body: { term: term.term, aliases: next },
+      }),
+    etag,
+  );
+  return (
+    <div className="space-y-1">
+      {term.status === "Proposed" && (
+        <button type="button" className="rounded border px-2 text-xs" disabled={confirmTerm.isPending} onClick={() => confirmTerm.mutate(undefined, onWritten)}>
+          {t("glossary.confirm")}
+        </button>
+      )}
+      {!editing ? (
+        <button type="button" className="ml-1 rounded border px-2 text-xs" onClick={() => setEditing(true)}>
+          {t("glossary.edit.open")}
+        </button>
+      ) : (
+        <form
+          className="space-x-1"
+          onSubmit={(event) => {
+            event.preventDefault();
+            edit.mutate(parseAliases(aliases), { onSuccess: () => { setEditing(false); void queryClient.invalidateQueries(); } });
+          }}
+        >
+          <label className="text-xs">
+            {t("glossary.edit.aliases")}
+            <input className="ml-1 rounded border p-1" value={aliases} onChange={(event) => setAliases(event.target.value)} />
+          </label>
+          <button type="submit" className="rounded border px-2 text-xs" disabled={edit.isPending}>
+            {t("glossary.edit.save")}
+          </button>
+          <button type="button" className="rounded border px-2 text-xs" onClick={() => setEditing(false)}>
+            {t("glossary.edit.cancel")}
+          </button>
+        </form>
+      )}
+      <Failure error={confirmTerm.error} />
+      <Failure error={edit.error} />
+    </div>
+  );
 }
 
 interface PendingMerge {
@@ -136,6 +204,7 @@ export function GlossaryPage() {
                   <th scope="col">{t("glossary.column.status")}</th>
                   <th scope="col">{t("glossary.column.aliases")}</th>
                   <th scope="col">{t("glossary.column.merge")}</th>
+                  <th scope="col">{t("glossary.column.actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -153,6 +222,11 @@ export function GlossaryPage() {
                       <button type="button" className="rounded border px-2 text-xs" disabled={locked} data-select="target" onClick={() => setTarget(term.id)}>
                         {t("glossary.merge.asTarget")}
                       </button>
+                    </td>
+                    <td>
+                      <RoleGate quiet>
+                        <TermActions term={term} etag={page.data.etag} />
+                      </RoleGate>
                     </td>
                   </tr>
                 ))}

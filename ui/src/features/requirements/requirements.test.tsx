@@ -230,6 +230,7 @@ function handlers(calls: Call[], overrides: { create?: () => Response; staleCurs
     }),
     http.post("*/api/proposals/:id/supersede", write()),
     http.post("*/api/proposals/:id/accept", write()),
+    http.post("*/api/proposals/:id/reject", write()),
   ];
 }
 
@@ -491,6 +492,20 @@ describe("RequirementDetail EARS review (R0.6)", () => {
     expect(accepts()[0]?.body).toEqual({ reason: null });
     expect(posts(calls, "/accept-ears")).toHaveLength(0);
     await waitFor(() => expect(reads()).toBeGreaterThan(before));
+  });
+
+  it("rejects the surfaced EARS proposal through /reject with the review reason (H0.11 EARS review)", async () => {
+    const calls: Call[] = [];
+    server.use(...handlers(calls));
+    renderAt("/requirements/req:a");
+    const user = userEvent.setup();
+    const ears = await screen.findByRole("region", { name: "EARS suggestion" });
+    await user.type(within(ears).getByTestId("ears-reason"), "Keep the original form.");
+    await user.click(within(ears).getByTestId("ears-reject"));
+    const rejects = () => calls.filter((c) => c.method === "POST" && decoded(c.path) === "/api/proposals/prop:ears-a/reject");
+    await waitFor(() => expect(rejects()).toHaveLength(1));
+    expect(rejects().map((c) => [c.ifMatch, c.body])).toEqual([[TEST_ETAG, { reason: "Keep the original form." }]]);
+    expect(posts(calls, "/accept")).toHaveLength(0);
   });
 
   it("shows the suggestion as unavailable when the server pairs no proposal reference", async () => {
