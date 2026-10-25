@@ -574,7 +574,8 @@ pub enum ScenarioWhen {
 }
 
 impl ScenarioWhen {
-    fn anchor(&self) -> &Id {
+    /// The anchor element the When executes.
+    pub fn anchor(&self) -> &Id {
         match self {
             ScenarioWhen::Operation(id)
             | ScenarioWhen::Event(id)

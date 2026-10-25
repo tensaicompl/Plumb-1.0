@@ -12,6 +12,7 @@ use plumb_expr::{map_pilot_value_type, Value as ExprValue};
 use plumb_functional::decision_table::DecisionType;
 use plumb_functional::{
     ScenarioGiven, ScenarioLiteral, ScenarioSemantics, ScenarioThen, ScenarioValue, ScenarioWhen,
+    CALCULATION_RESULT_KEY_PREFIX,
 };
 use plumb_psg::{ElementStatus, NodePayload, NodeType, RelationKind, ScenarioRun};
 use serde::Serialize;
@@ -20,7 +21,7 @@ use thiserror::Error;
 use crate::materialize::{admit, materialize, runtime_values, to_expr_value};
 use crate::model::{
     accepted, ExecutionFailure, ExecutionModel, ExecutionResult, ExecutionRun, ExecutionRuntime,
-    ExecutionTraceStep, RuntimeState, SimulationError,
+    ExecutionTraceStep, ResolutionSource, RuntimeState, SimulationError,
 };
 use crate::trace::{
     scenario_run, ComparisonTraceStep, ScenarioTraceArtifact, ScenarioTraceArtifactBody,
@@ -103,6 +104,12 @@ pub enum ScenarioDiff {
     },
     MissingExpectedState {
         state_ref: Id,
+    },
+    /// A Then `result:<key>` reference whose Calculation produced no result in this run
+    /// (H0.10): a Fail, never a silent Undecidable.
+    MissingExecutionResult {
+        calculation_ref: Id,
+        key: String,
     },
     RuleNotSatisfied {
         rule_ref: Id,
@@ -310,10 +317,24 @@ fn compare_then(
         attribute_values: then.attribute_values.clone(),
         ..ScenarioGiven::default()
     };
+    // A `result:<key>` reference of the named Calculation itself resolves to that
+    // Calculation's execution result in this run (H0.10); validation rejects any other
+    // calculation-result reference at derivation.
+    let execution_result_ref = |calculation_ref: &Id, value: &ScenarioValue| match value {
+        ScenarioValue::SemanticRef(d)
+            if &d.owner_ref == calculation_ref
+                && d.key.starts_with(CALCULATION_RESULT_KEY_PREFIX) =>
+        {
+            Some(d.key.clone())
+        }
+        _ => None,
+    };
     let calculation_positions: Vec<(&Id, &ScenarioValue)> =
         then.calculation_results.iter().collect();
-    for (index, (_, value)) in calculation_positions.iter().enumerate() {
-        if matches!(value, ScenarioValue::SemanticRef(_)) {
+    for (index, (calculation_ref, value)) in calculation_positions.iter().enumerate() {
+        if matches!(value, ScenarioValue::SemanticRef(_))
+            && execution_result_ref(calculation_ref, value).is_none()
+        {
             let index =
                 u32::try_from(index).map_err(|_| invalid(scenario_ref, "too many expectations"))?;
             probe_given.decision_inputs.insert(index, (*value).clone());
@@ -352,7 +373,25 @@ fn compare_then(
 
     let expected_attributes = &resolved.state.attributes;
     let mut expected_calculations: BTreeMap<Id, ScenarioLiteral> = BTreeMap::new();
+    let mut unexecuted_results = Vec::new();
     for (index, (calculation_ref, value)) in calculation_positions.iter().enumerate() {
+        if let Some(key) = execution_result_ref(calculation_ref, value) {
+            match actual.state.calculation_results.get(*calculation_ref) {
+                Some(literal) => {
+                    steps.push(ComparisonTraceStep::ExpectedValueResolved {
+                        owner_ref: (*calculation_ref).clone(),
+                        key,
+                        source: ResolutionSource::ExecutionResult,
+                    });
+                    expected_calculations.insert((*calculation_ref).clone(), literal.clone());
+                }
+                None => unexecuted_results.push(ScenarioDiff::MissingExecutionResult {
+                    calculation_ref: (*calculation_ref).clone(),
+                    key,
+                }),
+            }
+            continue;
+        }
         let literal = match value {
             ScenarioValue::Literal(literal) => literal.clone(),
             ScenarioValue::SemanticRef(_) => u32::try_from(index)
@@ -532,6 +571,7 @@ fn compare_then(
         });
         calculation_diffs.extend(diff);
     }
+    calculation_diffs.extend(unexecuted_results);
 
     // Canonical diff order: attributes, states, rules, decision outputs, calculations,
     // outcome set, event set.
@@ -578,6 +618,29 @@ pub fn compare_run(
         ExecutionResult::Undecidable { trace, .. } => (
             trace,
             (ScenarioVerdict::Undecidable, Vec::new(), Vec::new()),
+        ),
+        // A modeled business rejection is the observed outcome: the pre-state, no event, and
+        // Then compared normally (architecture §33.4).
+        ExecutionResult::Rejected {
+            outcome_ref,
+            state,
+            rule_results,
+            trace,
+            ..
+        } => (
+            trace,
+            compare_then(
+                model,
+                scenario_ref,
+                &admitted.semantics,
+                runtime,
+                &Actual {
+                    state,
+                    outcome_refs: std::slice::from_ref(outcome_ref),
+                    event_refs: &[],
+                    rule_results,
+                },
+            )?,
         ),
         ExecutionResult::Executed {
             state,

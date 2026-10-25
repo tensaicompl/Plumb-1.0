@@ -470,10 +470,12 @@ fn produce_outcome_selections(
     let key: plumb_psg::ExtensionKey =
         OUTCOME_SELECTION_EXTENSION
             .parse()
-            .map_err(|e: plumb_psg::InvalidExtensionKey| DirectoryError::InvalidElement {
-                element: graph.project_id().clone(),
-                reason: e.to_string(),
-            })?;
+            .map_err(
+                |e: plumb_psg::InvalidExtensionKey| DirectoryError::InvalidElement {
+                    element: graph.project_id().clone(),
+                    reason: e.to_string(),
+                },
+            )?;
     let mut outcomes = Vec::new();
     for (outcome_ref, mut selections) in by_outcome {
         let invalid = |reason: String| DirectoryError::InvalidOutcomeSelection {

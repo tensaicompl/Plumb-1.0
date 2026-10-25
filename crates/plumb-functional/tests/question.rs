@@ -975,7 +975,10 @@ mod question_contract {
             prompt.contains("a configured holiday never consumes a working day"),
             "{prompt}"
         );
-        assert!(prompt.contains("Which Accepted Calendar applies"), "{prompt}");
+        assert!(
+            prompt.contains("Which Accepted Calendar applies"),
+            "{prompt}"
+        );
         assert!(prompt.contains("calculation:days"), "{prompt}");
     }
 

@@ -548,8 +548,7 @@ mod directory_contract {
                 node_id,
                 status,
                 NodePayload::Outcome(
-                    serde_json::from_value(json!({"name": node_id, "outcome_kind": kind}))
-                        .unwrap(),
+                    serde_json::from_value(json!({"name": node_id, "outcome_kind": kind})).unwrap(),
                 ),
             )
         };
@@ -707,7 +706,10 @@ mod directory_contract {
         ] {
             let mut j = draft_json();
             j["outcome_selections"] = case.clone();
-            assert!(serde_json::from_value::<DirectoryDraft>(j).is_err(), "{case}");
+            assert!(
+                serde_json::from_value::<DirectoryDraft>(j).is_err(),
+                "{case}"
+            );
         }
     }
 }

@@ -820,7 +820,10 @@ mod compare_contract {
     }
 
     #[test]
-    fn unresolved_then_semantic_ref_is_undecidable_not_fail() {
+    fn then_result_refs_resolve_to_the_execution_result_never_silently_undecidable() {
+        // H0.10 (architecture §33.11): `result:<key>` of the named Calculation resolves to its
+        // execution result in the trace (this was an Undecidable expected-semantic-missing
+        // before the plan v3.2 hotfix).
         let mut t = then();
         t.calculation_results
             .insert(id(CALC), sem(CALC, "result:holiday_inside_period"));
@@ -829,21 +832,48 @@ mod compare_contract {
         let (execution, c) =
             compare_with(&w, ExecutionInputs::default(), &holiday_runtime(&cal)).unwrap();
         assert!(matches!(execution.result, ExecutionResult::Executed { .. }));
-        assert_eq!(c.result, ScenarioVerdict::Undecidable);
-        assert!(c.diffs.is_empty());
+        assert_eq!(c.result, ScenarioVerdict::Pass, "{:?}", c.diffs);
         let steps = comparison_steps(&c);
         assert!(
-            steps.contains(&&ComparisonTraceStep::ExpectedSemanticMissing {
-                missing: vec![plumb_sim::MissingSemantic {
-                    owner_ref: id(CALC),
-                    key: "result:holiday_inside_period".into(),
-                    kind: MissingSemanticKind::SemanticRef,
-                }]
+            steps.contains(&&ComparisonTraceStep::ExpectedValueResolved {
+                owner_ref: id(CALC),
+                key: "result:holiday_inside_period".into(),
+                source: ResolutionSource::ExecutionResult,
             })
         );
         assert!(!steps
             .iter()
-            .any(|s| matches!(s, ComparisonTraceStep::CalculationCompared { .. })));
+            .any(|s| matches!(s, ComparisonTraceStep::ExpectedSemanticMissing { .. })));
+        // A Calculation the run never executed is a Fail with a typed diff.
+        let mut t = then();
+        t.calculation_results.insert(
+            id("calculation:unused"),
+            sem("calculation:unused", "result:x"),
+        );
+        let mut w = rich_world("amount > 10", t.clone());
+        w.add(calculation(
+            "calculation:unused",
+            "amount * 3",
+            ("Int", None),
+            None,
+            &[(AMOUNT, "amount")],
+            None,
+            true,
+        ));
+        w.scenario_then(
+            given_states(&[(AMOUNT, lit(int(20)))], &[DRAFT]),
+            ScenarioWhen::Operation(id(SUBMIT)),
+            t,
+        );
+        let c = compare(&w, rich_inputs());
+        assert_eq!(c.result, ScenarioVerdict::Fail);
+        assert_eq!(
+            c.diffs,
+            vec![ScenarioDiff::MissingExecutionResult {
+                calculation_ref: id("calculation:unused"),
+                key: "result:x".into(),
+            }]
+        );
     }
 
     #[test]
@@ -1778,5 +1808,471 @@ mod compare_contract {
         assert!(plumb_sim::SCENARIO_TRACE_LINK_EXTENSION
             .parse::<plumb_psg::ExtensionKey>()
             .is_ok());
+    }
+
+    // ------------------------------------------------------------------ H0.4 business failures
+
+    // HR-shaped leave graph (architecture §33.4 regression shapes; built in memory).
+    const LEAVE_REQUEST: &str = "entity:leave-request";
+    const BALANCE: &str = "attr:annual-balance";
+    const REQUESTED: &str = "attr:requested-days";
+    const L_SUBMITTED: &str = "state:leave-submitted";
+    const L_APPROVED: &str = "state:leave-approved";
+    const L_WITHDRAWN: &str = "state:leave-withdrawn";
+    const CHECK_BALANCE: &str = "op:check-leave-balance";
+    const APPROVE: &str = "op:approve-leave-request";
+    const WITHDRAW: &str = "op:withdraw-leave-request";
+    const TR_APPROVE: &str = "transition:approve";
+    const TR_WITHDRAW: &str = "transition:withdraw";
+    const MANAGER_ROLE: &str = "secrole:manager";
+    const APPROVE_PERMISSION: &str = "permission:approve-leave";
+    const MANAGER: &str = "principal:m200";
+    const EMPLOYEE: &str = "principal:e100";
+    const INSUFFICIENT: &str = "outcome:insufficient-balance";
+    const NOT_AUTHORIZED: &str = "outcome:not-authorized";
+    const NOT_WITHDRAWABLE: &str = "outcome:not-withdrawable";
+    const BALANCE_OK: &str = "outcome:balance-ok";
+    const OUTCOME_SELECTION: &str = "plumb_sim:outcome_selection";
+
+    fn outcome_of(node_id: &str, kind: OutcomeKind, selection: Option<Value>) -> Node {
+        let mut n = node(
+            node_id,
+            Accepted,
+            NodePayload::Outcome(Outcome {
+                name: node_id.into(),
+                outcome_kind: kind,
+            }),
+        );
+        if let Some(selection) = selection {
+            n.extensions.insert(
+                ExtensionKey::from_str(OUTCOME_SELECTION).unwrap(),
+                selection,
+            );
+        }
+        n
+    }
+
+    fn on_failures(operation_ref: &str, kinds: &[&str]) -> Value {
+        json!({"version": 1, "selections": [{"operation_ref": operation_ref, "on_failures": kinds}]})
+    }
+
+    /// The leave request with its balance attributes, lifecycle, the balance check, the
+    /// manager-only approval and the withdrawal, each with its modeled business failure Outcome.
+    fn hr_leave_world() -> World {
+        let mut w = World::empty();
+        w.add(entity(LEAVE_REQUEST, "LeaveRequest"))
+            .add(attribute(
+                BALANCE,
+                "annual_balance",
+                "Decimal(1)",
+                None,
+                None,
+            ))
+            .add(attribute(
+                REQUESTED,
+                "requested_days",
+                "Decimal(1)",
+                None,
+                None,
+            ))
+            .add(state(L_SUBMITTED))
+            .add(state(L_APPROVED))
+            .add(state(L_WITHDRAWN))
+            .add(operation(
+                CHECK_BALANCE,
+                &["requested_days <= annual_balance"],
+                &[],
+            ))
+            .add(operation(APPROVE, &[], &[]))
+            .add(operation(WITHDRAW, &[], &[]))
+            .add(node(
+                TR_APPROVE,
+                Accepted,
+                NodePayload::Transition(Transition {
+                    stateful_ref: id(LEAVE_REQUEST),
+                    from_state: id(L_SUBMITTED),
+                    to_state: id(L_APPROVED),
+                    guard_expr: None,
+                    effect_refs: None,
+                }),
+            ))
+            .add(node(
+                TR_WITHDRAW,
+                Accepted,
+                NodePayload::Transition(Transition {
+                    stateful_ref: id(LEAVE_REQUEST),
+                    from_state: id(L_SUBMITTED),
+                    to_state: id(L_WITHDRAWN),
+                    guard_expr: None,
+                    effect_refs: None,
+                }),
+            ))
+            .add(node(
+                MANAGER_ROLE,
+                Accepted,
+                NodePayload::SecurityRole(plumb_psg::SecurityRole {
+                    name: "Manager".into(),
+                    description: None,
+                }),
+            ))
+            .add(node(
+                APPROVE_PERMISSION,
+                Accepted,
+                NodePayload::Permission(plumb_psg::Permission {
+                    name: "ApproveLeave".into(),
+                }),
+            ))
+            .add(outcome_of(
+                INSUFFICIENT,
+                OutcomeKind::BusinessFailure,
+                Some(on_failures(CHECK_BALANCE, &["precondition_rejected"])),
+            ))
+            .add(outcome_of(BALANCE_OK, OutcomeKind::Success, None))
+            .add(node(
+                "scope:leave-requests",
+                Accepted,
+                NodePayload::ResourceScope(plumb_psg::ResourceScope {
+                    resource_ref: id(LEAVE_REQUEST),
+                    scope_kind: "all".into(),
+                }),
+            ))
+            .add(outcome_of(
+                NOT_AUTHORIZED,
+                OutcomeKind::BusinessFailure,
+                Some(on_failures(APPROVE, &["authorization_denied"])),
+            ))
+            .add(outcome_of(
+                NOT_WITHDRAWABLE,
+                OutcomeKind::BusinessFailure,
+                Some(on_failures(WITHDRAW, &["invalid_source_state"])),
+            ))
+            // Technical failures are never selected, whatever they would claim.
+            .add(outcome_of(
+                "outcome:storage-down",
+                OutcomeKind::TechnicalFailure,
+                None,
+            ));
+        for p in [MANAGER, EMPLOYEE] {
+            w.add(node(
+                p,
+                Accepted,
+                NodePayload::Principal(plumb_psg::Principal {
+                    name: p.into(),
+                    principal_kind: "user".into(),
+                }),
+            ));
+        }
+        for a in [BALANCE, REQUESTED] {
+            w.link(RelationKind::HasAttribute, LEAVE_REQUEST, a);
+        }
+        for s in [L_SUBMITTED, L_APPROVED, L_WITHDRAWN] {
+            w.link(RelationKind::HasState, LEAVE_REQUEST, s);
+        }
+        w.link(RelationKind::TransitionsVia, TR_APPROVE, APPROVE)
+            .link(RelationKind::TransitionsVia, TR_WITHDRAW, WITHDRAW)
+            .link(RelationKind::Grants, MANAGER_ROLE, APPROVE_PERMISSION)
+            .link(RelationKind::Permits, APPROVE_PERMISSION, APPROVE)
+            .link(
+                RelationKind::ScopedTo,
+                APPROVE_PERMISSION,
+                "scope:leave-requests",
+            )
+            .link(RelationKind::AssignedRole, MANAGER, MANAGER_ROLE)
+            .link(RelationKind::Produces, CHECK_BALANCE, INSUFFICIENT)
+            .link(RelationKind::Produces, CHECK_BALANCE, BALANCE_OK)
+            .link(
+                RelationKind::Produces,
+                CHECK_BALANCE,
+                "outcome:storage-down",
+            )
+            .link(RelationKind::Produces, APPROVE, NOT_AUTHORIZED)
+            .link(RelationKind::Produces, WITHDRAW, NOT_WITHDRAWABLE)
+            .link(RelationKind::Produces, APPROVE, "event:leave-approved")
+            .add(event("event:leave-approved"));
+        w
+    }
+
+    fn balance_scope() -> ExecutionExpressionScopeInput {
+        scope(
+            CHECK_BALANCE,
+            &[(BALANCE, "annual_balance"), (REQUESTED, "requested_days")],
+        )
+    }
+
+    fn hr_compare(
+        w: &World,
+        actor: Option<&str>,
+    ) -> Result<(ExecutionRun, ScenarioComparison), ComparisonError> {
+        let cal = calendars(&[]);
+        compare_with(
+            w,
+            scopes(vec![balance_scope()]),
+            &runtime(&cal, &NO_MANAGERS, actor, Vec::new()),
+        )
+    }
+
+    fn expect_outcome(outcome_ref: &str, states: &[&str]) -> ScenarioThen<ScenarioValue> {
+        let mut t = then();
+        t.outcomes = vec![id(outcome_ref)];
+        t.states_active = states.iter().map(|s| id(s)).collect();
+        t
+    }
+
+    fn balance_given(balance: &str, requested: &str) -> ScenarioGiven<ScenarioValue> {
+        given_states(
+            &[
+                (BALANCE, lit(decimal(balance, None))),
+                (REQUESTED, lit(decimal(requested, None))),
+            ],
+            &[L_SUBMITTED],
+        )
+    }
+
+    #[test]
+    fn expected_business_failure_passes() {
+        // SCN-010 shape: insufficient balance (precondition_rejected).
+        let mut w = hr_leave_world();
+        w.scenario_then(
+            balance_given("1.0", "2.0"),
+            ScenarioWhen::Operation(id(CHECK_BALANCE)),
+            expect_outcome(INSUFFICIENT, &[L_SUBMITTED]),
+        );
+        let (execution, c) = hr_compare(&w, None).unwrap();
+        let ExecutionResult::Rejected {
+            failure,
+            outcome_ref,
+            state,
+            ..
+        } = &execution.result
+        else {
+            panic!("expected Rejected, got {:?}", execution.result);
+        };
+        assert_eq!(
+            failure,
+            &ExecutionFailure::PreconditionRejected {
+                operation_ref: id(CHECK_BALANCE),
+                index: 0
+            }
+        );
+        assert_eq!(outcome_ref, &id(INSUFFICIENT));
+        // The pre-state is kept and no event is produced.
+        assert_eq!(state.active_states, BTreeSet::from([id(L_SUBMITTED)]));
+        assert_eq!(c.result, ScenarioVerdict::Pass, "{:?}", c.diffs);
+        assert!(c.trace.contains(&ScenarioTraceStep::Execution(
+            ExecutionTraceStep::OutcomeSelected {
+                operation_ref: id(CHECK_BALANCE),
+                outcome_ref: id(INSUFFICIENT),
+            }
+        )));
+        assert_consistent(&c);
+
+        // SCN-013 shape: a non-manager approval (authorization_denied); the state stays
+        // Submitted and no LeaveApproved event is produced.
+        let mut w = hr_leave_world();
+        let mut t = expect_outcome(NOT_AUTHORIZED, &[L_SUBMITTED]);
+        w.scenario_then(
+            given_states(&[], &[L_SUBMITTED]),
+            ScenarioWhen::Operation(id(APPROVE)),
+            t.clone(),
+        );
+        let (_, c) = hr_compare(&w, Some(EMPLOYEE)).unwrap();
+        assert_eq!(c.result, ScenarioVerdict::Pass, "{:?}", c.diffs);
+        // The manager approves: the business failure expectation now fails.
+        let (execution, c) = hr_compare(&w, Some(MANAGER)).unwrap();
+        assert!(matches!(execution.result, ExecutionResult::Executed { .. }));
+        assert_eq!(c.result, ScenarioVerdict::Fail);
+        // A rejection never produces events.
+        t.events = vec![id("event:leave-approved")];
+        w.scenario_then(
+            given_states(&[], &[L_SUBMITTED]),
+            ScenarioWhen::Operation(id(APPROVE)),
+            t,
+        );
+        let (_, c) = hr_compare(&w, Some(EMPLOYEE)).unwrap();
+        assert_eq!(c.result, ScenarioVerdict::Fail);
+        assert!(c
+            .diffs
+            .iter()
+            .any(|d| matches!(d, ScenarioDiff::EventSetMismatch { .. })));
+
+        // SCN-022 shape: withdrawing an Approved request (invalid_source_state of the
+        // transition its Operation triggers).
+        let mut w = hr_leave_world();
+        w.scenario_then(
+            given_states(&[], &[L_APPROVED]),
+            ScenarioWhen::Transition(id(TR_WITHDRAW)),
+            expect_outcome(NOT_WITHDRAWABLE, &[L_APPROVED]),
+        );
+        let (execution, c) = hr_compare(&w, None).unwrap();
+        assert!(matches!(
+            &execution.result,
+            ExecutionResult::Rejected {
+                failure: ExecutionFailure::InvalidSourceState { .. },
+                ..
+            }
+        ));
+        assert_eq!(c.result, ScenarioVerdict::Pass, "{:?}", c.diffs);
+    }
+
+    #[test]
+    fn expected_business_failure_that_executes_successfully_fails() {
+        let mut w = hr_leave_world();
+        w.scenario_then(
+            balance_given("5.0", "2.0"),
+            ScenarioWhen::Operation(id(CHECK_BALANCE)),
+            expect_outcome(INSUFFICIENT, &[]),
+        );
+        let (execution, c) = hr_compare(&w, None).unwrap();
+        // The only success candidate is selected; the business failure never is.
+        let ExecutionResult::Executed { outcome_refs, .. } = &execution.result else {
+            panic!("expected Executed, got {:?}", execution.result);
+        };
+        assert_eq!(outcome_refs, &[id(BALANCE_OK)]);
+        assert_eq!(c.result, ScenarioVerdict::Fail);
+        assert_eq!(
+            c.diffs,
+            vec![ScenarioDiff::OutcomeSetMismatch {
+                anchor_ref: id(CHECK_BALANCE),
+                expected: vec![id(INSUFFICIENT)],
+                actual: vec![id(BALANCE_OK)],
+                missing: vec![id(INSUFFICIENT)],
+                unexpected: vec![id(BALANCE_OK)],
+            }]
+        );
+    }
+
+    #[test]
+    fn unexpected_rejections_and_model_failures_never_pass() {
+        // No business_failure Outcome lists the kind: Fail with the execution-failure diff.
+        let mut w = hr_leave_world();
+        w.add(outcome_of(
+            INSUFFICIENT,
+            OutcomeKind::BusinessFailure,
+            Some(on_failures(CHECK_BALANCE, &["authorization_denied"])),
+        ));
+        w.scenario_then(
+            balance_given("1.0", "2.0"),
+            ScenarioWhen::Operation(id(CHECK_BALANCE)),
+            expect_outcome(INSUFFICIENT, &[]),
+        );
+        let (execution, c) = hr_compare(&w, None).unwrap();
+        assert!(matches!(execution.result, ExecutionResult::Failed { .. }));
+        assert_eq!(c.result, ScenarioVerdict::Fail);
+        assert!(matches!(
+            c.diffs.as_slice(),
+            [ScenarioDiff::ExecutionFailure { .. }]
+        ));
+        // Two business_failure Outcomes listing the kind: Undecidable OUTCOME_SELECTION.
+        let mut w = hr_leave_world();
+        w.add(outcome_of(
+            "outcome:also-insufficient",
+            OutcomeKind::BusinessFailure,
+            Some(on_failures(CHECK_BALANCE, &["precondition_rejected"])),
+        ))
+        .link(
+            RelationKind::Produces,
+            CHECK_BALANCE,
+            "outcome:also-insufficient",
+        );
+        w.scenario_then(
+            balance_given("1.0", "2.0"),
+            ScenarioWhen::Operation(id(CHECK_BALANCE)),
+            expect_outcome(INSUFFICIENT, &[]),
+        );
+        let (execution, c) = hr_compare(&w, None).unwrap();
+        let ExecutionResult::Undecidable { missing, .. } = &execution.result else {
+            panic!("expected Undecidable, got {:?}", execution.result);
+        };
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].owner_ref, id(CHECK_BALANCE));
+        assert_eq!(missing[0].key, "outcome_selection");
+        assert_eq!(missing[0].kind, MissingSemanticKind::OutcomeSelection);
+        assert_eq!(c.result, ScenarioVerdict::Undecidable);
+        // A model failure (postcondition_violation) stays Fail whatever the Scenario expects.
+        let mut w = hr_leave_world();
+        w.add(operation(
+            CHECK_BALANCE,
+            &["requested_days <= annual_balance"],
+            &["requested_days > annual_balance"],
+        ));
+        w.scenario_then(
+            balance_given("5.0", "2.0"),
+            ScenarioWhen::Operation(id(CHECK_BALANCE)),
+            expect_outcome(INSUFFICIENT, &[]),
+        );
+        let (execution, c) = hr_compare(&w, None).unwrap();
+        assert!(matches!(
+            execution.result,
+            ExecutionResult::Failed {
+                failure: ExecutionFailure::PostconditionViolation { .. },
+                ..
+            }
+        ));
+        assert_eq!(c.result, ScenarioVerdict::Fail);
+    }
+
+    #[test]
+    fn internal_error_never_passes() {
+        // A simulator error is no verdict, never a Pass, even when the Scenario expects the
+        // business failure Outcome.
+        let mut w = hr_leave_world();
+        w.scenario_then(
+            given_states(&[], &[L_SUBMITTED]),
+            ScenarioWhen::Operation(id(APPROVE)),
+            expect_outcome(NOT_AUTHORIZED, &[L_SUBMITTED]),
+        );
+        let err = hr_compare(&w, Some("principal:unknown")).unwrap_err();
+        assert!(matches!(
+            err,
+            ComparisonError::Simulation(SimulationError::InvalidRuntimeActor { .. })
+        ));
+        let cal = calendars(&[]);
+        let disallowed = runtime(
+            &cal,
+            &NO_MANAGERS,
+            Some(EMPLOYEE),
+            vec![RuntimeSemanticValue {
+                owner_ref: id(BALANCE),
+                key: "value".into(),
+                value: decimal("9.0", None),
+            }],
+        );
+        let err = compare_with(&w, scopes(vec![balance_scope()]), &disallowed).unwrap_err();
+        assert!(matches!(
+            err,
+            ComparisonError::Simulation(SimulationError::DisallowedRuntimeValue { .. })
+        ));
+        // A stale execution never yields a verdict either.
+        let graph = w.graph();
+        let model = build_execution_model(&graph, scopes(vec![balance_scope()])).unwrap();
+        let rt = runtime(&cal, &NO_MANAGERS, Some(EMPLOYEE), Vec::new());
+        let mut execution = run(&model, &id(SCN), &rt).unwrap();
+        execution.specification_hash = Hash::content_sha256(b"older scenario");
+        assert!(matches!(
+            compare_run(&model, &execution, &rt),
+            Err(ComparisonError::StaleExecutionRun { .. })
+        ));
+    }
+
+    #[test]
+    fn then_calculation_result_refs_resolve_to_the_execution_result() {
+        // H0.10: result:<key> resolves to the named Calculation's execution result in the trace.
+        let mut t = then();
+        t.calculation_results
+            .insert(id(CALC_A), sem(CALC_A, "result:doubled"));
+        let c = compare(&rich_world("amount > 10", t), rich_inputs());
+        assert_eq!(c.result, ScenarioVerdict::Pass, "{:?}", c.diffs);
+        let steps = comparison_steps(&c);
+        assert!(
+            steps.contains(&&ComparisonTraceStep::ExpectedValueResolved {
+                owner_ref: id(CALC_A),
+                key: "result:doubled".into(),
+                source: ResolutionSource::ExecutionResult,
+            })
+        );
+        assert!(steps.contains(&&ComparisonTraceStep::CalculationCompared {
+            calculation_ref: id(CALC_A),
+            matched: true,
+        }));
     }
 }

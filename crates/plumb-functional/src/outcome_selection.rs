@@ -135,8 +135,7 @@ impl OutcomeSelection {
         for entry in &self.selections {
             let op = &entry.operation_ref;
             let operation = graph.node(op).filter(|n| {
-                n.status == ElementStatus::Accepted
-                    && n.payload.node_type() == NodeType::Operation
+                n.status == ElementStatus::Accepted && n.payload.node_type() == NodeType::Operation
             });
             if operation.is_none() {
                 return Err(invalid(format!("{op} is not an Accepted Operation")));

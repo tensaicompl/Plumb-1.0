@@ -35,10 +35,10 @@ mod incremental_contract {
         RuntimeSemanticValue, ScenarioVerdict, SimulationError,
     };
     use plumb_sim::{
-        rerun_dirty_scenarios, select_dirty_scenarios, IncrementalError, IncrementalScenarioPolicy,
-        IncrementalScenarioResult, IncrementalScenarioRuntime, SCENARIO_FAIL_CODE,
-        SCENARIO_FAIL_CONDITION, SCENARIO_FINDING_FAMILY, SCENARIO_UNDECIDABLE_CODE,
-        SCENARIO_UNDECIDABLE_CONDITION,
+        rerun_dirty_scenarios, scenario_run_currency, select_dirty_scenarios, IncrementalError,
+        IncrementalScenarioPolicy, IncrementalScenarioResult, IncrementalScenarioRuntime,
+        ScenarioRunCurrency, SCENARIO_FAIL_CODE, SCENARIO_FAIL_CONDITION, SCENARIO_FINDING_FAMILY,
+        SCENARIO_UNDECIDABLE_CODE, SCENARIO_UNDECIDABLE_CONDITION,
     };
     use plumb_validation::{finding_id, finding_key, GeneratedFinding};
     use serde_json::{json, Value};
@@ -944,6 +944,99 @@ mod incremental_contract {
                 "{dirty_ids:?}"
             );
         }
+    }
+
+    fn invariant(node_id: &str, scope_ref: &str, expression: &str) -> Node {
+        node(
+            node_id,
+            Accepted,
+            NodePayload::Invariant(plumb_psg::Invariant {
+                scope_ref: id(scope_ref),
+                expression: expression.into(),
+            }),
+        )
+    }
+
+    #[test]
+    fn invariant_edit_marks_scenario_dirty() {
+        // H0.10 (architecture §33.11): the dependency set holds the Accepted Invariants scoped
+        // to the footprint and the footprint Entities and Attributes.
+        let mut w = selection_world();
+        w.add(invariant("invariant:limit", AMOUNT, "amount < 100"))
+            .add(invariant("invariant:request", REQUEST, "amount < 1000"))
+            .add(invariant("invariant:fee", FEE, "fee > 0"))
+            .add(attribute(NOTE, "note", "String", None, None))
+            .link(RelationKind::Writes, SUBMIT, AMOUNT)
+            .link(RelationKind::Reads, SUBMIT, NOTE);
+        // Transitions on the request apply its invariants to every Scenario that moves it.
+        assert_eq!(
+            selected(&w, &["invariant:request"], &[]),
+            names(&[S_EVENT, S_SUBMIT, S_TRANSITION])
+        );
+        assert_eq!(selected(&w, &["invariant:limit"], &[]), names(&[S_SUBMIT]));
+        assert!(selected(&w, &["invariant:fee"], &[]).is_empty());
+        assert_eq!(selected(&w, &[NOTE], &[]), names(&[S_SUBMIT]));
+
+        // Editing the invariant re-executes the dependent Scenario deterministically and its
+        // earlier run is stale.
+        let cal = calendars(&[]);
+        let inputs = || {
+            scopes(vec![
+                scope(SUBMIT, &[(AMOUNT, "amount")]),
+                scope(RULE, &[(AMOUNT, "amount")]),
+                scope("invariant:limit", &[(AMOUNT, "amount")]),
+                scope("invariant:request", &[(AMOUNT, "amount")]),
+                scope("invariant:fee", &[(FEE, "fee")]),
+            ])
+        };
+        let runtimes = [IncrementalScenarioRuntime {
+            scenario_ref: id(S_SUBMIT),
+            runtime: runtime(&cal, &NO_MANAGERS, Some(ALICE), Vec::new()),
+        }];
+        let before = rerun(&w, inputs(), &["invariant:limit"], &runtimes, &[]).unwrap();
+        assert_eq!(before.selected_scenario_refs, vec![id(S_SUBMIT)]);
+        assert_eq!(before.comparisons[0].result, ScenarioVerdict::Pass);
+        let mut edited = w.clone();
+        edited.add(invariant("invariant:limit", AMOUNT, "amount < 10"));
+        let after = rerun(&edited, inputs(), &["invariant:limit"], &runtimes, &[]).unwrap();
+        assert_eq!(after.comparisons[0].result, ScenarioVerdict::Fail);
+        let again = rerun(&edited, inputs(), &["invariant:limit"], &runtimes, &[]).unwrap();
+        assert_eq!(after, again);
+
+        let old = &before.comparisons[0].trace_artifact.body;
+        let graph = edited.graph();
+        let model = build_execution_model(&graph, inputs()).unwrap();
+        assert_eq!(
+            scenario_run_currency(
+                &model,
+                &id(S_SUBMIT),
+                &old.specification_hash,
+                &old.model_semantic_hash
+            )
+            .unwrap(),
+            ScenarioRunCurrency::StaleDependencies
+        );
+        let new = &after.comparisons[0].trace_artifact.body;
+        assert_eq!(
+            scenario_run_currency(
+                &model,
+                &id(S_SUBMIT),
+                &new.specification_hash,
+                &new.model_semantic_hash
+            )
+            .unwrap(),
+            ScenarioRunCurrency::Current
+        );
+        assert_eq!(
+            scenario_run_currency(
+                &model,
+                &id(S_SUBMIT),
+                &plumb_core::Hash::content_sha256(b"older specification"),
+                &new.model_semantic_hash
+            )
+            .unwrap(),
+            ScenarioRunCurrency::StaleSpecification
+        );
     }
 
     #[test]

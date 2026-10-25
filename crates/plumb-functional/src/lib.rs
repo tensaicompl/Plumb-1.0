@@ -120,12 +120,7 @@ pub use decision_table::{
 pub use directory::{
     produce_directory, DirectoryAudit, DirectoryCalendarBinding, DirectoryCalendarDraft,
     DirectoryDecisionTableDraft, DirectoryDisposition, DirectoryDraft, DirectoryElement,
-    DirectoryOutcomeSelectionDraft,
-    DirectoryError, DirectoryOutcome, DirectoryResult,
-};
-pub use outcome_selection::{
-    BusinessFailureKind, OutcomeSelection, OutcomeSelectionEntry, OutcomeSelectionError,
-    OUTCOME_SELECTION_EXTENSION, OUTCOME_SELECTION_VERSION,
+    DirectoryError, DirectoryOutcome, DirectoryOutcomeSelectionDraft, DirectoryResult,
 };
 pub use domain::{
     analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,
@@ -161,6 +156,10 @@ pub use operation::{
     OperationRequest, OperationScope, OutcomeOrigin, OPERATION_CONTEXT_VERSION,
     OPERATION_ORIGIN_EXTENSION, OPERATION_OUTPUT_VERSION, OPERATION_TASK_KIND,
     OUTCOME_ORIGIN_EXTENSION,
+};
+pub use outcome_selection::{
+    BusinessFailureKind, OutcomeSelection, OutcomeSelectionEntry, OutcomeSelectionError,
+    OUTCOME_SELECTION_EXTENSION, OUTCOME_SELECTION_VERSION,
 };
 pub use process::{
     analysis_issues, analyze_processes, api_process_step_id, build_process_request, linear_process,

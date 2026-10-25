@@ -2626,7 +2626,11 @@ mod scenario_contract {
                                          FRACTION: {"kind": "decimal", "value": "0.5", "unit": null}}}),
             then.clone(),
         );
-        assert!(validate_scenario(&g, &ok).is_ok(), "{:?}", validate_scenario(&g, &ok));
+        assert!(
+            validate_scenario(&g, &ok).is_ok(),
+            "{:?}",
+            validate_scenario(&g, &ok)
+        );
         for wrong in [
             json!({"attribute_values": {START: {"kind": "int", "value": 5}}}),
             // Decimal(2) carries at most two fractional digits and no unit.
@@ -2651,20 +2655,14 @@ mod scenario_contract {
         // Calculation itself; anything else can never resolve and is a typed validation error.
         let mut nodes = hr_nodes(HR_EXPRESSION, None);
         let other = {
-            let mut n = nodes
-                .iter()
-                .find(|n| n.id == id(CALC))
-                .unwrap()
-                .clone();
+            let mut n = nodes.iter().find(|n| n.id == id(CALC)).unwrap().clone();
             n.id = id("calculation:other");
             n
         };
         nodes.push(other);
         let g = graph(nodes, hr_edges());
         let given = json!({"attribute_values": {START: {"kind": "date", "value": "2026-01-05"}}});
-        let result_ref = |owner: &str, key: &str| {
-            json!({"calculation_results": {CALC: {"kind": "semantic_ref", "owner_ref": owner, "key": key}}})
-        };
+        let result_ref = |owner: &str, key: &str| json!({"calculation_results": {CALC: {"kind": "semantic_ref", "owner_ref": owner, "key": key}}});
         assert!(validate_scenario(
             &g,
             &calculation_scenario(given.clone(), result_ref(CALC, "result:boundary"))

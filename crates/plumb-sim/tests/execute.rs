@@ -656,6 +656,7 @@ mod execute_contract {
         match result {
             ExecutionResult::Executed { trace, .. }
             | ExecutionResult::Failed { trace, .. }
+            | ExecutionResult::Rejected { trace, .. }
             | ExecutionResult::Undecidable { trace, .. } => trace,
         }
     }
@@ -724,6 +725,8 @@ mod execute_contract {
 
     #[test]
     fn wrong_typed_given_literal_is_an_error() {
+        // H0.4 [Fable #116]: Given literals are type-checked at scenario validation, so the
+        // Scenario is never admitted (it is invalid, not a content-dependent run condition).
         let mut w = request_world();
         w.add(rule(RULE, Some("amount > 0"), None));
         w.scenario(
@@ -738,8 +741,21 @@ mod execute_contract {
         )
         .unwrap_err();
         assert!(
-            matches!(err, SimulationError::ValueTypeMismatch { owner_ref, .. } if owner_ref == id(AMOUNT))
+            matches!(&err, SimulationError::InvalidScenario { reason, .. } if reason.contains(AMOUNT)),
+            "{err:?}"
         );
+    }
+
+    /// The typed model conditions of an Undecidable run (H0.4, Fable #116).
+    fn conditions_of(result: &ExecutionResult) -> Vec<(String, String)> {
+        match result {
+            ExecutionResult::Undecidable { missing, .. } => missing
+                .iter()
+                .filter(|m| m.kind == MissingSemanticKind::ModelCondition)
+                .map(|m| (m.owner_ref.to_string(), m.key.clone()))
+                .collect(),
+            other => panic!("expected Undecidable, got {other:?}"),
+        }
     }
 
     // ------------------------------------------------------------------ HR semantic references
@@ -847,7 +863,9 @@ mod execute_contract {
     }
 
     #[test]
-    fn hr_ambiguous_or_malformed_examples_are_errors() {
+    fn hr_ambiguous_or_malformed_examples_are_per_scenario_conditions() {
+        // H0.4 [Fable #116]: bad Accepted examples make only the dependent Scenario
+        // Undecidable with a typed condition; nothing aborts the batch.
         let cal = calendars(&[]);
         let rt = runtime(&cal, &NO_MANAGERS, None, Vec::new());
         let mut twice = hr_world(
@@ -862,19 +880,27 @@ mod execute_contract {
             given(&[(FRACTION, sem(CALC, HALF_DAY))]),
             ScenarioWhen::Calculation(id(CALC)),
         );
-        assert!(matches!(
-            try_run(&twice, ExecutionInputs::default(), &rt).unwrap_err(),
-            SimulationError::AmbiguousCalculationExample { .. }
-        ));
+        assert_eq!(
+            conditions_of(
+                &try_run(&twice, ExecutionInputs::default(), &rt)
+                    .unwrap()
+                    .result
+            ),
+            pairs(&[(CALC, "calculation_example:half_day_fraction")])
+        );
         let mut malformed = hr_world(HR_EXPRESSION, Some(vec![json!({"version": 2})]));
         malformed.scenario(
             given(&[(FRACTION, sem(CALC, HALF_DAY))]),
             ScenarioWhen::Calculation(id(CALC)),
         );
-        assert!(matches!(
-            try_run(&malformed, ExecutionInputs::default(), &rt).unwrap_err(),
-            SimulationError::InvalidCalculationExample { .. }
-        ));
+        assert_eq!(
+            conditions_of(
+                &try_run(&malformed, ExecutionInputs::default(), &rt)
+                    .unwrap()
+                    .result
+            ),
+            pairs(&[(CALC, "calculation_example")])
+        );
     }
 
     fn inclusive_given() -> ScenarioGiven<ScenarioValue> {
@@ -939,13 +965,20 @@ mod execute_contract {
         );
         w.scenario(g, ScenarioWhen::Calculation(id(CALC)));
         let cal = calendars(&[]);
-        let err = try_run(
+        let result = try_run(
             &w,
             ExecutionInputs::default(),
             &runtime(&cal, &NO_MANAGERS, None, Vec::new()),
         )
-        .unwrap_err();
-        assert!(matches!(err, SimulationError::SemanticContradiction { .. }));
+        .unwrap()
+        .result;
+        assert_eq!(
+            conditions_of(&result),
+            pairs(&[(
+                CALC,
+                &format!("semantic_contradiction:{WORKING_DAYS_INCLUSIVE_KEY}")
+            )])
+        );
     }
 
     fn holiday_world() -> World {
@@ -1278,18 +1311,15 @@ mod execute_contract {
             }
         );
 
+        // H0.4 [Fable #116]: UNIQUE overlaps are rejected at model build, before any run.
         let mut overlapping = rows;
         overlapping.push((any4(), 3));
-        let cal = calendars(&[]);
-        let err = try_run(
-            &w,
-            table_inputs(table_spec("UNIQUE", overlapping)),
-            &runtime(&cal, &NO_MANAGERS, None, Vec::new()),
-        )
-        .unwrap_err();
+        let graph = w.graph();
         assert!(matches!(
-            err,
-            SimulationError::AmbiguousDecisionRow { rows, .. } if rows == vec![0, 2]
+            build_execution_model(&graph, table_inputs(table_spec("UNIQUE", overlapping)))
+                .err()
+                .unwrap(),
+            SimulationError::InvalidDecisionTableSpec { .. }
         ));
     }
 
@@ -1365,24 +1395,29 @@ mod execute_contract {
             let mut inputs = standard_inputs(3, "0.50");
             inputs.retain(|(i, _)| *i != bad.0);
             inputs.push(bad.clone());
-            let err = try_run(
+            // H0.4 [Fable #116]: a per-scenario typed condition, never a batch abort.
+            let result = try_run(
                 &table_world("FIRST", &inputs),
                 table_inputs(spec.clone()),
                 &rt,
             )
-            .unwrap_err();
-            assert!(
-                matches!(err, SimulationError::DecisionInputMismatch { index, .. } if index == bad.0),
+            .unwrap()
+            .result;
+            assert_eq!(
+                conditions_of(&result),
+                pairs(&[(TABLE, &format!("decision_input_mismatch:{}", bad.0))]),
                 "{bad:?}"
             );
         }
         let mut extra = standard_inputs(3, "0.50");
         extra.push((4, int(1)));
-        let err = try_run(&table_world("FIRST", &extra), table_inputs(spec), &rt).unwrap_err();
-        assert!(matches!(
-            err,
-            SimulationError::DecisionInputMismatch { index: 4, .. }
-        ));
+        let result = try_run(&table_world("FIRST", &extra), table_inputs(spec), &rt)
+            .unwrap()
+            .result;
+        assert_eq!(
+            conditions_of(&result),
+            pairs(&[(TABLE, "decision_input_mismatch:4")])
+        );
     }
 
     #[test]
@@ -1815,6 +1850,268 @@ mod execute_contract {
         assert_eq!(missing_of(&result), pairs(&[(SUBMIT, "outcome_selection")]));
     }
 
+    const OUTCOME_SELECTION: &str = "plumb_sim:outcome_selection";
+
+    fn outcome_of(node_id: &str, kind: OutcomeKind, selection: Option<Value>) -> Node {
+        let mut n = node(
+            node_id,
+            Accepted,
+            NodePayload::Outcome(Outcome {
+                name: node_id.into(),
+                outcome_kind: kind,
+            }),
+        );
+        if let Some(selection) = selection {
+            n.extensions.insert(
+                ExtensionKey::from_str(OUTCOME_SELECTION).unwrap(),
+                selection,
+            );
+        }
+        n
+    }
+
+    fn when(entries: &[(&str, &str)]) -> Value {
+        let selections: Vec<Value> = entries
+            .iter()
+            .map(|(op, w)| json!({"operation_ref": op, "when": w}))
+            .collect();
+        json!({"version": 1, "selections": selections})
+    }
+
+    #[test]
+    fn multiple_outcomes_select_deterministically() {
+        // H0.4 (architecture §33.4): success/partial candidates; business and technical
+        // failures are never selected on success.
+        let mut w = submit_world(&[], &[], None);
+        w.add(outcome_of("outcome:large", OutcomeKind::Success, None))
+            .add(outcome_of(
+                "outcome:declined",
+                OutcomeKind::BusinessFailure,
+                Some(json!({"version": 1, "selections": [
+                    {"operation_ref": SUBMIT, "on_failures": ["precondition_rejected"]}]})),
+            ))
+            .add(outcome_of(
+                "outcome:crash",
+                OutcomeKind::TechnicalFailure,
+                None,
+            ));
+        for o in ["outcome:large", "outcome:declined", "outcome:crash"] {
+            w.link(RelationKind::Produces, SUBMIT, o);
+        }
+        submit_scenario(&mut w, &[(AMOUNT, lit(int(50)))]);
+        let inputs = || scopes(vec![amount_scope(SUBMIT)]);
+        // One candidate without a selection entry is selected as before.
+        assert_eq!(executed(&execute(&w, inputs())).1, &[id("outcome:large")]);
+        // Several candidates: each needs a `when` entry; exactly one true selects it.
+        w.add(outcome_of(
+            "outcome:large",
+            OutcomeKind::Success,
+            Some(when(&[(SUBMIT, "amount > 10")])),
+        ))
+        .add(outcome_of(
+            "outcome:small",
+            OutcomeKind::Partial,
+            Some(when(&[(SUBMIT, "amount <= 10")])),
+        ))
+        .link(RelationKind::Produces, SUBMIT, "outcome:small");
+        let result = execute(&w, inputs());
+        assert_eq!(executed(&result).1, &[id("outcome:large")]);
+        let selected = |r: &ExecutionResult| {
+            trace_of(r)
+                .iter()
+                .filter(|s| matches!(s, ExecutionTraceStep::OutcomeSelected { .. }))
+                .count()
+        };
+        assert_eq!(selected(&result), 1);
+        submit_scenario(&mut w, &[(AMOUNT, lit(int(3)))]);
+        assert_eq!(executed(&execute(&w, inputs())).1, &[id("outcome:small")]);
+        // Identical under reverse insertion.
+        let graph = w.reversed_graph();
+        let model = build_execution_model(&graph, inputs()).unwrap();
+        let cal = calendars(&[]);
+        let rt = runtime(&cal, &NO_MANAGERS, None, Vec::new());
+        assert_eq!(
+            run(&model, &id(SCN), &rt).unwrap().result,
+            execute(&w, inputs())
+        );
+        // Two true, or none true: Undecidable with OUTCOME_SELECTION.
+        let mut both = w.clone();
+        both.add(outcome_of(
+            "outcome:small",
+            OutcomeKind::Partial,
+            Some(when(&[(SUBMIT, "amount > 0")])),
+        ));
+        submit_scenario(&mut both, &[(AMOUNT, lit(int(50)))]);
+        assert_eq!(
+            missing_of(&execute(&both, inputs())),
+            pairs(&[(SUBMIT, "outcome_selection")])
+        );
+        let mut neither = w.clone();
+        neither.add(outcome_of(
+            "outcome:small",
+            OutcomeKind::Partial,
+            Some(when(&[(SUBMIT, "amount > 100")])),
+        ));
+        assert_eq!(
+            missing_of(&execute(&neither, inputs())),
+            pairs(&[(SUBMIT, "outcome_selection")])
+        );
+        // A missing entry for this Operation is Undecidable, never a guess.
+        let mut unlisted = w.clone();
+        unlisted.add(outcome_of(
+            "outcome:small",
+            OutcomeKind::Partial,
+            Some(when(&[("op:other", "amount > 100")])),
+        ));
+        unlisted.add(operation("op:other", &[], &[]));
+        assert_eq!(
+            missing_of(&execute(&unlisted, inputs())),
+            pairs(&[(SUBMIT, "outcome_selection")])
+        );
+        // Without the Operation's expression scope the conditions cannot be evaluated.
+        assert_eq!(
+            missing_of(&execute(&w, ExecutionInputs::default())),
+            pairs(&[(SUBMIT, "expression_scope")])
+        );
+        // A `when` that does not type-check as Bool is a build error.
+        let mut ill_typed = w.clone();
+        ill_typed.add(outcome_of(
+            "outcome:small",
+            OutcomeKind::Partial,
+            Some(when(&[(SUBMIT, "amount + 1")])),
+        ));
+        let graph = ill_typed.graph();
+        assert!(matches!(
+            build_execution_model(&graph, inputs()).err().unwrap(),
+            SimulationError::InvalidOutcomeSelection { .. }
+        ));
+        // A malformed selection value never selects: Undecidable for the dependent run only.
+        let mut malformed = w.clone();
+        malformed.add(outcome_of(
+            "outcome:small",
+            OutcomeKind::Partial,
+            Some(json!({"version": 2, "selections": []})),
+        ));
+        assert_eq!(
+            missing_of(&execute(&malformed, inputs())),
+            pairs(&[(SUBMIT, "outcome_selection")])
+        );
+    }
+
+    #[test]
+    fn business_rejections_select_their_modeled_outcome() {
+        let mut w = submit_world(&["amount > 0"], &[], None);
+        w.add(outcome_of(
+            "outcome:declined",
+            OutcomeKind::BusinessFailure,
+            Some(json!({"version": 1, "selections": [
+                {"operation_ref": SUBMIT, "on_failures": ["authorization_denied", "precondition_rejected"]}]})),
+        ))
+        .add(outcome_of("outcome:accepted", OutcomeKind::Success, None))
+        .add(event("event:submitted"));
+        for o in ["outcome:declined", "outcome:accepted", "event:submitted"] {
+            w.link(RelationKind::Produces, SUBMIT, o);
+        }
+        submit_scenario(&mut w, &[(AMOUNT, lit(int(0)))]);
+        let result = execute(&w, scopes(vec![amount_scope(SUBMIT)]));
+        let ExecutionResult::Rejected {
+            failure,
+            outcome_ref,
+            state,
+            trace,
+            ..
+        } = &result
+        else {
+            panic!("expected Rejected, got {result:?}");
+        };
+        assert_eq!(
+            failure,
+            &ExecutionFailure::PreconditionRejected {
+                operation_ref: id(SUBMIT),
+                index: 0
+            }
+        );
+        assert_eq!(outcome_ref, &id("outcome:declined"));
+        assert_eq!(state.active_states, BTreeSet::from([id(DRAFT)]));
+        assert_eq!(state.attributes[&id(AMOUNT)], int(0));
+        assert!(!trace
+            .iter()
+            .any(|s| matches!(s, ExecutionTraceStep::EventEmitted { .. })));
+        assert!(trace.contains(&ExecutionTraceStep::OutcomeSelected {
+            operation_ref: id(SUBMIT),
+            outcome_ref: id("outcome:declined"),
+        }));
+        // Model failures are never selected.
+        let mut post = w.clone();
+        post.add(operation(SUBMIT, &["amount > 0"], &["amount > 100"]));
+        submit_scenario(&mut post, &[(AMOUNT, lit(int(5)))]);
+        assert!(matches!(
+            failure_of(&execute(&post, scopes(vec![amount_scope(SUBMIT)]))),
+            ExecutionFailure::PostconditionViolation { .. }
+        ));
+    }
+
+    #[test]
+    fn unparseable_expressions_make_only_dependent_scenarios_undecidable() {
+        // H0.4 [Fable #119]: prose at every site compiles to Unparseable under an explicit
+        // scope; type errors in parseable expressions stay build errors.
+        let mut w = submit_world(&[], &[], Some("the manager agrees"));
+        w.add(rule(RULE, Some("the request is complete"), None))
+            .add(invariant("invariant:limit", REQUEST, "amounts are bounded"))
+            .add(entity("entity:other", "Other"))
+            .add(operation("op:other", &[], &[]));
+        w.scenario(
+            given(&[(AMOUNT, lit(int(1)))]),
+            ScenarioWhen::Rule(id(RULE)),
+        );
+        let inputs = || {
+            scopes(vec![
+                amount_scope(TR_SUBMIT),
+                amount_scope(RULE),
+                amount_scope("invariant:limit"),
+            ])
+        };
+        let graph = w.graph();
+        build_execution_model(&graph, inputs()).unwrap();
+        let result = execute(&w, inputs());
+        let ExecutionResult::Undecidable { missing, .. } = &result else {
+            panic!("expected Undecidable, got {result:?}");
+        };
+        assert_eq!(
+            missing
+                .iter()
+                .map(|m| (m.owner_ref.to_string(), m.key.clone(), m.kind))
+                .collect::<Vec<_>>(),
+            vec![(
+                RULE.to_owned(),
+                "rule_condition".to_owned(),
+                MissingSemanticKind::UnsupportedExpression
+            )]
+        );
+        submit_scenario(&mut w, &[]);
+        assert_eq!(
+            missing_of(&execute(&w, inputs())),
+            pairs(&[(TR_SUBMIT, "transition_guard")])
+        );
+        // An independent Scenario still executes.
+        w.scenario(given(&[]), ScenarioWhen::Operation(id("op:other")));
+        executed(&execute(&w, inputs()));
+        // The invariant applies to an affected request: only that Scenario is Undecidable.
+        let mut inv = request_world();
+        inv.add(operation(SUBMIT, &[], &[]))
+            .add(invariant("invariant:limit", REQUEST, "amounts are bounded"))
+            .link(RelationKind::Writes, SUBMIT, AMOUNT)
+            .link(RelationKind::Writes, SUBMIT, REQUEST);
+        inv.scenario(given(&[]), ScenarioWhen::Operation(id(SUBMIT)));
+        assert_eq!(
+            missing_of(&execute(
+                &inv,
+                scopes(vec![amount_scope("invariant:limit")])
+            )),
+            pairs(&[("invariant:limit", "invariant")])
+        );
+    }
+
     #[test]
     fn produced_events_are_emitted_sorted_and_only_on_success() {
         let mut w = submit_world(&["amount > 0"], &[], None);
@@ -2110,7 +2407,9 @@ mod execute_contract {
     }
 
     #[test]
-    fn conflicting_transitions_are_rejected() {
+    fn conflicting_transitions_make_only_that_scenario_undecidable() {
+        // H0.4 [Fable #116]: a content-dependent model condition is a per-scenario typed
+        // Undecidable; a Scenario whose state never reaches the conflict still executes.
         let mut w = submit_world(&[], &[], None);
         w.add(transition("transition:submit-close", DRAFT, CLOSED, None))
             .link(
@@ -2119,17 +2418,67 @@ mod execute_contract {
                 SUBMIT,
             );
         submit_scenario(&mut w, &[]);
-        let cal = calendars(&[]);
-        let err = try_run(
-            &w,
-            ExecutionInputs::default(),
-            &runtime(&cal, &NO_MANAGERS, None, Vec::new()),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            SimulationError::ConflictingTransitions { .. }
-        ));
+        let result = execute(&w, ExecutionInputs::default());
+        assert_eq!(
+            conditions_of(&result),
+            pairs(&[(DRAFT, "conflicting_transitions")])
+        );
+        w.scenario(
+            given_states(&[], &[SUBMITTED]),
+            ScenarioWhen::Operation(id(SUBMIT)),
+        );
+        executed(&execute(&w, ExecutionInputs::default()));
+    }
+
+    #[test]
+    fn several_governing_tables_route_inputs_or_report_a_typed_condition() {
+        // H0.4 [Fable #117]: the Given decision inputs name no table, so with several
+        // governing DecisionTables their routing is ambiguous: a dedicated typed condition,
+        // never silently discarded inputs.
+        let spec = table_spec("FIRST", vec![(any4(), 1)]);
+        let mut w = table_world("FIRST", &standard_inputs(3, "0.50"));
+        w.add(node(
+            "decision-table:other",
+            Accepted,
+            NodePayload::DecisionTable(DecisionTable {
+                name: "Other".into(),
+                hit_policy: "FIRST".into(),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                rows: Vec::new(),
+            }),
+        ))
+        .add(operation(SUBMIT, &[], &[]))
+        .link(RelationKind::GovernedBy, SUBMIT, TABLE)
+        .link(RelationKind::GovernedBy, SUBMIT, "decision-table:other");
+        let mut g = ScenarioGiven::default();
+        for (index, literal) in standard_inputs(3, "0.50") {
+            g.decision_inputs.insert(index, lit(literal));
+        }
+        w.scenario(g, ScenarioWhen::Operation(id(SUBMIT)));
+        let inputs = ExecutionInputs {
+            decision_tables: vec![
+                ScenarioDecisionTableInput {
+                    decision_table_ref: id(TABLE),
+                    spec: spec.clone(),
+                },
+                ScenarioDecisionTableInput {
+                    decision_table_ref: id("decision-table:other"),
+                    spec: spec.clone(),
+                },
+            ],
+            ..ExecutionInputs::default()
+        };
+        let result = execute(&w, inputs.clone());
+        assert_eq!(
+            conditions_of(&result),
+            pairs(&[(SUBMIT, "decision_input_routing")])
+        );
+        // One governing table receives every input, as before.
+        let mut single = w.clone();
+        single.edges.retain(|e| e.to != id("decision-table:other"));
+        let result = execute(&single, inputs);
+        assert_eq!(executed(&result).0.decision_outputs[&id(TABLE)][&0], int(1));
     }
 
     // ------------------------------------------------------------------ invariants
