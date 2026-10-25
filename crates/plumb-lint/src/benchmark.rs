@@ -425,9 +425,7 @@ fn agreement(corpus: &LintCorpus) -> AgreementReport {
 /// warn recommendation; nothing is applied.
 pub fn run_benchmark(corpus: &LintCorpus, threshold: Ratio) -> Result<BenchmarkReport, LintError> {
     validate_corpus(corpus)?;
-    if threshold.denominator == 0 || threshold.numerator > threshold.denominator {
-        return Err(benchmark_error("threshold must be a ratio in [0, 1]"));
-    }
+    validate_threshold(threshold)?;
     let policy = LintPolicy::default();
     let mut counts: BTreeMap<LintRuleId, [u32; 4]> = BTreeMap::new();
     let mut evaluated: BTreeMap<LintRuleId, bool> =
@@ -480,7 +478,7 @@ pub fn run_benchmark(corpus: &LintCorpus, threshold: Ratio) -> Result<BenchmarkR
             }
         })
         .collect();
-    let severity_recommendations = recommend_severities(&metrics, threshold);
+    let severity_recommendations = recommend_severities(&metrics, threshold)?;
     Ok(BenchmarkReport {
         corpus_id: corpus.metadata.corpus_id.clone(),
         sentence_count: count(corpus.sentences.len())?,
@@ -490,12 +488,22 @@ pub fn run_benchmark(corpus: &LintCorpus, threshold: Ratio) -> Result<BenchmarkR
     })
 }
 
+/// Every benchmark entry point accepts only a threshold ratio in [0, 1] with a positive
+/// denominator.
+fn validate_threshold(threshold: Ratio) -> Result<(), LintError> {
+    if threshold.denominator == 0 || threshold.numerator > threshold.denominator {
+        return Err(benchmark_error("threshold must be a ratio in [0, 1]"));
+    }
+    Ok(())
+}
+
 /// Warn recommendations for evaluated rules with defined precision below `threshold` whose
 /// default severity is above warn; a recommendation never raises a severity.
 pub fn recommend_severities(
     metrics: &[RuleBenchmarkMetrics],
     threshold: Ratio,
-) -> Vec<SeverityRecommendation> {
+) -> Result<Vec<SeverityRecommendation>, LintError> {
+    validate_threshold(threshold)?;
     let mut out: Vec<SeverityRecommendation> = metrics
         .iter()
         .filter_map(|m| {
@@ -516,7 +524,7 @@ pub fn recommend_severities(
         })
         .collect();
     out.sort_by_key(|r| r.rule_id);
-    out
+    Ok(out)
 }
 
 // ============================================================================ regression
@@ -574,6 +582,13 @@ pub fn compare_to_baseline(
     }
     if report.corpus_id != baseline.corpus_id {
         return Err(benchmark_error("report and baseline corpora differ"));
+    }
+    // A changed corpus under the same corpus_id is a different corpus.
+    if report.sentence_count != baseline.corpus_sentence_count {
+        return Err(benchmark_error(format!(
+            "report has {} sentences, the baseline corpus {}",
+            report.sentence_count, baseline.corpus_sentence_count
+        )));
     }
     let report_rules: Vec<LintRuleId> = report.metrics.iter().map(|m| m.rule_id).collect();
     let baseline_rules: Vec<LintRuleId> = baseline.per_rule.iter().map(|m| m.rule_id).collect();
