@@ -659,25 +659,32 @@ function renderConflict() {
 }
 
 describe("shared ConflictDialog", () => {
-  it("offers only Refresh latest and Dismiss and never replays a write", async () => {
+  it("is the \"This changed since you looked\" sheet: Review again or Dismiss, never a replayed write", async () => {
     const user = userEvent.setup();
     const { invalidate, mutations } = renderConflict();
     expect(screen.queryByRole("dialog")).toBeNull();
     act(() => {
       useConflictStore.getState().setConflict({ revision: "rev:8:bbbbbbbbbbbbbbbb", semanticHash: "psg:sha256:newer" });
     });
-    const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getAllByRole("button").map((b) => b.textContent)).toEqual(["Dismiss", "Refresh latest"]);
+    const dialog = await screen.findByRole("dialog", { name: "This changed since you looked" });
+    expect(within(dialog).getByText(/your change was not applied/)).toBeTruthy();
+    // The change summary: the version the model is now at.
+    expect(within(dialog).getByText("The model is now at version v8.")).toBeTruthy();
+    const buttons = within(dialog).getAllByRole("button").map((b) => b.textContent);
+    expect(buttons).toContain("Dismiss");
+    expect(buttons.some((b) => b?.startsWith("Review again"))).toBe(true);
+    // Technical values live in the Details disclosure.
+    expect(within(dialog).getByText("Details")).toBeTruthy();
     expect(within(dialog).getByTestId("conflict-revision").textContent).toBe("rev:8:bbbbbbbbbbbbbbbb");
     expect(within(dialog).getByTestId("conflict-semantic-hash").textContent).toBe("psg:sha256:newer");
     expect(within(dialog).getByTestId("conflict-status").textContent).toContain("412");
-    // Focus starts on the explicit refresh action; a click outside does not close the dialog.
-    await waitFor(() => expect(document.activeElement?.textContent).toBe("Refresh latest"));
+    // Focus starts on the explicit Review again action; a click outside does not close the sheet.
+    await waitFor(() => expect(document.activeElement?.textContent).toMatch(/^Review again/));
     fireEvent.pointerDown(document.body);
     fireEvent.click(document.body);
     expect(screen.queryByRole("dialog")).not.toBeNull();
 
-    await user.click(within(dialog).getByRole("button", { name: "Refresh latest" }));
+    await user.click(within(dialog).getByRole("button", { name: /Review again/ }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(useConflictStore.getState().conflict).toBeNull();
@@ -700,7 +707,7 @@ describe("shared ConflictDialog", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
-    // No mutation was ever created or re-run by the dialog.
+    // No mutation was ever created or re-run by the sheet.
     expect(mutations).toEqual([]);
   });
 });

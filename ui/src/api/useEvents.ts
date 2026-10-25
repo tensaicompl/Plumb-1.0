@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { create } from "zustand";
 
 import type { components } from "./schema";
 
@@ -38,6 +39,20 @@ export function parseDesignEvent(data: unknown): DesignEvent | null {
   }
 }
 
+/** The live connection: connecting (first attempt), open, or lost (reconnecting after a close). */
+export type ConnectionStatus = "connecting" | "open" | "lost";
+
+interface ConnectionState {
+  readonly status: ConnectionStatus;
+  setStatus(status: ConnectionStatus): void;
+}
+
+/** View state of the event stream connection (the shell's connection banner reads it). */
+export const useConnectionStore = create<ConnectionState>()((set) => ({
+  status: "connecting",
+  setStatus: (status) => set({ status }),
+}));
+
 /** The first reconnect delay and the cap of the exponential backoff (architecture §33.12). */
 export const RECONNECT_BASE_MS = 1000;
 export const RECONNECT_CAP_MS = 30000;
@@ -57,7 +72,7 @@ export function reconnectDelay(attempt: number, random: () => number = Math.rand
  * written into the cache. Malformed messages are ignored. After a close or network loss (including
  * the server's events-missed lag close) the stream reconnects with exponential backoff and, once
  * connected again, invalidates the server queries exactly once, since events may have been missed.
- * Unmounting stops reconnection.
+ * Unmounting stops reconnection. The connection status is mirrored into `useConnectionStore`.
  */
 export function useEvents(): void {
   const queryClient = useQueryClient();
@@ -73,8 +88,10 @@ export function useEvents(): void {
         void queryClient.invalidateQueries();
       }
     };
+    const setStatus = useConnectionStore.getState().setStatus;
     const onOpen = () => {
       attempt = 0;
+      setStatus("open");
       if (missed) {
         missed = false;
         void queryClient.invalidateQueries();
@@ -85,6 +102,7 @@ export function useEvents(): void {
         return;
       }
       missed = true;
+      setStatus("lost");
       detach();
       timer = setTimeout(connect, reconnectDelay(attempt));
       attempt += 1;
@@ -110,6 +128,7 @@ export function useEvents(): void {
       }
       detach();
       socket?.close();
+      setStatus("connecting");
     };
   }, [queryClient]);
 }

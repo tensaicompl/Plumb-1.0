@@ -19,6 +19,8 @@ export default defineConfig({
     environment: "jsdom",
     // Playwright specs (e2e/) run against the real backend through scripts/run-pilot-e2e.sh.
     exclude: ["node_modules/**", "e2e/**"],
+    // jsdom shims for browser APIs Radix and the shell use (ResizeObserver, matchMedia...).
+    setupFiles: ["src/test/setup.ts"],
     // U0.1 owns no unit-test file; once tests exist, failing tests still fail.
     passWithNoTests: true,
     // E0.4: `npm run test:coverage` (make ui-cov) enforces >= 80% on the feature screens and

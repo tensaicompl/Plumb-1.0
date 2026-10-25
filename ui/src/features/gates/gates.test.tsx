@@ -11,7 +11,7 @@ import { http, HttpResponse } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { components } from "../../api/schema";
-import { server } from "../../test/msw";
+import { isShellRead, server } from "../../test/msw";
 
 type GateStatus = components["schemas"]["GateStatus"];
 type GateRuleResult = components["schemas"]["GateRuleResult"];
@@ -155,7 +155,7 @@ function handlers(gates: GateStatus[], readiness: Readiness = READINESS) {
 async function renderGates(gates: GateStatus[] = [I0, F1, F4], readiness?: Readiness) {
   server.use(...handlers(gates, readiness));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/gates"] }));
+  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/quality"] }));
   render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
@@ -175,7 +175,7 @@ const fieldOf = (element: HTMLElement, name: string) => element.querySelector("[
 describe("GatesPage", () => {
   it("renders I0-F4 in order and an absent gate as Unevaluated without synthetic rules", async () => {
     const router = await renderGates();
-    expect(router.state.location.pathname).toBe("/gates");
+    expect(router.state.location.pathname).toBe("/quality");
     expect([...document.querySelectorAll("main [data-gate]")].map((li) => li.getAttribute("data-gate"))).toEqual(["I0", "F1", "F2", "F3", "F4"]);
     for (const name of ["F2", "F3"]) {
       expect(within(gate(name)).getByTestId("gate-result").textContent).toBe("Unevaluated");
@@ -288,7 +288,8 @@ describe("GatesPage", () => {
     expect(document.body.textContent).not.toMatch(/compliant|certified|certification|conformance score/i);
     expect(calls.every((c) => c.method === "GET")).toBe(true);
     const reads = new Set(calls.map((c) => c.path));
-    expect([...reads].filter((p) => p !== "/api/me" && p !== "/api/model/version").sort()).toEqual(["/api/gates", "/api/readiness"]);
+    // The shell's own reads aside (identity, version, work counts), the page reads gates and readiness.
+    expect([...reads].filter((p) => !isShellRead(p) || p === "/api/gates").sort()).toEqual(["/api/gates", "/api/readiness"]);
     expect(calls.find((c) => c.path === "/api/readiness")?.search.toString()).toBe("");
   });
 });

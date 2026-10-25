@@ -1,4 +1,5 @@
-import { createRootRoute, createRoute, createRouter, type RouterHistory } from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, redirect, type RouterHistory } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 
 import { CalculationsPage } from "../features/calculations/CalculationsPage";
 import { DecisionsPage } from "../features/decisions/DecisionsPage";
@@ -8,152 +9,190 @@ import { GatesPage } from "../features/gates/GatesPage";
 import { GlossaryPage } from "../features/glossary/GlossaryPage";
 import { HomePage } from "../features/home/HomePage";
 import { ProcessesPage } from "../features/processes/ProcessesPage";
-import { ProposalsPage } from "../features/proposals/ProposalsPage";
-import { QuestionsPage } from "../features/questions/QuestionsPage";
-import { ScenariosPage } from "../features/scenarios/ScenariosPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
 import { RulesPage } from "../features/rules/RulesPage";
-import { SentencesPage } from "../features/sentences/SentencesPage";
-import { SessionPanel } from "../features/sessions/SessionPanel";
+import { ScenariosPage } from "../features/scenarios/ScenariosPage";
 import { AppShell } from "./AppShell";
+import { InboxInterim, Legacy, ModelInterim, parseInboxFilter, QualityInterim, SourceInterim, SourcesInterim } from "./routes/interim";
 import { NotFoundPage, RouteErrorPage } from "./RouteStatus";
 
-// The explicit route tree. Each page is registered by the task that implements it (Hotfix 071);
-// there is no route discovery and no placeholder route.
-// Unknown routes and render failures stay inside the shell with typed catalogue pages.
+// The explicit route tree: the spec §3 URL structure, every URL deep-linkable. Screen lanes
+// replace each route's component with their screen (src/README-SCREENS.md); until then a route
+// renders the closest old page inside the new shell. There is no route discovery and no
+// placeholder route. Unknown routes and render failures stay inside the shell.
 const rootRoute = createRootRoute({
   component: AppShell,
-  notFoundComponent: NotFoundPage,
-  errorComponent: RouteErrorPage,
+  notFoundComponent: () => (
+    <Legacy>
+      <NotFoundPage />
+    </Legacy>
+  ),
+  errorComponent: (props) => (
+    <Legacy>
+      <RouteErrorPage {...props} />
+    </Legacy>
+  ),
 });
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: HomePage,
+  beforeLoad: () => {
+    throw redirect({ to: "/overview", replace: true });
+  },
 });
 
-// U2.1: the requirement list and detail, and the glossary.
+// ------------------------------------------------------------------ Overview
+
+const overviewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/overview",
+  component: () => (
+    <Legacy>
+      <HomePage />
+    </Legacy>
+  ),
+});
+
+// ------------------------------------------------------------------ Inbox
+
+const inboxRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inbox",
+  validateSearch: parseInboxFilter,
+  component: function InboxRoute() {
+    const { filter } = inboxRoute.useSearch();
+    return <InboxInterim filter={filter} />;
+  },
+});
+
+const inboxItemRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inbox/$id",
+  validateSearch: parseInboxFilter,
+  component: function InboxItemRoute() {
+    const { filter } = inboxItemRoute.useSearch();
+    return <InboxInterim filter={filter} />;
+  },
+});
+
+// ------------------------------------------------------------------ Requirements
+
 const requirementsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/requirements",
-  component: RequirementsPage,
+  component: () => (
+    <Legacy>
+      <RequirementsPage />
+    </Legacy>
+  ),
 });
 
-const requirementDetailRoute = createRoute({
+const requirementRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/requirements/$requirementId",
-  component: function RequirementDetailRoute() {
-    const { requirementId } = requirementDetailRoute.useParams();
-    return <RequirementDetail key={requirementId} requirementId={requirementId} />;
+  path: "/requirements/$id",
+  component: function RequirementRoute() {
+    const { id } = requirementRoute.useParams();
+    return (
+      <Legacy>
+        <RequirementDetail key={id} requirementId={id} />
+      </Legacy>
+    );
   },
 });
 
-const glossaryRoute = createRoute({
+// ------------------------------------------------------------------ Model
+
+const modelRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/model/glossary",
-  component: GlossaryPage,
+  path: "/model",
+  component: ModelInterim,
 });
 
-// U2.2: the sentences and the Question inbox with the round manager.
-const sentencesRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/model/sentences",
-  component: SentencesPage,
-});
-
-const questionsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/questions",
-  component: QuestionsPage,
-});
-
-// H0.11: proposal discovery and governance (architecture §33.12).
-const proposalsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/proposals",
-  component: ProposalsPage,
-});
-
-// U2.3: the project room, the real project-mode session panel (scope []).
-const sessionsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/sessions",
-  component: function ProjectRoomRoute() {
-    return <SessionPanel mode="project" />;
+const modelIndexRoute = createRoute({
+  getParentRoute: () => modelRoute,
+  path: "/",
+  beforeLoad: () => {
+    throw redirect({ to: "/model/glossary", replace: true });
   },
 });
 
-// U2.4: the process swimlane view; process selection happens inside the page.
-const processesRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/model/processes",
-  component: ProcessesPage,
-});
+/** A Model segment and its optional selected item (`/model/<segment>` and `/model/<segment>/$id`). */
+function segmentRoutes(segment: "glossary" | "entities" | "rules" | "calculations" | "processes", Page: () => ReactNode) {
+  return [
+    createRoute({ getParentRoute: () => modelRoute, path: segment, component: Page }),
+    createRoute({ getParentRoute: () => modelRoute, path: segment + "/$id", component: Page }),
+  ] as const;
+}
 
-// U2.5: the scenarios view; scenario selection and traces stay within the page.
+const glossaryRoutes = segmentRoutes("glossary", GlossaryPage);
+const entitiesRoutes = segmentRoutes("entities", EntitiesPage);
+const rulesRoutes = segmentRoutes("rules", RulesPage);
+const calculationsRoutes = segmentRoutes("calculations", CalculationsPage);
+const processesRoutes = segmentRoutes("processes", ProcessesPage);
+
+// ------------------------------------------------------------------ Scenarios
+
 const scenariosRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/model/scenarios",
-  component: ScenariosPage,
+  path: "/scenarios",
+  component: () => (
+    <Legacy>
+      <ScenariosPage />
+    </Legacy>
+  ),
 });
 
-// U2.6: the analyst views; selection and details stay within each page.
-const entitiesRoute = createRoute({
+const scenarioRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/model/entities",
-  component: EntitiesPage,
+  path: "/scenarios/$id",
+  component: () => (
+    <Legacy>
+      <ScenariosPage />
+    </Legacy>
+  ),
 });
 
-const findingsRoute = createRoute({
+// ------------------------------------------------------------------ Quality
+
+const qualityRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/model/findings",
-  component: FindingsPage,
+  path: "/quality",
+  component: QualityInterim,
 });
 
-const rulesRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/model/rules",
-  component: RulesPage,
-});
+const qualityIndexRoute = createRoute({ getParentRoute: () => qualityRoute, path: "/", component: GatesPage });
+const qualityGateRoute = createRoute({ getParentRoute: () => qualityRoute, path: "$gate", component: GatesPage });
+const qualityHistoryRoute = createRoute({ getParentRoute: () => qualityRoute, path: "history", component: DecisionsPage });
+const qualityIssuesRoute = createRoute({ getParentRoute: () => qualityRoute, path: "issues", component: FindingsPage });
 
-const calculationsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/model/calculations",
-  component: CalculationsPage,
-});
+// ------------------------------------------------------------------ Sources
 
-// U2.7: the I0-F4 gates with their rule results and the read-only decision log.
-const gatesRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/gates",
-  component: GatesPage,
-});
+const sourcesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sources", component: SourcesInterim });
 
-const decisionsRoute = createRoute({
+const sourceRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/decisions",
-  component: DecisionsPage,
+  path: "/sources/$id",
+  component: function SourceRoute() {
+    const { id } = sourceRoute.useParams();
+    return <SourceInterim key={id} id={id} />;
+  },
 });
 
 export const routeTree = rootRoute.addChildren([
   indexRoute,
+  overviewRoute,
+  inboxRoute,
+  inboxItemRoute,
   requirementsRoute,
-  requirementDetailRoute,
-  glossaryRoute,
-  sentencesRoute,
-  questionsRoute,
-  proposalsRoute,
-  sessionsRoute,
-  processesRoute,
+  requirementRoute,
+  modelRoute.addChildren([modelIndexRoute, ...glossaryRoutes, ...entitiesRoutes, ...rulesRoutes, ...calculationsRoutes, ...processesRoutes]),
   scenariosRoute,
-  entitiesRoute,
-  findingsRoute,
-  rulesRoute,
-  calculationsRoute,
-  gatesRoute,
-  decisionsRoute,
+  scenarioRoute,
+  qualityRoute.addChildren([qualityIndexRoute, qualityGateRoute, qualityHistoryRoute, qualityIssuesRoute]),
+  sourcesRoute,
+  sourceRoute,
 ]);
 
 /** A router over the route tree (browser history unless `history` is given). */

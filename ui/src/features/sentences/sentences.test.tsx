@@ -228,7 +228,7 @@ function newBackend(): Backend {
 function renderSentences() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   lastClient = queryClient;
-  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/model/sentences"] }));
+  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/inbox?filter=wording"] }));
   render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
@@ -452,7 +452,9 @@ describe("Sentence bulk accept", () => {
       ["/api/model/sentences/req:s2/accept", tag(1)],
       ["/api/model/sentences/req:s5/accept", tag(2)],
     ]);
-    expect(backend.versionReads - readsBeforeRelease).toBe(0);
+    // The shell's version indicator may refresh its display after each commit; no precondition
+    // came from it (the If-Match chain above is the accept results' revisions).
+    expect(backend.versionReads - readsBeforeRelease).toBeLessThanOrEqual(accepts(backend).length);
     expect(within(section("entity:request")).getByTestId("bulk-accepted").textContent).toBe("3");
     expect(within(section("entity:request")).getByTestId("bulk-remaining").textContent).toBe("0");
   });

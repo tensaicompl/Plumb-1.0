@@ -1,6 +1,7 @@
-// U2.3 session tests (Hotfix 077/078): the /sessions project room (scope [] on explicit Start only);
-// the shell Project room launcher; the requirement-scoped side panel (scope [requirementId] only
-// for an Accepted requirement, no fallback); no scoped panel on list routes; explicit S0..S12
+// U2.3 session tests (Hotfix 077/078), in the shell's Assistant panel: the project session
+// (scope [] on explicit Start only) opened from the toolbar or sidebar Assistant toggle; the
+// requirement-scoped session on a requirement detail route (scope [requirementId] only for an
+// Accepted requirement, no fallback); no session panel until the Assistant opens; explicit S0..S12
 // stages; blank turns never sent; one pending → final request per turn (no streaming); the
 // current-page transcript that a remount does not restore; server metrics refetched after turns;
 // proposal cards with only [kind, reject] callable, Hotfix 078 reason gating for every positive
@@ -24,6 +25,7 @@ type ProposalKind = components["schemas"]["ProposalKind"];
 let routerModule: typeof import("../../app/router");
 let mutation: typeof import("../../api/useVersionedMutation");
 let nav: typeof import("../../app/nav");
+let shell: typeof import("../../app/preferences");
 let sessions: typeof import("./SessionPanel");
 
 /** WebSocket/EventSource constructions other than the shell's DesignEvent socket. */
@@ -60,6 +62,7 @@ beforeAll(async () => {
   routerModule = await import("../../app/router");
   mutation = await import("../../api/useVersionedMutation");
   nav = await import("../../app/nav");
+  shell = await import("../../app/preferences");
   sessions = await import("./SessionPanel");
 });
 
@@ -73,6 +76,7 @@ afterEach(() => {
   server.resetHandlers();
   sockets.length = 0;
   mutation.useConflictStore.getState().clearConflict();
+  shell.useShellStore.setState({ assistantOpen: false });
 });
 
 // ------------------------------------------------------------------ fixtures
@@ -235,7 +239,14 @@ function handlers(backend: Backend) {
   ];
 }
 
-function renderAt(path: string) {
+/**
+ * Renders the app at `target`. The project session lives in the Assistant panel ("/sessions" in
+ * these tests means the Overview with the Assistant open); on other paths the Assistant opens
+ * unless `assistant` is false.
+ */
+function renderAt(target: string, assistant = true) {
+  const path = target === "/sessions" ? "/overview" : target;
+  shell.useShellStore.setState({ assistantOpen: assistant });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: [path] }));
   const view = render(
@@ -278,8 +289,8 @@ const button = (card: HTMLElement, action: string) => card.querySelector("button
 
 // ------------------------------------------------------------------ project room and launcher
 
-describe("Project room", () => {
-  it("is the real /sessions session panel and creates scope [] only on Start session", async () => {
+describe("Project session (Assistant panel)", () => {
+  it("is the real session panel in project scope and creates scope [] only on Start session", async () => {
     const backend = newBackend();
     server.use(...handlers(backend));
     renderAt("/sessions");
@@ -287,41 +298,30 @@ describe("Project room", () => {
     expect(await screen.findByTestId("session-panel")).toBeTruthy();
     expect(panel().getAttribute("data-session-mode")).toBe("project");
     expect(within(panel()).getByTestId("session-scope").textContent).toBe("Project");
-    // Opening the room sends nothing; there is no duplicate scoped side panel.
+    // Opening the panel sends nothing.
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(posts(backend, "/api/sessions")).toEqual([]);
-    expect(screen.queryByTestId("scoped-session-aside")).toBeNull();
+    expect(screen.getAllByTestId("session-panel")).toHaveLength(1);
     await startSession(user, backend);
     expect(posts(backend, "/api/sessions").map((c) => [c.ifMatch, c.body])).toEqual([[TEST_ETAG, { scope: [] }]]);
   });
 
-  it("is reached through the shell Project room launcher without changing the frozen navigation", async () => {
+  it("opens from the toolbar or sidebar Assistant toggle without a route or a navigation entry", async () => {
     server.use(...handlers(newBackend()));
-    const { router } = renderAt("/");
+    const { router } = renderAt("/overview", false);
     const user = userEvent.setup();
-    const launcher = await screen.findByTestId("project-room-launcher");
-    expect(launcher.getAttribute("href")).toBe("/sessions");
-    await user.click(launcher);
+    const bar = await screen.findByRole("banner");
+    expect(screen.queryByTestId("session-panel")).toBeNull();
+    await user.click(within(bar).getByRole("button", { name: "Assistant" }));
     expect(await screen.findByTestId("session-panel")).toBeTruthy();
-    expect(router.state.location.pathname).toBe("/sessions");
-    const hrefs = nav.PILOT_NAVIGATION.flatMap((e) => (e.kind === "group" ? e.links.map((l) => l.href) : [e.link.href]));
-    expect(hrefs).not.toContain("/sessions");
-    expect(hrefs).toEqual([
-      "/",
-      "/requirements",
-      "/model/glossary",
-      "/model/sentences",
-      "/model/entities",
-      "/model/processes",
-      "/model/scenarios",
-      "/model/findings",
-      "/model/rules",
-      "/model/calculations",
-      "/questions",
-      "/proposals",
-      "/decisions",
-      "/gates",
-    ]);
+    expect(router.state.location.pathname).toBe("/overview");
+    await user.click(within(bar).getByRole("button", { name: "Assistant" }));
+    expect(screen.queryByTestId("session-panel")).toBeNull();
+    const sidebar = screen.getByRole("navigation", { name: "Main navigation" }).closest("aside") as HTMLElement;
+    await user.click(within(sidebar).getByRole("button", { name: "Assistant" }));
+    expect(await screen.findByTestId("session-panel")).toBeTruthy();
+    expect(nav.DESTINATIONS.map((d) => d.href)).toEqual(["/overview", "/inbox", "/requirements", "/model/glossary", "/scenarios", "/quality", "/sources"]);
+    expect(Object.keys(router.routesByPath)).not.toContain("/sessions");
   });
 });
 
@@ -333,7 +333,7 @@ describe("Requirement-scoped session", () => {
     server.use(...handlers(backend));
     renderAt("/requirements/req:accepted");
     const user = userEvent.setup();
-    const aside = await screen.findByTestId("scoped-session-aside");
+    const aside = await screen.findByTestId("assistant-panel");
     expect(within(aside).getByTestId("session-panel").getAttribute("data-session-mode")).toBe("requirement");
     expect(within(aside).getByTestId("session-scope").textContent).toBe("req:accepted");
     await waitFor(() => expect((within(aside).getByTestId("session-start") as HTMLButtonElement).disabled).toBe(false));
@@ -347,7 +347,7 @@ describe("Requirement-scoped session", () => {
     server.use(...handlers(backend));
     renderAt("/requirements/req:proposed");
     const user = userEvent.setup();
-    const aside = await screen.findByTestId("scoped-session-aside");
+    const aside = await screen.findByTestId("assistant-panel");
     expect(within(aside).getByTestId("session-scope").textContent).toBe("req:proposed");
     const unavailable = await within(aside).findByTestId("scope-unavailable");
     expect(unavailable.textContent).toContain("req:proposed");
@@ -363,21 +363,24 @@ describe("Requirement-scoped session", () => {
     const backend = newBackend({ requirementStatus: null });
     server.use(...handlers(backend));
     renderAt("/requirements/req:ghost");
-    const aside = await screen.findByTestId("scoped-session-aside");
+    const aside = await screen.findByTestId("assistant-panel");
     expect((await within(aside).findByTestId("scope-error")).textContent).toContain("req:ghost");
     expect((within(aside).getByTestId("session-start") as HTMLButtonElement).disabled).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(posts(backend, "/api/sessions")).toEqual([]);
   });
 
-  it.each(["/", "/requirements", "/model/glossary", "/model/sentences", "/questions"])("mounts no scoped panel on %s", async (path) => {
-    server.use(...handlers(newBackend()));
-    renderAt(path);
-    await screen.findByTestId("project-room-launcher");
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(screen.queryByTestId("scoped-session-aside")).toBeNull();
-    expect(screen.queryByTestId("session-panel")).toBeNull();
-  });
+  it.each(["/overview", "/requirements", "/requirements/req:accepted", "/model/glossary", "/inbox?filter=wording", "/inbox?filter=questions"])(
+    "mounts no session panel on %s until the Assistant opens",
+    async (path) => {
+      server.use(...handlers(newBackend()));
+      renderAt(path, false);
+      await screen.findByRole("banner");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(screen.queryByTestId("assistant-panel")).toBeNull();
+      expect(screen.queryByTestId("session-panel")).toBeNull();
+    },
+  );
 });
 
 // ------------------------------------------------------------------ turns
@@ -649,7 +652,8 @@ describe("Engine questions", () => {
     expect(document.querySelector("[data-asked-question]")).toBeNull();
     expect(document.querySelector("[data-question-card]")).toBeNull();
     expect(document.querySelector("[data-renderer]")).toBeNull();
-    expect(backend.calls.filter((c) => c.path.startsWith("/api/questions"))).toEqual([]);
+    // The shell reads open questions for its Inbox count; the panel itself asks or answers nothing.
+    expect(backend.calls.filter((c) => c.path.startsWith("/api/questions") && (c.method !== "GET" || c.path !== "/api/questions"))).toEqual([]);
   });
 
   it("renders the U2.2 answer flow for an exact Open engine question", async () => {

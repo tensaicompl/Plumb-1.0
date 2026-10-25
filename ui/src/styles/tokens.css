@@ -1,0 +1,299 @@
+/* =============================================================================================
+   Plumb design tokens (TensAI Design System).
+   Source: docs/design/handoff/design-system/tokens/colors_and_type.css and tokens.json.
+
+   Two layers:
+   1. Brand palette (raw values, never used directly by screens).
+   2. Semantic roles (what screens use, through the Tailwind theme in app.css).
+
+   Light is the designed appearance. Dark is derived from the same roles (the handoff marks it
+   "not yet designed"): midnight is the page, midnight-light the raised surface, midnight-muted the
+   separator, on-dark / subtext the text, exactly as the brand's "on dark surfaces" rules say.
+   Status hues keep their meaning and switch to their lighter text tones for contrast.
+
+   Appearance selection (Settings): <html data-appearance="light|dark">; no attribute = System.
+
+   Fonts, tracking, shadows and easing are named --ff-*, --ls-*, --elev-* and --motion-* here so
+   the Tailwind theme (app.css) can expose them as --font-*, --tracking-*, --shadow-* and --ease-*
+   without a self-referencing variable.
+   ============================================================================================= */
+
+:root {
+  /* ---------- Brand palette ---------- */
+  --color-bg-black: #000000;
+  --color-bg-white: #fafafa;
+
+  --color-violet: #6d28d9;
+  --color-violet-hover: #7c3aed;
+  --color-violet-pressed: #5b21b6;
+  --color-violet-light: #c4b5fd;
+  --color-violet-wash: #ede9fe;
+  --color-violet-tint: rgba(109, 40, 217, 0.12);
+
+  --color-midnight: #0f172a;
+  --color-midnight-light: #1e293b;
+  --color-midnight-muted: #334155;
+  --color-midnight-subtext: #94a3b8;
+  --color-midnight-on-dark: #f8fafc;
+
+  --color-gray: #6b7280;
+  --color-gray-light: #9ca3af;
+  --color-surface: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-border-strong: #cbd5e1;
+
+  --status-success: #10b981;
+  --status-warning: #f59e0b;
+  --status-danger: #dc2626;
+
+  /* ---------- Semantic roles (light, as designed) ---------- */
+  color-scheme: light;
+
+  /* surfaces */
+  --bg-page: var(--color-bg-white);
+  --bg-card: #ffffff;
+  --bg-surface: var(--color-surface);
+  --bg-sidebar: #ffffff;
+  --bg-toolbar: rgba(255, 255, 255, 0.8);
+  --bg-inspector: #ffffff;
+  --bg-assistant: var(--color-bg-white);
+  --bg-subtle-row: #fcfcfd;
+
+  /* text */
+  --fg-1: var(--color-midnight);
+  --fg-2: var(--color-midnight-muted);
+  --fg-3: var(--color-gray);
+  --fg-4: var(--color-gray-light);
+  /* Secondary text on the surface colour: #6B7280 is 4.41:1 on #F1F5F9 (below AA), so text on
+     surfaces uses this one step darker grey (4.91:1); it is 5.38:1 on white. */
+  --fg-3-surface: #636b78;
+  --fg-on-dark: var(--color-midnight-on-dark);
+  --fg-sub-dark: var(--color-midnight-subtext);
+
+  /* separators */
+  --border: var(--color-border);
+  --border-strong: var(--color-border-strong);
+  --edge: #94a3b8; /* diagram edges */
+
+  /* primary (midnight) control and active navigation */
+  --primary: var(--color-midnight);
+  --primary-hover: var(--color-midnight-light);
+  --primary-fg: #ffffff;
+  --primary-soft: var(--color-midnight-muted); /* badge on an active nav item */
+  --muted-ring: #64748b; /* readiness 70-84 */
+  --disabled-bg: var(--color-border-strong);
+
+  /* dark "hero" surfaces (next-action card, expression block, toast) */
+  --hero: var(--color-midnight);
+  --hero-raised: var(--color-midnight-light);
+  --hero-fg: #ffffff;
+  --hero-sub: var(--color-midnight-subtext);
+  --toast-bg: var(--color-midnight);
+  --toast-action: var(--color-midnight-light);
+  --toast-icon: #6ee7b7;
+
+  /* accent: the one primary action per surface */
+  --accent: var(--color-violet);
+  --accent-hover: var(--color-violet-hover);
+  --accent-pressed: var(--color-violet-pressed);
+  --accent-fg: #ffffff;
+  --accent-wash: var(--color-violet-wash);
+  --accent-wash-hover: #ddd6fe;
+  --accent-tint: var(--color-violet-tint);
+  --accent-on-dark: var(--color-violet-light);
+
+  /* status */
+  --pass: var(--status-success);
+  --pass-fg: #047857;
+  --pass-tint: rgba(16, 185, 129, 0.12);
+  --attention: var(--status-warning);
+  --attention-fg: #b45309;
+  --attention-tint: rgba(245, 158, 11, 0.14);
+  --blocked: var(--status-danger);
+  --blocked-fg: #b91c1c;
+  --blocked-tint: rgba(220, 38, 38, 0.1);
+  --blocked-hover: #b91c1c;
+  --running: var(--color-violet);
+  --running-fg: var(--color-violet-pressed);
+  --running-tint: var(--color-violet-wash);
+  --neutral: var(--color-gray-light);
+  --neutral-fg: #636b78; /* AA on the neutral tint (the handoff #6B7280 is 4.41:1) */
+  --neutral-tint: var(--color-surface);
+  --stale-ring: var(--color-gray-light);
+
+  /* diff */
+  --diff-add-fg: #047857;
+  --diff-add-bg: rgba(16, 185, 129, 0.08);
+  --diff-add-word: rgba(16, 185, 129, 0.14);
+  --diff-del-fg: #b91c1c;
+  --diff-del-bg: rgba(220, 38, 38, 0.06);
+  --diff-del-word: rgba(220, 38, 38, 0.12);
+
+  /* connection banner */
+  --banner-bg: #fef3c7;
+  --banner-fg: #92400e;
+
+  /* overlays */
+  --scrim: rgba(15, 23, 42, 0.6);
+  --shimmer: rgba(255, 255, 255, 0.55);
+
+  /* focus ring: 3px violet halo plus a 1px violet outline */
+  --focus-ring: 0 0 0 3px rgba(109, 40, 217, 0.2);
+  --focus-outline: var(--color-violet);
+
+  /* the enso is black on light surfaces */
+  --logo-filter: none;
+
+  /* ---------- Typography ---------- */
+  --ff-display: "Montserrat", "Helvetica Neue", system-ui, -apple-system, sans-serif;
+  --ff-body: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --ff-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --ls-tight: -0.02em;
+  --ls-eyebrow: 0.14em;
+
+  /* ---------- Shadows ---------- */
+  --elev-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --elev-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --elev-md: 0 4px 12px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.04);
+  --elev-lg: 0 12px 32px rgba(15, 23, 42, 0.1), 0 4px 8px rgba(15, 23, 42, 0.04);
+  --elev-xl: 0 24px 64px rgba(15, 23, 42, 0.14), 0 8px 16px rgba(15, 23, 42, 0.06);
+  --elev-segment: 0 1px 3px rgba(15, 23, 42, 0.1);
+
+  /* ---------- Motion ---------- */
+  --motion-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-entrance: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-collapse: 150ms;
+  --dur-slow: 320ms;
+}
+
+/* ---------- Dark appearance (derived) ---------- */
+/* The same declarations apply for System when the OS prefers dark, and for an explicit Dark. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-appearance="light"]) {
+    color-scheme: dark;
+    --bg-page: #0b1120;
+    --bg-card: var(--color-midnight);
+    --bg-surface: var(--color-midnight-light);
+    --bg-sidebar: var(--color-midnight);
+    --bg-toolbar: rgba(15, 23, 42, 0.8);
+    --bg-inspector: var(--color-midnight);
+    --bg-assistant: #0b1120;
+    --bg-subtle-row: #111a2e;
+    --fg-1: var(--color-midnight-on-dark);
+    --fg-2: #cbd5e1;
+    --fg-3: var(--color-midnight-subtext);
+    --fg-4: #64748b;
+    --fg-3-surface: var(--color-midnight-subtext);
+    --border: var(--color-midnight-muted);
+    --border-strong: #475569;
+    --edge: #64748b;
+    --primary: var(--color-midnight-on-dark);
+    --primary-hover: #e2e8f0;
+    --primary-fg: var(--color-midnight);
+    --primary-soft: #cbd5e1;
+    --muted-ring: #94a3b8;
+    --disabled-bg: var(--color-midnight-muted);
+    --hero: var(--color-midnight-light);
+    --hero-raised: var(--color-midnight-muted);
+    --toast-bg: var(--color-midnight-muted);
+    --toast-action: #475569;
+    --accent-wash: rgba(109, 40, 217, 0.28);
+    --accent-wash-hover: rgba(109, 40, 217, 0.4);
+    --accent-tint: rgba(124, 58, 237, 0.24);
+    --pass-fg: #6ee7b7;
+    --pass-tint: rgba(16, 185, 129, 0.18);
+    --attention-fg: #fcd34d;
+    --attention-tint: rgba(245, 158, 11, 0.18);
+    --blocked-fg: #fca5a5;
+    --blocked-tint: rgba(220, 38, 38, 0.2);
+    --running-fg: var(--color-violet-light);
+    --running-tint: rgba(109, 40, 217, 0.28);
+    --neutral-fg: var(--color-midnight-subtext);
+    --neutral-tint: var(--color-midnight-light);
+    --stale-ring: #64748b;
+    --diff-add-fg: #6ee7b7;
+    --diff-add-bg: rgba(16, 185, 129, 0.12);
+    --diff-add-word: rgba(16, 185, 129, 0.22);
+    --diff-del-fg: #fca5a5;
+    --diff-del-bg: rgba(220, 38, 38, 0.12);
+    --diff-del-word: rgba(220, 38, 38, 0.22);
+    --banner-bg: rgba(245, 158, 11, 0.16);
+    --banner-fg: #fcd34d;
+    --scrim: rgba(2, 6, 23, 0.72);
+    --shimmer: rgba(255, 255, 255, 0.06);
+    --focus-ring: 0 0 0 3px rgba(167, 139, 250, 0.35);
+    --focus-outline: #a78bfa;
+    --logo-filter: invert(1);
+    --elev-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --elev-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --elev-md: 0 4px 12px rgba(0, 0, 0, 0.45), 0 2px 4px rgba(0, 0, 0, 0.3);
+    --elev-lg: 0 12px 32px rgba(0, 0, 0, 0.5), 0 4px 8px rgba(0, 0, 0, 0.3);
+    --elev-xl: 0 24px 64px rgba(0, 0, 0, 0.6), 0 8px 16px rgba(0, 0, 0, 0.35);
+    --elev-segment: 0 1px 3px rgba(0, 0, 0, 0.45);
+  }
+}
+
+:root[data-appearance="dark"] {
+  color-scheme: dark;
+  --bg-page: #0b1120;
+  --bg-card: var(--color-midnight);
+  --bg-surface: var(--color-midnight-light);
+  --bg-sidebar: var(--color-midnight);
+  --bg-toolbar: rgba(15, 23, 42, 0.8);
+  --bg-inspector: var(--color-midnight);
+  --bg-assistant: #0b1120;
+  --bg-subtle-row: #111a2e;
+  --fg-1: var(--color-midnight-on-dark);
+  --fg-2: #cbd5e1;
+  --fg-3: var(--color-midnight-subtext);
+  --fg-4: #64748b;
+  --fg-3-surface: var(--color-midnight-subtext);
+  --border: var(--color-midnight-muted);
+  --border-strong: #475569;
+  --edge: #64748b;
+  --primary: var(--color-midnight-on-dark);
+  --primary-hover: #e2e8f0;
+  --primary-fg: var(--color-midnight);
+  --primary-soft: #cbd5e1;
+  --muted-ring: #94a3b8;
+  --disabled-bg: var(--color-midnight-muted);
+  --hero: var(--color-midnight-light);
+  --hero-raised: var(--color-midnight-muted);
+  --toast-bg: var(--color-midnight-muted);
+  --toast-action: #475569;
+  --accent-wash: rgba(109, 40, 217, 0.28);
+  --accent-wash-hover: rgba(109, 40, 217, 0.4);
+  --accent-tint: rgba(124, 58, 237, 0.24);
+  --pass-fg: #6ee7b7;
+  --pass-tint: rgba(16, 185, 129, 0.18);
+  --attention-fg: #fcd34d;
+  --attention-tint: rgba(245, 158, 11, 0.18);
+  --blocked-fg: #fca5a5;
+  --blocked-tint: rgba(220, 38, 38, 0.2);
+  --running-fg: var(--color-violet-light);
+  --running-tint: rgba(109, 40, 217, 0.28);
+  --neutral-fg: var(--color-midnight-subtext);
+  --neutral-tint: var(--color-midnight-light);
+  --stale-ring: #64748b;
+  --diff-add-fg: #6ee7b7;
+  --diff-add-bg: rgba(16, 185, 129, 0.12);
+  --diff-add-word: rgba(16, 185, 129, 0.22);
+  --diff-del-fg: #fca5a5;
+  --diff-del-bg: rgba(220, 38, 38, 0.12);
+  --diff-del-word: rgba(220, 38, 38, 0.22);
+  --banner-bg: rgba(245, 158, 11, 0.16);
+  --banner-fg: #fcd34d;
+  --scrim: rgba(2, 6, 23, 0.72);
+    --shimmer: rgba(255, 255, 255, 0.06);
+  --focus-ring: 0 0 0 3px rgba(167, 139, 250, 0.35);
+  --focus-outline: #a78bfa;
+  --logo-filter: invert(1);
+  --elev-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --elev-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --elev-md: 0 4px 12px rgba(0, 0, 0, 0.45), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --elev-lg: 0 12px 32px rgba(0, 0, 0, 0.5), 0 4px 8px rgba(0, 0, 0, 0.3);
+  --elev-xl: 0 24px 64px rgba(0, 0, 0, 0.6), 0 8px 16px rgba(0, 0, 0, 0.35);
+  --elev-segment: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
