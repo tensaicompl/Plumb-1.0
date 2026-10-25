@@ -21,6 +21,21 @@ architecture text, so the plan can be updated when it is picked up again.
 | E0.1 builds a reference PSG from fixture-contract.yaml | The product builds the pilot (CLI simulation); E0.1 keeps byte references of the five deterministic outputs in `fixtures/hr-leave/derived/`. |
 | E0.2 test host `crates/plumb-api/tests/e2e_hr.rs` | `crates/plumb-cli/tests/sim_hr.rs` (`hr_pilot_simulation` + `hr_oracle`). |
 
+## H0.7 rule adjudications (lane D)
+
+| Rule / item | Contract on this branch |
+|---|---|
+| `PLUMB.F1.REQ.NO_CONTRADICTION` | No producer exists, so the rule is NOT_APPLICABLE ("No contradiction finding material exists: …") unless supplemental or Accepted Finding material of its code (any finding status) is present; then it evaluates as before. |
+| `PLUMB.F1.REQ.TYPE_KNOWN` (Fable #299) | Pass-by-construction is declared in the result evidence `pass_by_construction:closed_requirement_kind_and_level` (the checksummed profile YAML is not edited). |
+| `PLUMB.F1.REQ.CRITERIA_FOR_BEHAVIOR` (Fable #299) | "In implementation scope" = not named by a governed `outside_implementation_scope {requirement_ref}` decision marker (new S1.6 marker kind). |
+| `PLUMB.F1.REQ.MODALITY_EXPLICIT` | Unchanged behaviour, documented: every Accepted Requirement is in `applies_when` (closed typed modality); `must` is not in the profile modality list and fails. |
+| `PLUMB.F2.STATE.REACHABILITY` | Initial / terminal / externally-entered states are declared by the governed State extension `plumb_functional:state_disposition {version 1, initial, terminal, externally_entered}`, produced only by directory `state_dispositions` (HUMAN_CONFIRM SetNodeExtension). Machines (owner -> `has_state` States) without a declared initial state are outside applies_when (NOT_APPLICABLE). |
+| `PLUMB.F2.EVENT.PRODUCER/CONSUMER` | `plumb_functional:event_disposition` from directory `event_dispositions`, exactly per §33.7. |
+| Directory disposition families | `event_dispositions` and `state_dispositions` default to `[]` (the six element families stay required), so existing directory configurations remain valid. |
+| `PLUMB.F2.OPERATION.PERFORMER` | The "owning system/component placeholder" alternative is an Accepted `allocated_to` to an Accepted SoftwareSystem, Container, Component, Module or ExternalSystem. |
+| `PLUMB.F2.INVARIANT.EXPRESSIBLE` | The manual/formal alternative is not representable in the pilot (no field, `verified_by` excludes Invariant); scope problems are violations, not evaluator errors. |
+| `PLUMB.F2.SOD.NO_VIOLATION` | All four constraint kinds are evaluated over static assignments; dynamic SoD = no single assigned role (with inheritance) activates two governed roles. Condition key `separation_constraint_violated`. |
+
 ## Plan tasks: status on this branch
 
 | Task | Status |
