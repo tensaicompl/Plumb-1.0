@@ -522,13 +522,16 @@ mod services {
         let decisions = acceptance_decisions(&loaded.graph, &proposal_id);
         match decisions.as_slice() {
             [] => Ok(stored),
-            [(_, decided_at)] => {
+            [(decision_ref, decided_at)] => {
+                // Fable #196: resolved with the revision that committed the decision.
+                let accepted =
+                    stage_acceptance::decision_revision(state, &loaded.revision, decision_ref)?;
                 let repaired = state
                     .with_workflow_store(|store| {
                         store.resolve_proposal(
                             &proposal_id,
                             WorkflowProposalState::Accepted,
-                            &loaded.revision.id,
+                            &accepted,
                             *decided_at,
                         )
                     })?
@@ -795,20 +798,6 @@ mod services {
                         .with_details(json!({ "id": imported.source.id })),
                 );
             }
-            for artifact in [&imported.original_artifact, &imported.extracted_artifact] {
-                let stored = self.with_artifact_store(|store| {
-                    store.put(
-                        artifact.kind,
-                        &artifact.media_type,
-                        &artifact.bytes,
-                        artifact.created_at,
-                    )
-                })?;
-                match stored {
-                    Ok(hash) if hash == artifact.hash => {}
-                    _ => return Err(ApiError::internal("artifact_store")),
-                }
-            }
             let mut patches = vec![SemanticPatch::AddNode {
                 node: imported.source.clone(),
             }];
@@ -831,7 +820,18 @@ mod services {
                 None,
             )
             .map_err(|_| ApiError::internal("proposal"))?;
-            let write = self.commit(loaded, &proposal, created_at, "create_source")?;
+            // Fable #368: the original and extracted artifacts are stored in the
+            // revision-commit transaction, never left unreferenced by a lost CAS.
+            let write = self.commit_with_artifacts(
+                loaded,
+                &proposal,
+                &[
+                    imported.original_artifact.clone(),
+                    imported.extracted_artifact.clone(),
+                ],
+                created_at,
+                "create_source",
+            )?;
             let NodePayload::SourceArtifact(source) = &imported.source.payload else {
                 return Err(ApiError::internal("importer"));
             };

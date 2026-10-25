@@ -307,6 +307,47 @@ mod stages {
         assert!(!store.claim_recipe_job(&generic("1"), ts(T3)).unwrap());
     }
 
+    /// H0.3 (§33.3): only a Failed recipe job is re-queued for a new attempt under the same ID;
+    /// its failure, result and the steps of the failed attempt are cleared atomically.
+    #[test]
+    fn stages_retry_requeues_only_failed_jobs() {
+        let db = Db::new();
+        let mut store = db.store();
+        inserted(store.insert_recipe_job(&db.recipe("1")).unwrap());
+        assert!(store.claim_recipe_job(&generic("1"), ts(T2)).unwrap());
+        store
+            .insert_step(&NewStageStep {
+                recipe_job_id: generic("1"),
+                ordinal: 0,
+                phase: "tags".to_owned(),
+                compiler_stage: "S1".to_owned(),
+                input_revision_id: db.r1.clone(),
+            })
+            .unwrap();
+        store
+            .interrupt_recipe_jobs("E_JOB_INTERRUPTED", "interrupted", ts(T2))
+            .unwrap();
+        inserted(store.insert_recipe_job(&db.recipe("2")).unwrap());
+        let retried = store.retry_recipe_job(&generic("1"), ts(T3)).unwrap();
+        assert_eq!(retried.status, StageStatus::Queued);
+        assert_eq!(retried.failure_code, None);
+        assert_eq!(retried.failure_message, None);
+        assert_eq!(retried.result_revision_id, None);
+        assert_eq!(retried.updated_at, ts(T3));
+        assert!(store.steps(&generic("1")).unwrap().is_empty());
+        assert!(store.claim_recipe_job(&generic("1"), ts(T3)).unwrap());
+        // Anything but Failed is a conflict and changes nothing.
+        for job in ["1", "2"] {
+            let before = store.recipe_job(&generic(job)).unwrap();
+            assert!(matches!(
+                store.retry_recipe_job(&generic(job), ts(T3)),
+                Err(StoreError::WorkflowStateConflict { .. })
+            ));
+            assert_eq!(store.recipe_job(&generic(job)).unwrap(), before);
+        }
+        assert!(store.retry_recipe_job(&generic("9"), ts(T3)).is_err());
+    }
+
     // ------------------------------------------------------------------ stage jobs and steps
 
     #[test]

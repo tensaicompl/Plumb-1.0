@@ -554,15 +554,17 @@ pub(crate) fn reconcile_pending(state: &ApiState) -> Result<(), ApiError> {
         .map_err(crate::stage::store_error)?;
     for link in links {
         let decisions = acceptance_decisions(&loaded.graph, &link.proposal_id);
-        if let [(_, decided_at)] = decisions.as_slice() {
+        if let [(decision_ref, decided_at)] = decisions.as_slice() {
             // A set reconciliation of an earlier link may already have resolved this row.
             if is_pending(state, &link.proposal_id)? {
+                // Fable #196: resolved with the revision that committed the decision.
+                let accepted = decision_revision(state, &loaded.revision, decision_ref)?;
                 state
                     .with_workflow_store(|store| {
                         store.resolve_proposal(
                             &link.proposal_id,
                             WorkflowProposalState::Accepted,
-                            &loaded.revision.id,
+                            &accepted,
                             *decided_at,
                         )
                     })?
@@ -572,6 +574,147 @@ pub(crate) fn reconcile_pending(state: &ApiState) -> Result<(), ApiError> {
         }
     }
     Ok(())
+}
+
+/// Plain stage commit reconciliation (H0.10, §33.11), run on startup before any in-flight job
+/// is interrupted: every Ready child of an in-flight recipe job whose plain (automatic or
+/// derivation) output was already committed is settled to that revision — found by walking the
+/// branch from the head to the revision whose parent is the child base and whose
+/// `accepted_patch_ref` is the output PatchSet — and its parent becomes Committed with the
+/// last settled revision. Nothing is committed again; committed work is never failed.
+pub(crate) fn settle_plain_commits(state: &ApiState) -> Result<(), ApiError> {
+    let head = state.load_head()?;
+    let parents = state
+        .with_stage_store(|store| store.recipe_jobs())?
+        .map_err(crate::stage::store_error)?;
+    for parent in parents.into_iter().filter(|r| r.status.is_in_flight()) {
+        let steps = state
+            .with_stage_store(|store| store.steps(&parent.recipe_job_id))?
+            .map_err(crate::stage::store_error)?;
+        let mut settled = None;
+        for step in &steps {
+            let Some(child_id) = &step.stage_job_id else {
+                continue;
+            };
+            if let Some(revision) = settle_plain_child(state, &head, child_id)? {
+                state
+                    .with_stage_store(|store| {
+                        store.update_step(
+                            &parent.recipe_job_id,
+                            step.ordinal,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(&revision),
+                        )
+                    })?
+                    .map_err(crate::stage::store_error)?;
+                settled = Some(revision);
+            }
+        }
+        if let Some(revision) = settled {
+            state
+                .with_stage_store(|store| {
+                    store.transition_recipe_job(
+                        &parent.recipe_job_id,
+                        &[
+                            StageStatus::Queued,
+                            StageStatus::Acquiring,
+                            StageStatus::Evaluating,
+                        ],
+                        StageStatus::Committed,
+                        Some(&revision),
+                        None,
+                        state.now(),
+                    )
+                })?
+                .map_err(crate::stage::store_error)?;
+        }
+    }
+    Ok(())
+}
+
+/// Settles one Ready child whose plain output is already committed on the branch; returns the
+/// committed revision.
+fn settle_plain_child(
+    state: &ApiState,
+    head: &LoadedRevision,
+    child_id: &Hash,
+) -> Result<Option<RevisionId>, ApiError> {
+    let record = state
+        .with_stage_store(|store| store.stage_job(child_id))?
+        .map_err(crate::stage::store_error)?
+        .ok_or_else(|| ApiError::workflow_corrupt(&format!("stage job {child_id}")))?;
+    let (StageStatus::Ready, Some(run_ref)) = (record.status, &record.compile_run_ref) else {
+        return Ok(None);
+    };
+    let mut job = decode_child(&record.stage_job_json, child_id)?;
+    let run = load_run(state, run_ref)?;
+    let corrupt = || ApiError::workflow_corrupt(&format!("stage job output {child_id}"));
+    let output = if let Some(patch_ref) = &run.output_derivation_patch_ref {
+        let artifact = state
+            .with_artifact_store(|store| store.get(patch_ref))?
+            .map_err(|_| corrupt())?;
+        let patch_set: PatchSet = serde_json::from_slice(&artifact.bytes).map_err(|_| corrupt())?;
+        PlainOutput::Derivation(patch_set)
+    } else if let [proposal_ref] = run.output_proposal_refs.as_slice() {
+        let artifact = state
+            .with_artifact_store(|store| store.get(proposal_ref))?
+            .map_err(|_| corrupt())?;
+        let proposal: Proposal = serde_json::from_slice(&artifact.bytes).map_err(|_| corrupt())?;
+        if !is_auto(&proposal) {
+            return Ok(None);
+        }
+        PlainOutput::Proposal(proposal)
+    } else {
+        return Ok(None);
+    };
+    let patch_set = match &output {
+        PlainOutput::Proposal(p) => &p.patch_set,
+        PlainOutput::Derivation(d) => d,
+    };
+    let accepted = Hash::content_sha256(&to_canonical_json(patch_set).map_err(|_| corrupt())?);
+    let base = job.base_revision().clone();
+    let Some(revision) = state.find_on_branch(&head.revision, Some(&base), |r| {
+        r.parent.as_ref() == Some(&base) && r.accepted_patch_ref.as_ref() == Some(&accepted)
+    })?
+    else {
+        return Ok(None);
+    };
+    let delta = apply_patch(&state.load_revision(&base)?.graph, patch_set)
+        .map_err(|_| corrupt())?
+        .delta;
+    let commit = CommitResult {
+        revision: revision.clone(),
+        delta,
+    };
+    match &output {
+        PlainOutput::Proposal(p) => job.record_proposal_commit(&run, p, &commit),
+        PlainOutput::Derivation(d) => job.record_derivation_commit(&run, d, &commit),
+    }
+    .map_err(|_| corrupt())?;
+    persist_child(state, &job, StageStatus::Ready, state.now())?;
+    Ok(Some(revision.id))
+}
+
+/// A decoded plain output of a persisted run.
+enum PlainOutput {
+    Proposal(Proposal),
+    Derivation(PatchSet),
+}
+
+/// Fable #196: the revision on the branch lineage of `head` whose decision refs contain the
+/// acceptance decision `decision_ref` (the revision that committed the acceptance).
+pub(crate) fn decision_revision(
+    state: &ApiState,
+    head: &plumb_store::GraphRevision,
+    decision_ref: &Id,
+) -> Result<RevisionId, ApiError> {
+    state
+        .find_on_branch(head, None, |r| r.decision_refs.contains(decision_ref))?
+        .map(|r| r.id)
+        .ok_or_else(|| ApiError::workflow_corrupt(&format!("acceptance decision {decision_ref}")))
 }
 
 // ============================================================================ proposal sets (R0.3)

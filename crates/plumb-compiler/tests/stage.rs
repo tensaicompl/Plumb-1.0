@@ -1728,11 +1728,18 @@ fn planned_and_input_media_types_are_validated() {
             bytes: bytes.clone(),
         };
         assert!(
-            matches!(input.validate(), Err(CompilerError::InvalidArtifactInput(_))),
+            matches!(
+                input.validate(),
+                Err(CompilerError::InvalidArtifactInput(_))
+            ),
             "input {bad:?}"
         );
     }
-    for good in ["text/plain", "application/json", "application/vnd.plumb+json"] {
+    for good in [
+        "text/plain",
+        "application/json",
+        "application/vnd.plumb+json",
+    ] {
         PlannedArtifact {
             kind: ArtifactKind::Projection,
             media_type: good.into(),

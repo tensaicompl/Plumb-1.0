@@ -5115,6 +5115,29 @@ mod http_workflow {
         );
     }
 
+    /// Fable #368: import artifacts are persisted in the revision-commit transaction, so an
+    /// import whose CAS is lost leaves no unreferenced original or extracted artifact.
+    #[tokio::test]
+    async fn lost_import_commit_persists_no_artifacts() {
+        let app = app();
+        let stale = app.state.head().unwrap();
+        concurrent_commit(&app.path);
+        let bytes = b"# Leave\n\nEmployees shall record their overtime.\n";
+        let err = app
+            .state
+            .create_source(&stale, "overtime.md", "text/markdown", bytes)
+            .unwrap_err();
+        assert_eq!(err.body().code, "E_PRECONDITION_FAILED");
+        let artifacts = SqliteArtifactStore::open(&app.path).unwrap();
+        assert!(!artifacts.exists(&Hash::content_sha256(bytes)).unwrap());
+        // The committed import stores them with its revision.
+        let loaded = app.state.head().unwrap();
+        app.state
+            .create_source(&loaded, "overtime.md", "text/markdown", bytes)
+            .unwrap();
+        assert!(artifacts.exists(&Hash::content_sha256(bytes)).unwrap());
+    }
+
     /// H0.10 (§33.11): a turn whose transcript CAS committed before a crash is recovered onto
     /// the revision that CAS produced, never onto the head current at read time, and its
     /// proposals stay bound to that revision.

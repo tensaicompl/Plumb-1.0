@@ -643,10 +643,22 @@ impl ApiState {
         })?
     }
 
-    /// Whether `report` is current for `loaded` under this profile (the A0.2 currency rule).
+    /// Whether `report` is current for `loaded` under this profile (the A0.2 currency rule),
+    /// and (H0.10, §33.11) has a result for every rule of its gate in the active profile.
     fn is_current(&self, report: &GateReport, loaded: &LoadedRevision) -> bool {
         let inner = &self.inner;
-        report.validate().is_ok()
+        let complete = inner
+            .profile
+            .gates
+            .iter()
+            .find(|g| g.id == report.gate)
+            .is_some_and(|gate| {
+                gate.rule_ids
+                    .iter()
+                    .all(|id| report.rules.iter().any(|r| &r.rule_id == id))
+            });
+        complete
+            && report.validate().is_ok()
             && report.baseline_semantic_hash == loaded.revision.semantic_hash
             && report.baseline_evidence_hash == loaded.revision.evidence_hash
             && report.profile_id == inner.profile.profile_id
@@ -669,9 +681,27 @@ impl ApiState {
             let records = self
                 .with_stage_store(|store| store.gate_reports())?
                 .map_err(|_| ApiError::workflow_corrupt("gate reports"))?;
+            // H0.10: a durable report is current only for the inputs assembled now (computed
+            // once per gate and evaluation time; an assembly failure means not current).
+            let mut inputs: BTreeMap<(GateId, Option<Timestamp>), Option<Option<Hash>>> =
+                BTreeMap::new();
             for record in records {
                 let report = crate::stage::gates::decode_report(&record)?;
                 if !self.is_current(&report, loaded) {
+                    continue;
+                }
+                let assembled = inputs
+                    .entry((report.gate, record.evaluation_at))
+                    .or_insert_with(|| {
+                        crate::stage::gates::current_input_hash(
+                            self,
+                            loaded,
+                            report.gate,
+                            record.evaluation_at,
+                        )
+                        .ok()
+                    });
+                if assembled.as_ref() != Some(&record.supplemental_input_hash) {
                     continue;
                 }
                 let Some(position) = GateId::ALL.iter().position(|g| *g == report.gate) else {
@@ -735,6 +765,19 @@ impl ApiState {
         created_at: Timestamp,
         operation_id: &'static str,
     ) -> Result<WriteResult, ApiError> {
+        self.commit_with_artifacts(loaded, proposal, &[], created_at, operation_id)
+    }
+
+    /// [`ApiState::commit`] that stores `artifacts` in the revision-commit transaction
+    /// (Fable #368): a lost or rejected CAS leaves none of them behind.
+    pub(crate) fn commit_with_artifacts(
+        &self,
+        loaded: &LoadedRevision,
+        proposal: &Proposal,
+        artifacts: &[plumb_artifacts::Artifact],
+        created_at: Timestamp,
+        operation_id: &'static str,
+    ) -> Result<WriteResult, ApiError> {
         let report = run_intake(loaded, proposal)?;
         match validate_required_rationale(proposal, &report, None) {
             Ok(()) => {}
@@ -743,13 +786,15 @@ impl ApiState {
             }
             Err(_) => return Err(ApiError::internal("intake_rationale")),
         }
-        self.commit_patch_set(
+        self.commit_patch_set_with_artifacts(
             loaded,
             &proposal.patch_set,
             Vec::new(),
+            artifacts,
             created_at,
             operation_id,
         )
+        .map(|(write, _)| write)
     }
 
     /// The A0.3 write pipeline (Hotfix 065): X1.3 intake of `proposal` against the loaded head,
@@ -896,13 +941,39 @@ impl ApiState {
         created_at: Timestamp,
         operation_id: &'static str,
     ) -> Result<(WriteResult, Committed), ApiError> {
+        self.commit_patch_set_with_artifacts(
+            loaded,
+            patch_set,
+            decision_refs,
+            &[],
+            created_at,
+            operation_id,
+        )
+    }
+
+    /// [`ApiState::commit_patch_set_detailed`] storing `artifacts` in the same transaction.
+    fn commit_patch_set_with_artifacts(
+        &self,
+        loaded: &LoadedRevision,
+        patch_set: &PatchSet,
+        decision_refs: Vec<Id>,
+        artifacts: &[plumb_artifacts::Artifact],
+        created_at: Timestamp,
+        operation_id: &'static str,
+    ) -> Result<(WriteResult, Committed), ApiError> {
         let meta = RevisionWriteMeta {
             decision_refs,
             created_by: self.inner.identity.actor_ref.clone(),
             created_at,
         };
         let committed = self.with_revision_store(|store| {
-            store.commit(&self.inner.branch, &loaded.revision.id, patch_set, meta)
+            store.commit_with_artifacts(
+                &self.inner.branch,
+                &loaded.revision.id,
+                patch_set,
+                meta,
+                artifacts,
+            )
         })?;
         let result = match committed {
             Ok(result) => result,
