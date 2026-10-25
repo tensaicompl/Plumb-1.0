@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use plumb_core::Id;
+use plumb_core::{Hash, Id};
 use plumb_functional::{
     validate_scenario, ScenarioDependency, ScenarioSemantics, ScenarioValue, ScenarioWhen,
     SCENARIO_CONFIRMED,
@@ -23,6 +23,7 @@ use thiserror::Error;
 
 use crate::compare::{compare_run, ComparisonError, ScenarioComparison};
 use crate::execute::run;
+use crate::materialize::admit;
 use crate::model::{accepted, CalculationEntry, ExecutionModel, ExecutionRuntime, SimulationError};
 use crate::trace::ScenarioVerdict;
 
@@ -127,6 +128,9 @@ struct DependencyCollector<'m, 'g> {
     ids: BTreeSet<Id>,
     /// Calculations whose calendar and closure were already collected.
     calculations: BTreeSet<Id>,
+    /// The elements whose Invariants can apply to the run: the anchor, the Operation's read and
+    /// written Entities and Attributes and the subjects of reachable Transitions (H0.10).
+    footprint: BTreeSet<Id>,
 }
 
 impl DependencyCollector<'_, '_> {
@@ -201,6 +205,35 @@ impl DependencyCollector<'_, '_> {
             self.add(id);
             self.add(&t.from_state);
             self.add(&t.to_state);
+            self.footprint.insert(t.stateful_ref.clone());
+        }
+    }
+
+    /// The Accepted read and written Entities and Attributes of an Operation.
+    fn operation_footprint(&mut self, id: &Id) {
+        let graph = self.model.graph;
+        for kind in [RelationKind::Reads, RelationKind::Writes] {
+            for target in targets(graph, id, kind) {
+                let footprint_type = graph.node(&target).map(|n| n.payload.node_type());
+                if matches!(footprint_type, Some(NodeType::Entity | NodeType::Attribute)) {
+                    self.add(&target);
+                    self.footprint.insert(target);
+                }
+            }
+        }
+    }
+
+    /// The Accepted Invariants scoped to the footprint (H0.10, architecture §33.11).
+    fn footprint_invariants(&mut self) {
+        let graph = self.model.graph;
+        for invariant_ref in graph.node_ids_by_type(NodeType::Invariant) {
+            if let Some(NodePayload::Invariant(i)) =
+                accepted(graph, invariant_ref, NodeType::Invariant).map(|n| &n.payload)
+            {
+                if self.footprint.contains(&i.scope_ref) {
+                    self.ids.insert(invariant_ref.clone());
+                }
+            }
         }
     }
 
@@ -213,6 +246,7 @@ impl DependencyCollector<'_, '_> {
             }
         }
         self.calculations_used_by(id);
+        self.operation_footprint(id);
         for produced in targets(graph, id, RelationKind::Produces) {
             self.add(&produced);
         }
@@ -248,6 +282,7 @@ impl DependencyCollector<'_, '_> {
         for r in payload_refs {
             self.add(r);
         }
+        self.footprint.insert(semantics.when.anchor().clone());
         match &semantics.when {
             ScenarioWhen::Operation(id) => {
                 self.add(id);
@@ -306,6 +341,7 @@ impl DependencyCollector<'_, '_> {
         if let Some(actor) = actor {
             self.add(actor);
         }
+        self.footprint_invariants();
     }
 }
 
@@ -338,6 +374,7 @@ fn scenario_dependencies(
         model,
         ids: BTreeSet::new(),
         calculations: BTreeSet::new(),
+        footprint: BTreeSet::new(),
     };
     collector.collect(scenario_ref, &semantics, &payload_refs, actor);
     Ok(collector.ids)
@@ -456,6 +493,36 @@ pub fn scenario_execution_finding(
         }
         ScenarioVerdict::Undecidable => Ok(None),
     }
+}
+
+/// Whether a recorded ScenarioRun is current for the model (H0.10, architecture §33.11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScenarioRunCurrency {
+    Current,
+    /// The Scenario specification changed since the run.
+    StaleSpecification,
+    /// The run was computed for an older model baseline, so possibly for an older state of
+    /// the Scenario's dependencies: never reported current.
+    StaleDependencies,
+}
+
+/// The currency of a run recorded with `specification_hash` over the model baseline
+/// `model_semantic_hash` (both from its ScenarioTrace artifact). The trace envelope binds the
+/// whole baseline, so a run of any older dependency state is stale, never current.
+pub fn scenario_run_currency(
+    model: &ExecutionModel<'_>,
+    scenario_ref: &Id,
+    specification_hash: &Hash,
+    model_semantic_hash: &Hash,
+) -> Result<ScenarioRunCurrency, IncrementalError> {
+    let current = admit(model, scenario_ref)?;
+    Ok(if &current.specification_hash != specification_hash {
+        ScenarioRunCurrency::StaleSpecification
+    } else if model.semantic_hash() != model_semantic_hash {
+        ScenarioRunCurrency::StaleDependencies
+    } else {
+        ScenarioRunCurrency::Current
+    })
 }
 
 /// Reruns the selected Scenarios through the unchanged run and compare_run and returns their

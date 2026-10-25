@@ -2196,10 +2196,13 @@ mod calculation_answer_tests {
             json!({"holiday_consumes_working_day": true, "calendar_ref": "cal:test"}),
             None,
         );
-        assert_eq!(
+        // H0.4 (plan v3.2 hotfix): the closed schema offers only recordable answers, so the
+        // unsupported policy is refused by the schema; UnsupportedHolidayPolicy stays the
+        // defensive mapping error behind it.
+        assert!(matches!(
             result.err(),
-            Some(ResolutionError::UnsupportedHolidayPolicy)
-        );
+            Some(ResolutionError::AnswerSchemaInvalid { .. })
+        ));
         // Nothing changed: the Question is still Open and the calculation has no calendar.
         assert_eq!(status_of(&g, &q), OPEN);
         assert_eq!(calc_of(&g).calendar_ref, None);

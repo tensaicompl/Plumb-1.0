@@ -114,6 +114,17 @@ pub enum ScenarioError {
         key: String,
         reason: String,
     },
+    /// A Given literal does not conform to its Attribute's pilot type (H0.4, Fable #116).
+    #[error("given value of {attribute_ref} does not match the Attribute type")]
+    GivenValueTypeMismatch { attribute_ref: Id },
+    /// A Then calculation result reference that can never resolve to the execution result of
+    /// its Calculation (H0.10, architecture §33.11).
+    #[error("calculation result reference {owner_ref}/{key} of {calculation_ref} cannot resolve")]
+    UnresolvableCalculationResult {
+        calculation_ref: Id,
+        owner_ref: Id,
+        key: String,
+    },
     #[error("invalid scenario payload: {reason}")]
     InvalidScenario { reason: String },
     #[error("no derived scenario {scenario_ref}")]
@@ -563,7 +574,8 @@ pub enum ScenarioWhen {
 }
 
 impl ScenarioWhen {
-    fn anchor(&self) -> &Id {
+    /// The anchor element the When executes.
+    pub fn anchor(&self) -> &Id {
         match self {
             ScenarioWhen::Operation(id)
             | ScenarioWhen::Event(id)
@@ -1104,6 +1116,38 @@ pub fn validate_scenario(
         .chain(t.calculation_results.keys())
     {
         need(id, NodeType::Calculation)?;
+    }
+    // Given literals conform to their Attribute's pilot type (H0.4, Fable #116).
+    for (attribute_ref, value) in &g.attribute_values {
+        let ScenarioValue::Literal(literal) = value else {
+            continue;
+        };
+        let conforms = matches!(
+            accepted_of(graph, attribute_ref, NodeType::Attribute).map(|n| &n.payload),
+            Some(NodePayload::Attribute(a)) if literal_conforms_to_attribute(attribute_ref, a, literal)
+        );
+        if !conforms {
+            return Err(ScenarioError::GivenValueTypeMismatch {
+                attribute_ref: attribute_ref.clone(),
+            });
+        }
+    }
+    // A Then calculation result reference is `result:<key>` of the named Calculation itself: it
+    // resolves to that Calculation's execution result in the scenario trace (H0.10).
+    for (calculation_ref, value) in &t.calculation_results {
+        if let ScenarioValue::SemanticRef(d) = value {
+            let resolvable = &d.owner_ref == calculation_ref
+                && d.key
+                    .strip_prefix(CALCULATION_RESULT_KEY_PREFIX)
+                    .is_some_and(is_clean_text);
+            if !resolvable {
+                return Err(ScenarioError::UnresolvableCalculationResult {
+                    calculation_ref: calculation_ref.clone(),
+                    owner_ref: d.owner_ref.clone(),
+                    key: d.key.clone(),
+                });
+            }
+        }
     }
     for value in g.values().into_iter().chain(t.values()) {
         if let ScenarioValue::SemanticRef(d) = value {
@@ -2075,6 +2119,41 @@ fn attribute_contract(
                     .as_ref()
                     .is_some_and(|members| values.iter().all(|v| members.contains(v)))
         }
+        _ => false,
+    }
+}
+
+/// Whether a literal conforms exactly to the pilot type of an Accepted Attribute (no coercion),
+/// the same rule the S4.2 materializer applies.
+fn literal_conforms_to_attribute(
+    attribute_ref: &Id,
+    attribute: &plumb_psg::Attribute,
+    literal: &ScenarioLiteral,
+) -> bool {
+    if literal.validate().is_err() {
+        return false;
+    }
+    let Ok(ty) = map_pilot_value_type(
+        &attribute.value_type,
+        attribute.unit.as_deref(),
+        Some(attribute_ref),
+    ) else {
+        return false;
+    };
+    match (literal, &ty) {
+        (ScenarioLiteral::Bool { .. }, Ty::Bool)
+        | (ScenarioLiteral::Int { .. }, Ty::Int)
+        | (ScenarioLiteral::String { .. }, Ty::String)
+        | (ScenarioLiteral::Date { .. }, Ty::Date)
+        | (ScenarioLiteral::DateTime { .. }, Ty::DateTime) => true,
+        (ScenarioLiteral::Decimal { value, unit: None }, Ty::Decimal(scale)) => {
+            canonical_decimal(value).is_some_and(|d| d.scale() <= u32::from(*scale))
+        }
+        (ScenarioLiteral::Decimal { unit: Some(u), .. }, Ty::Quantity(q)) => u == q.as_str(),
+        (ScenarioLiteral::Enum { value }, Ty::Enum(_)) => attribute
+            .enum_values
+            .as_ref()
+            .is_some_and(|members| members.contains(value)),
         _ => false,
     }
 }

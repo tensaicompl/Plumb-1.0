@@ -422,15 +422,56 @@ fn target_context(
     })
 }
 
-/// Every non-empty string scalar in value positions of `value`.
-fn collect_strings(value: &Value, out: &mut BTreeSet<String>) {
-    match value {
-        Value::String(s) if !s.is_empty() => {
-            out.insert(s.clone());
-        }
-        Value::Array(items) => items.iter().for_each(|v| collect_strings(v, out)),
-        Value::Object(map) => map.values().for_each(|v| collect_strings(v, out)),
-        _ => {}
+/// The explicit human-text fields of each payload type that may ground EARS wording (H0.10,
+/// Fable #139). Type tags, enum wire strings, Id values and every other field never do.
+fn human_text_fields(node_type: NodeType) -> &'static [&'static str] {
+    match node_type {
+        NodeType::Requirement => &["statement", "title"],
+        NodeType::AcceptanceCriterion
+        | NodeType::Assumption
+        | NodeType::Constraint
+        | NodeType::Goal
+        | NodeType::Need => &["statement"],
+        NodeType::Concept => &["name", "definition"],
+        NodeType::Term => &["term", "aliases"],
+        NodeType::Entity | NodeType::Process | NodeType::SecurityRole => &["name", "description"],
+        NodeType::Actor
+        | NodeType::Attribute
+        | NodeType::BusinessRole
+        | NodeType::Calculation
+        | NodeType::DecisionTable
+        | NodeType::DomainRelationship
+        | NodeType::Event
+        | NodeType::Operation
+        | NodeType::Outcome
+        | NodeType::Permission
+        | NodeType::Principal
+        | NodeType::Rule
+        | NodeType::Scenario
+        | NodeType::Stakeholder
+        | NodeType::State => &["name"],
+        _ => &[],
+    }
+}
+
+/// The non-empty string values (or string list members) of the allow-listed human-text fields
+/// of one serialized payload (`{"type": .., "data": {..}}`).
+fn collect_human_text(node_type: NodeType, payload: &Value, out: &mut BTreeSet<String>) {
+    let Some(data) = payload.get("data").and_then(Value::as_object) else {
+        return;
+    };
+    for field in human_text_fields(node_type) {
+        let strings: Vec<&str> = match data.get(*field) {
+            Some(Value::String(s)) => vec![s.as_str()],
+            Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        out.extend(
+            strings
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+        );
     }
 }
 
@@ -455,7 +496,7 @@ fn accepted_semantics(
         let payload = serde_json::to_value(&node.payload)
             .map_err(|e| invalid_input(format!("payload of {id} is not JSON: {e}")))?;
         let mut values = BTreeSet::new();
-        collect_strings(&payload, &mut values);
+        collect_human_text(node.payload.node_type(), &payload, &mut values);
         if !values.is_empty() {
             catalog.push(EarsAcceptedSemantic {
                 semantic_ref: id.clone(),

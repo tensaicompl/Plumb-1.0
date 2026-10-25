@@ -17,7 +17,8 @@ use plumb_functional::calculation::{
 };
 use plumb_functional::decision_table::{analyze_decision_table, DecisionTableSpec, HitPolicy};
 use plumb_functional::{
-    CalculationScope, CalculationScopeBinding, ScenarioDecisionTableInput, ScenarioLiteral,
+    BusinessFailureKind, CalculationScope, CalculationScopeBinding, OutcomeSelection,
+    ScenarioDecisionTableInput, ScenarioLiteral, OUTCOME_SELECTION_EXTENSION,
 };
 use plumb_psg::{semantic_hash, ElementStatus, Graph, Node, NodePayload, NodeType};
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,9 @@ pub enum MissingSemanticKind {
     UnsupportedExpression,
     PolicyCondition,
     OutcomeSelection,
+    /// A content-dependent model condition that makes only this run Undecidable (H0.4,
+    /// Fable #116/#117): the key names the condition ([`missing_keys`]).
+    ModelCondition,
 }
 
 /// One missing value, identified by `(owner_ref, key)`.
@@ -127,6 +131,31 @@ pub mod missing_keys {
     pub fn decision_input(index: usize) -> String {
         format!("decision_input:{index}")
     }
+
+    // Model conditions (H0.4, Fable #116/#117), kind `ModelCondition`.
+    /// Several Accepted Transitions leave the owner State at once.
+    pub const CONFLICTING_TRANSITIONS: &str = "conflicting_transitions";
+    /// A UNIQUE DecisionTable matched several rows (defensive: rejected at model build).
+    pub const AMBIGUOUS_DECISION_ROW: &str = "ambiguous_decision_row";
+    /// The Given decision inputs cannot be routed to one of several governing DecisionTables.
+    pub const DECISION_INPUT_ROUTING: &str = "decision_input_routing";
+    /// The owner Calculation's Accepted examples are malformed.
+    pub const CALCULATION_EXAMPLE: &str = "calculation_example";
+
+    /// `decision_input_mismatch:<index>`: a Given decision input does not fit its column.
+    pub fn decision_input_mismatch(index: u32) -> String {
+        format!("decision_input_mismatch:{index}")
+    }
+
+    /// `calculation_example:<key>`: several Accepted examples share the key.
+    pub fn ambiguous_calculation_example(key: &str) -> String {
+        format!("{CALCULATION_EXAMPLE}:{key}")
+    }
+
+    /// `semantic_contradiction:<key>`: a Given value contradicts the accepted semantics.
+    pub fn semantic_contradiction(key: &str) -> String {
+        format!("semantic_contradiction:{key}")
+    }
 }
 
 /// The position of an executable expression of its owner.
@@ -141,12 +170,14 @@ pub enum ExpressionSite {
 }
 
 impl ExpressionSite {
-    /// The missing-semantic key of an unparseable pre/postcondition.
-    pub fn unsupported_key(self) -> Option<String> {
+    /// The missing-semantic key of an unparseable expression at this site (H0.4, Fable #119).
+    pub fn unsupported_key(self) -> String {
         match self {
-            ExpressionSite::Precondition { index } => Some(format!("precondition:{index}")),
-            ExpressionSite::Postcondition { index } => Some(format!("postcondition:{index}")),
-            _ => None,
+            ExpressionSite::Precondition { index } => format!("precondition:{index}"),
+            ExpressionSite::Postcondition { index } => format!("postcondition:{index}"),
+            ExpressionSite::RuleCondition => "rule_condition".to_owned(),
+            ExpressionSite::TransitionGuard => "transition_guard".to_owned(),
+            ExpressionSite::Invariant => "invariant".to_owned(),
         }
     }
 }
@@ -202,6 +233,29 @@ pub enum ExecutionFailure {
     },
 }
 
+impl ExecutionFailure {
+    /// The business rejection kind (architecture §33.4); `None` for the unexpected model
+    /// failures `postcondition_violation` and `evaluation_failed`.
+    pub fn business_kind(&self) -> Option<BusinessFailureKind> {
+        Some(match self {
+            ExecutionFailure::AuthorizationDenied { .. } => {
+                BusinessFailureKind::AuthorizationDenied
+            }
+            ExecutionFailure::PreconditionRejected { .. } => {
+                BusinessFailureKind::PreconditionRejected
+            }
+            ExecutionFailure::TransitionGuardRejected { .. } => {
+                BusinessFailureKind::TransitionGuardRejected
+            }
+            ExecutionFailure::InvalidSourceState { .. } => BusinessFailureKind::InvalidSourceState,
+            ExecutionFailure::InvariantViolation { .. } => BusinessFailureKind::InvariantViolation,
+            ExecutionFailure::NoDecisionRow { .. } => BusinessFailureKind::NoDecisionRow,
+            ExecutionFailure::PostconditionViolation { .. }
+            | ExecutionFailure::EvaluationFailed { .. } => return None,
+        })
+    }
+}
+
 /// How a Scenario SemanticRef was resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -209,6 +263,8 @@ pub enum ResolutionSource {
     CalculationExample,
     CalculationExpression,
     RuntimeValue,
+    /// A Then `result:<key>` reference: the named Calculation's execution result (H0.10).
+    ExecutionResult,
 }
 
 /// The authorization decision of an Operation.
@@ -338,6 +394,16 @@ pub enum ExecutionResult {
         failure: ExecutionFailure,
         trace: Vec<ExecutionTraceStep>,
     },
+    /// A modeled business rejection (architecture §33.4): the one Accepted `business_failure`
+    /// Outcome listing the failure kind is the observed outcome, the state is the pre-state
+    /// (the materialized Given) and no event is produced; Then is compared normally.
+    Rejected {
+        failure: ExecutionFailure,
+        outcome_ref: Id,
+        state: RuntimeState,
+        rule_results: BTreeMap<Id, bool>,
+        trace: Vec<ExecutionTraceStep>,
+    },
     Undecidable {
         missing: Vec<MissingSemantic>,
         trace: Vec<ExecutionTraceStep>,
@@ -438,6 +504,61 @@ pub enum SimulationError {
     UnsupportedResultValue { owner_ref: Id },
     #[error("evaluation of {owner_ref} contradicts its validated model: {reason}")]
     Evaluation { owner_ref: Id, reason: String },
+    #[error("invalid outcome selection of {outcome_ref} for {operation_ref}: {reason}")]
+    InvalidOutcomeSelection {
+        outcome_ref: Id,
+        operation_ref: Id,
+        reason: String,
+    },
+}
+
+impl SimulationError {
+    /// The per-scenario typed condition of a content-dependent model error (H0.4,
+    /// Fable #116): such a run is Undecidable while other Scenarios still execute. `None` for
+    /// infrastructure, admission and internal errors, which never yield a verdict.
+    pub(crate) fn model_condition(&self) -> Option<MissingSemantic> {
+        let condition = |owner_ref: &Id, key: String| MissingSemantic {
+            owner_ref: owner_ref.clone(),
+            key,
+            kind: MissingSemanticKind::ModelCondition,
+        };
+        Some(match self {
+            SimulationError::ConflictingTransitions { from_state, .. } => {
+                condition(from_state, missing_keys::CONFLICTING_TRANSITIONS.to_owned())
+            }
+            SimulationError::AmbiguousDecisionRow {
+                decision_table_ref, ..
+            } => condition(
+                decision_table_ref,
+                missing_keys::AMBIGUOUS_DECISION_ROW.to_owned(),
+            ),
+            SimulationError::DecisionInputMismatch {
+                decision_table_ref,
+                index,
+                ..
+            } => condition(
+                decision_table_ref,
+                missing_keys::decision_input_mismatch(*index),
+            ),
+            SimulationError::InvalidCalculationExample {
+                calculation_ref, ..
+            } => condition(
+                calculation_ref,
+                missing_keys::CALCULATION_EXAMPLE.to_owned(),
+            ),
+            SimulationError::AmbiguousCalculationExample {
+                calculation_ref,
+                key,
+            } => condition(
+                calculation_ref,
+                missing_keys::ambiguous_calculation_example(key),
+            ),
+            SimulationError::SemanticContradiction { owner_ref, key } => {
+                condition(owner_ref, missing_keys::semantic_contradiction(key))
+            }
+            _ => return None,
+        })
+    }
 }
 
 // ============================================================================ model
@@ -484,6 +605,11 @@ pub struct ExecutionModel<'g> {
     pub(crate) calculations: BTreeMap<Id, CalculationEntry>,
     pub(crate) scopes: BTreeMap<Id, ExpressionScope>,
     pub(crate) expressions: BTreeMap<(Id, ExpressionSite), CompiledExpression>,
+    /// The outcome selection material of Accepted Outcomes carrying it (H0.4); `None` when the
+    /// value is malformed or invalid, which never selects.
+    pub(crate) outcome_selections: BTreeMap<Id, Option<OutcomeSelection>>,
+    /// The `when` conditions by (outcome, operation) under the Operation's explicit scope.
+    pub(crate) outcome_conditions: BTreeMap<(Id, Id), CompiledExpression>,
 }
 
 impl ExecutionModel<'_> {
@@ -570,6 +696,13 @@ fn decision_tables(
         let analysis = analyze_decision_table(&input.spec);
         if !analysis.structure.is_empty() {
             return Err(bad_spec(format!("{:?}", analysis.structure)));
+        }
+        // UNIQUE overlaps are rejected here, never at run time (H0.4, Fable #116).
+        if !analysis.illegal_overlaps.is_empty() {
+            return Err(bad_spec(format!(
+                "UNIQUE rows overlap: {:?}",
+                analysis.illegal_overlaps
+            )));
         }
         if u32::try_from(input.spec.inputs.len().max(input.spec.outputs.len())).is_err()
             || u32::try_from(input.spec.rows.len()).is_err()
@@ -724,14 +857,71 @@ fn expression_scopes(
                     }
                     CompiledExpression::Executable(ast)
                 }
-                Err(_) if site.unsupported_key().is_some() => CompiledExpression::Unparseable,
-                Err(e) => return Err(invalid(e.to_string())),
+                // Prose at any site is Unparseable: only dependent runs are Undecidable
+                // (H0.4, Fable #119).
+                Err(_) => CompiledExpression::Unparseable,
             };
             expressions.insert((owner_ref.clone(), site), compiled);
         }
         scopes.insert(input.owner_ref, scope);
     }
     Ok((scopes, expressions))
+}
+
+type OutcomeMaterial = (
+    BTreeMap<Id, Option<OutcomeSelection>>,
+    BTreeMap<(Id, Id), CompiledExpression>,
+);
+
+/// The outcome selection material of every Accepted Outcome (H0.4, architecture §33.4). A
+/// malformed or invalid value is kept as `None` (it never selects); a `when` is compiled under
+/// its Operation's explicit scope, where prose is Unparseable and a type error is a build error.
+fn outcome_material(
+    graph: &Graph,
+    scopes: &BTreeMap<Id, ExpressionScope>,
+) -> Result<OutcomeMaterial, SimulationError> {
+    let mut selections = BTreeMap::new();
+    let mut conditions = BTreeMap::new();
+    for outcome_ref in graph.node_ids_by_type(NodeType::Outcome) {
+        let Some(node) = accepted(graph, outcome_ref, NodeType::Outcome) else {
+            continue;
+        };
+        let Some(value) = node
+            .extensions
+            .iter()
+            .find(|(k, _)| k.as_str() == OUTCOME_SELECTION_EXTENSION)
+            .map(|(_, v)| v)
+        else {
+            continue;
+        };
+        let selection = OutcomeSelection::from_value(outcome_ref, value)
+            .and_then(|s| s.validate(graph, outcome_ref).map(|()| s))
+            .ok();
+        for entry in selection.iter().flat_map(|s| &s.selections) {
+            let (Some(when), Some(scope)) = (&entry.when, scopes.get(&entry.operation_ref)) else {
+                continue;
+            };
+            let invalid = |reason: String| SimulationError::InvalidOutcomeSelection {
+                outcome_ref: outcome_ref.clone(),
+                operation_ref: entry.operation_ref.clone(),
+                reason,
+            };
+            let compiled = match parse(when) {
+                Ok(ast) => {
+                    match typecheck(&ast, &scope.env) {
+                        Ok(Ty::Bool) => {}
+                        Ok(ty) => return Err(invalid(format!("type {ty:?} is not Bool"))),
+                        Err(e) => return Err(invalid(e.to_string())),
+                    }
+                    CompiledExpression::Executable(ast)
+                }
+                Err(_) => CompiledExpression::Unparseable,
+            };
+            conditions.insert((outcome_ref.clone(), entry.operation_ref.clone()), compiled);
+        }
+        selections.insert(outcome_ref.clone(), selection);
+    }
+    Ok((selections, conditions))
 }
 
 /// Validates the graph baseline and the explicit supplemental inputs into an execution model.
@@ -742,6 +932,7 @@ pub fn build_execution_model(
     let decision_tables = decision_tables(graph, inputs.decision_tables)?;
     let calculations = calculations(graph, inputs.calculation_scope_overrides)?;
     let (scopes, expressions) = expression_scopes(graph, inputs.expression_scopes)?;
+    let (outcome_selections, outcome_conditions) = outcome_material(graph, &scopes)?;
     Ok(ExecutionModel {
         graph,
         project_id: graph.project_id().clone(),
@@ -750,5 +941,7 @@ pub fn build_execution_model(
         calculations,
         scopes,
         expressions,
+        outcome_selections,
+        outcome_conditions,
     })
 }

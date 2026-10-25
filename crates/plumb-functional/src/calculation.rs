@@ -626,6 +626,25 @@ fn grounded<'c>(
     Ok(&text[s..e])
 }
 
+/// The grounded name slice: exactly the persisted range, without surrounding whitespace or
+/// control characters (H0.10, Fable #109; the state and domain producers' rule). Nothing is
+/// trimmed, so identity always uses the persisted range.
+fn grounded_name<'c>(
+    context: &'c CalculationContext,
+    g: &CalculationGroundedRange,
+) -> Result<&'c str, CalculationError> {
+    let slice = grounded(context, g)?;
+    if slice.trim() != slice || slice.chars().any(char::is_control) {
+        return Err(CalculationError::InvalidGrounding {
+            requirement_ref: g.requirement_ref.clone(),
+            start: g.start,
+            end: g.end,
+            reason: "slice has surrounding whitespace or control characters".to_owned(),
+        });
+    }
+    Ok(slice)
+}
+
 /// `calculation:<16 hex of SHA-256(RFC 8785 {project_id, name, node_type: calculation})>`.
 fn calculation_id(project_id: &Id, name: &str) -> Result<Id, CoreError> {
     let body = json!({"project_id": project_id, "name": name, "node_type": "calculation"});
@@ -701,7 +720,7 @@ pub fn analyze_calculations(
     let mut seen = BTreeSet::new();
     for candidate in decoded.calculations {
         // Grounding and calendar selection are part of the artifact contract.
-        let raw_name = grounded(&context, &candidate.name_range)?;
+        let name = grounded_name(&context, &candidate.name_range)?.to_owned();
         let mut evidence = candidate.expression_evidence.clone();
         for range in &evidence {
             grounded(&context, range)?;
@@ -722,18 +741,10 @@ pub fn analyze_calculations(
                 });
             }
         }
-        let name = raw_name.trim().to_owned();
         let calculation_ref = calculation_id(graph.project_id(), &name)?;
         if !seen.insert(calculation_ref.clone()) {
             return Err(CalculationError::DuplicateCandidate { calculation_ref });
         }
-        let name_issue = if name.is_empty() {
-            Some("the grounded name is empty")
-        } else if name.chars().any(char::is_control) {
-            Some("the grounded name contains control characters")
-        } else {
-            None
-        };
         let draft = CalculationDraft {
             expression: &candidate.expression,
             result_type: &candidate.result_type,
@@ -746,12 +757,6 @@ pub fn analyze_calculations(
             &draft,
             validate_calculation_bindings(graph, &scope.bindings),
         );
-        if let Some(reason) = name_issue {
-            qualification.issues.push(CalculationIssue::InvalidName {
-                reason: reason.to_owned(),
-            });
-            qualification.prepared = None;
-        }
         let mut disposition = CalculationDisposition::Ineligible;
         if qualification.is_qualified() {
             let payload = NodePayload::Calculation(Calculation {

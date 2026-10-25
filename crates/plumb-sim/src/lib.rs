@@ -20,10 +20,10 @@ mod trace;
 pub use compare::*;
 pub use execute::run;
 pub use incremental::{
-    rerun_dirty_scenarios, scenario_execution_finding, select_dirty_scenarios, IncrementalError,
-    IncrementalScenarioPolicy, IncrementalScenarioResult, IncrementalScenarioRuntime,
-    SCENARIO_FAIL_CODE, SCENARIO_FAIL_CONDITION, SCENARIO_FINDING_FAMILY,
-    SCENARIO_UNDECIDABLE_CODE, SCENARIO_UNDECIDABLE_CONDITION,
+    rerun_dirty_scenarios, scenario_execution_finding, scenario_run_currency,
+    select_dirty_scenarios, IncrementalError, IncrementalScenarioPolicy, IncrementalScenarioResult,
+    IncrementalScenarioRuntime, ScenarioRunCurrency, SCENARIO_FAIL_CODE, SCENARIO_FAIL_CONDITION,
+    SCENARIO_FINDING_FAMILY, SCENARIO_UNDECIDABLE_CODE, SCENARIO_UNDECIDABLE_CONDITION,
 };
 pub use model::{
     build_execution_model, missing_keys, AuthorizationDecision, EvaluationFailureKind,

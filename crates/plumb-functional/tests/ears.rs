@@ -38,9 +38,9 @@ mod ears_contract {
     const SCHEMA_HASH: &str =
         "sha256:0b56132d51dd3f048fd06af0bdc7fa66e54d367f9ffe72866db146fcad154c86";
     const GOLDEN_CONTEXT_HASH: &str =
-        "sha256:bceae30f6c786c54c6912bf0df6d5bfa9d265726006aaa74a35b94b58376f48f";
+        "sha256:169b7456fbe16ed0c9b06b539cbb41dcde29b679ea341512107e8fa7c2dcf94b";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:4f746ebe8e584c8009b9d945749c6355e91f726436befa3e62969caa27860122";
+        "sha256:595963a61634811e72e66b9b444298df0407883e8a090e0252118cb439ed31e8";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and
@@ -548,11 +548,8 @@ mod ears_contract {
             context.accepted_semantics,
             vec![EarsAcceptedSemantic {
                 semantic_ref: id("actor:admin"),
-                values: vec![
-                    "Actor".to_owned(),
-                    "Administrator".to_owned(),
-                    "human".to_owned()
-                ],
+                // H0.10 [Fable #139]: only the allow-listed human text.
+                values: vec!["Administrator".to_owned()],
             }]
         );
         let inner = &ears.request;
@@ -588,7 +585,7 @@ mod ears_contract {
                 }],
                 "accepted_semantics": [{
                     "semantic_ref": "actor:admin",
-                    "values": ["Actor", "Administrator", "human"],
+                    "values": ["Administrator"],
                 }],
             })
         );
@@ -637,6 +634,50 @@ mod ears_contract {
             !archive.values.iter().any(|v| v == "statement"),
             "keys are not values"
         );
+        // H0.10 [Fable #139]: only the allow-listed human-text fields of each payload type;
+        // never the payload type tag, enum wire strings (kind, level, modality) or Id values.
+        assert_eq!(archive.values, ["The system shall archive the report."]);
+        let admin = ears
+            .context
+            .accepted_semantics
+            .iter()
+            .find(|s| s.semantic_ref == id("actor:admin"))
+            .unwrap();
+        assert_eq!(admin.values, ["Administrator"]);
+        let entity = semantic_node(
+            "entity:leave",
+            NodePayload::Entity(plumb_psg::Entity {
+                name: "Leave request".into(),
+                description: Some("A request for leave".into()),
+                aggregate_root: Some(true),
+            }),
+            ElementStatus::Accepted,
+        );
+        let calendar = semantic_node(
+            "calendar:office",
+            NodePayload::Calendar(plumb_psg::Calendar {
+                time_zone: "Europe/Warsaw".into(),
+                week_pattern: json!({"weekend": ["saturday", "sunday"]}),
+                region: Some("PL".into()),
+                holiday_source: None,
+            }),
+            ElementStatus::Accepted,
+        );
+        let graph = with_nodes(&graph, vec![entity, calendar]);
+        let ears = request(&graph, std::slice::from_ref(&ids[0]));
+        let values = |r: &str| {
+            ears.context
+                .accepted_semantics
+                .iter()
+                .find(|s| s.semantic_ref == id(r))
+                .map(|s| s.values.clone())
+        };
+        assert_eq!(
+            values("entity:leave").unwrap(),
+            ["A request for leave", "Leave request"]
+        );
+        // A Calendar carries no human-text field: no catalog entry at all.
+        assert_eq!(values("calendar:office"), None);
         // EvidenceFragment and SourceArtifact never contribute to the semantic hash.
         assert!(refs
             .iter()
@@ -1174,6 +1215,21 @@ mod ears_contract {
             accepted("actor:admin", "employee"),
         );
         assert!(matches!(fuzzy, Err(EarsError::InvalidGrounding { .. })));
+        // H0.10 [Fable #139]: payload type tags, enum wire strings and IDs are never wording.
+        for not_text in ["Actor", "human", "actor:admin"] {
+            let tag = run(
+                vec![actor(
+                    "actor:admin",
+                    "Administrator",
+                    ElementStatus::Accepted,
+                )],
+                accepted("actor:admin", not_text),
+            );
+            assert!(
+                matches!(tag, Err(EarsError::InvalidGrounding { .. })),
+                "{not_text}"
+            );
+        }
         let grounded = run(
             vec![actor(
                 "actor:admin",

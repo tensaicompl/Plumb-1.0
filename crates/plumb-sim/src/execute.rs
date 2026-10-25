@@ -17,9 +17,10 @@ use plumb_functional::decision_table::{
     NumericInterval,
 };
 use plumb_functional::{
-    authorization_facts, effective_security_roles, ScenarioLiteral, ScenarioWhen,
+    authorization_facts, effective_security_roles, BusinessFailureKind, ScenarioLiteral,
+    ScenarioWhen,
 };
-use plumb_psg::{ElementStatus, Graph, NodePayload, NodeType, RelationKind};
+use plumb_psg::{ElementStatus, Graph, NodePayload, NodeType, OutcomeKind, RelationKind};
 
 use crate::materialize::{
     admit, bind_values, expression_bindings, from_expr_value, materialize, runtime_values,
@@ -308,27 +309,50 @@ impl Executor<'_, '_, '_> {
     /// A Boolean expression of `owner_ref` under its explicit scope; `None` is missing.
     fn expression(&mut self, owner_ref: &Id, site: ExpressionSite) -> Step<Option<bool>> {
         let model = self.model;
-        let Some(scope) = model.scopes.get(owner_ref) else {
+        if !model.scopes.contains_key(owner_ref) {
             self.miss(
                 owner_ref,
                 missing_keys::EXPRESSION_SCOPE,
                 MissingSemanticKind::ExpressionScope,
             );
             return Ok(None);
+        }
+        let Some(compiled) = model.expressions.get(&(owner_ref.clone(), site)) else {
+            return Err(Stop::Error(SimulationError::InvalidExpression {
+                owner_ref: owner_ref.clone(),
+                site,
+                reason: "the expression is not part of the model".to_owned(),
+            }));
         };
-        let ast = match model.expressions.get(&(owner_ref.clone(), site)) {
-            Some(CompiledExpression::Executable(ast)) => ast,
-            Some(CompiledExpression::Unparseable) => {
-                let key = site.unsupported_key().unwrap_or_default();
-                self.miss(owner_ref, key, MissingSemanticKind::UnsupportedExpression);
+        self.evaluate(owner_ref, compiled, owner_ref, site.unsupported_key())
+    }
+
+    /// Evaluates a compiled Boolean expression under the explicit scope of `scope_owner` (which
+    /// exists); an Unparseable expression is the missing `(unsupported_owner, unsupported_key)`.
+    fn evaluate(
+        &mut self,
+        scope_owner: &Id,
+        compiled: &CompiledExpression,
+        unsupported_owner: &Id,
+        unsupported_key: String,
+    ) -> Step<Option<bool>> {
+        let model = self.model;
+        let owner_ref = scope_owner;
+        let Some(scope) = model.scopes.get(owner_ref) else {
+            return Err(Stop::Error(SimulationError::Evaluation {
+                owner_ref: owner_ref.clone(),
+                reason: "the expression scope is not part of the model".to_owned(),
+            }));
+        };
+        let ast = match compiled {
+            CompiledExpression::Executable(ast) => ast,
+            CompiledExpression::Unparseable => {
+                self.miss(
+                    unsupported_owner,
+                    unsupported_key,
+                    MissingSemanticKind::UnsupportedExpression,
+                );
                 return Ok(None);
-            }
-            None => {
-                return Err(Stop::Error(SimulationError::InvalidExpression {
-                    owner_ref: owner_ref.clone(),
-                    site,
-                    reason: "the expression is not part of the model".to_owned(),
-                }))
             }
         };
         let used = expression_bindings(ast, &scope.roots, &scope.fields);
@@ -851,15 +875,20 @@ impl Executor<'_, '_, '_> {
             RelationKind::GovernedBy,
             NodeType::DecisionTable,
         );
-        let sole_inputs = self.decision_inputs.clone();
-        let none = BTreeMap::new();
-        for table_ref in &tables {
-            let inputs = if tables.len() == 1 {
-                &sole_inputs
-            } else {
-                &none
-            };
-            self.decision_table(table_ref, inputs)?;
+        // The Given decision inputs name no table: with several governing tables they cannot
+        // be routed, a dedicated typed condition rather than silently discarded inputs
+        // (H0.4, Fable #117). Without inputs every table reports its own missing columns.
+        if tables.len() > 1 && !self.decision_inputs.is_empty() {
+            self.miss(
+                operation_ref,
+                missing_keys::DECISION_INPUT_ROUTING,
+                MissingSemanticKind::ModelCondition,
+            );
+        } else {
+            let inputs = self.decision_inputs.clone();
+            for table_ref in &tables {
+                self.decision_table(table_ref, &inputs)?;
+            }
         }
         self.checkpoint()?;
 
@@ -873,32 +902,10 @@ impl Executor<'_, '_, '_> {
         }
         self.checkpoint()?;
 
-        match targets(
-            graph,
-            operation_ref,
-            RelationKind::Produces,
-            NodeType::Outcome,
-        )
-        .as_slice()
-        {
-            [] => {}
-            [outcome_ref] => {
-                self.outcome_refs.push(outcome_ref.clone());
-                self.trace.push(ExecutionTraceStep::OutcomeSelected {
-                    operation_ref: operation_ref.clone(),
-                    outcome_ref: outcome_ref.clone(),
-                });
-            }
-            _ => {
-                self.miss(
-                    operation_ref,
-                    missing_keys::OUTCOME_SELECTION,
-                    MissingSemanticKind::OutcomeSelection,
-                );
-                self.checkpoint()?;
-            }
-        }
-
+        // Outcome selection keeps its frozen trace position (S4.2): the interpreter never
+        // writes attributes and every calculation has run, so a `when` over the scope sees the
+        // post-execution values already.
+        self.success_outcome(operation_ref)?;
         self.triggered_transitions(operation_ref)?;
         self.conditions(operation_ref, post, true)?;
         Ok(targets(
@@ -907,6 +914,113 @@ impl Executor<'_, '_, '_> {
             RelationKind::Produces,
             NodeType::Event,
         ))
+    }
+
+    // ------------------------------------------------------------------ outcomes
+
+    /// Whether `outcome_ref` carries selection material for `operation_ref`; an invalid value
+    /// counts as material (it never selects).
+    fn has_selection(&self, outcome_ref: &Id, operation_ref: &Id) -> bool {
+        match self.model.outcome_selections.get(outcome_ref) {
+            None => false,
+            Some(None) => true,
+            Some(Some(selection)) => selection.entry(operation_ref).is_some(),
+        }
+    }
+
+    fn select_outcome(&mut self, operation_ref: &Id, outcome_ref: &Id) {
+        self.outcome_refs.push(outcome_ref.clone());
+        self.trace.push(ExecutionTraceStep::OutcomeSelected {
+            operation_ref: operation_ref.clone(),
+            outcome_ref: outcome_ref.clone(),
+        });
+    }
+
+    fn outcome_undecidable(&mut self, operation_ref: &Id) -> Step<()> {
+        self.miss(
+            operation_ref,
+            missing_keys::OUTCOME_SELECTION,
+            MissingSemanticKind::OutcomeSelection,
+        );
+        self.checkpoint()
+    }
+
+    /// Successful execution (architecture §33.4): the candidates are the Operation's Accepted
+    /// `success`/`partial` Outcomes. One candidate without selection material is selected;
+    /// otherwise every candidate needs a `when` for this Operation over the post-execution
+    /// state and exactly one true selects it. Anything else is Undecidable OUTCOME_SELECTION.
+    fn success_outcome(&mut self, operation_ref: &Id) -> Step<()> {
+        let graph = self.model.graph;
+        let candidates: Vec<Id> = targets(
+            graph,
+            operation_ref,
+            RelationKind::Produces,
+            NodeType::Outcome,
+        )
+        .into_iter()
+        .filter(|o| {
+            matches!(
+                graph.node(o).map(|n| &n.payload),
+                Some(NodePayload::Outcome(outcome))
+                    if matches!(outcome.outcome_kind, OutcomeKind::Success | OutcomeKind::Partial)
+            )
+        })
+        .collect();
+        match candidates.as_slice() {
+            [] => return Ok(()),
+            [only] if !self.has_selection(only, operation_ref) => {
+                self.select_outcome(operation_ref, only);
+                return Ok(());
+            }
+            _ => {}
+        }
+        let model = self.model;
+        let mut chosen = Vec::new();
+        let mut complete = true;
+        for candidate in &candidates {
+            let has_when = matches!(
+                model.outcome_selections.get(candidate),
+                Some(Some(selection))
+                    if selection.entry(operation_ref).is_some_and(|e| e.when.is_some())
+            );
+            if !has_when {
+                complete = false;
+                continue;
+            }
+            if !model.scopes.contains_key(operation_ref) {
+                self.miss(
+                    operation_ref,
+                    missing_keys::EXPRESSION_SCOPE,
+                    MissingSemanticKind::ExpressionScope,
+                );
+                continue;
+            }
+            let Some(compiled) = model
+                .outcome_conditions
+                .get(&(candidate.clone(), operation_ref.clone()))
+            else {
+                return Err(Stop::Error(SimulationError::InvalidOutcomeSelection {
+                    outcome_ref: candidate.clone(),
+                    operation_ref: operation_ref.clone(),
+                    reason: "the condition is not part of the model".to_owned(),
+                }));
+            };
+            let key = missing_keys::OUTCOME_SELECTION.to_owned();
+            if self.evaluate(operation_ref, compiled, candidate, key)? == Some(true) {
+                chosen.push(candidate.clone());
+            }
+        }
+        if !complete {
+            return self.outcome_undecidable(operation_ref);
+        }
+        self.checkpoint()?;
+        match chosen.as_slice() {
+            [one] => {
+                self.select_outcome(operation_ref, one);
+                Ok(())
+            }
+            _ => self.outcome_undecidable(operation_ref),
+        }
     }
 
     // ------------------------------------------------------------------ invariants
@@ -989,8 +1103,83 @@ impl Executor<'_, '_, '_> {
     }
 }
 
+/// The Operation whose modeled business failures a rejection of the `when` anchor selects
+/// among: the anchor Operation, or the Accepted triggering Operation of a Transition anchor.
+fn rejecting_operation(graph: &Graph, when: &ScenarioWhen) -> Option<Id> {
+    match when {
+        ScenarioWhen::Operation(id) => Some(id.clone()),
+        ScenarioWhen::Transition(transition_ref) => {
+            let triggers = targets(
+                graph,
+                transition_ref,
+                RelationKind::TransitionsVia,
+                NodeType::Operation,
+            );
+            match triggers.as_slice() {
+                [operation_ref] => Some(operation_ref.clone()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The Accepted `business_failure` Outcomes of `operation_ref` whose selection entry lists
+/// `kind`; `None` when an invalid selection value makes the candidates unknown.
+fn rejection_outcomes(
+    model: &ExecutionModel<'_>,
+    operation_ref: &Id,
+    kind: BusinessFailureKind,
+) -> Option<Vec<Id>> {
+    let graph = model.graph;
+    let mut out = Vec::new();
+    for outcome_ref in targets(
+        graph,
+        operation_ref,
+        RelationKind::Produces,
+        NodeType::Outcome,
+    ) {
+        let business = matches!(
+            graph.node(&outcome_ref).map(|n| &n.payload),
+            Some(NodePayload::Outcome(o)) if o.outcome_kind == OutcomeKind::BusinessFailure
+        );
+        if !business {
+            continue;
+        }
+        match model.outcome_selections.get(&outcome_ref) {
+            None => {}
+            Some(None) => return None,
+            Some(Some(selection)) => {
+                let listed = selection
+                    .entry(operation_ref)
+                    .and_then(|e| e.on_failures.as_ref())
+                    .is_some_and(|kinds| kinds.contains(&kind));
+                if listed {
+                    out.push(outcome_ref);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+fn undecidable(
+    mut trace: Vec<ExecutionTraceStep>,
+    missing: BTreeSet<MissingSemantic>,
+) -> ExecutionResult {
+    let missing: Vec<MissingSemantic> = missing.into_iter().collect();
+    trace.push(ExecutionTraceStep::SemanticMissing {
+        missing: missing.clone(),
+    });
+    ExecutionResult::Undecidable { missing, trace }
+}
+
 /// Executes one Accepted, Confirmed Scenario. Pure: the graph, the Scenario and the caller's
 /// state are never mutated and nothing is persisted.
+///
+/// A content-dependent model condition makes only this run Undecidable with a typed
+/// `ModelCondition` (H0.4, Fable #116); every other error is no verdict. A business rejection
+/// with exactly one modeled `business_failure` Outcome is `Rejected` (architecture §33.4).
 pub fn run(
     model: &ExecutionModel<'_>,
     scenario_ref: &Id,
@@ -998,20 +1187,26 @@ pub fn run(
 ) -> Result<ExecutionRun, SimulationError> {
     let admitted = admit(model, scenario_ref)?;
     let runtime_values = runtime_values(model, runtime)?;
-    let given = materialize(model, scenario_ref, &admitted.semantics, &runtime_values)?;
     let finish = |result: ExecutionResult| ExecutionRun {
         scenario_ref: scenario_ref.clone(),
         specification_hash: admitted.specification_hash.clone(),
         result,
     };
-    let mut trace = given.trace;
+    let given = match materialize(model, scenario_ref, &admitted.semantics, &runtime_values) {
+        Ok(given) => given,
+        Err(e) => {
+            let condition = e.model_condition().ok_or(e)?;
+            let trace = vec![ExecutionTraceStep::MaterializationStarted {
+                scenario_ref: scenario_ref.clone(),
+            }];
+            return Ok(finish(undecidable(trace, BTreeSet::from([condition]))));
+        }
+    };
+    let trace = given.trace;
     if !given.missing.is_empty() {
-        let missing: Vec<MissingSemantic> = given.missing.into_iter().collect();
-        trace.push(ExecutionTraceStep::SemanticMissing {
-            missing: missing.clone(),
-        });
-        return Ok(finish(ExecutionResult::Undecidable { missing, trace }));
+        return Ok(finish(undecidable(trace, given.missing)));
     }
+    let pre_state = given.state.clone();
     let mut executor = Executor {
         model,
         runtime,
@@ -1024,7 +1219,8 @@ pub fn run(
         outcome_refs: Vec::new(),
         invariant_targets: BTreeSet::new(),
     };
-    let outcome = executor.execute(&admitted.semantics.when);
+    let when = &admitted.semantics.when;
+    let outcome = executor.execute(when);
     let mut trace = executor.trace;
     Ok(finish(match outcome {
         Ok(event_refs) => ExecutionResult::Executed {
@@ -1034,14 +1230,45 @@ pub fn run(
             rule_results: executor.rule_results,
             trace,
         },
-        Err(Stop::Failed(failure)) => ExecutionResult::Failed { failure, trace },
-        Err(Stop::Undecidable) => {
-            let missing: Vec<MissingSemantic> = executor.missing.into_iter().collect();
-            trace.push(ExecutionTraceStep::SemanticMissing {
-                missing: missing.clone(),
-            });
-            ExecutionResult::Undecidable { missing, trace }
+        Err(Stop::Failed(failure)) => {
+            let rejection = failure
+                .business_kind()
+                .zip(rejecting_operation(model.graph, when));
+            let Some((kind, operation_ref)) = rejection else {
+                return Ok(finish(ExecutionResult::Failed { failure, trace }));
+            };
+            match rejection_outcomes(model, &operation_ref, kind).as_deref() {
+                Some([]) => ExecutionResult::Failed { failure, trace },
+                Some([outcome_ref]) => {
+                    trace.push(ExecutionTraceStep::OutcomeSelected {
+                        operation_ref,
+                        outcome_ref: outcome_ref.clone(),
+                    });
+                    trace.push(ExecutionTraceStep::ExecutionCompleted);
+                    ExecutionResult::Rejected {
+                        failure,
+                        outcome_ref: outcome_ref.clone(),
+                        state: pre_state,
+                        rule_results: executor.rule_results,
+                        trace,
+                    }
+                }
+                _ => undecidable(
+                    trace,
+                    BTreeSet::from([MissingSemantic {
+                        owner_ref: operation_ref,
+                        key: missing_keys::OUTCOME_SELECTION.to_owned(),
+                        kind: MissingSemanticKind::OutcomeSelection,
+                    }]),
+                ),
+            }
         }
-        Err(Stop::Error(e)) => return Err(e),
+        Err(Stop::Undecidable) => undecidable(trace, executor.missing),
+        Err(Stop::Error(e)) => {
+            let condition = e.model_condition().ok_or(e)?;
+            let mut missing = executor.missing;
+            missing.insert(condition);
+            undecidable(trace, missing)
+        }
     }))
 }

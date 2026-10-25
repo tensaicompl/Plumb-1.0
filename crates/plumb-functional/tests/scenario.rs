@@ -2600,6 +2600,93 @@ mod scenario_contract {
         assert_eq!(build(false), build(true));
     }
 
+    // ================================================================= H0.4 / H0.10 validation
+
+    fn calculation_scenario(given: Value, then: Value) -> Scenario {
+        Scenario {
+            name: "Calculation scenario".into(),
+            scenario_kind: ScenarioKind::Boundary,
+            given: vec![given],
+            when: json!({"calculation": CALC}),
+            then: vec![then],
+            requirement_refs: None,
+            derived_from_refs: Some(vec![id(CALC)]),
+            confirmation_status: Some("Derived".into()),
+        }
+    }
+
+    #[test]
+    fn given_literals_are_type_checked_at_scenario_validation() {
+        // H0.4 [Fable #116]: a wrongly typed Given literal is a typed scenario validation error,
+        // never a hard simulation error at run time.
+        let g = hr_graph(HR_EXPRESSION, None);
+        let then = json!({"calculation_results": {CALC: {"kind": "semantic_ref", "owner_ref": CALC, "key": "result:boundary"}}});
+        let ok = calculation_scenario(
+            json!({"attribute_values": {START: {"kind": "date", "value": "2026-01-05"},
+                                         FRACTION: {"kind": "decimal", "value": "0.5", "unit": null}}}),
+            then.clone(),
+        );
+        assert!(
+            validate_scenario(&g, &ok).is_ok(),
+            "{:?}",
+            validate_scenario(&g, &ok)
+        );
+        for wrong in [
+            json!({"attribute_values": {START: {"kind": "int", "value": 5}}}),
+            // Decimal(2) carries at most two fractional digits and no unit.
+            json!({"attribute_values": {FRACTION: {"kind": "decimal", "value": "0.125", "unit": null}}}),
+            json!({"attribute_values": {FRACTION: {"kind": "decimal", "value": "0.5", "unit": "hour"}}}),
+            json!({"attribute_values": {INCLUSIVE: {"kind": "string", "value": "yes"}}}),
+        ] {
+            let scenario = calculation_scenario(wrong.clone(), then.clone());
+            assert!(
+                matches!(
+                    validate_scenario(&g, &scenario),
+                    Err(ScenarioError::GivenValueTypeMismatch { .. })
+                ),
+                "{wrong}"
+            );
+        }
+    }
+
+    #[test]
+    fn calculation_result_refs_must_resolve_at_validation() {
+        // H0.10: a Then.calculation_results semantic reference is `result:<key>` of the named
+        // Calculation itself; anything else can never resolve and is a typed validation error.
+        let mut nodes = hr_nodes(HR_EXPRESSION, None);
+        let other = {
+            let mut n = nodes.iter().find(|n| n.id == id(CALC)).unwrap().clone();
+            n.id = id("calculation:other");
+            n
+        };
+        nodes.push(other);
+        let g = graph(nodes, hr_edges());
+        let given = json!({"attribute_values": {START: {"kind": "date", "value": "2026-01-05"}}});
+        let result_ref = |owner: &str, key: &str| json!({"calculation_results": {CALC: {"kind": "semantic_ref", "owner_ref": owner, "key": key}}});
+        assert!(validate_scenario(
+            &g,
+            &calculation_scenario(given.clone(), result_ref(CALC, "result:boundary"))
+        )
+        .is_ok());
+        for (owner, key) in [
+            ("calculation:other", "result:boundary"),
+            (CALC, "half_day_fraction"),
+            (CALC, "result:"),
+            (CALC, "result: padded"),
+            (CAL, "holiday_date"),
+        ] {
+            let scenario = calculation_scenario(given.clone(), result_ref(owner, key));
+            assert!(
+                matches!(
+                    validate_scenario(&g, &scenario),
+                    Err(ScenarioError::UnresolvableCalculationResult { .. })
+                ),
+                "{owner} {key}: {:?}",
+                validate_scenario(&g, &scenario)
+            );
+        }
+    }
+
     // ================================================================= lifecycle (Hotfix 065)
 
     fn lifecycle_scenario(
