@@ -1,4 +1,4 @@
-.PHONY: check test ui-check ui-test ui-cov lint placeholders cov mutants bench openapi e2e all
+.PHONY: package check test ui-check ui-test ui-cov lint placeholders cov mutants bench openapi e2e all
 
 check:
 	cargo check --workspace
@@ -51,3 +51,7 @@ e2e:
 	scripts/run-pilot-e2e.sh
 
 all: lint check test ui-cov placeholders openapi
+
+# A local-install package in dist/ (release CLI with the Anthropic provider, built UI, scripts).
+package:
+	scripts/package-local.sh

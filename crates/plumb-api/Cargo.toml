@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }
+tower = { workspace = true }
 utoipa = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
@@ -34,7 +35,6 @@ rusqlite = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 jsonschema = { workspace = true }
-tower = { workspace = true }
 
 [features]
 default = []

@@ -41,6 +41,9 @@ pub enum CliError {
     Application(#[from] ApplicationError),
     #[error("{0}")]
     Usage(String),
+    /// `serve --ui-dir` names a directory without the built UI's `index.html`.
+    #[error("E_UI_DIR_INVALID: {0}")]
+    UiDirInvalid(String),
     #[error("{0}")]
     Io(String),
     /// A recipe that ended failed or stale; its job is still reported.
@@ -85,6 +88,9 @@ impl CliError {
             }
             CliError::ProviderUnavailable(error) => {
                 json!({ "code": "E_PROVIDER_UNAVAILABLE", "message": error.to_string() })
+            }
+            CliError::UiDirInvalid(reason) => {
+                json!({ "code": "E_UI_DIR_INVALID", "message": reason })
             }
             CliError::Config(error @ ConfigError::NonLoopbackBind(_)) => {
                 json!({ "code": "E_NON_LOOPBACK_BIND", "message": error.to_string() })
@@ -860,7 +866,11 @@ pub fn require_loopback_listen(listen: SocketAddr) -> Result<(), CliError> {
 }
 
 /// `serve --listen`: the HTTP server of `plumb-api` over this state until Ctrl-C.
-pub fn serve(state: ApiState, listen: SocketAddr) -> Result<Done, CliError> {
+pub fn serve(
+    state: ApiState,
+    listen: SocketAddr,
+    ui_dir: Option<&std::path::Path>,
+) -> Result<Done, CliError> {
     require_loopback_listen(listen)?;
     // One record per request and every internal failure's cause on stderr (Fable #202);
     // RUST_LOG overrides the default `info` filter.
@@ -870,7 +880,7 @@ pub fn serve(state: ApiState, listen: SocketAddr) -> Result<Done, CliError> {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .try_init();
-    serve_blocking(state, listen).map_err(|e| CliError::Io(format!("serve: {e}")))?;
+    serve_blocking(state, listen, ui_dir).map_err(|e| CliError::Io(format!("serve: {e}")))?;
     Ok(Done {
         json: json!({ "listen": listen.to_string() }),
         text: String::new(),

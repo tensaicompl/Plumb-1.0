@@ -16,7 +16,7 @@ mod http_core {
     use axum::http::{header, Method, Request, StatusCode};
     use axum::Router;
     use plumb_api::openapi::{DesignEvent, OPERATIONS};
-    use plumb_api::{router, ApiIdentity, ApiState, ApiStateError};
+    use plumb_api::{router, router_with_ui, ApiIdentity, ApiState, ApiStateError};
     use plumb_artifacts::{ArtifactStore, SqliteArtifactStore};
     use plumb_core::{to_canonical_json, Clock, FixedClock, GateId, Hash, Id, Timestamp};
     use plumb_functional::waiver::create_waiver;
@@ -4223,5 +4223,55 @@ mod http_core {
             );
         }
         assert_eq!(revision_count(&app), before);
+    }
+
+    /// Local install (goal-approach): `serve --ui-dir` serves the built UI on the API's origin.
+    /// Any non-API GET that names no file returns `index.html` (client-side routes), an API path
+    /// keeps the typed envelope, and a path never escapes the UI directory.
+    #[tokio::test]
+    async fn the_built_ui_is_served_next_to_the_api() {
+        let app = app();
+        let ui = tempfile::tempdir().unwrap();
+        std::fs::write(ui.path().join("index.html"), "<html>plumb-ui</html>").unwrap();
+        std::fs::create_dir_all(ui.path().join("assets")).unwrap();
+        std::fs::write(ui.path().join("assets/app.js"), "console.log(1)").unwrap();
+        let served = router_with_ui(app.state.clone(), Some(ui.path()));
+        let get = |uri: &str| Request::get(uri).body(Body::empty()).unwrap();
+        for uri in ["/", "/requirements", "/requirements/req:a", "/gates?tab=f2"] {
+            let r = send(&served, get(uri)).await;
+            assert_eq!(r.status, StatusCode::OK, "{uri}");
+            assert_eq!(
+                String::from_utf8_lossy(&r.bytes),
+                "<html>plumb-ui</html>",
+                "{uri}"
+            );
+        }
+        let r = send(&served, get("/assets/app.js")).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(String::from_utf8_lossy(&r.bytes), "console.log(1)");
+        assert!(r.headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        // The API is unchanged, unknown API paths keep the typed 404.
+        assert_eq!(
+            send(&served, get("/api/requirements")).await.status,
+            StatusCode::OK
+        );
+        let r = send(&served, get("/api/nowhere")).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "E_ROUTE_NOT_FOUND")
+        );
+        // No traversal out of the UI directory.
+        std::fs::write(ui.path().parent().unwrap().join("secret.txt"), "secret").ok();
+        let r = send(&served, get("/../secret.txt")).await;
+        assert!(!String::from_utf8_lossy(&r.bytes).contains("secret"));
+        // Without a UI directory nothing changes.
+        let r = send(&router(app.state.clone()), get("/")).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "E_ROUTE_NOT_FOUND")
+        );
     }
 }

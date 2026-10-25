@@ -573,6 +573,27 @@ mod cli {
 
     /// H0.8 (architecture §33.8): the pilot has no user authentication, so `serve` refuses any
     /// non-loopback bind address with a typed configuration error before it opens anything.
+    /// Local install: `serve --ui-dir` names the built UI; a directory without `index.html` is
+    /// refused before any database or configuration is touched.
+    #[test]
+    fn serve_refuses_a_ui_dir_without_an_index() {
+        let empty = tempfile::tempdir().unwrap();
+        for dir in [empty.path().to_str().unwrap(), "/nonexistent/plumb-ui"] {
+            let (code, _, err) = output(bin().args([
+                "serve",
+                "--listen",
+                "127.0.0.1:0",
+                "--ui-dir",
+                dir,
+                "--json",
+            ]));
+            assert_eq!(code, 1, "{dir}: {err}");
+            let value: Value = serde_json::from_str(err.trim())
+                .unwrap_or_else(|_| panic!("{dir}: stderr {err:?}"));
+            assert_eq!(value["code"], "E_UI_DIR_INVALID", "{value}");
+        }
+    }
+
     #[test]
     fn serve_refuses_non_loopback_bind() {
         let env = env();

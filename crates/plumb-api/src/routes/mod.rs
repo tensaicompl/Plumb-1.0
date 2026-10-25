@@ -2,6 +2,7 @@
 //! Hotfix 063), the 40 A0.3-owned operations (plan A0.3, Hotfix 065) and the two A0.4-owned
 //! stage and job operations (plan A0.4, Hotfix 067): all 72 operations.
 
+use std::path::Path;
 use std::time::Instant;
 
 use axum::extract::{DefaultBodyLimit, MatchedPath, Request};
@@ -124,7 +125,14 @@ async fn require_loopback(request: Request, next: Next) -> Response {
 /// The pilot HTTP router over `state`. `POST /api/sources` carries its own body limit, set on
 /// its route and therefore overriding the router-wide default of [`MAX_JSON_BODY_BYTES`].
 pub fn router(state: ApiState) -> Router {
-    Router::new()
+    router_with_ui(state, None)
+}
+
+/// [`router`] that also serves the built UI from `ui_dir` on the same origin (local install):
+/// a non-API path that names no file returns the UI's `index.html`, so client-side routes load
+/// the app; `/api` paths keep the typed envelope. Without `ui_dir` it is exactly [`router`].
+pub fn router_with_ui(state: ApiState, ui_dir: Option<&Path>) -> Router {
+    let api = Router::new()
         .merge(meta::routes())
         .merge(sources::routes())
         .merge(requirements::routes())
@@ -135,9 +143,28 @@ pub fn router(state: ApiState) -> Router {
         .merge(proposals::routes())
         .merge(sessions::routes())
         .merge(scenarios::routes())
-        .merge(stages::routes())
-        .fallback(route_not_found)
-        .method_not_allowed_fallback(method_not_allowed)
+        .merge(stages::routes());
+    let api = match ui_dir {
+        None => api.fallback(route_not_found),
+        Some(dir) => {
+            let files = tower_http::services::ServeDir::new(dir)
+                .fallback(tower_http::services::ServeFile::new(dir.join("index.html")));
+            api.fallback(move |request: Request| {
+                let files = files.clone();
+                async move {
+                    let path = request.uri().path();
+                    if path == "/api" || path.starts_with("/api/") {
+                        return ApiError::route_not_found().into_response();
+                    }
+                    match tower::ServiceExt::oneshot(files, request).await {
+                        Ok(response) => response.into_response(),
+                        Err(never) => match never {},
+                    }
+                }
+            })
+        }
+    };
+    api.method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
         .layer(map_response(|response: Response| async move {
             typed_framework_error(MAX_JSON_BODY_BYTES, response)

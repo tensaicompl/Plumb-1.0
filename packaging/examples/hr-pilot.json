@@ -1,0 +1,471 @@
+{
+  "assistant_actor_ref": "agent:assistant",
+  "authorization_draft": null,
+  "calculation_scope": {
+    "bindings": [
+      {
+        "node_ref": {
+          "$one": {
+            "type": "Attribute",
+            "where": {
+              "name": "start date"
+            }
+          }
+        },
+        "symbol": "start_date",
+        "exposure": {
+          "kind": "root"
+        }
+      },
+      {
+        "node_ref": {
+          "$one": {
+            "type": "Attribute",
+            "where": {
+              "name": "end date"
+            }
+          }
+        },
+        "symbol": "end_date",
+        "exposure": {
+          "kind": "root"
+        }
+      }
+    ],
+    "calendar_refs": {
+      "$all": {
+        "type": "Calendar"
+      }
+    }
+  },
+  "calculation_scope_overrides": [],
+  "calendars": [
+    {
+      "calendar_ref": "cal:office",
+      "holidays": [
+        "2026-12-25"
+      ],
+      "weekend": [
+        "saturday",
+        "sunday"
+      ]
+    }
+  ],
+  "direct_managers": [
+    {
+      "employee_ref": "actor:employee",
+      "manager_ref": "actor:manager"
+    }
+  ],
+  "directory": {
+    "actors": [
+      {
+        "id": "actor:employee",
+        "payload": {
+          "actor_kind": "human",
+          "name": "Employee"
+        }
+      },
+      {
+        "id": "actor:manager",
+        "payload": {
+          "actor_kind": "human",
+          "name": "Manager"
+        }
+      },
+      {
+        "id": "actor:system",
+        "payload": {
+          "actor_kind": "system",
+          "name": "Leave System"
+        }
+      }
+    ],
+    "business_roles": [
+      {
+        "id": "brole:employee",
+        "payload": {
+          "name": "EmployeeRole"
+        }
+      },
+      {
+        "id": "brole:manager",
+        "payload": {
+          "name": "ManagerRole"
+        }
+      }
+    ],
+    "calendars": [
+      {
+        "calendar_ref": "cal:office",
+        "holiday_source": null,
+        "id": "calendar:office",
+        "region": "PL",
+        "time_zone": "Europe/Warsaw"
+      }
+    ],
+    "decision_tables": [
+      {
+        "id": "dt:annual-eligibility",
+        "name": "AnnualLeaveEligibility",
+        "spec": {
+          "default_output": null,
+          "hit_policy": "UNIQUE",
+          "inputs": [
+            {
+              "domain": null,
+              "name": "contract_type",
+              "ty": {
+                "members": [
+                  "Contractor",
+                  "Employee"
+                ],
+                "type": "enum"
+              }
+            }
+          ],
+          "outputs": [
+            {
+              "domain": null,
+              "name": "eligible",
+              "ty": {
+                "type": "bool"
+              }
+            }
+          ],
+          "rows": [
+            {
+              "inputs": [
+                {
+                  "cell": "enum_set",
+                  "members": [
+                    "Employee"
+                  ]
+                }
+              ],
+              "outputs": [
+                {
+                  "cell": "bool",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "inputs": [
+                {
+                  "cell": "enum_set",
+                  "members": [
+                    "Contractor"
+                  ]
+                }
+              ],
+              "outputs": [
+                {
+                  "cell": "bool",
+                  "value": false
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "rules": [
+      {
+        "id": "rule:annual-leave-eligibility",
+        "payload": {
+          "action_expr": null,
+          "condition_expr": null,
+          "name": "AnnualLeaveEligibility",
+          "rule_kind": "business"
+        }
+      },
+      {
+        "id": "rule:manager-decision-authorization",
+        "payload": {
+          "action_expr": null,
+          "condition_expr": null,
+          "name": "ManagerDecisionAuthorization",
+          "rule_kind": "business"
+        }
+      },
+      {
+        "id": "rule:overlap",
+        "payload": {
+          "action_expr": null,
+          "condition_expr": null,
+          "name": "OverlapRule",
+          "rule_kind": "business"
+        }
+      }
+    ],
+    "stakeholders": [
+      {
+        "id": "stakeholder:employee",
+        "payload": {
+          "contact_ref": null,
+          "name": "Employee",
+          "organization": null,
+          "responsibilities": null,
+          "stakeholder_kind": "business"
+        }
+      },
+      {
+        "id": "stakeholder:manager",
+        "payload": {
+          "contact_ref": null,
+          "name": "Manager",
+          "organization": null,
+          "responsibilities": null,
+          "stakeholder_kind": "business"
+        }
+      },
+      {
+        "id": "stakeholder:hr",
+        "payload": {
+          "contact_ref": null,
+          "name": "HR Policy Owner",
+          "organization": null,
+          "responsibilities": null,
+          "stakeholder_kind": "business"
+        }
+      }
+    ]
+  },
+  "duplicate_policy": {
+    "jaccard_threshold": "0.8"
+  },
+  "expression_scopes": [],
+  "gates": {
+    "f1": {
+      "lint_policy": {
+        "severity_overrides": {}
+      }
+    },
+    "f4": {
+      "in_scope_scenario_refs": [],
+      "required_scenario_kinds": [],
+      "visible_assumption_refs": []
+    }
+  },
+  "identity": {
+    "actor_ref": "agent:cli",
+    "mode": "pilot",
+    "roles": [
+      "analyst"
+    ],
+    "user": "alice"
+  },
+  "operation_scope": {
+    "calculation_refs": [],
+    "data_schema_refs": [],
+    "domain_refs": {
+      "$all": {
+        "type": [
+          "Entity",
+          "Attribute"
+        ]
+      }
+    },
+    "event_payload_attribute_refs": [],
+    "event_refs": [],
+    "governor_refs": {
+      "$all": {
+        "type": "Rule"
+      }
+    },
+    "performer_refs": {
+      "$all": {
+        "type": [
+          "BusinessRole",
+          "Actor"
+        ]
+      }
+    },
+    "support_refs": []
+  },
+  "process_scope": {
+    "event_refs": {
+      "$all": {
+        "type": "Event"
+      }
+    },
+    "operation_refs": {
+      "$all": {
+        "type": "Operation"
+      }
+    },
+    "outcome_refs": {
+      "$all": {
+        "type": "Outcome"
+      }
+    },
+    "performer_refs": {
+      "$all": {
+        "type": [
+          "BusinessRole",
+          "Actor"
+        ]
+      }
+    },
+    "transition_refs": {
+      "$all": {
+        "type": "Transition"
+      }
+    }
+  },
+  "provider_policy": {
+    "config": {
+      "adapter_version": 1,
+      "api_version": "2023-06-01",
+      "effort": "high",
+      "max_tokens": 32000,
+      "model": "claude-opus-5-5"
+    },
+    "provider": "anthropic"
+  },
+  "question_routing": {
+    "routing": {
+      "authorization": [
+        "stakeholder:hr",
+        "stakeholder:architect"
+      ],
+      "calendar": [
+        "stakeholder:hr"
+      ],
+      "default": [
+        "stakeholder:hr"
+      ],
+      "formula": [
+        "stakeholder:hr"
+      ],
+      "rounding": [
+        "stakeholder:hr"
+      ]
+    },
+    "stakeholders": [
+      {
+        "id": "stakeholder:employee",
+        "name": "Employee",
+        "roles": [
+          "business"
+        ]
+      },
+      {
+        "id": "stakeholder:manager",
+        "name": "Manager",
+        "roles": [
+          "business"
+        ]
+      },
+      {
+        "id": "stakeholder:hr",
+        "name": "HR Policy Owner",
+        "roles": [
+          "business",
+          "analyst"
+        ]
+      },
+      {
+        "id": "stakeholder:architect",
+        "name": "Solution Architect",
+        "roles": [
+          "architect"
+        ]
+      },
+      {
+        "id": "stakeholder:auditor",
+        "name": "Auditor",
+        "roles": [
+          "auditor"
+        ]
+      }
+    ]
+  },
+  "runtime_semantic_values": [],
+  "scenario_derivation": {
+    "boundaries": [],
+    "decision_tables": [
+      {
+        "decision_table_ref": "dt:annual-eligibility",
+        "spec": {
+          "default_output": null,
+          "hit_policy": "UNIQUE",
+          "inputs": [
+            {
+              "domain": null,
+              "name": "contract_type",
+              "ty": {
+                "members": [
+                  "Contractor",
+                  "Employee"
+                ],
+                "type": "enum"
+              }
+            }
+          ],
+          "outputs": [
+            {
+              "domain": null,
+              "name": "eligible",
+              "ty": {
+                "type": "bool"
+              }
+            }
+          ],
+          "rows": [
+            {
+              "inputs": [
+                {
+                  "cell": "enum_set",
+                  "members": [
+                    "Employee"
+                  ]
+                }
+              ],
+              "outputs": [
+                {
+                  "cell": "bool",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "inputs": [
+                {
+                  "cell": "enum_set",
+                  "members": [
+                    "Contractor"
+                  ]
+                }
+              ],
+              "outputs": [
+                {
+                  "cell": "bool",
+                  "value": false
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "session_turn": {
+    "max_context_bytes": 65536,
+    "max_open_questions": 3,
+    "retrieval_top_k": 3
+  },
+  "stage_actor_ref": "agent:compiler",
+  "validation_policy": {
+    "profile_allow_waiver_rule_ids": [],
+    "promoted_to_blocker_rule_ids": []
+  },
+  "verification_applicability": {
+    "sources": []
+  },
+  "version": 1,
+  "vocabulary_policy": {
+    "language": "en"
+  }
+}

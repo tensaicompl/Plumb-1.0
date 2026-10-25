@@ -184,6 +184,9 @@ enum Command {
     Serve {
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
+        /// Serve the built UI (`ui/dist`) from this directory on the same address.
+        #[arg(long, value_name = "DIR")]
+        ui_dir: Option<std::path::PathBuf>,
     },
     /// Persist the configured directory proposals (pending; nothing is committed).
     Directory,
@@ -340,8 +343,16 @@ fn provider_choice(cli: &Cli) -> Result<ProviderChoice<'_>, CliError> {
 
 fn execute(cli: Cli) -> Result<Done, CliError> {
     // A non-loopback serve address is refused before anything is read or opened (§33.8).
-    if let Command::Serve { listen } = &cli.command {
+    if let Command::Serve { listen, ui_dir } = &cli.command {
         commands::require_loopback_listen(*listen)?;
+        if let Some(dir) = ui_dir {
+            if !dir.join("index.html").is_file() {
+                return Err(CliError::UiDirInvalid(format!(
+                    "{} has no index.html (build the UI with `npm run build` in ui/)",
+                    dir.display()
+                )));
+            }
+        }
     }
     let choice = provider_choice(&cli)?;
     let config_path = cli
@@ -406,7 +417,7 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
         Command::Ready => commands::ready(&state),
         Command::Export { format } => commands::export(&state, &format),
         Command::Report { out } => commands::report(&state, &out),
-        Command::Serve { listen } => commands::serve(state, listen),
+        Command::Serve { listen, ui_dir } => commands::serve(state, listen, ui_dir.as_deref()),
         Command::Directory => commands::directory(&state),
         Command::Confirm { elements, reason } => commands::confirm(&state, &elements, reason),
         Command::Findings { command } => match command {

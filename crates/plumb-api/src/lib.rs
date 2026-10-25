@@ -21,7 +21,7 @@ mod workflow;
 pub use openapi::{
     openapi_document, render_api_markdown, render_openapi_json, ApiDoc, OpenApiContractError,
 };
-pub use routes::router;
+pub use routes::{router, router_with_ui};
 pub use runtime::{
     A04RuntimeConfig, CalendarConfig, DirectManagerFact, DirectManagerPredicates, F1GateConfig,
     F4GateConfig, GateInputsConfig, ProviderMode, RuntimeConfigError,

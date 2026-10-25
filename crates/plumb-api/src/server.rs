@@ -10,7 +10,6 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use thiserror::Error;
 
-use crate::routes::router;
 use crate::state::ApiState;
 
 /// Why the server could not run.
@@ -113,8 +112,13 @@ async fn shutdown_signal() {
 /// Serves the pilot router over `state` on `listen` until SIGINT or SIGTERM, blocking the
 /// caller. A non-loopback `listen` is refused before any runtime or listener is created. On
 /// shutdown the stage job queue closes and the in-flight job is drained or persisted
-/// interrupted within `STAGE_SHUTDOWN_GRACE_SECONDS` (H0.3, architecture §33.3).
-pub fn serve_blocking(state: ApiState, listen: SocketAddr) -> Result<(), ServeError> {
+/// interrupted within `STAGE_SHUTDOWN_GRACE_SECONDS` (H0.3, architecture §33.3). With `ui_dir`
+/// the built UI is served on the same origin ([`crate::router_with_ui`]).
+pub fn serve_blocking(
+    state: ApiState,
+    listen: SocketAddr,
+    ui_dir: Option<&std::path::Path>,
+) -> Result<(), ServeError> {
     require_loopback_bind(listen)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -129,7 +133,7 @@ pub fn serve_blocking(state: ApiState, listen: SocketAddr) -> Result<(), ServeEr
                 addr: listen,
                 source,
             })?;
-        axum::serve(listener, router(state))
+        axum::serve(listener, crate::routes::router_with_ui(state, ui_dir))
             .with_graceful_shutdown(async move {
                 shutdown_signal().await;
                 // Close the queue to new claims as soon as the signal arrives.
