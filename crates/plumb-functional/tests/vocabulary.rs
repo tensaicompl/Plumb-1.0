@@ -1123,6 +1123,81 @@ mod vocabulary_contract {
         assert_eq!(terms(&single)[0].1.aliases, None);
     }
 
+    /// H0.5 (architecture 33.5): a rerun recognizes its own accepted output by ID, type and the
+    /// producer-owned fields (Term: term, language); enrichment (aliases) never conflicts, an
+    /// owned-field mismatch of an Accepted node is a real conflict, and a differing Proposed
+    /// candidate is a per-key disposition that never aborts the other keys (Fable #138).
+    #[test]
+    fn vocabulary_rerun_after_enrichment() {
+        let (graph, ids) = setup(&[
+            "The leave request shall be stored.",
+            "The employee shall sign the leave request.",
+        ]);
+        let req = request(&graph, &ids);
+        let mentions = |g: &Graph| {
+            vec![
+                mention(g, &ids[0], "leave request"),
+                mention(g, &ids[1], "employee"),
+            ]
+        };
+        let first = analyze(&graph, &req, mentions(&graph)).unwrap();
+        let leave = first
+            .proposals
+            .iter()
+            .map(added)
+            .find(|n| n.id.as_str() == TERM_ID)
+            .unwrap()
+            .clone();
+        assert_eq!(terms(&first).len(), 2);
+        let rerun = |node: Node| {
+            let g = with_nodes(&graph, vec![node]);
+            let r = request(&g, &ids);
+            analyze(&g, &r, mentions(&g))
+        };
+        // Accepted and enriched (aliases): no proposal for it, no conflict, the other key stays.
+        let mut enriched = leave.clone();
+        enriched.status = Accepted;
+        if let NodePayload::Term(t) = &mut enriched.payload {
+            t.aliases = Some(vec!["LR".to_owned()]);
+        }
+        let result = rerun(enriched).unwrap();
+        assert!(result.conflicts.is_empty());
+        let names: Vec<&str> = terms(&result)
+            .iter()
+            .map(|(_, t)| t.term.as_str())
+            .collect();
+        assert_eq!(names, ["employee"]);
+        // Accepted with a changed owned field (term): a real conflict.
+        let mut renamed = leave.clone();
+        renamed.status = Accepted;
+        if let NodePayload::Term(t) = &mut renamed.payload {
+            t.term = "absence request".to_owned();
+        }
+        assert!(matches!(
+            rerun(renamed),
+            Err(VocabularyError::ExistingVocabularyCandidateConflict { .. })
+        ));
+        // A differing Proposed candidate: per-key disposition, the batch continues.
+        let mut differing = leave.clone();
+        if let NodePayload::Term(t) = &mut differing.payload {
+            t.aliases = Some(vec!["LR".to_owned()]);
+        }
+        let result = rerun(differing).unwrap();
+        assert_eq!(
+            result.dispositions,
+            [VocabularyKeyDisposition {
+                normalized_key: "leave request".to_owned(),
+                node_ref: id(TERM_ID),
+                disposition: "pending_candidate_differs".to_owned(),
+            }]
+        );
+        let names: Vec<&str> = terms(&result)
+            .iter()
+            .map(|(_, t)| t.term.as_str())
+            .collect();
+        assert_eq!(names, ["employee"]);
+    }
+
     #[test]
     fn vocabulary_concept_proposal_and_evidence() {
         let (graph, ids) = setup(&[

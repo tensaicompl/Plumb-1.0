@@ -1335,6 +1335,57 @@ mod calculation_contract {
         ));
     }
 
+    /// H0.5 / Fable #105: the governed inclusive-end rewrite and examples are enrichment; a
+    /// rerun recognizes the enriched Accepted calculation as its own output. A changed owned
+    /// field (result type) is still a conflict.
+    #[test]
+    fn calculation_rerun_after_enrichment() {
+        let g = base_graph(vec![], vec![]);
+        let first = run(&g, &hr_scope(), vec![half_day()]).unwrap();
+        let accepted = set_status(
+            &apply(&g, &first.proposals),
+            GOLDEN_CALCULATION_ID,
+            Accepted,
+        );
+        let edit = |change: &dyn Fn(&mut plumb_psg::Calculation)| {
+            let nodes = accepted
+                .nodes()
+                .values()
+                .cloned()
+                .map(|mut n| {
+                    if n.id.as_str() == GOLDEN_CALCULATION_ID {
+                        if let NodePayload::Calculation(c) = &mut n.payload {
+                            change(c);
+                        }
+                    }
+                    n
+                })
+                .collect();
+            Graph::new(
+                accepted.project_id().clone(),
+                accepted.profile_id().clone(),
+                nodes,
+                accepted.edges().values().cloned().collect(),
+            )
+            .unwrap()
+        };
+        let enriched = edit(&|c| {
+            c.expression = rewrite_working_days_inclusive_end(&c.expression, None, true).unwrap();
+            c.examples = Some(vec![json!({"key": "calculation_fraction:x", "version": 1})]);
+        });
+        let rerun = one(&enriched, &hr_scope(), half_day());
+        assert_eq!(
+            rerun.disposition,
+            CalculationDisposition::ExistingEquivalent
+        );
+        assert!(rerun.qualification.issues.is_empty(), "{rerun:?}");
+        let retyped = edit(&|c| c.result_type = "Decimal(4)".to_owned());
+        assert_eq!(
+            one(&retyped, &hr_scope(), half_day()).disposition,
+            CalculationDisposition::ExistingConflict
+        );
+    }
+
     // ------------------------------------------------------------------ accepted qualification
 
     #[test]

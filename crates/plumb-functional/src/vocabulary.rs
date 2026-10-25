@@ -579,6 +579,16 @@ pub enum VocabularyIssue {
     InferenceUnavailable,
 }
 
+/// One per-key disposition of a vocabulary rerun (architecture 33.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VocabularyKeyDisposition {
+    pub normalized_key: String,
+    pub node_ref: Id,
+    /// `pending_candidate_differs` (a Proposed node at the ID differs) or `inactive` (the node
+    /// at the ID is Rejected, Superseded or otherwise not active).
+    pub disposition: String,
+}
+
 /// Who owns the Proposed vocabulary nodes and when, supplied by the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VocabularyAudit {
@@ -596,6 +606,9 @@ pub struct VocabularyInference<'a> {
 /// Everything one analysis produced; nothing has been applied or persisted.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct VocabularyAnalysisResult {
+    /// Per-key outcomes of existing nodes at a deterministic ID that are neither the same
+    /// output (no-op) nor a conflict, e.g. `pending_candidate_differs` (H0.5, Fable #138).
+    pub dispositions: Vec<VocabularyKeyDisposition>,
     pub candidates: Vec<VocabularyTermCandidate>,
     pub cooccurrences: Vec<VocabularyCooccurrence>,
     pub lint_contexts: Vec<VocabularyLintContext>,
@@ -869,6 +882,27 @@ struct ProposalContext<'a> {
 
 /// The AddNode proposal of a new vocabulary node, or None when the identical node is already
 /// pending or already Accepted at its deterministic ID.
+/// The outcome of one deterministic vocabulary candidate against the graph.
+enum Presence {
+    New(Box<Proposal>),
+    /// The node at the ID is this producer's own output (possibly enriched): nothing to do.
+    Existing,
+    Disposition(VocabularyKeyDisposition),
+}
+
+/// Term: `term`, `language`; Concept: `name`, `concept_kind` (architecture 33.5).
+fn same_owned_fields(existing: &NodePayload, expected: &NodePayload) -> bool {
+    match (existing, expected) {
+        (NodePayload::Term(a), NodePayload::Term(b)) => {
+            a.term == b.term && a.language == b.language
+        }
+        (NodePayload::Concept(a), NodePayload::Concept(b)) => {
+            a.name == b.name && a.concept_kind == b.concept_kind
+        }
+        _ => existing == expected,
+    }
+}
+
 fn propose_vocabulary_node(
     context: &ProposalContext<'_>,
     id: Id,
@@ -876,7 +910,7 @@ fn propose_vocabulary_node(
     payload: NodePayload,
     evidence: Vec<Id>,
     origin: &VocabularyOrigin,
-) -> Result<Option<Proposal>, VocabularyError> {
+) -> Result<Presence, VocabularyError> {
     let extension: ExtensionKey = VOCABULARY_ORIGIN_EXTENSION
         .parse()
         .map_err(invalid_proposal)?;
@@ -903,18 +937,36 @@ fn propose_vocabulary_node(
     };
     node.validate().map_err(invalid_proposal)?;
     if let Some(existing) = context.graph.node(&id) {
-        let same_type = existing.payload.node_type() == node.payload.node_type();
-        let pending = existing.status == ElementStatus::Proposed
-            && existing.payload == node.payload
-            && existing.evidence == node.evidence
-            && existing.extensions == node.extensions;
-        if same_type && (pending || existing.status == ElementStatus::Accepted) {
-            return Ok(None);
-        }
-        return Err(VocabularyError::ExistingVocabularyCandidateConflict {
-            node_ref: id,
+        let conflict = || VocabularyError::ExistingVocabularyCandidateConflict {
+            node_ref: id.clone(),
             normalized_key: key.to_owned(),
-        });
+        };
+        if existing.payload.node_type() != node.payload.node_type() {
+            return Err(conflict());
+        }
+        let disposition = |d: &str| {
+            Ok(Presence::Disposition(VocabularyKeyDisposition {
+                normalized_key: key.to_owned(),
+                node_ref: id.clone(),
+                disposition: d.to_owned(),
+            }))
+        };
+        return match existing.status {
+            // Owned fields only (architecture 33.5): enrichment never conflicts.
+            ElementStatus::Accepted if same_owned_fields(&existing.payload, &node.payload) => {
+                Ok(Presence::Existing)
+            }
+            ElementStatus::Accepted => Err(conflict()),
+            ElementStatus::Proposed
+                if existing.payload == node.payload
+                    && existing.evidence == node.evidence
+                    && existing.extensions == node.extensions =>
+            {
+                Ok(Presence::Existing)
+            }
+            ElementStatus::Proposed => disposition("pending_candidate_differs"),
+            _ => disposition("inactive"),
+        };
     }
     let evidence_refs = node.evidence.clone();
     Proposal::new(
@@ -929,7 +981,7 @@ fn propose_vocabulary_node(
         AcceptancePolicy::HumanConfirm,
         None,
     )
-    .map(Some)
+    .map(|p| Presence::New(Box::new(p)))
     .map_err(invalid_proposal)
 }
 
@@ -993,6 +1045,7 @@ pub fn analyze_vocabulary(
     let context = &vocabulary_request.context;
     let Some(inference) = inference else {
         return Ok(VocabularyAnalysisResult {
+            dispositions: Vec::new(),
             candidates: Vec::new(),
             cooccurrences: Vec::new(),
             lint_contexts: Vec::new(),
@@ -1088,6 +1141,7 @@ pub fn analyze_vocabulary(
     };
     let mut conflicts = Vec::new();
     let mut proposals = Vec::new();
+    let mut dispositions: Vec<VocabularyKeyDisposition> = Vec::new();
     let mut accepted_mentions: BTreeMap<&str, BTreeSet<Id>> = BTreeMap::new();
     for (key, entries) in &by_key {
         for (m, _) in entries {
@@ -1181,7 +1235,7 @@ pub fn analyze_vocabulary(
                 definition: None,
             };
             let id = vocabulary_node_id(graph.project_id(), key, "term")?;
-            if let Some(p) = propose_vocabulary_node(
+            match propose_vocabulary_node(
                 &proposal_context,
                 id,
                 key,
@@ -1189,7 +1243,9 @@ pub fn analyze_vocabulary(
                 evidence_of(graph, &mention_requirements),
                 &origin,
             )? {
-                proposals.push(p);
+                Presence::New(p) => proposals.push(*p),
+                Presence::Existing => {}
+                Presence::Disposition(d) => dispositions.push(d),
             }
         }
 
@@ -1244,7 +1300,7 @@ pub fn analyze_vocabulary(
                 concept_kind: kind,
             };
             let id = vocabulary_node_id(graph.project_id(), key, "concept")?;
-            if let Some(p) = propose_vocabulary_node(
+            match propose_vocabulary_node(
                 &proposal_context,
                 id,
                 key,
@@ -1252,7 +1308,9 @@ pub fn analyze_vocabulary(
                 evidence_of(graph, &evidence_requirements),
                 &origin,
             )? {
-                proposals.push(p);
+                Presence::New(p) => proposals.push(*p),
+                Presence::Existing => {}
+                Presence::Disposition(d) => dispositions.push(d),
             }
         }
         conflicts.extend(key_conflicts);
@@ -1301,7 +1359,9 @@ pub fn analyze_vocabulary(
     }
 
     proposals.sort_by(|a, b| added_node_id(a).cmp(&added_node_id(b)));
+    dispositions.sort_by(|a, b| a.node_ref.cmp(&b.node_ref));
     Ok(VocabularyAnalysisResult {
+        dispositions,
         candidates,
         cooccurrences,
         lint_contexts,

@@ -27,6 +27,7 @@ time = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
+serde_yaml = { workspace = true }
 
 [features]
 default = []

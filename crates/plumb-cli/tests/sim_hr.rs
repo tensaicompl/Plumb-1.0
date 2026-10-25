@@ -1239,6 +1239,134 @@ fn hr_pilot_simulation() {
         code, 0,
         "every NOW gate passes at the end of the pilot: {gates}"
     );
+    hr_oracle(&sim);
+}
+
+/// Normalizes a name for comparison with the fixture contract ("LeaveRequest", "leave request"
+/// and "Leave Request" are the same name).
+fn norm(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// E0.2 (HR semantic oracle): the production pipeline output is asserted against every section
+/// of fixtures/hr-leave/fixture-contract.yaml the pipeline produces in this simulation; the
+/// sections the product does not (yet) produce are printed as coverage, never hidden.
+fn hr_oracle(sim: &Sim) {
+    let contract: Value =
+        serde_yaml::from_str(&std::fs::read_to_string(fixture("fixture-contract.yaml")).unwrap())
+            .unwrap();
+    let nodes = sim.nodes();
+    let accepted = |t: &str| -> Vec<&Value> {
+        nodes
+            .iter()
+            .filter(|n| n["status"] == "Accepted" && n["payload"]["type"] == t)
+            .collect()
+    };
+    let names = |t: &str| -> std::collections::BTreeSet<String> {
+        accepted(t)
+            .iter()
+            .filter_map(|n| n["payload"]["data"]["name"].as_str().map(norm))
+            .collect()
+    };
+    let contract_names = |key: &str| -> std::collections::BTreeSet<String> {
+        contract[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| norm(v.as_str().unwrap()))
+            .collect()
+    };
+    let mut coverage = Vec::new();
+
+    // Requirements: all 32, exact statements and kinds.
+    let requirements = accepted("Requirement");
+    assert_eq!(requirements.len(), 32);
+    for r in contract["requirements"].as_array().unwrap() {
+        let found = requirements
+            .iter()
+            .find(|n| n["payload"]["data"]["source_identifier"] == r["id"])
+            .unwrap_or_else(|| panic!("{} missing", r["id"]));
+        assert_eq!(
+            found["payload"]["data"]["statement"], r["statement"],
+            "{}",
+            r["id"]
+        );
+        assert_eq!(
+            found["payload"]["data"]["requirement_kind"], r["kind"],
+            "{}",
+            r["id"]
+        );
+    }
+    coverage.push(("requirements", 32, 32));
+
+    // States: exactly the contract's six lifecycle states.
+    assert_eq!(names("State"), contract_names("states"));
+    coverage.push(("states", 6, 6));
+
+    // Operations and events: everything produced is in the contract. Entities: reported.
+    for (section, node_type) in [
+        ("operations", "Operation"),
+        ("events", "Event"),
+        ("entities", "Entity"),
+    ] {
+        let produced = names(node_type);
+        let expected = contract_names(section);
+        let unexpected: Vec<_> = produced.difference(&expected).collect();
+        if section != "entities" {
+            assert!(
+                unexpected.is_empty(),
+                "{section} not in the contract: {unexpected:?}"
+            );
+        }
+        coverage.push((
+            section,
+            produced.intersection(&expected).count(),
+            expected.len(),
+        ));
+    }
+
+    // Rules: the three contract rules.
+    let expected_rules: std::collections::BTreeSet<String> = contract["rules"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|k| norm(k))
+        .collect();
+    assert_eq!(names("Rule"), expected_rules);
+    coverage.push(("rules", 3, 3));
+
+    // Ambiguities: the expert answers took effect through the question path.
+    let calculations = accepted("Calculation");
+    let calc = calculations[0];
+    let expression = calc["payload"]["data"]["expression"].as_str().unwrap();
+    assert!(
+        expression.contains(", true)"),
+        "inclusive end answered: {expression}"
+    );
+    assert_eq!(
+        calc["payload"]["data"]["examples"][0]["expected_result"]["value"],
+        contract["accepted_post_answer_semantics"]["half_day_fraction"],
+        "half day answered"
+    );
+    let holiday = nodes.iter().any(|n| {
+        n["payload"]["type"] == "ResolutionDecision"
+            && n["payload"]["data"]["answer"]["kind"] == "calculation_holiday_policy"
+            && n["payload"]["data"]["answer"]["holiday_consumes_working_day"] == false
+    });
+    assert!(holiday, "holiday policy answered");
+    coverage.push(("ambiguities", 3, 3));
+    coverage.push(("calculations", calculations.len(), 2));
+    coverage.push(("processes", names("Process").len(), 6));
+    coverage.push(("invariants", accepted("Invariant").len(), 5));
+    coverage.push(("scenarios", accepted("Scenario").len(), 44));
+
+    println!("HR oracle coverage (produced and in contract / contract):");
+    for (section, produced, expected) in coverage {
+        println!("  {section:<13} {produced:>3} / {expected}");
+    }
 }
 
 /// H0.10 (rejection memory): a stage proposal the analyst rejected is not proposed again when
@@ -1338,4 +1466,37 @@ fn rejecting_a_stale_proposal_is_not_remembered() {
         .count();
     // All 32 fixture requirements (the stale-rejected one included) plus HR-900.
     assert_eq!(fresh_count, first.as_array().unwrap().len() + 1, "{fresh}");
+}
+
+/// H0.5 (analyzer issues): a candidate a stage cannot turn into a proposal is reported with
+/// its reason in the stage result, never silently dropped.
+#[test]
+fn dropped_candidates_are_reported() {
+    let sim = Sim::new();
+    sim.cli(&["init", "--project", "project:hr"], &[]);
+    let source = sim.dir.join("source.md");
+    std::fs::write(
+        &source,
+        "# Requirements\n\n1. **X-001** [functional] The system shall store requests.\n\
+         2. **X-002** [functional] The system might log every request.\n",
+    )
+    .unwrap();
+    sim.cli(
+        &[
+            "import",
+            source.to_str().unwrap(),
+            "--media-type",
+            "text/markdown",
+            "--name",
+            "source.md",
+        ],
+        &[],
+    );
+    let (code, out) = sim.stage("extract");
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(sim.json(&["proposals"]).as_array().unwrap().len(), 1);
+    assert!(
+        out.contains("missing_modality"),
+        "the dropped X-002 is reported: {out}"
+    );
 }

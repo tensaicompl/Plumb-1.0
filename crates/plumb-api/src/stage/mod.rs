@@ -803,6 +803,37 @@ impl ApiState {
             .collect())
     }
 
+    /// What the phases of recipe job `id` could not turn into proposals, with their reasons,
+    /// in step order (each entry carries its phase, analyser, kind and detail).
+    pub fn recipe_dispositions(&self, id: &Hash) -> Result<Vec<Value>, ApiError> {
+        let steps = self
+            .with_stage_store(|store| store.steps(id))?
+            .map_err(crate::stage::store_error)?;
+        let mut out = Vec::new();
+        for step in steps {
+            let Some(hash) = &step.intermediate_artifact_ref else {
+                continue;
+            };
+            let artifact = self
+                .with_artifact_store(|store| store.get(hash))?
+                .map_err(|_| ApiError::workflow_corrupt(&format!("step intermediate {hash}")))?;
+            let Ok(value) = serde_json::from_slice::<Value>(&artifact.bytes) else {
+                continue;
+            };
+            for item in value
+                .get("dispositions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let mut item = item.clone();
+                item["phase"] = Value::String(step.phase.clone());
+                out.push(item);
+            }
+        }
+        Ok(out)
+    }
+
     /// [`ApiState::recipe_gate_results`] with the non-passing rules of each report.
     pub fn recipe_gate_details(
         &self,

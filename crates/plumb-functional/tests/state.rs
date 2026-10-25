@@ -1260,6 +1260,29 @@ mod lifecycle_contract {
         assert_eq!(replay.existing.len(), 4);
     }
 
+    /// H0.5 / Fable #105: a Transition's guard_expr and effect_refs are enrichable; a rerun
+    /// after enrichment recognizes the Transition as its own output (no conflict, no proposal).
+    #[test]
+    fn s2_state_rerun_after_transition_enrichment() {
+        let g = base_graph();
+        let r = request(&g);
+        let artifact = artifact_for(&r.request, full_output(json!(OPERATION)));
+        let g2 = apply(&g, &analyze_with(&g, &r, &artifact).unwrap().proposals);
+        let g3 = apply(&g2, &analyze_with(&g2, &r, &artifact).unwrap().proposals);
+        let enriched = map_nodes(&g3, |n| {
+            if n.id == id(TRANSITION) {
+                if let NodePayload::Transition(t) = &mut n.payload {
+                    t.guard_expr = Some("true".to_owned());
+                    t.effect_refs = Some(vec![id(OPERATION)]);
+                }
+            }
+        });
+        let replay = analyze_with(&enriched, &r, &artifact).unwrap();
+        assert!(replay.proposals.is_empty(), "{:?}", replay.proposals);
+        assert!(replay.conflicts.is_empty() && replay.issues.is_empty());
+        assert_eq!(replay.existing.len(), 4);
+    }
+
     #[test]
     fn s2_state_missing_trigger_finding() {
         let g = with_states();

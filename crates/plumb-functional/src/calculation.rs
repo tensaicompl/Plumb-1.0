@@ -775,6 +775,7 @@ pub fn analyze_calculations(
             match graph.node(&calculation_ref) {
                 Some(existing) => {
                     let same_payload = existing.payload == payload;
+                    let own_output = same_owned_calculation(&existing.payload, &payload);
                     let same_origin = existing
                         .extensions
                         .iter()
@@ -784,7 +785,7 @@ pub fn analyze_calculations(
                         ElementStatus::Proposed if same_payload && same_origin => {
                             CalculationDisposition::IdempotentReplay
                         }
-                        ElementStatus::Accepted if same_payload => {
+                        ElementStatus::Accepted if same_payload || own_output => {
                             CalculationDisposition::ExistingEquivalent
                         }
                         _ => {
@@ -1118,6 +1119,26 @@ pub const CALCULATION_FRACTION_KEY_PREFIX: &str = "calculation_fraction:";
 pub const UNRESOLVED_INCLUSIVE_END: &str = "inclusive_end";
 
 const WORKING_DAYS_FUNCTION: &str = "working_days";
+
+/// Whether an existing Calculation is this producer's output after legitimate enrichment
+/// (architecture 33.5, Fable #105): `examples` are enrichable, and the expression may differ
+/// only by the governed inclusive-end rewrite of the candidate's unresolved argument.
+fn same_owned_calculation(existing: &NodePayload, candidate: &NodePayload) -> bool {
+    let (NodePayload::Calculation(e), NodePayload::Calculation(c)) = (existing, candidate) else {
+        return false;
+    };
+    let expression = e.expression == c.expression
+        || [true, false].iter().any(|answer| {
+            rewrite_working_days_inclusive_end(&c.expression, None, *answer).as_deref()
+                == Ok(e.expression.as_str())
+        });
+    expression
+        && e.name == c.name
+        && e.result_type == c.result_type
+        && e.unit == c.unit
+        && e.rounding == c.rounding
+        && e.calendar_ref == c.calendar_ref
+}
 
 /// `calculation_fraction:<64 hex of SHA-256(RFC 8785 {attribute_ref, calculation_ref})>`: the
 /// governed `Calculation.examples` key of one fractional input, a function of the two exact IDs

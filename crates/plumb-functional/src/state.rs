@@ -1506,7 +1506,16 @@ pub fn analyze_lifecycle(
                         && from_state_grounding == t.from_grounding
                         && to_state_grounding == t.to_grounding
             );
-            if node.payload != payload || !same_origin {
+            // guard_expr and effect_refs are enrichable (architecture 33.5, Fable #105).
+            fn owned(p: &NodePayload) -> Option<(&Id, &Id, &Id)> {
+                match p {
+                    NodePayload::Transition(x) => {
+                        Some((&x.stateful_ref, &x.from_state, &x.to_state))
+                    }
+                    _ => None,
+                }
+            }
+            if owned(&node.payload) != owned(&payload) || !same_origin {
                 return Err(LifecycleError::ExistingCandidateConflict {
                     node_ref: t.id.clone(),
                 });

@@ -61,6 +61,11 @@ impl SegmentationIntermediate {
     }
 }
 
+/// Serializes analyser material for the phase report (never fails: unserializable is null).
+fn to_json<T: serde::Serialize>(value: &T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
 /// What one phase evaluation produced besides the compiler evaluation.
 pub(crate) struct PhaseOutput {
     pub(crate) evaluation: StageEvaluation,
@@ -355,6 +360,14 @@ impl<'a> PhaseStage<'a> {
         let mut proposals: Vec<Proposal> = Vec::new();
         let mut intermediate = None;
         let mut traces = Vec::new();
+        let mut dispositions: Vec<serde_json::Value> = Vec::new();
+        let mut report = |analyser: &str, kind: &str, items: serde_json::Value| {
+            if let serde_json::Value::Array(items) = items {
+                for item in items {
+                    dispositions.push(json!({"analyser": analyser, "kind": kind, "detail": item}));
+                }
+            }
+        };
         match phase {
             Phase::Segmentation => {
                 let fragments = self.fragments(graph);
@@ -395,10 +408,11 @@ impl<'a> PhaseStage<'a> {
                     artifact: &artifact,
                     derivation_ref,
                 };
-                proposals =
+                let result =
                     compile_requirement_candidates(graph, candidates, &r, Some(inference), &audit)
-                        .map_err(|e| fail(&e))?
-                        .proposals;
+                        .map_err(|e| fail(&e))?;
+                report("requirements", "unresolved", to_json(&result.unresolved));
+                proposals = result.proposals;
             }
             Phase::Consolidate => {
                 let policy = &self.a04.vocabulary_policy;
@@ -413,11 +427,12 @@ impl<'a> PhaseStage<'a> {
                     artifact: &artifact,
                     derivation_ref,
                 };
-                proposals.extend(
-                    analyze_vocabulary(graph, &v, policy, Some(inference), &audit)
-                        .map_err(|e| fail(&e))?
-                        .proposals,
-                );
+                let result = analyze_vocabulary(graph, &v, policy, Some(inference), &audit)
+                    .map_err(|e| fail(&e))?;
+                report("vocabulary", "disposition", to_json(&result.dispositions));
+                report("vocabulary", "conflict", to_json(&result.conflicts));
+                report("vocabulary", "issue", to_json(&result.issues));
+                proposals.extend(result.proposals);
                 let e = build_ears_request(graph, &self.targets, self.policy())
                     .map_err(|e| fail(&e))?;
                 let (artifact, derivation_ref) = acquired(&e.request)?;
@@ -458,9 +473,20 @@ impl<'a> PhaseStage<'a> {
                     artifact: &artifact,
                     derivation_ref,
                 };
-                proposals = analyze_calculations(graph, &r, Some(inference), &audit)
-                    .map_err(|e| fail(&e))?
-                    .proposals;
+                let result = analyze_calculations(graph, &r, Some(inference), &audit)
+                    .map_err(|e| fail(&e))?;
+                report("calculations", "issue", to_json(&result.issues));
+                let ineligible: Vec<Value> = result
+                    .candidates
+                    .iter()
+                    .filter(|c| !c.qualification.issues.is_empty())
+                    .map(|c| {
+                        json!({"disposition": format!("{:?}", c.disposition),
+                                    "issues": to_json(&c.qualification.issues)})
+                    })
+                    .collect();
+                report("calculations", "candidate", Value::Array(ineligible));
+                proposals = result.proposals;
             }
             Phase::Analyse => {
                 let d = build_domain_request(graph, self.policy()).map_err(|e| fail(&e))?;
@@ -473,11 +499,11 @@ impl<'a> PhaseStage<'a> {
                     artifact: &artifact,
                     derivation_ref,
                 };
-                proposals.extend(
-                    analyze_domain(graph, &d, Some(inference), &audit)
-                        .map_err(|e| fail(&e))?
-                        .proposals,
-                );
+                let result =
+                    analyze_domain(graph, &d, Some(inference), &audit).map_err(|e| fail(&e))?;
+                report("domain", "issue", to_json(&result.issues));
+                report("domain", "conflict", to_json(&result.conflicts));
+                proposals.extend(result.proposals);
                 let l = build_lifecycle_request(graph, self.policy()).map_err(|e| fail(&e))?;
                 let (artifact, derivation_ref) = acquired(&l.request)?;
                 let audit = LifecycleAudit {
@@ -488,11 +514,11 @@ impl<'a> PhaseStage<'a> {
                     artifact: &artifact,
                     derivation_ref,
                 };
-                proposals.extend(
-                    analyze_lifecycle(graph, &l, Some(inference), &audit)
-                        .map_err(|e| fail(&e))?
-                        .proposals,
-                );
+                let result =
+                    analyze_lifecycle(graph, &l, Some(inference), &audit).map_err(|e| fail(&e))?;
+                report("lifecycle", "issue", to_json(&result.issues));
+                report("lifecycle", "conflict", to_json(&result.conflicts));
+                proposals.extend(result.proposals);
             }
             Phase::Flows => {
                 let op = self
@@ -516,11 +542,10 @@ impl<'a> PhaseStage<'a> {
                     artifact: &artifact,
                     derivation_ref,
                 };
-                proposals.extend(
-                    analyze_operations(graph, &o, Some(inference), &audit)
-                        .map_err(|e| fail(&e))?
-                        .proposals,
-                );
+                let result =
+                    analyze_operations(graph, &o, Some(inference), &audit).map_err(|e| fail(&e))?;
+                report("operations", "issue", to_json(&result.issues));
+                proposals.extend(result.proposals);
                 let p = build_process_request(graph, &self.targets, pr, self.policy())
                     .map_err(|e| fail(&e))?;
                 let (artifact, derivation_ref) = acquired(&p.request)?;
@@ -532,11 +557,10 @@ impl<'a> PhaseStage<'a> {
                     artifact: &artifact,
                     derivation_ref,
                 };
-                proposals.extend(
-                    analyze_processes(graph, &p, Some(inference), &audit)
-                        .map_err(|e| fail(&e))?
-                        .proposals,
-                );
+                let result =
+                    analyze_processes(graph, &p, Some(inference), &audit).map_err(|e| fail(&e))?;
+                report("processes", "issue", to_json(&result.issues));
+                proposals.extend(result.proposals);
                 if let Some(draft) = &self.a04.authorization_draft {
                     let audit = AuthorizationAudit {
                         created_by: actor,
@@ -642,6 +666,13 @@ impl<'a> PhaseStage<'a> {
             }
         }
         let evaluation = StageEvaluation::new(None, proposals).map_err(|e| fail(&e))?;
+        // What the analysers could not turn into proposals, with their reasons (H0.5: no
+        // caller reads only `.proposals`). Segmentation keeps its own typed intermediate; every
+        // other phase persists these dispositions as its intermediate projection.
+        if intermediate.is_none() && !dispositions.is_empty() {
+            let value = json!({"version": 1, "dispositions": dispositions});
+            intermediate = Some(to_canonical_json(&value).map_err(|e| fail(&e))?);
+        }
         Ok(PhaseOutput {
             evaluation,
             intermediate,
