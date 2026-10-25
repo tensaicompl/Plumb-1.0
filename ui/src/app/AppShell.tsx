@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Outlet, useMatch, useRouter, useRouterState } from "@tanstack/react-router";
 import { useState, type FormEvent, type MouseEvent } from "react";
 
-import { apiClient } from "../api/client";
+import { apiClient, readData } from "../api/client";
 import type { components } from "../api/schema";
 import { useEvents } from "../api/useEvents";
 import { ConflictDialog } from "../components/ConflictDialog";
@@ -10,15 +10,12 @@ import { SessionPanel } from "../features/sessions/SessionPanel";
 import { t } from "../i18n";
 import { useMe } from "./auth";
 import { PILOT_NAVIGATION, type NavLink } from "./nav";
+import { ReadFailure } from "../components/ReadFailure";
 
 type SearchPage = components["schemas"]["SearchPage"];
 
 async function searchModel(q: string): Promise<SearchPage> {
-  const { data, response } = await apiClient.GET("/api/search", { params: { query: { q } } });
-  if (data === undefined) {
-    throw new Error(`GET /api/search failed with HTTP ${response.status}`);
-  }
-  return data;
+  return (await readData(apiClient.GET("/api/search", { params: { query: { q } } })));
 }
 
 /** One navigation anchor; plain left clicks navigate client-side through the router history. */
@@ -93,7 +90,7 @@ function Navigation() {
 function Identity() {
   const me = useMe();
   if (me.isError) {
-    return <p role="alert">{t("shell.identityFailed")}</p>;
+    return <ReadFailure error={me.error} messageKey="shell.identityFailed" />;
   }
   if (me.data === undefined) {
     return null;
@@ -152,7 +149,7 @@ function GlobalSearch() {
       </form>
       {submitted !== null && (
         <section aria-label={t("shell.search.results")} className="absolute right-0 z-10 mt-1 w-96 rounded border bg-white p-2 shadow">
-          {results.isError && <p role="alert">{t("shell.search.failed")}</p>}
+          {results.isError && <ReadFailure error={results.error} messageKey="shell.search.failed" />}
           {results.data !== undefined && results.data.items.length === 0 && <p>{t("shell.search.empty")}</p>}
           {results.data !== undefined && results.data.items.length > 0 && (
             <ol className="space-y-2" data-testid="search-results">

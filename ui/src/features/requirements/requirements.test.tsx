@@ -13,11 +13,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { http } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { components } from "../../api/schema";
-import { server } from "../../test/msw";
+import { etagJson, server, TEST_ETAG } from "../../test/msw";
 
 type RequirementPage = components["schemas"]["RequirementPage"];
 type RequirementDetail = components["schemas"]["RequirementDetail"];
@@ -193,21 +193,21 @@ function handlers(calls: Call[], overrides: { create?: () => Response } = {}) {
   };
   const write = (status = 200) => async ({ request }: { request: Request }) => {
     await record(request, "POST");
-    return HttpResponse.json(WRITE, { status });
+    return etagJson(WRITE, { status });
   };
   return [
-    http.get("*/api/me", () => HttpResponse.json({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"] })),
     http.get("*/api/model/version", () =>
-      HttpResponse.json({ version: "rev:7", revision: "rev:7", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
+      etagJson({ version: "rev:7", revision: "rev:7", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
     http.get("*/api/requirements", async ({ request }) => {
       await record(request, "GET");
       const cursor = new URL(request.url).searchParams.get("cursor");
-      return HttpResponse.json(cursor === "cursor-page-2" ? PAGE_2 : PAGE_1);
+      return etagJson(cursor === "cursor-page-2" ? PAGE_2 : PAGE_1);
     }),
     http.get("*/api/requirements/:id", async ({ request, params }) => {
       await record(request, "GET");
-      return HttpResponse.json(params["id"] === "req:b" ? DETAIL_B : DETAIL_A);
+      return etagJson(params["id"] === "req:b" ? DETAIL_B : DETAIL_A);
     }),
     http.post("*/api/requirements/:id/classify", write()),
     http.post("*/api/requirements/:id/accept-ears", write()),
@@ -216,11 +216,11 @@ function handlers(calls: Call[], overrides: { create?: () => Response } = {}) {
     http.post("*/api/requirements/:id/split", write()),
     http.post("*/api/requirements/:id/split/preview", async ({ request }) => {
       await record(request, "POST");
-      return HttpResponse.json(SPLIT_PREVIEW);
+      return etagJson(SPLIT_PREVIEW);
     }),
     http.post("*/api/proposals/:id/create", async ({ request }) => {
       await record(request, "POST");
-      return overrides.create === undefined ? HttpResponse.json(WRITE) : overrides.create();
+      return overrides.create === undefined ? etagJson(WRITE) : overrides.create();
     }),
     http.post("*/api/proposals/:id/supersede", write()),
     http.post("*/api/proposals/:id/accept", write()),
@@ -309,7 +309,7 @@ describe("RequirementsPage", () => {
       ],
       next_cursor: null,
     };
-    server.use(http.get("*/api/requirements", () => HttpResponse.json(unavailable)), ...handlers([]));
+    server.use(http.get("*/api/requirements", () => etagJson(unavailable)), ...handlers([]));
     renderAt("/requirements");
     const row = (await screen.findByText("req:u")).closest("tr");
     const cell = row?.querySelector("[data-lint]");
@@ -374,7 +374,7 @@ describe("RequirementDetail", () => {
   it("shows lint as unavailable without a current F1 report and as findings when current", async () => {
     // R0.4: lint_current false is unavailable lint, never "no findings".
     const unavailable: RequirementDetail = { ...DETAIL_A, smells: [], lint_findings: [], readiness: null, lint_current: false };
-    server.use(http.get("*/api/requirements/:id", () => HttpResponse.json(unavailable)), ...handlers([]));
+    server.use(http.get("*/api/requirements/:id", () => etagJson(unavailable)), ...handlers([]));
     renderAt("/requirements/req:a");
     const lint = await screen.findByRole("region", { name: "Lint findings" });
     expect(lint.getAttribute("data-lint")).toBe("unavailable");
@@ -429,10 +429,10 @@ describe("RequirementDetail", () => {
 
     const writes = calls.filter((c) => c.method === "POST");
     expect(writes.map((c) => [decoded(c.path), c.ifMatch, c.body])).toEqual([
-      ["/api/requirements/req:a/classify", CURRENT, { class: "quality" }],
-      ["/api/proposals/prop:ears-a/accept", CURRENT, { reason: "EARS form reviewed." }],
-      ["/api/requirements/req:a/waive-finding", CURRENT, { finding_id: "fnd:compound-a", reason: "Accepted risk." }],
-      ["/api/requirements/req:a/mark-duplicate", CURRENT, { of: "req:b", reason: "Same intent." }],
+      ["/api/requirements/req:a/classify", TEST_ETAG, { class: "quality" }],
+      ["/api/proposals/prop:ears-a/accept", TEST_ETAG, { reason: "EARS form reviewed." }],
+      ["/api/requirements/req:a/waive-finding", TEST_ETAG, { finding_id: "fnd:compound-a", reason: "Accepted risk." }],
+      ["/api/requirements/req:a/mark-duplicate", TEST_ETAG, { of: "req:b", reason: "Same intent." }],
     ]);
   });
 });
@@ -460,7 +460,7 @@ describe("RequirementDetail EARS review (R0.6)", () => {
 
   it("shows the suggestion as unavailable when the server pairs no proposal reference", async () => {
     const unpaired: RequirementDetail = { ...DETAIL_A, ears_proposal_ref: null };
-    server.use(http.get("*/api/requirements/:id", () => HttpResponse.json(unpaired)), ...handlers([]));
+    server.use(http.get("*/api/requirements/:id", () => etagJson(unpaired)), ...handlers([]));
     renderAt("/requirements/req:a");
     const ears = await screen.findByRole("region", { name: "EARS suggestion" });
     expect(within(ears).getByTestId("ears-unavailable").textContent).toBe("Not calculated: no EARS suggestion is available.");
@@ -495,7 +495,7 @@ describe("Requirement split", () => {
 
     const preview = posts(calls, "/split/preview")[0];
     expect(decoded(preview?.path ?? "")).toBe("/api/requirements/req:a/split/preview");
-    expect(preview?.ifMatch).toBe(CURRENT);
+    expect(preview?.ifMatch).toBe(TEST_ETAG);
     expect(preview?.body).toEqual({
       parts: ["Employees shall submit leave requests.", "Employees shall cancel leave requests."],
       reason: "Two behaviours.",
@@ -525,7 +525,7 @@ describe("Requirement split", () => {
 
     const created = posts(calls, "/create");
     expect(created.map((c) => [decoded(c.path), c.ifMatch, c.body])).toEqual([
-      ["/api/proposals/prop:split-a/create", CURRENT, { reason: "Two behaviours." }],
+      ["/api/proposals/prop:split-a/create", `"rev:7"`, { reason: "Two behaviours." }],
     ]);
     // Never the direct split nor the supersede action; no stale warning although the committed
     // hash differs from the candidate hash.
@@ -540,7 +540,7 @@ describe("Requirement split", () => {
     server.use(
       ...handlers(calls, {
         create: () =>
-          HttpResponse.json(
+          etagJson(
             { code: "E_PROPOSAL_BASELINE_CHANGED", message: "baseline changed", details: {} },
             { status: 409 },
           ),

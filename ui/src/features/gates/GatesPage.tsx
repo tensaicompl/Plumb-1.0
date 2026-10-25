@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readData } from "../../api/client";
 import type { components } from "../../api/schema";
 import { PILOT_GATES } from "../../app/nav";
 import { t, type MessageKey } from "../../i18n";
 import { gatesQueryKey } from "../home/HomePage";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type GateStatus = components["schemas"]["GateStatus"];
 type GateRuleResult = components["schemas"]["GateRuleResult"];
@@ -34,19 +35,11 @@ const SUB_SCORES: readonly (readonly [keyof Readiness["sub"], MessageKey])[] = [
 ];
 
 async function fetchGates(): Promise<GateStatus[]> {
-  const { data, response } = await apiClient.GET("/api/gates");
-  if (data === undefined) {
-    throw new Error("GET /api/gates failed with HTTP " + String(response.status));
-  }
-  return data;
+  return (await readData(apiClient.GET("/api/gates")));
 }
 
 async function fetchReadiness(): Promise<Readiness> {
-  const { data, response } = await apiClient.GET("/api/readiness");
-  if (data === undefined) {
-    throw new Error("GET /api/readiness failed with HTTP " + String(response.status));
-  }
-  return data;
+  return (await readData(apiClient.GET("/api/readiness")));
 }
 
 function Ids({ values }: { values: readonly string[] }) {
@@ -222,7 +215,7 @@ export function GatesPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t("gates.title")}</h1>
-      {gates.isError && <p role="alert">{t("gates.loadFailed")}</p>}
+      {gates.isError && <ReadFailure error={gates.error} messageKey="gates.loadFailed" />}
       {gates.data === undefined && !gates.isError && <p>{t("gates.loading")}</p>}
       {gates.data !== undefined && (
         <ol className="space-y-3">

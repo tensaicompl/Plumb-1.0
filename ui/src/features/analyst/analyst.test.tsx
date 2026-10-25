@@ -10,11 +10,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { components } from "../../api/schema";
-import { server } from "../../test/msw";
+import { etagJson, server, TEST_ETAG } from "../../test/msw";
 
 type Finding = components["schemas"]["Finding"];
 type Assumption = components["schemas"]["Assumption"];
@@ -204,24 +204,24 @@ interface Backend {
 
 function handlers(backend: Backend) {
   return [
-    http.get("*/api/me", () => HttpResponse.json({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"] })),
     http.get("*/api/model/version", () =>
-      HttpResponse.json({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
+      etagJson({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
-    http.get("*/api/gates", () => HttpResponse.json({ items: [], next_cursor: null })),
-    http.get("*/api/findings", () => HttpResponse.json({ items: FINDINGS, next_cursor: null })),
-    http.get("*/api/assumptions", () => HttpResponse.json({ items: ASSUMPTIONS, next_cursor: null })),
-    http.get("*/api/model/entities", () => HttpResponse.json({ items: ENTITIES, next_cursor: null })),
-    http.get("*/api/model/crud", () => HttpResponse.json(CRUD)),
-    http.get("*/api/model/rules", () => HttpResponse.json({ items: RULES, next_cursor: null })),
-    http.get("*/api/model/calculations", () => HttpResponse.json({ items: CALCULATIONS, next_cursor: null })),
+    http.get("*/api/gates", () => etagJson({ items: [], next_cursor: null })),
+    http.get("*/api/findings", () => etagJson({ items: FINDINGS, next_cursor: null })),
+    http.get("*/api/assumptions", () => etagJson({ items: ASSUMPTIONS, next_cursor: null })),
+    http.get("*/api/model/entities", () => etagJson({ items: ENTITIES, next_cursor: null })),
+    http.get("*/api/model/crud", () => etagJson(CRUD)),
+    http.get("*/api/model/rules", () => etagJson({ items: RULES, next_cursor: null })),
+    http.get("*/api/model/calculations", () => etagJson({ items: CALCULATIONS, next_cursor: null })),
     http.get("*/api/model/calculations/:id/example", ({ params }) =>
       params["id"] === "calc:days"
-        ? HttpResponse.json(EXAMPLE)
-        : HttpResponse.json({ code: "E_CALCULATION_INPUT_REQUIRED", message: "Root input taken is required." }, { status: 422 }),
+        ? etagJson(EXAMPLE)
+        : etagJson({ code: "E_CALCULATION_INPUT_REQUIRED", message: "Root input taken is required." }, { status: 422 }),
     ),
     http.post("*/api/model/rules/:id/cells", () =>
-      backend.cellFailure !== null ? backend.cellFailure : HttpResponse.json({ version: "rev:2", revision: "rev:2", semantic_hash: CURRENT, events: [] }),
+      backend.cellFailure !== null ? backend.cellFailure : etagJson({ version: "rev:2", revision: "rev:2", semantic_hash: CURRENT, events: [] }),
     ),
   ];
 }
@@ -427,7 +427,7 @@ describe("RulesPage", () => {
     const [post] = writes();
     expect(post?.method).toBe("POST");
     expect(post?.path).toBe("/api/model/rules/dt:leave/cells");
-    expect(post?.ifMatch).toBe(CURRENT);
+    expect(post?.ifMatch).toBe(TEST_ETAG);
     // The exact entered text: no reparsing or recanonicalisation in the browser.
     expect(post?.body).toEqual({ cell: "row:1:output:0", outcome, reason: "   Managers review long leave." });
     expect(calls.filter((c) => c.path.startsWith("/api/proposals"))).toEqual([]);
@@ -438,7 +438,7 @@ describe("RulesPage", () => {
 
   it("shows a server write error once, without retry or generic proposal call", async () => {
     const { user } = await renderAt("/model/rules", {
-      cellFailure: HttpResponse.json({ code: "E_NO_CHANGE", message: "The cell already has this outcome." }, { status: 422 }),
+      cellFailure: etagJson({ code: "E_NO_CHANGE", message: "The cell already has this outcome." }, { status: 422 }),
     });
     await screen.findByText("Bonus");
     const bonus = item("data-rule-id", "dt:bonus");

@@ -11,11 +11,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { http } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { components } from "../../api/schema";
-import { server } from "../../test/msw";
+import { etagJson, server, TEST_ETAG } from "../../test/msw";
 
 type Proposal = components["schemas"]["SessionProposalView"];
 type TurnResponse = components["schemas"]["SessionTurnResponse"];
@@ -169,21 +169,21 @@ function handlers(backend: Backend) {
     });
   };
   return [
-    http.get("*/api/me", () => HttpResponse.json({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"] })),
     http.get("*/api/model/version", () =>
-      HttpResponse.json({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
+      etagJson({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
-    http.get("*/api/gates", () => HttpResponse.json([])),
-    http.get("*/api/requirements", () => HttpResponse.json({ items: [], next_cursor: null })),
-    http.get("*/api/glossary", () => HttpResponse.json({ items: [], next_cursor: null })),
-    http.get("*/api/model/entities", () => HttpResponse.json({ items: [], next_cursor: null })),
-    http.get("*/api/model/sentences", () => HttpResponse.json({ items: [], next_cursor: null })),
+    http.get("*/api/gates", () => etagJson([])),
+    http.get("*/api/requirements", () => etagJson({ items: [], next_cursor: null })),
+    http.get("*/api/glossary", () => etagJson({ items: [], next_cursor: null })),
+    http.get("*/api/model/entities", () => etagJson({ items: [], next_cursor: null })),
+    http.get("*/api/model/sentences", () => etagJson({ items: [], next_cursor: null })),
     http.get("*/api/requirements/:id", async ({ request, params }) => {
       await record(request, "GET");
       if (backend.requirementStatus === null) {
-        return HttpResponse.json({ code: "E_NOT_FOUND", message: "missing", details: {} }, { status: 404 });
+        return etagJson({ code: "E_NOT_FOUND", message: "missing", details: {} }, { status: 404 });
       }
-      return HttpResponse.json({
+      return etagJson({
         id: params["id"],
         text: "Employees shall submit leave requests.",
         class: "functional",
@@ -199,20 +199,20 @@ function handlers(backend: Backend) {
     }),
     http.get("*/api/questions", async ({ request }) => {
       await record(request, "GET");
-      return HttpResponse.json({ items: [Q_ENGINE], next_cursor: null });
+      return etagJson({ items: [Q_ENGINE], next_cursor: null });
     }),
     http.post("*/api/questions/:id/answer", async ({ request }) => {
       await record(request, "POST");
-      return HttpResponse.json({ code: "E_UNEXPECTED", message: "not in these tests", details: {} }, { status: 500 });
+      return etagJson({ code: "E_UNEXPECTED", message: "not in these tests", details: {} }, { status: 500 });
     }),
     http.post("*/api/sessions", async ({ request }) => {
       await record(request, "POST");
-      return HttpResponse.json({ ...WRITE, id: "session:1" });
+      return etagJson({ ...WRITE, id: "session:1" });
     }),
     http.get("*/api/sessions/:id/metrics", async ({ request }) => {
       await record(request, "GET");
       const metrics = backend.metrics.length > 1 ? backend.metrics.shift() : backend.metrics[0];
-      return HttpResponse.json(metrics);
+      return etagJson(metrics);
     }),
     http.post("*/api/sessions/:id/turns", async ({ request }) => {
       await record(request, "POST");
@@ -222,14 +222,14 @@ function handlers(backend: Backend) {
         await hold;
       }
       if (backend.turnFails) {
-        return HttpResponse.json({ code: "E_PROVIDER_FAILED", message: "provider failed", details: {} }, { status: 502 });
+        return etagJson({ code: "E_PROVIDER_FAILED", message: "provider failed", details: {} }, { status: 502 });
       }
       const next = backend.turns.shift();
-      return HttpResponse.json(next ?? turnResponse("(no reply configured)"));
+      return etagJson(next ?? turnResponse("(no reply configured)"));
     }),
     http.post("*/api/proposals/:id/:verb", async ({ request, params }) => {
       await record(request, "POST");
-      return backend.action(String(params["verb"])) ?? HttpResponse.json(WRITE);
+      return backend.action(String(params["verb"])) ?? etagJson(WRITE);
     }),
   ];
 }
@@ -291,7 +291,7 @@ describe("Project room", () => {
     expect(posts(backend, "/api/sessions")).toEqual([]);
     expect(screen.queryByTestId("scoped-session-aside")).toBeNull();
     await startSession(user, backend);
-    expect(posts(backend, "/api/sessions").map((c) => [c.ifMatch, c.body])).toEqual([[CURRENT, { scope: [] }]]);
+    expect(posts(backend, "/api/sessions").map((c) => [c.ifMatch, c.body])).toEqual([[TEST_ETAG, { scope: [] }]]);
   });
 
   it("is reached through the shell Project room launcher without changing the frozen navigation", async () => {
@@ -337,7 +337,7 @@ describe("Requirement-scoped session", () => {
     await waitFor(() => expect((within(aside).getByTestId("session-start") as HTMLButtonElement).disabled).toBe(false));
     await user.click(within(aside).getByTestId("session-start"));
     await within(aside).findByTestId("session-id");
-    expect(posts(backend, "/api/sessions").map((c) => [c.ifMatch, c.body])).toEqual([[CURRENT, { scope: ["req:accepted"] }]]);
+    expect(posts(backend, "/api/sessions").map((c) => [c.ifMatch, c.body])).toEqual([[TEST_ETAG, { scope: ["req:accepted"] }]]);
   });
 
   it("refuses a non-Accepted requirement without falling back to project scope", async () => {
@@ -411,7 +411,7 @@ describe("Session turns", () => {
     await user.click(screen.getByTestId("session-send"));
     await waitFor(() => expect(posts(backend, "/api/sessions/session:1/turns")).toHaveLength(1));
     expect(posts(backend, "/api/sessions/session:1/turns").map((c) => [c.ifMatch, c.body])).toEqual([
-      [CURRENT, { text: "Employees request leave.", stage: "S7" }],
+      [TEST_ETAG, { text: "Employees request leave.", stage: "S7" }],
     ]);
   });
 
@@ -538,7 +538,7 @@ describe("Session proposal cards", () => {
     await user.click(button(card, "create") as HTMLButtonElement);
     await within(card).findByTestId("card-resolved");
     expect(proposalPosts(backend).map((c) => [c.path, c.ifMatch, c.body])).toEqual([
-      ["/api/proposals/prop:create/create", CURRENT, { reason: null }],
+      ["/api/proposals/prop:create/create", `"rev:2"`, { reason: null }],
     ]);
     // A resolved card cannot be acted on again.
     expect(Array.from(card.querySelectorAll("button[data-action]")).every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
@@ -588,7 +588,7 @@ describe("Session proposal cards", () => {
     const backend = newBackend({
       action: (verb) =>
         verb === "supersede"
-          ? HttpResponse.json({ code: "E_PROPOSAL_BASELINE_CHANGED", message: "moved", details: {} }, { status: 409 })
+          ? etagJson({ code: "E_PROPOSAL_BASELINE_CHANGED", message: "moved", details: {} }, { status: 409 })
           : null,
     });
     server.use(...handlers(backend));
@@ -605,7 +605,7 @@ describe("Session proposal cards", () => {
 
   it("shows other proposal failures without resolving the card or retrying", async () => {
     const backend = newBackend({
-      action: () => HttpResponse.json({ code: "E_INTAKE_REASON_REQUIRED", message: "reason", details: {} }, { status: 409 }),
+      action: () => etagJson({ code: "E_INTAKE_REASON_REQUIRED", message: "reason", details: {} }, { status: 409 }),
     });
     server.use(...handlers(backend));
     renderAt("/sessions");

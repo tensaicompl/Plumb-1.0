@@ -1,10 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, ReviewedEtag, useReviewedEtag, type ReviewedItems } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t, type MessageKey } from "../../i18n";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type Entity = components["schemas"]["Entity"];
 type CrudMatrix = components["schemas"]["CrudMatrix"];
@@ -20,20 +21,12 @@ export const entitiesQueryKey = ["entities"] as const;
 /** The CRUD matrix query root. */
 export const crudQueryKey = ["crud"] as const;
 
-async function fetchEntities(): Promise<Entity[]> {
-  const { data, response } = await apiClient.GET("/api/model/entities");
-  if (data === undefined) {
-    throw new Error("GET /api/model/entities failed with HTTP " + String(response.status));
-  }
-  return data.items;
+function fetchEntities(): Promise<ReviewedItems<Entity>> {
+  return readReviewed(apiClient.GET("/api/model/entities"));
 }
 
-async function fetchCrud(): Promise<CrudMatrix> {
-  const { data, response } = await apiClient.GET("/api/model/crud");
-  if (data === undefined) {
-    throw new Error("GET /api/model/crud failed with HTTP " + String(response.status));
-  }
-  return data;
+function fetchCrud(): Promise<CrudMatrix> {
+  return readReviewed(apiClient.GET("/api/model/crud"));
 }
 
 function Optional({ value }: { value: string | null | undefined }) {
@@ -44,11 +37,13 @@ function Optional({ value }: { value: string | null | undefined }) {
 function AttributeType({ attribute }: { attribute: EntityAttribute }) {
   const queryClient = useQueryClient();
   const [choice, setChoice] = useState("");
-  const setType = useVersionedMutation<WriteResult, string>((type, ifMatch) =>
-    apiClient.POST("/api/model/attributes/{id}/type", {
-      params: { path: { id: attribute.id }, header: { "If-Match": ifMatch } },
-      body: { type },
-    }),
+  const setType = useVersionedMutation<WriteResult, string>(
+    (type, ifMatch) =>
+      apiClient.POST("/api/model/attributes/{id}/type", {
+        params: { path: { id: attribute.id }, header: { "If-Match": ifMatch } },
+        body: { type },
+      }),
+    useReviewedEtag(),
   );
   const error = setType.error;
   return (
@@ -240,20 +235,22 @@ export function EntitiesPage() {
       <h1 className="text-xl font-semibold">{t("entities.title")}</h1>
       <section aria-label={t("entities.list")} className="space-y-2">
         <h2 className="font-semibold">{t("entities.list")}</h2>
-        {entities.isError && <p role="alert">{t("entities.loadFailed")}</p>}
+        {entities.isError && <ReadFailure error={entities.error} messageKey="entities.loadFailed" />}
         {entities.data === undefined && !entities.isError && <p>{t("entities.loading")}</p>}
-        {entities.data !== undefined && entities.data.length === 0 && <p>{t("entities.empty")}</p>}
-        {entities.data !== undefined && entities.data.length > 0 && (
-          <ul className="space-y-2">
-            {entities.data.map((entity) => (
-              <EntityItem key={entity.id} entity={entity} />
-            ))}
-          </ul>
+        {entities.data !== undefined && entities.data.items.length === 0 && <p>{t("entities.empty")}</p>}
+        {entities.data !== undefined && entities.data.items.length > 0 && (
+          <ReviewedEtag.Provider value={entities.data.etag}>
+            <ul className="space-y-2">
+              {entities.data.items.map((entity) => (
+                <EntityItem key={entity.id} entity={entity} />
+              ))}
+            </ul>
+          </ReviewedEtag.Provider>
         )}
       </section>
       <section aria-label={t("entities.crud.title")} className="space-y-2">
         <h2 className="font-semibold">{t("entities.crud.title")}</h2>
-        {crud.isError && <p role="alert">{t("entities.loadFailed")}</p>}
+        {crud.isError && <ReadFailure error={crud.error} messageKey="entities.loadFailed" />}
         {crud.data === undefined && !crud.isError && <p>{t("entities.loading")}</p>}
         {crud.data !== undefined && <Crud matrix={crud.data} />}
       </section>

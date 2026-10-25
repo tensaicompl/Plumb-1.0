@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, ReviewedEtag, useReviewedEtag, type ReviewedItems } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t, type MessageKey } from "../../i18n";
 import { writeErrorCode } from "../questions/QuestionsPage";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type Rule = components["schemas"]["Rule"];
 type RuleCellRequest = components["schemas"]["RuleCellRequest"];
@@ -14,12 +15,8 @@ type WriteResult = components["schemas"]["WriteResult"];
 /** Every rule query shares this root and is refetched after a cell write. */
 export const rulesQueryKey = ["rules"] as const;
 
-async function fetchRules(): Promise<Rule[]> {
-  const { data, response } = await apiClient.GET("/api/model/rules");
-  if (data === undefined) {
-    throw new Error("GET /api/model/rules failed with HTTP " + String(response.status));
-  }
-  return data.items;
+function fetchRules(): Promise<ReviewedItems<Rule>> {
+  return readReviewed(apiClient.GET("/api/model/rules"));
 }
 
 /**
@@ -89,11 +86,13 @@ function Rows({ rows }: { rows: Rule["rows"] }) {
  */
 function CellFill({ rule }: { rule: Rule }) {
   const queryClient = useQueryClient();
-  const fill = useVersionedMutation<WriteResult, RuleCellRequest>((body, ifMatch) =>
-    apiClient.POST("/api/model/rules/{id}/cells", {
-      params: { path: { id: rule.id }, header: { "If-Match": ifMatch } },
-      body,
-    }),
+  const fill = useVersionedMutation<WriteResult, RuleCellRequest>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/model/rules/{id}/cells", {
+        params: { path: { id: rule.id }, header: { "If-Match": ifMatch } },
+        body,
+      }),
+    useReviewedEtag(),
   );
   const [cell, setCell] = useState("");
   const [outcome, setOutcome] = useState("");
@@ -170,15 +169,17 @@ export function RulesPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t("rules.title")}</h1>
-      {rules.isError && <p role="alert">{t("rules.loadFailed")}</p>}
+      {rules.isError && <ReadFailure error={rules.error} messageKey="rules.loadFailed" />}
       {rules.data === undefined && !rules.isError && <p>{t("rules.loading")}</p>}
-      {rules.data !== undefined && rules.data.length === 0 && <p>{t("rules.empty")}</p>}
-      {rules.data !== undefined && rules.data.length > 0 && (
-        <ul className="space-y-2">
-          {rules.data.map((rule) => (
-            <RuleItem key={rule.id} rule={rule} />
-          ))}
-        </ul>
+      {rules.data !== undefined && rules.data.items.length === 0 && <p>{t("rules.empty")}</p>}
+      {rules.data !== undefined && rules.data.items.length > 0 && (
+        <ReviewedEtag.Provider value={rules.data.etag}>
+          <ul className="space-y-2">
+            {rules.data.items.map((rule) => (
+              <RuleItem key={rule.id} rule={rule} />
+            ))}
+          </ul>
+        </ReviewedEtag.Provider>
       )}
     </div>
   );

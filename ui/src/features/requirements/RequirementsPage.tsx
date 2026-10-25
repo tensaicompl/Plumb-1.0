@@ -2,9 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readData } from "../../api/client";
 import type { components } from "../../api/schema";
 import { t } from "../../i18n";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type RequirementPage = components["schemas"]["RequirementPage"];
 
@@ -42,11 +43,7 @@ async function fetchRequirements(filters: RequirementFilters, cursor: string | n
   if (cursor !== null) {
     query.cursor = cursor;
   }
-  const { data, response } = await apiClient.GET("/api/requirements", { params: { query } });
-  if (data === undefined) {
-    throw new Error("GET /api/requirements failed with HTTP " + String(response.status));
-  }
-  return data;
+  return (await readData(apiClient.GET("/api/requirements", { params: { query } })));
 }
 
 /**
@@ -98,7 +95,7 @@ export function RequirementsPage() {
         </button>
       </form>
       <p className="text-sm text-slate-600">{t("readiness.advisory")}</p>
-      {page.isError && <p role="alert">{t("requirements.loadFailed")}</p>}
+      {page.isError && <ReadFailure error={page.error} messageKey="requirements.loadFailed" />}
       {page.data === undefined && !page.isError && <p>{t("requirements.loading")}</p>}
       {page.data !== undefined && (
         <>

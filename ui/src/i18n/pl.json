@@ -578,5 +578,10 @@
   "shell.search.score": "Wynik",
   "shell.search.submit": "Szukaj",
   "shell.user": "Użytkownik",
-  "write.failed": "Zmiana nie została zapisana:"
+  "write.failed": "Zmiana nie została zapisana:",
+  "write.transportFailed": "Nie udało się połączyć z serwerem; zmiana nie została zapisana. Sprawdź połączenie i spróbuj ponownie.",
+  "write.inferenceUnavailable": "Model AI jest niedostępny: na tym serwerze nie skonfigurowano dostawcy wnioskowania.",
+  "write.notLoaded": "Dane dla tej zmiany nie zostały jeszcze wczytane; nic nie wysłano.",
+  "read.failed": "Nie udało się wczytać danych:",
+  "read.transportFailed": "Nie udało się połączyć z serwerem."
 }

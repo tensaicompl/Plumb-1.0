@@ -1,9 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, revisionEtag, ReviewedEtag, type Reviewed } from "../../api/client";
 import type { components } from "../../api/schema";
-import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
+import { modelVersionQueryKey, useModelVersion, useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { fetchQuestions, QuestionAnswerCard, questionsQueryKey, writeErrorCode } from "../questions/QuestionsPage";
 import { ProposalCard } from "./ProposalCard";
@@ -27,20 +27,12 @@ interface LocalTurn {
   readonly response: SessionTurnResponse;
 }
 
-async function fetchRequirement(id: string): Promise<RequirementDetail> {
-  const { data, response } = await apiClient.GET("/api/requirements/{id}", { params: { path: { id } } });
-  if (data === undefined) {
-    throw new Error("GET /api/requirements/{id} failed with HTTP " + String(response.status));
-  }
-  return data;
+function fetchRequirement(id: string): Promise<Reviewed<RequirementDetail>> {
+  return readReviewed(apiClient.GET("/api/requirements/{id}", { params: { path: { id } } }));
 }
 
-async function fetchMetrics(id: string): Promise<SessionMetrics> {
-  const { data, response } = await apiClient.GET("/api/sessions/{id}/metrics", { params: { path: { id } } });
-  if (data === undefined) {
-    throw new Error("GET /api/sessions/{id}/metrics failed with HTTP " + String(response.status));
-  }
-  return data;
+function fetchMetrics(id: string): Promise<SessionMetrics> {
+  return readReviewed(apiClient.GET("/api/sessions/{id}/metrics", { params: { path: { id } } }));
 }
 
 function sessionMetricsKey(sessionId: string) {
@@ -61,7 +53,7 @@ function WriteError({ error }: { error: Error | null }) {
 /** The engine Question of a turn: only an exact existing Open Question is actionable. */
 function EngineQuestion({ questionId }: { questionId: string }) {
   const open = useQuery({ queryKey: [...questionsQueryKey, "open"], queryFn: () => fetchQuestions("Open") });
-  const question = open.data?.find((q) => q.id === questionId);
+  const question = open.data?.items.find((q) => q.id === questionId);
   return (
     <section aria-label={t("session.engineQuestion")} className="space-y-1 rounded border p-2" data-asked-question={questionId}>
       <h4 className="font-semibold">
@@ -76,7 +68,9 @@ function EngineQuestion({ questionId }: { questionId: string }) {
       {question !== undefined && (
         <>
           <p>{question.text}</p>
-          <QuestionAnswerCard question={question} />
+          <ReviewedEtag.Provider value={open.data?.etag}>
+            <QuestionAnswerCard question={question} />
+          </ReviewedEtag.Provider>
         </>
       )}
     </section>
@@ -107,15 +101,22 @@ export function SessionPanel(props: SessionPanelProps) {
   const scope: string[] = requirementId === null ? [] : [requirementId];
   const scopeReady = requirementId === null || requirement.data?.status === "Accepted";
 
-  const create = useVersionedMutation<CreateSessionResponse, string[]>((body, ifMatch) =>
-    apiClient.POST("/api/sessions", { params: { header: { "If-Match": ifMatch } }, body: { scope: body } }),
+  // The session works on the model as currently displayed: the requirement it is scoped to, or
+  // the current model version (refetched after every write the panel makes).
+  const version = useModelVersion();
+  const create = useVersionedMutation<CreateSessionResponse, string[]>(
+    (body, ifMatch) => apiClient.POST("/api/sessions", { params: { header: { "If-Match": ifMatch } }, body: { scope: body } }),
+    requirementId === null ? version.data?.etag : requirement.data?.etag,
   );
-  const turn = useVersionedMutation<SessionTurnResponse, { sessionId: string; text: string; stage: SessionStage }>((body, ifMatch) =>
-    apiClient.POST("/api/sessions/{id}/turns", {
-      params: { path: { id: body.sessionId }, header: { "If-Match": ifMatch } },
-      body: { text: body.text, stage: body.stage },
-    }),
+  const turn = useVersionedMutation<SessionTurnResponse, { sessionId: string; text: string; stage: SessionStage }>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/sessions/{id}/turns", {
+        params: { path: { id: body.sessionId }, header: { "If-Match": ifMatch } },
+        body: { text: body.text, stage: body.stage },
+      }),
+    version.data?.etag,
   );
+  const versionReady = version.data !== undefined && !version.isFetching;
   const metrics = useQuery({
     queryKey: sessionMetricsKey(sessionId ?? ""),
     queryFn: () => fetchMetrics(sessionId ?? ""),
@@ -149,6 +150,7 @@ export function SessionPanel(props: SessionPanelProps) {
           setTurns((current) => [...current, { key, text: submitted, response }]);
           setText("");
           void queryClient.invalidateQueries({ queryKey: sessionMetricsKey(sessionId) });
+          void queryClient.invalidateQueries({ queryKey: modelVersionQueryKey });
         },
       },
     );
@@ -229,7 +231,7 @@ export function SessionPanel(props: SessionPanelProps) {
                   <span className="font-semibold">{t("session.assistant")}</span> {entry.response.reply}
                 </p>
                 {entry.response.proposals.map((proposal) => (
-                  <ProposalCard key={proposal.id} proposal={proposal} />
+                  <ProposalCard key={proposal.id} proposal={proposal} reviewedEtag={revisionEtag(entry.response.revision)} />
                 ))}
                 {entry.response.asked_question !== undefined && entry.response.asked_question !== null && (
                   <EngineQuestion questionId={entry.response.asked_question} />
@@ -261,7 +263,7 @@ export function SessionPanel(props: SessionPanelProps) {
               {t("session.message")}
               <textarea className="w-full rounded border p-1" value={text} data-testid="session-text" onChange={(event) => setText(event.target.value)} />
             </label>
-            <button type="submit" className="rounded border px-3 py-1" data-testid="session-send" disabled={turn.isPending || stage === "" || text.trim() === ""}>
+            <button type="submit" className="rounded border px-3 py-1" data-testid="session-send" disabled={turn.isPending || !versionReady || stage === "" || text.trim() === ""}>
               {t("session.send")}
             </button>
             {turn.isPending && (

@@ -1,12 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, revisionEtag, type Reviewed } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { DiffViewer, type ModelDiff } from "../../components/DiffViewer";
 import { ProvenanceDrawer, type ProvenanceItem } from "../../components/ProvenanceDrawer";
 import { t } from "../../i18n";
+import { ReadFailure } from "../../components/ReadFailure";
 
 export type RequirementDetailView = components["schemas"]["RequirementDetail"];
 export type SemanticChangePreview = components["schemas"]["SemanticChangePreviewResponse"];
@@ -18,12 +19,8 @@ export function requirementQueryKey(id: string) {
   return ["requirements", "detail", id] as const;
 }
 
-async function fetchRequirement(id: string): Promise<RequirementDetailView> {
-  const { data, response } = await apiClient.GET("/api/requirements/{id}", { params: { path: { id } } });
-  if (data === undefined) {
-    throw new Error("GET /api/requirements/{id} failed with HTTP " + String(response.status));
-  }
-  return data;
+function fetchRequirement(id: string): Promise<Reviewed<RequirementDetailView>> {
+  return readReviewed(apiClient.GET("/api/requirements/{id}", { params: { path: { id } } }));
 }
 
 /**
@@ -183,24 +180,29 @@ interface PendingPreview {
  * explicit confirmation through POST /api/proposals/{id}/create with the same reason. A moved
  * baseline discards the preview and requires a new one; nothing is retried.
  */
-function SplitAction({ requirementId }: { requirementId: string }) {
+function SplitAction({ requirementId, etag }: { requirementId: string; etag: string | null }) {
   const queryClient = useQueryClient();
   const [parts, setParts] = useState<string[]>(["", ""]);
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState<PendingPreview | null>(null);
   const [stale, setStale] = useState(false);
 
-  const preview = useVersionedMutation<SemanticChangePreview, { parts: string[]; reason: string }>((body, ifMatch) =>
-    apiClient.POST("/api/requirements/{id}/split/preview", {
-      params: { path: { id: requirementId }, header: { "If-Match": ifMatch } },
-      body,
-    }),
+  const preview = useVersionedMutation<SemanticChangePreview, { parts: string[]; reason: string }>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/requirements/{id}/split/preview", {
+        params: { path: { id: requirementId }, header: { "If-Match": ifMatch } },
+        body,
+      }),
+    etag,
   );
-  const confirm = useVersionedMutation<WriteResult, PendingPreview>((target, ifMatch) =>
-    apiClient.POST("/api/proposals/{id}/create", {
-      params: { path: { id: target.preview.proposal_id }, header: { "If-Match": ifMatch } },
-      body: { reason: target.reason },
-    }),
+  // The confirmation is based on the reviewed preview, which states its baseline revision.
+  const confirm = useVersionedMutation<WriteResult, PendingPreview>(
+    (target, ifMatch) =>
+      apiClient.POST("/api/proposals/{id}/create", {
+        params: { path: { id: target.preview.proposal_id }, header: { "If-Match": ifMatch } },
+        body: { reason: target.reason },
+      }),
+    (target) => revisionEtag(target.preview.revision),
   );
 
   const requestPreview = () => {
@@ -312,26 +314,32 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
 
   const onWritten = { onSuccess: () => void queryClient.invalidateQueries() };
   const path = { id: requirementId };
-  const classify = useVersionedMutation<WriteResult, string>((value, ifMatch) =>
-    apiClient.POST("/api/requirements/{id}/classify", { params: { path, header: { "If-Match": ifMatch } }, body: { class: value } }),
+  const reviewed = requirement.data?.etag;
+  const classify = useVersionedMutation<WriteResult, string>(
+    (value, ifMatch) => apiClient.POST("/api/requirements/{id}/classify", { params: { path, header: { "If-Match": ifMatch } }, body: { class: value } }),
+    reviewed,
   );
   // R0.6: a surfaced S1.2 EARS suggestion is the pending WorkflowProposal `ears_proposal_ref`,
   // accepted through the governed proposal acceptance (never as an analyst text edit).
-  const acceptEars = useVersionedMutation<WriteResult, { proposal: string; reason: string | null }>((body, ifMatch) =>
-    apiClient.POST("/api/proposals/{id}/accept", {
-      params: { path: { id: body.proposal }, header: { "If-Match": ifMatch } },
-      body: { reason: body.reason },
-    }),
+  const acceptEars = useVersionedMutation<WriteResult, { proposal: string; reason: string | null }>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/proposals/{id}/accept", {
+        params: { path: { id: body.proposal }, header: { "If-Match": ifMatch } },
+        body: { reason: body.reason },
+      }),
+    reviewed,
   );
-  const waive = useVersionedMutation<WriteResult, { finding_id: string; reason: string }>((body, ifMatch) =>
-    apiClient.POST("/api/requirements/{id}/waive-finding", { params: { path, header: { "If-Match": ifMatch } }, body }),
+  const waive = useVersionedMutation<WriteResult, { finding_id: string; reason: string }>(
+    (body, ifMatch) => apiClient.POST("/api/requirements/{id}/waive-finding", { params: { path, header: { "If-Match": ifMatch } }, body }),
+    reviewed,
   );
-  const duplicate = useVersionedMutation<WriteResult, { of: string; reason: string }>((body, ifMatch) =>
-    apiClient.POST("/api/requirements/{id}/mark-duplicate", { params: { path, header: { "If-Match": ifMatch } }, body }),
+  const duplicate = useVersionedMutation<WriteResult, { of: string; reason: string }>(
+    (body, ifMatch) => apiClient.POST("/api/requirements/{id}/mark-duplicate", { params: { path, header: { "If-Match": ifMatch } }, body }),
+    reviewed,
   );
 
   if (requirement.isError) {
-    return <p role="alert">{t("requirement.loadFailed")}</p>;
+    return <ReadFailure error={requirement.error} messageKey="requirement.loadFailed" />;
   }
   if (requirement.data === undefined) {
     return <p>{t("requirement.loading")}</p>;
@@ -545,7 +553,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
           <WriteError error={duplicate.error} />
         </form>
 
-        <SplitAction requirementId={detail.id} />
+        <SplitAction requirementId={detail.id} etag={detail.etag} />
       </section>
     </div>
   );

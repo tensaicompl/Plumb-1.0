@@ -1,12 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, ReviewedEtag, useReviewedEtag, type ReviewedItems } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { writeErrorCode } from "../questions/QuestionsPage";
 import { ScenarioTrace } from "./ScenarioTrace";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type Scenario = components["schemas"]["Scenario"];
 type ScenarioStatus = components["schemas"]["ScenarioStatus"];
@@ -26,7 +27,7 @@ export interface ScenarioFilters {
 
 const NO_FILTERS: ScenarioFilters = { requirement: "", status: "", derived: "" };
 
-async function fetchScenarios(filters: ScenarioFilters): Promise<Scenario[]> {
+function fetchScenarios(filters: ScenarioFilters): Promise<ReviewedItems<Scenario>> {
   const query: { requirement?: string; status?: ScenarioStatus; derived?: boolean } = {};
   if (filters.requirement !== "") {
     query.requirement = filters.requirement;
@@ -37,20 +38,12 @@ async function fetchScenarios(filters: ScenarioFilters): Promise<Scenario[]> {
   if (filters.derived !== "") {
     query.derived = filters.derived === "true";
   }
-  const { data, response } = await apiClient.GET("/api/scenarios", { params: { query } });
-  if (data === undefined) {
-    throw new Error("GET /api/scenarios failed with HTTP " + String(response.status));
-  }
-  return data.items;
+  return readReviewed(apiClient.GET("/api/scenarios", { params: { query } }));
 }
 
 /** The server-confirmable scenarios: exactly the Proposed + Derived ones the API returns. */
-async function fetchConfirmable(): Promise<Scenario[]> {
-  const { data, response } = await apiClient.GET("/api/scenarios", { params: { query: { status: "Proposed", derived: true } } });
-  if (data === undefined) {
-    throw new Error("GET /api/scenarios failed with HTTP " + String(response.status));
-  }
-  return data.items;
+function fetchConfirmable(): Promise<ReviewedItems<Scenario>> {
+  return readReviewed(apiClient.GET("/api/scenarios", { params: { query: { status: "Proposed", derived: true } } }));
 }
 
 function parse(text: string): unknown {
@@ -136,8 +129,9 @@ function SemanticValue({ text }: { text: string }) {
 function CorrectionEditor({ scenario, onDone }: { scenario: Scenario; onDone: () => void }) {
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<string[]>(scenario.then);
-  const correct = useVersionedMutation<WriteResult, string[]>((then, ifMatch) =>
-    apiClient.POST("/api/scenarios/{id}/correct", { params: { path: { id: scenario.id }, header: { "If-Match": ifMatch } }, body: { then } }),
+  const correct = useVersionedMutation<WriteResult, string[]>(
+    (then, ifMatch) => apiClient.POST("/api/scenarios/{id}/correct", { params: { path: { id: scenario.id }, header: { "If-Match": ifMatch } }, body: { then } }),
+    useReviewedEtag(),
   );
   return (
     <form
@@ -191,8 +185,9 @@ function ScenarioCard({
 }) {
   const queryClient = useQueryClient();
   const [correcting, setCorrecting] = useState(false);
-  const confirm = useVersionedMutation<WriteResult>((_, ifMatch) =>
-    apiClient.POST("/api/scenarios/{id}/confirm", { params: { path: { id: scenario.id }, header: { "If-Match": ifMatch } } }),
+  const confirm = useVersionedMutation<WriteResult>(
+    (_, ifMatch) => apiClient.POST("/api/scenarios/{id}/confirm", { params: { path: { id: scenario.id }, header: { "If-Match": ifMatch } } }),
+    useReviewedEtag(),
   );
   const when = parse(scenario.when);
   const anchor = isRecord(when) && Object.keys(when).length === 1 ? Object.entries(when)[0] : undefined;
@@ -286,11 +281,12 @@ function ScenarioCard({
 }
 
 /** Bulk confirmation of one DecisionTable's derived scenarios, behind an explicit three-sample prompt. */
-function BulkConfirm({ groups }: { groups: Map<string, string[]> }) {
+function BulkConfirm({ groups, etag }: { groups: Map<string, string[]>; etag: string | null | undefined }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState<string | null>(null);
-  const bulk = useVersionedMutation<WriteResult, string>((tableId, ifMatch) =>
-    apiClient.POST("/api/scenarios/confirm-derived", { params: { header: { "If-Match": ifMatch } }, body: { table_id: tableId } }),
+  const bulk = useVersionedMutation<WriteResult, string>(
+    (tableId, ifMatch) => apiClient.POST("/api/scenarios/confirm-derived", { params: { header: { "If-Match": ifMatch } }, body: { table_id: tableId } }),
+    etag,
   );
   if (groups.size === 0) {
     return null;
@@ -357,13 +353,14 @@ export function ScenariosPage() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const scenarios = useQuery({ queryKey: [...scenariosQueryKey, "list", filters], queryFn: () => fetchScenarios(filters) });
   const confirmable = useQuery({ queryKey: [...scenariosQueryKey, "confirmable"], queryFn: fetchConfirmable });
-  const run = useVersionedMutation<WriteResult, string[]>((scope, ifMatch) =>
-    apiClient.POST("/api/scenarios/run", { params: { header: { "If-Match": ifMatch } }, body: { scope } }),
+  const run = useVersionedMutation<WriteResult, string[]>(
+    (scope, ifMatch) => apiClient.POST("/api/scenarios/run", { params: { header: { "If-Match": ifMatch } }, body: { scope } }),
+    scenarios.data?.etag,
   );
 
-  const confirmableIds = new Set((confirmable.data ?? []).map((s) => s.id));
-  const groups = decisionTableGroups(confirmable.data ?? []);
-  const runnableIds = new Set((scenarios.data ?? []).filter(runnable).map((s) => s.id));
+  const confirmableIds = new Set((confirmable.data?.items ?? []).map((s) => s.id));
+  const groups = decisionTableGroups(confirmable.data?.items ?? []);
+  const runnableIds = new Set((scenarios.data?.items ?? []).filter(runnable).map((s) => s.id));
   const scope = [...selected].filter((id) => runnableIds.has(id)).sort();
 
   const onSelect = (id: string, on: boolean) =>
@@ -416,7 +413,7 @@ export function ScenariosPage() {
         </button>
       </form>
 
-      <BulkConfirm groups={groups} />
+      <BulkConfirm groups={groups} etag={confirmable.data?.etag} />
 
       <section aria-label={t("scenarios.run.title")} className="flex flex-wrap items-center gap-2 text-sm">
         <span>
@@ -444,12 +441,13 @@ export function ScenariosPage() {
         <WriteError error={run.error} />
       </section>
 
-      {scenarios.isError && <p role="alert">{t("scenarios.loadFailed")}</p>}
+      {scenarios.isError && <ReadFailure error={scenarios.error} messageKey="scenarios.loadFailed" />}
       {scenarios.data === undefined && !scenarios.isError && <p>{t("scenarios.loading")}</p>}
-      {scenarios.data !== undefined && scenarios.data.length === 0 && <p>{t("scenarios.empty")}</p>}
-      {scenarios.data !== undefined && scenarios.data.length > 0 && (
+      {scenarios.data !== undefined && scenarios.data.items.length === 0 && <p>{t("scenarios.empty")}</p>}
+      {scenarios.data !== undefined && scenarios.data.items.length > 0 && (
+        <ReviewedEtag.Provider value={scenarios.data.etag}>
         <ul className="space-y-3">
-          {scenarios.data.map((scenario) => (
+          {scenarios.data.items.map((scenario) => (
             <ScenarioCard
               key={scenario.id}
               scenario={scenario}
@@ -459,6 +457,7 @@ export function ScenariosPage() {
             />
           ))}
         </ul>
+        </ReviewedEtag.Provider>
       )}
     </div>
   );

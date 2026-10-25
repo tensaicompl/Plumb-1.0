@@ -578,5 +578,10 @@
   "shell.search.score": "Score",
   "shell.search.submit": "Search",
   "shell.user": "User",
-  "write.failed": "The change was not saved:"
+  "write.failed": "The change was not saved:",
+  "write.transportFailed": "The server could not be reached; the change was not saved. Check the connection and try again.",
+  "write.inferenceUnavailable": "The AI model is not available: no inference provider is configured for this server.",
+  "write.notLoaded": "The data for this change has not loaded yet; nothing was sent.",
+  "read.failed": "The data could not be loaded:",
+  "read.transportFailed": "The server could not be reached."
 }

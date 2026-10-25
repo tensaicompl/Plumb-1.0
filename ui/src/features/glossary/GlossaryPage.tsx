@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, revisionEtag, type Reviewed } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { errorCode, isBaselineChanged, SemanticChangePreviewPanel, type SemanticChangePreview } from "../requirements/RequirementDetail";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type GlossaryPage = components["schemas"]["GlossaryPage"];
 type WriteResult = components["schemas"]["WriteResult"];
@@ -18,16 +19,12 @@ export function glossaryQueryKey(cursor: string | null) {
   return ["glossary", cursor] as const;
 }
 
-async function fetchGlossary(cursor: string | null): Promise<GlossaryPage> {
+function fetchGlossary(cursor: string | null): Promise<Reviewed<GlossaryPage>> {
   const query: { cursor?: string; limit: number } = { limit: GLOSSARY_PAGE_SIZE };
   if (cursor !== null) {
     query.cursor = cursor;
   }
-  const { data, response } = await apiClient.GET("/api/glossary", { params: { query } });
-  if (data === undefined) {
-    throw new Error("GET /api/glossary failed with HTTP " + String(response.status));
-  }
-  return data;
+  return readReviewed(apiClient.GET("/api/glossary", { params: { query } }));
 }
 
 interface PendingMerge {
@@ -62,17 +59,22 @@ export function GlossaryPage() {
   const [pending, setPending] = useState<PendingMerge | null>(null);
   const [stale, setStale] = useState(false);
 
-  const preview = useVersionedMutation<SemanticChangePreview, { source: string; into: string; reason: string }>((choice, ifMatch) =>
-    apiClient.POST("/api/glossary/{id}/merge/preview", {
-      params: { path: { id: choice.source }, header: { "If-Match": ifMatch } },
-      body: { into: choice.into, reason: choice.reason },
-    }),
+  const preview = useVersionedMutation<SemanticChangePreview, { source: string; into: string; reason: string }>(
+    (choice, ifMatch) =>
+      apiClient.POST("/api/glossary/{id}/merge/preview", {
+        params: { path: { id: choice.source }, header: { "If-Match": ifMatch } },
+        body: { into: choice.into, reason: choice.reason },
+      }),
+    page.data?.etag,
   );
-  const confirm = useVersionedMutation<WriteResult, PendingMerge>((merge, ifMatch) =>
-    apiClient.POST("/api/proposals/{id}/merge", {
-      params: { path: { id: merge.preview.proposal_id }, header: { "If-Match": ifMatch } },
-      body: { reason: merge.reason },
-    }),
+  // The confirmation is based on the reviewed preview, which states its baseline revision.
+  const confirm = useVersionedMutation<WriteResult, PendingMerge>(
+    (merge, ifMatch) =>
+      apiClient.POST("/api/proposals/{id}/merge", {
+        params: { path: { id: merge.preview.proposal_id }, header: { "If-Match": ifMatch } },
+        body: { reason: merge.reason },
+      }),
+    (merge) => revisionEtag(merge.preview.revision),
   );
 
   const locked = pending !== null;
@@ -109,7 +111,7 @@ export function GlossaryPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t("glossary.title")}</h1>
-      {page.isError && <p role="alert">{t("glossary.loadFailed")}</p>}
+      {page.isError && <ReadFailure error={page.error} messageKey="glossary.loadFailed" />}
       {page.data === undefined && !page.isError && <p>{t("glossary.loading")}</p>}
       {page.data !== undefined && (
         <>

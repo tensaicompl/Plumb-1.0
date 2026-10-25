@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readData } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useModelVersion } from "../../api/useVersionedMutation";
 import { PILOT_GATES } from "../../app/nav";
+import { ReadFailure } from "../../components/ReadFailure";
 import { t, type MessageKey } from "../../i18n";
 
 type GateStatus = components["schemas"]["GateStatus"];
@@ -12,11 +13,7 @@ type GateStatus = components["schemas"]["GateStatus"];
 export const gatesQueryKey = ["gates"] as const;
 
 async function fetchGates(): Promise<GateStatus[]> {
-  const { data, response } = await apiClient.GET("/api/gates");
-  if (data === undefined) {
-    throw new Error(`GET /api/gates failed with HTTP ${response.status}`);
-  }
-  return data;
+  return (await readData(apiClient.GET("/api/gates")));
 }
 
 /** A returned gate passes or fails; a gate absent from the response is unevaluated. */
@@ -33,7 +30,7 @@ export function HomePage() {
   const gates = useQuery({ queryKey: gatesQueryKey, queryFn: fetchGates });
 
   if (version.isError || gates.isError) {
-    return <p role="alert">{t("home.loadFailed")}</p>;
+    return <ReadFailure error={version.error ?? gates.error} messageKey="home.loadFailed" />;
   }
   if (version.data === undefined || gates.data === undefined) {
     return <p>{t("home.loading")}</p>;

@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readData } from "../../api/client";
 import type { components } from "../../api/schema";
 import { t, type MessageKey } from "../../i18n";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type Decision = components["schemas"]["Decision"];
 
@@ -11,11 +12,7 @@ type Decision = components["schemas"]["Decision"];
 export const decisionsQueryKey = ["decisions"] as const;
 
 async function fetchDecisions(): Promise<Decision[]> {
-  const { data, response } = await apiClient.GET("/api/decisions");
-  if (data === undefined) {
-    throw new Error("GET /api/decisions failed with HTTP " + String(response.status));
-  }
-  return data.items;
+  return (await readData(apiClient.GET("/api/decisions"))).items;
 }
 
 function Item({ labelKey, name, children }: { labelKey: MessageKey; name: string; children: ReactNode }) {
@@ -45,7 +42,7 @@ export function DecisionsPage() {
       <p className="text-sm" data-testid="decisions-boundary">
         {t("decisions.boundary")}
       </p>
-      {decisions.isError && <p role="alert">{t("decisions.loadFailed")}</p>}
+      {decisions.isError && <ReadFailure error={decisions.error} messageKey="decisions.loadFailed" />}
       {decisions.data === undefined && !decisions.isError && <p>{t("decisions.loading")}</p>}
       {decisions.data !== undefined && decisions.data.length === 0 && <p>{t("decisions.empty")}</p>}
       {decisions.data !== undefined && decisions.data.length > 0 && (

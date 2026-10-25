@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, type Reviewed } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { ProcessDiagram } from "./ProcessDiagram";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type Process = components["schemas"]["Process"];
 type ProcessStepRequest = components["schemas"]["ProcessStepRequest"];
@@ -15,19 +16,11 @@ type WriteResult = components["schemas"]["WriteResult"];
 export const processesQueryKey = ["processes"] as const;
 
 async function fetchProcesses(): Promise<Process[]> {
-  const { data, response } = await apiClient.GET("/api/processes");
-  if (data === undefined) {
-    throw new Error("GET /api/processes failed with HTTP " + String(response.status));
-  }
-  return data.items;
+  return (await readReviewed(apiClient.GET("/api/processes"))).items;
 }
 
-async function fetchProcess(id: string): Promise<Process> {
-  const { data, response } = await apiClient.GET("/api/processes/{id}", { params: { path: { id } } });
-  if (data === undefined) {
-    throw new Error("GET /api/processes/{id} failed with HTTP " + String(response.status));
-  }
-  return data;
+function fetchProcess(id: string): Promise<Reviewed<Process>> {
+  return readReviewed(apiClient.GET("/api/processes/{id}", { params: { path: { id } } }));
 }
 
 /** A zero-based position, or null when the input is not a non-negative integer. */
@@ -48,13 +41,15 @@ function errorCode(error: unknown): string | null {
  * task to another performer lane. Each explicit submission is one POST /api/processes/{id}/steps
  * through the versioned mutation; the server builds and commits the semantic change.
  */
-function SemanticEdits({ process }: { process: Process }) {
+function SemanticEdits({ process }: { process: Reviewed<Process> }) {
   const queryClient = useQueryClient();
-  const steps = useVersionedMutation<WriteResult, ProcessStepRequest>((body, ifMatch) =>
-    apiClient.POST("/api/processes/{id}/steps", {
-      params: { path: { id: process.id }, header: { "If-Match": ifMatch } },
-      body,
-    }),
+  const steps = useVersionedMutation<WriteResult, ProcessStepRequest>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/processes/{id}/steps", {
+        params: { path: { id: process.id }, header: { "If-Match": ifMatch } },
+        body,
+      }),
+    process.etag,
   );
   const [addOperation, setAddOperation] = useState("");
   const [addPosition, setAddPosition] = useState("");
@@ -175,7 +170,7 @@ function SemanticEdits({ process }: { process: Process }) {
 function ProcessView({ id }: { id: string }) {
   const process = useQuery({ queryKey: [...processesQueryKey, "detail", id], queryFn: () => fetchProcess(id) });
   if (process.isError) {
-    return <p role="alert">{t("processes.loadFailed")}</p>;
+    return <ReadFailure error={process.error} messageKey="processes.loadFailed" />;
   }
   if (process.data === undefined) {
     return <p>{t("processes.loading")}</p>;
@@ -224,7 +219,7 @@ export function ProcessesPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t("processes.title")}</h1>
-      {processes.isError && <p role="alert">{t("processes.loadFailed")}</p>}
+      {processes.isError && <ReadFailure error={processes.error} messageKey="processes.loadFailed" />}
       {processes.data === undefined && !processes.isError && <p>{t("processes.loading")}</p>}
       {processes.data !== undefined && processes.data.length === 0 && <p>{t("processes.empty")}</p>}
       {processes.data !== undefined && processes.data.length > 0 && (

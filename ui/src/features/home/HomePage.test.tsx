@@ -7,7 +7,7 @@
 // relative `/api/...` URLs a browser resolves against its origin, so the test resolves them
 // against the jsdom location the same way.
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -349,8 +349,8 @@ describe("HomePage global search", () => {
 // ------------------------------------------------------------------ versioned writes
 
 describe("HomePage versioned mutation", () => {
-  it("sends the fetched semantic_hash once and surfaces a 412 without retrying", async () => {
-    const counts = { version: 0 };
+  it("sends the ETag of the reviewed read once, never fetches a version inside the mutation, and surfaces a 412 without retrying", async () => {
+    const counts = { version: 0, reviewed: 0 };
     const ifMatch: (string | null)[] = [];
     const rejected: PreconditionFailed = {
       code: "E_PRECONDITION_FAILED",
@@ -361,6 +361,10 @@ describe("HomePage versioned mutation", () => {
     };
     server.use(
       ...shellHandlers(counts),
+      http.get("*/api/requirements/:id", () => {
+        counts.reviewed += 1;
+        return HttpResponse.json({ id: "req:1" }, { headers: { ETag: '"rev:6:reviewedreviewed"' } });
+      }),
       http.post("*/api/proposals/:id/reject", ({ request }) => {
         ifMatch.push(request.headers.get("If-Match"));
         return HttpResponse.json(rejected, { status: 412 });
@@ -368,15 +372,21 @@ describe("HomePage versioned mutation", () => {
     );
 
     function Harness() {
-      const mutation = app.mutation.useVersionedMutation((id: string, version: string) =>
-        app.client.apiClient.POST("/api/proposals/{id}/reject", {
-          params: { path: { id }, header: { "If-Match": version } },
-          body: {},
-        }),
+      const reviewed = useQuery({
+        queryKey: ["reviewed"],
+        queryFn: () => app.client.readReviewed(app.client.apiClient.GET("/api/requirements/{id}", { params: { path: { id: "req:1" } } })),
+      });
+      const mutation = app.mutation.useVersionedMutation(
+        (id: string, version: string) =>
+          app.client.apiClient.POST("/api/proposals/{id}/reject", {
+            params: { path: { id }, header: { "If-Match": version } },
+            body: {},
+          }),
+        reviewed.data?.etag,
       );
       return (
         <div>
-          <button type="button" onClick={() => mutation.mutate("prp:0123456789abcdef")}>
+          <button type="button" disabled={reviewed.data === undefined} onClick={() => mutation.mutate("prp:0123456789abcdef")}>
             write
           </button>
           <span data-testid="mutation-status">{mutation.status}</span>
@@ -391,19 +401,21 @@ describe("HomePage versioned mutation", () => {
       history: createMemoryHistory({ initialEntries: ["/"] }),
     });
     const queryClient = newQueryClient();
-    // A stale cached version must never become the precondition.
-    queryClient.setQueryData(app.mutation.modelVersionQueryKey, { ...VERSION, semantic_hash: "psg:sha256:stale" });
     const invalidate = vi.spyOn(queryClient, "invalidateQueries");
     renderRouter(router, queryClient);
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("button", { name: "write" }));
+    const write = await screen.findByRole("button", { name: "write" });
+    await waitFor(() => expect((write as HTMLButtonElement).disabled).toBe(false));
+    const versionsBefore = counts.version;
+    await user.click(write);
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("The model has changed")).toBeTruthy();
     expect(within(dialog).getByTestId("conflict-revision").textContent).toBe(rejected.revision);
     expect(within(dialog).getByTestId("conflict-semantic-hash").textContent).toBe(rejected.semantic_hash);
-    expect(ifMatch).toEqual([VERSION.semantic_hash]);
-    expect(counts.version).toBe(1);
+    // The precondition is exactly the reviewed read's ETag; no version is fetched to make it.
+    expect(ifMatch).toEqual(['"rev:6:reviewedreviewed"']);
+    expect(counts.version).toBe(versionsBefore);
     expect(invalidate).toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId("mutation-status").textContent).toBe("error"));
     expect(screen.getByTestId("mutation-error").textContent).toBe("PreconditionFailedError");
@@ -423,6 +435,57 @@ describe("HomePage versioned mutation", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(ifMatch).toHaveLength(2);
     expect(app.mutation.useConflictStore.getState().conflict).toBeNull();
+  });
+
+  it("shows a typed transport failure when the write never reaches the server", async () => {
+    server.use(
+      ...shellHandlers(),
+      http.post("*/api/proposals/:id/reject", () => HttpResponse.error()),
+    );
+    function Harness() {
+      const mutation = app.mutation.useVersionedMutation(
+        (id: string, version: string) =>
+          app.client.apiClient.POST("/api/proposals/{id}/reject", { params: { path: { id }, header: { "If-Match": version } }, body: {} }),
+        '"rev:7:aaaaaaaaaaaaaaaa"',
+      );
+      return (
+        <div>
+          <button type="button" onClick={() => mutation.mutate("prp:0123456789abcdef")}>
+            write
+          </button>
+          <span data-testid="mutation-error">{mutation.error === null ? "" : app.mutation.writeErrorMessage(mutation.error)}</span>
+          <span data-testid="mutation-code">{mutation.error instanceof app.mutation.WriteFailedError ? String((mutation.error.body as { code: string }).code) : ""}</span>
+        </div>
+      );
+    }
+    const root = createRootRoute({ component: app.shell.AppShell });
+    const index = createRoute({ getParentRoute: () => root, path: "/", component: Harness });
+    const router = createRouter({ routeTree: root.addChildren([index]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+    renderRouter(router, newQueryClient());
+    await userEvent.setup().click(await screen.findByRole("button", { name: "write" }));
+    await waitFor(() => expect(screen.getByTestId("mutation-code").textContent).toBe("E_TRANSPORT_FAILED"));
+    expect(screen.getByTestId("mutation-error").textContent).toBe("The server could not be reached; the change was not saved. Check the connection and try again.");
+  });
+});
+
+describe("HomePage reads", () => {
+  it("retries only network failures and 502/503/504, at most twice, and keeps the typed error", async () => {
+    const { shouldRetryRead, ReadFailedError, readReviewed } = app.client;
+    const failure = (status: number) => new ReadFailedError(status, { code: "E_X", message: "m", details: {} });
+    expect(shouldRetryRead(0, new TypeError("Failed to fetch"))).toBe(true);
+    for (const status of [502, 503, 504]) {
+      expect(shouldRetryRead(0, failure(status))).toBe(true);
+      expect(shouldRetryRead(1, failure(status))).toBe(true);
+      expect(shouldRetryRead(2, failure(status))).toBe(false);
+    }
+    for (const status of [400, 404, 409, 412, 422, 500]) {
+      expect(shouldRetryRead(0, failure(status))).toBe(false);
+    }
+    server.use(http.get("*/api/requirements/:id", () => HttpResponse.json({ code: "E_NOT_FOUND", message: "no requirement req:9", details: {} }, { status: 404 })));
+    const error = await readReviewed(app.client.apiClient.GET("/api/requirements/{id}", { params: { path: { id: "req:9" } } })).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReadFailedError);
+    expect((error as InstanceType<typeof ReadFailedError>).code).toBe("E_NOT_FOUND");
+    expect((error as InstanceType<typeof ReadFailedError>).serverMessage).toBe("no requirement req:9");
   });
 });
 
@@ -449,7 +512,7 @@ describe("HomePage design events", () => {
     });
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(setData).not.toHaveBeenCalled();
-    await waitFor(() => expect(queryClient.getQueryData(app.mutation.modelVersionQueryKey)).toEqual(VERSION));
+    await waitFor(() => expect(queryClient.getQueryData(app.mutation.modelVersionQueryKey)).toMatchObject(VERSION));
 
     for (const malformed of [
       "not json",
@@ -468,7 +531,7 @@ describe("HomePage design events", () => {
     }
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(setData).not.toHaveBeenCalled();
-    expect(queryClient.getQueryData(app.mutation.modelVersionQueryKey)).toEqual(VERSION);
+    expect(queryClient.getQueryData(app.mutation.modelVersionQueryKey)).toMatchObject(VERSION);
 
     view.unmount();
     expect(socket.closed).toBe(true);
