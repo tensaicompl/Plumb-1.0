@@ -62,6 +62,19 @@ describe("Scenario list", () => {
     expect(within(list).getByText("Approve leave request: Submitted → Approved")).toBeTruthy();
   });
 
+  it("moves through the list with J and K and closes the inspector with ⌘.", async () => {
+    const { user, router } = await h.renderAt("/scenarios", ...backend());
+    await screen.findByText("Submit leave request: Draft → Submitted");
+    await user.keyboard("j");
+    await waitFor(() => expect(router.state.location.pathname).toBe("/scenarios/scenario:submit"));
+    await user.keyboard("j");
+    await waitFor(() => expect(router.state.location.pathname).toBe("/scenarios/scenario:approve"));
+    await user.keyboard("k");
+    await waitFor(() => expect(router.state.location.pathname).toBe("/scenarios/scenario:submit"));
+    await user.keyboard("{Meta>}.{/Meta}");
+    await waitFor(() => expect(router.state.location.pathname).toBe("/scenarios"));
+  });
+
   it("shows the empty state", async () => {
     await h.renderAt("/scenarios", ...backend([]));
     expect(await screen.findByRole("heading", { name: "No scenarios yet" })).toBeTruthy();

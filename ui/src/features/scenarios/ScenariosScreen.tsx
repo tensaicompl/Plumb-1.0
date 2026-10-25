@@ -178,6 +178,32 @@ export function ScenariosScreen() {
   );
   const selected = items.find((item) => item.id === params.id) ?? null;
 
+  // J / K move through the shown rows and ⌘. closes the inspector; keys typed into fields are ignored.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target !== null && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) || document.querySelector("[role=dialog]") !== null) {
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === ".") {
+        event.preventDefault();
+        go("/scenarios");
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey || (event.key !== "j" && event.key !== "k")) {
+        return;
+      }
+      const index = shown.findIndex((item) => item.id === selected?.id);
+      const next = event.key === "j" ? shown[Math.min(shown.length - 1, index + 1)] : shown[Math.max(0, index - 1)];
+      if (next !== undefined && next.id !== selected?.id) {
+        event.preventDefault();
+        go(buildHref("/scenarios/$id", { id: next.id }));
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   const select = (event: MouseEvent<HTMLButtonElement>, id: string) => {
     event.preventDefault();
     go(buildHref("/scenarios/$id", { id }));

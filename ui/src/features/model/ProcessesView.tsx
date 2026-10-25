@@ -235,7 +235,7 @@ function ProcessDetail({ id, onImport }: { id: string; onImport: () => void }) {
         <ol aria-labelledby={headingId + "-steps"} className="m-0 flex list-none flex-col gap-2 p-0">
           {steps.map((node, index) => (
             <li key={node.id} className="flex items-center gap-2 text-caption text-fg-2">
-              <span className="w-4 font-mono text-eyebrow font-medium text-fg-4">{index + 1}</span>
+              <span className="w-4 font-mono text-eyebrow font-medium text-fg-3">{index + 1}</span>
               {nodeName(node, label)}
             </li>
           ))}
@@ -405,7 +405,7 @@ function EditStepsSheet({ process, steps, label, onClose }: { process: Reviewed<
           const name = nodeName(node, label);
           return (
             <li key={node.id} className="flex items-center gap-2 border-b border-line px-3.5 py-2 text-footnote last:border-b-0">
-              <span className="w-4 font-mono text-eyebrow text-fg-4">{index + 1}</span>
+              <span className="w-4 font-mono text-eyebrow text-fg-3">{index + 1}</span>
               <span className="min-w-0 flex-1 truncate font-medium text-fg">{name}</span>
               <IconButton
                 size={30}

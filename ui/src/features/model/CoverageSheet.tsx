@@ -86,7 +86,7 @@ export function CoverageSheet({ open, onOpenChange }: { open: boolean; onOpenCha
                         <Tooltip content={sentence}>
                           {/* Focusable so keyboard users get the same explanation as on hover. */}
                           {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-                          <span tabIndex={0} className={letters === "" ? "font-sans text-fg-4" : "font-mono font-semibold text-fg"}>
+                          <span tabIndex={0} className={letters === "" ? "font-sans text-fg-3" : "font-mono font-semibold text-fg"}>
                             {letters === "" ? "·" : letters}
                           </span>
                         </Tooltip>
