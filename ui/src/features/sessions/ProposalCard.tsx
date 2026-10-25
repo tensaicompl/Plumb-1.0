@@ -6,7 +6,7 @@ import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { ProposalReviewBar, type ProposalReviewAction } from "../../components/ProposalReviewBar";
 import { t } from "../../i18n";
-import { invalidateU22, isBaselineChanged, proposalActionRequest, writeErrorCode } from "../questions/QuestionsPage";
+import { invalidateU22, isBaselineChanged, proposalActionRequest, writeErrorCode } from "../../components/QuestionAnswerCard";
 
 export type SessionProposalView = components["schemas"]["SessionProposalView"];
 type ProposalKind = components["schemas"]["ProposalKind"];

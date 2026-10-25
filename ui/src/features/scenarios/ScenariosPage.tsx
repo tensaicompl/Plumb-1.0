@@ -5,7 +5,7 @@ import { apiClient, readReviewed, ReviewedEtag, useReviewedEtag, type ReviewedIt
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
-import { writeErrorCode } from "../questions/QuestionsPage";
+import { writeErrorCode } from "../../components/QuestionAnswerCard";
 import { ScenarioTrace } from "./ScenarioTrace";
 import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
 import { ReadFailure } from "../../components/ReadFailure";

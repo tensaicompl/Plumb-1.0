@@ -1,22 +1,22 @@
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+// The old answer card and proposal-action helpers, kept for the old pages that still use them
+// (the Assistant session panel, Rules, Scenarios) until their screen lanes replace them. The new
+// Inbox (src/features/inbox) answers questions in its own inspector card.
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient, readReviewed, revisionEtag, ReviewedEtag, useReviewedEtag, type ReviewedItems } from "../../api/client";
-import type { components } from "../../api/schema";
-import { modelVersionQueryKey, useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
-import { ProposalReviewBar, type ProposalReviewAction } from "../../components/ProposalReviewBar";
-import { isAnswerComplete, TypedAnswerControl, type AnswerValue } from "../../components/TypedAnswerControl";
-import { t } from "../../i18n";
-import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
-import { ReadFailure } from "../../components/ReadFailure";
-import { RoleGate } from "../../components/RoleGate";
+import { apiClient, readReviewed, revisionEtag, useReviewedEtag, type ReviewedItems } from "../api/client";
+import type { components } from "../api/schema";
+import { modelVersionQueryKey, useVersionedMutation, WriteFailedError, writeErrorMessage } from "../api/useVersionedMutation";
+import { ProposalReviewBar, type ProposalReviewAction } from "./ProposalReviewBar";
+import { isAnswerComplete, TypedAnswerControl, type AnswerValue } from "./TypedAnswerControl";
+import { t } from "../i18n";
+import type { ItemHealth } from "./HealthMarkers";
 
 export type Question = components["schemas"]["Question"];
 export type AnswerResponse = components["schemas"]["AnswerResponse"];
 export type ProposalKind = components["schemas"]["ProposalKind"];
 type QuestionPage = components["schemas"]["QuestionPage"];
 type WriteResult = components["schemas"]["WriteResult"];
-type CreateRoundResponse = components["schemas"]["CreateRoundResponse"];
 
 /** The query keys U2.2 reads; every successful U2.2 write invalidates them. */
 export const questionsQueryKey = ["questions"] as const;
@@ -280,220 +280,5 @@ export function QuestionAnswerCard({ question }: { question: Question }) {
         </section>
       )}
     </div>
-  );
-}
-
-/** The analyst round manager (Hotfix 076): explicit stakeholder and integer max in 1..=15; the server composes. */
-export const ROUND_MAX = 15;
-
-/** The explicit round size, or null when the input is not an integer in 1..=ROUND_MAX. */
-export function parseRoundMax(input: string): number | null {
-  if (!/^[0-9]+$/.test(input)) {
-    return null;
-  }
-  const value = Number(input);
-  return value >= 1 && value <= ROUND_MAX ? value : null;
-}
-
-function RoundManager({ stakeholders }: { stakeholders: readonly string[] }) {
-  const queryClient = useQueryClient();
-  const [stakeholder, setStakeholder] = useState("");
-  const [max, setMax] = useState("");
-  const [round, setRound] = useState<CreateRoundResponse["round"] | null>(null);
-  const create = useVersionedMutation<CreateRoundResponse, { stakeholder: string; max: number }>(
-    (body, ifMatch) => apiClient.POST("/api/rounds", { params: { header: { "If-Match": ifMatch } }, body }),
-    useReviewedEtag(),
-  );
-  const parsed = parseRoundMax(max);
-  const invalid = max !== "" && parsed === null;
-
-  return (
-    <form
-      aria-label={t("rounds.title")}
-      className="space-y-2 rounded border p-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (stakeholder === "" || parsed === null) {
-          return;
-        }
-        create.mutate(
-          { stakeholder, max: parsed },
-          {
-            onSuccess: (response) => {
-              setRound(response.round);
-              void invalidateU22(queryClient);
-            },
-          },
-        );
-      }}
-    >
-      <h2 className="font-semibold">{t("rounds.title")}</h2>
-      <label className="block text-sm">
-        {t("rounds.stakeholder")}
-        <select className="ml-2 rounded border" value={stakeholder} data-testid="round-stakeholder" onChange={(event) => setStakeholder(event.target.value)}>
-          <option value="">{t("rounds.chooseStakeholder")}</option>
-          {stakeholders.map((ref) => (
-            <option key={ref} value={ref}>
-              {ref}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-sm">
-        {t("rounds.max")}
-        <input
-          type="number"
-          min={1}
-          max={ROUND_MAX}
-          step={1}
-          className="ml-2 rounded border p-1"
-          value={max}
-          aria-invalid={invalid}
-          data-testid="round-max"
-          onChange={(event) => setMax(event.target.value)}
-        />
-      </label>
-      {invalid && (
-        <p role="alert" className="text-sm text-red-800" data-testid="round-max-invalid">
-          {t("rounds.maxInvalid")}
-        </p>
-      )}
-      <button type="submit" className="rounded border px-3 py-1" data-testid="round-submit" disabled={create.isPending || stakeholder === "" || parsed === null}>
-        {t("rounds.compose")}
-      </button>
-      <WriteError error={create.error} />
-      {round !== null && (
-        <section aria-label={t("rounds.result")} data-testid="round-result" className="text-sm">
-          <h3 className="font-semibold">{t("rounds.result")}</h3>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4">
-            <dt>{t("rounds.id")}</dt>
-            <dd className="font-mono" data-testid="round-id">
-              {round.id}
-            </dd>
-            <dt>{t("rounds.stakeholder")}</dt>
-            <dd className="font-mono">{round.stakeholder}</dd>
-          </dl>
-          {round.questions.length === 0 ? (
-            <p>{t("rounds.empty")}</p>
-          ) : (
-            <ol className="font-mono" data-testid="round-questions">
-              {round.questions.map((id) => (
-                <li key={id}>{id}</li>
-              ))}
-            </ol>
-          )}
-        </section>
-      )}
-    </form>
-  );
-}
-
-/** One Question with its exact server fields; context refs are shown as exact IDs. */
-function QuestionItem({ question }: { question: Question }) {
-  return (
-    <li className="space-y-2 rounded border p-3" data-question-id={question.id}>
-      <p data-testid="question-text">{question.text}</p>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 text-sm">
-        <dt>{t("question.id")}</dt>
-        <dd className="font-mono">{question.id}</dd>
-        <dt>{t("question.kind")}</dt>
-        <dd className="font-mono" data-field="kind">
-          {question.kind}
-        </dd>
-        <dt>{t("question.status")}</dt>
-        <dd className="font-mono" data-field="status">
-          {question.status}
-        </dd>
-        <dt>{t("question.priority")}</dt>
-        <dd data-field="priority">{question.priority === null ? t("question.none") : String(question.priority)}</dd>
-        <dt>{t("question.round")}</dt>
-        <dd className="font-mono" data-field="round">
-          {question.round_ref ?? t("question.none")}
-        </dd>
-        <dt>{t("question.context")}</dt>
-        <dd>
-          {question.context_refs.length === 0 ? (
-            t("question.none")
-          ) : (
-            <ul className="font-mono" data-field="context">
-              {question.context_refs.map((ref) => (
-                <li key={ref}>{ref}</li>
-              ))}
-            </ul>
-          )}
-        </dd>
-      </dl>
-      <QuestionAnswerCard question={question} />
-    </li>
-  );
-}
-
-/** The stakeholder Question inbox and the analyst round manager (v2 U5 as refined by Hotfix 076). */
-export function QuestionsPage() {
-  const questions = useQuery({ queryKey: [...questionsQueryKey, "inbox"], queryFn: () => fetchQuestions() });
-
-  const title = <h1 className="text-xl font-semibold">{t("questions.title")}</h1>;
-  if (questions.isError) {
-    return (
-      <div className="space-y-4">
-        {title}
-        <ReadFailure error={questions.error} messageKey="questions.loadFailed" />
-      </div>
-    );
-  }
-  if (questions.data === undefined) {
-    return (
-      <div className="space-y-4">
-        {title}
-        <p>{t("questions.loading")}</p>
-      </div>
-    );
-  }
-  // Groups by exact stakeholder_ref in server order of first appearance; unassigned last.
-  const groups = new Map<string, Question[]>();
-  const unassigned: Question[] = [];
-  for (const question of questions.data.items) {
-    if (question.stakeholder_ref === null) {
-      unassigned.push(question);
-    } else {
-      const group = groups.get(question.stakeholder_ref) ?? [];
-      group.push(question);
-      groups.set(question.stakeholder_ref, group);
-    }
-  }
-
-  return (
-    <ReviewedEtag.Provider value={questions.data.etag}>
-    <div className="space-y-4">
-      {title}
-      <RoleGate>
-        <RoundManager stakeholders={[...groups.keys()]} />
-      </RoleGate>
-      <HealthMarkers health={questions.data.health} />
-      {questions.data.items.length === 0 && <p>{t("questions.empty")}</p>}
-      {[...groups.entries()].map(([stakeholder, items]) => (
-        <section key={stakeholder} aria-label={stakeholder} data-stakeholder={stakeholder} className="space-y-2">
-          <h2 className="font-semibold">
-            {t("questions.stakeholder")} <span className="font-mono">{stakeholder}</span>
-          </h2>
-          <ul className="space-y-2">
-            {items.map((question) => (
-              <QuestionItem key={question.id} question={question} />
-            ))}
-          </ul>
-        </section>
-      ))}
-      {unassigned.length > 0 && (
-        <section aria-label={t("questions.unassigned")} data-stakeholder="" className="space-y-2">
-          <h2 className="font-semibold">{t("questions.unassigned")}</h2>
-          <ul className="space-y-2">
-            {unassigned.map((question) => (
-              <QuestionItem key={question.id} question={question} />
-            ))}
-          </ul>
-        </section>
-      )}
-    </div>
-    </ReviewedEtag.Provider>
   );
 }

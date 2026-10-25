@@ -1,6 +1,6 @@
 // Route bodies that keep the app usable inside the new shell until each screen lane replaces them:
 // the old pages, wrapped in a scrolling padded column, with segmented navigation where one
-// destination groups several old pages (Inbox, Model, Quality). See src/README-SCREENS.md.
+// destination groups several old pages (Model, Quality). See src/README-SCREENS.md.
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
@@ -8,11 +8,8 @@ import type { ReactNode } from "react";
 import { apiClient, readData } from "../../api/client";
 import { Button, EmptyState, MonoId, SegmentedLinks, Skeleton, SkeletonGroup } from "../../components/ui";
 import { ReadFailure } from "../../components/ReadFailure";
-import { ProposalsPage } from "../../features/proposals/ProposalsPage";
-import { QuestionsPage } from "../../features/questions/QuestionsPage";
-import { SentencesPage } from "../../features/sentences/SentencesPage";
 import { t, type MessageKey } from "../../i18n";
-import { buildHref, useGo } from "../shell/navigation";
+import { useGo } from "../shell/navigation";
 
 /** An old page inside the new shell: a scrolling column with the page padding. */
 export function Legacy({ children }: { children: ReactNode }) {
@@ -22,41 +19,6 @@ export function Legacy({ children }: { children: ReactNode }) {
 function Views({ labelKey, items }: { labelKey: MessageKey; items: readonly { href: string; label: string; active: boolean }[] }) {
   const go = useGo();
   return <SegmentedLinks label={t(labelKey)} items={items} onNavigate={go} className="mb-6" />;
-}
-
-// ------------------------------------------------------------------ Inbox
-
-export type InboxFilter = "proposals" | "questions" | "wording";
-
-/** The Inbox `filter` search parameter (unknown values fall back to proposals). */
-export function parseInboxFilter(search: Record<string, unknown>): { filter?: InboxFilter } {
-  const value = search["filter"];
-  return value === "questions" || value === "wording" || value === "proposals" ? { filter: value } : {};
-}
-
-/** /inbox and /inbox/$id: the proposals, questions and wording queues of the old pages. */
-export function InboxInterim({ filter }: { filter: InboxFilter | undefined }) {
-  const active = filter ?? "proposals";
-  const views: { filter: InboxFilter; label: MessageKey }[] = [
-    { filter: "proposals", label: "inbox.view.proposals" },
-    { filter: "questions", label: "inbox.view.questions" },
-    { filter: "wording", label: "inbox.view.wording" },
-  ];
-  return (
-    <Legacy>
-      <Views
-        labelKey="inbox.views"
-        items={views.map((view) => ({
-          href: view.filter === "proposals" ? "/inbox" : buildHref("/inbox", {}, { filter: view.filter }),
-          label: t(view.label),
-          active: view.filter === active,
-        }))}
-      />
-      {active === "proposals" && <ProposalsPage />}
-      {active === "questions" && <QuestionsPage />}
-      {active === "wording" && <SentencesPage />}
-    </Legacy>
-  );
 }
 
 // ------------------------------------------------------------------ Model and Quality

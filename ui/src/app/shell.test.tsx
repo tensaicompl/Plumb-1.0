@@ -682,7 +682,7 @@ describe("Routes", () => {
     }
   });
 
-  it("switches Inbox, Model and Quality views with segmented navigation", async () => {
+  it("switches Model and Quality views with segmented navigation and Inbox filters with links", async () => {
     const { user, router } = renderAt("/model/glossary");
     const views = await screen.findByRole("navigation", { name: "Model views" });
     expect(within(views).getByRole("link", { name: "Glossary" }).getAttribute("aria-current")).toBe("page");
@@ -696,8 +696,8 @@ describe("Routes", () => {
     act(() => {
       void router.navigate({ to: "/inbox" });
     });
-    const inbox = await screen.findByRole("navigation", { name: "Inbox views" });
-    await user.click(within(inbox).getByRole("link", { name: "Questions" }));
+    const inbox = await screen.findByRole("navigation", { name: "Inbox filters" });
+    await user.click(within(inbox).getByRole("link", { name: /^Questions/ }));
     await waitFor(() => expect(router.state.location.search).toEqual({ filter: "questions" }));
   });
 

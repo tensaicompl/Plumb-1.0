@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, createRouter, redirect, type RouterHistory } from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, redirect, useParams, type RouterHistory } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
 import { CalculationsPage } from "../features/calculations/CalculationsPage";
@@ -14,7 +14,9 @@ import { RequirementsPage } from "../features/requirements/RequirementsPage";
 import { RulesPage } from "../features/rules/RulesPage";
 import { ScenariosPage } from "../features/scenarios/ScenariosPage";
 import { AppShell } from "./AppShell";
-import { InboxInterim, Legacy, ModelInterim, parseInboxFilter, QualityInterim, SourceInterim, SourcesInterim } from "./routes/interim";
+import { InboxScreen } from "../features/inbox/InboxScreen";
+import { parseInboxSearch } from "../features/inbox/model";
+import { Legacy, ModelInterim, QualityInterim, SourceInterim, SourcesInterim } from "./routes/interim";
 import { NotFoundPage, RouteErrorPage } from "./RouteStatus";
 
 // The explicit route tree: the spec §3 URL structure, every URL deep-linkable. Screen lanes
@@ -57,25 +59,22 @@ const overviewRoute = createRoute({
 
 // ------------------------------------------------------------------ Inbox
 
+// S2: the Inbox screen (src/features/inbox). One screen instance serves `/inbox` and
+// `/inbox/$id` (the child routes only carry the selected item), so moving through the queue
+// keeps its state. `?filter=` picks a smart filter.
 const inboxRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/inbox",
-  validateSearch: parseInboxFilter,
+  validateSearch: parseInboxSearch,
   component: function InboxRoute() {
     const { filter } = inboxRoute.useSearch();
-    return <InboxInterim filter={filter} />;
+    const params: { id?: string } = useParams({ strict: false });
+    return <InboxScreen {...(filter === undefined ? {} : { filter })} {...(params.id === undefined ? {} : { selectedId: params.id })} />;
   },
 });
 
-const inboxItemRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/inbox/$id",
-  validateSearch: parseInboxFilter,
-  component: function InboxItemRoute() {
-    const { filter } = inboxItemRoute.useSearch();
-    return <InboxInterim filter={filter} />;
-  },
-});
+const inboxIndexRoute = createRoute({ getParentRoute: () => inboxRoute, path: "/" });
+const inboxItemRoute = createRoute({ getParentRoute: () => inboxRoute, path: "$id" });
 
 // ------------------------------------------------------------------ Requirements
 
@@ -183,8 +182,7 @@ const sourceRoute = createRoute({
 export const routeTree = rootRoute.addChildren([
   indexRoute,
   overviewRoute,
-  inboxRoute,
-  inboxItemRoute,
+  inboxRoute.addChildren([inboxIndexRoute, inboxItemRoute]),
   requirementsRoute,
   requirementRoute,
   modelRoute.addChildren([modelIndexRoute, ...glossaryRoutes, ...entitiesRoutes, ...rulesRoutes, ...calculationsRoutes, ...processesRoutes]),

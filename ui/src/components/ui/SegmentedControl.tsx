@@ -15,10 +15,15 @@ export interface SegmentOption<T extends string> {
 }
 
 export interface SegmentedControlProps<T extends string> {
-  /** The group's accessible name. */
-  readonly label: string;
+  /** The group's accessible name (or name it with `labelledBy`). */
+  readonly label?: string;
+  /** The ID of the element that names the group. */
+  readonly labelledBy?: string;
   readonly options: readonly SegmentOption<T>[];
-  readonly value: T;
+  /** The chosen value; null while nothing is chosen (the first segment keeps the tab stop). */
+  readonly value: T | null;
+  /** Segments share the full width (an answer control in the inspector). */
+  readonly fill?: boolean;
   readonly onChange: (value: T) => void;
   readonly className?: string;
 }
@@ -28,9 +33,10 @@ export interface SegmentedControlProps<T extends string> {
  * arrow keys, Home and End move and select, skipping disabled segments. Track surface radius 10
  * padding 3; segment 30 px radius 8; the active segment is white with a soft shadow.
  */
-export function SegmentedControl<T extends string>({ label, options, value, onChange, className }: SegmentedControlProps<T>) {
+export function SegmentedControl<T extends string>({ label, labelledBy, options, value, fill = false, onChange, className }: SegmentedControlProps<T>) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const enabled = options.map((option, index) => ({ option, index })).filter(({ option }) => option.disabled !== true);
+  const tabStop = options.some((option) => option.value === value) ? null : enabled[0]?.index;
   const move = (event: KeyboardEvent<HTMLButtonElement>, from: number) => {
     const position = enabled.findIndex(({ index }) => index === from);
     let target: number | undefined;
@@ -54,7 +60,7 @@ export function SegmentedControl<T extends string>({ label, options, value, onCh
     }
   };
   return (
-    <div role="radiogroup" aria-label={label} className={cn(TRACK, className)}>
+    <div role="radiogroup" aria-label={label} aria-labelledby={labelledBy} className={cn(TRACK, fill && "flex w-full", className)}>
       {options.map((option, index) => {
         const checked = option.value === value;
         return (
@@ -67,10 +73,10 @@ export function SegmentedControl<T extends string>({ label, options, value, onCh
             role="radio"
             aria-checked={checked}
             disabled={option.disabled}
-            tabIndex={checked ? 0 : -1}
+            tabIndex={checked || index === tabStop ? 0 : -1}
             onClick={() => onChange(option.value)}
             onKeyDown={(event) => move(event, index)}
-            className={cn(SEGMENT, checked ? ACTIVE : INACTIVE, "disabled:cursor-not-allowed disabled:opacity-40")}
+            className={cn(SEGMENT, fill && "h-9 flex-1", checked ? ACTIVE : INACTIVE, "disabled:cursor-not-allowed disabled:opacity-40")}
           >
             {option.label}
           </button>
