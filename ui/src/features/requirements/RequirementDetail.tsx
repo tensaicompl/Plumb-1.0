@@ -52,9 +52,14 @@ export function errorCode(error: unknown): string | null {
   return null;
 }
 
-/** A confirmation refused because the previewed proposal's baseline revision is no longer the head. */
-export function isBaselineChanged(error: unknown): boolean {
-  return error instanceof WriteFailedError && error.status === 409 && errorCode(error) === "E_PROPOSAL_BASELINE_CHANGED";
+/** A submission refused because the change it rebuilds is no longer the reviewed preview (H0.11). */
+export function isPreviewMismatch(error: unknown): boolean {
+  return error instanceof WriteFailedError && error.status === 409 && errorCode(error) === "E_PREVIEW_MISMATCH";
+}
+
+/** The identity of a reviewed preview that a direct write submits (H0.11, architecture §33.12). */
+export function previewConfirmation(preview: SemanticChangePreview) {
+  return { proposal_id: preview.proposal_id, built_at: preview.built_at };
 }
 
 function WriteError({ error }: { error: Error | null }) {
@@ -69,9 +74,10 @@ function WriteError({ error }: { error: Error | null }) {
 }
 
 /**
- * A server-authoritative semantic change preview (Hotfix 073/074): the pending proposal, its server
- * intake and the exact server semantic element diff. Nothing is committed until the explicit
- * confirmation; the candidate hash describes the domain proposal only, never the committed model.
+ * A server-authoritative semantic change preview (Hotfix 073/074): the exact proposal, its server
+ * intake and the exact server semantic element diff. Nothing is persisted (H0.11) or committed until
+ * the explicit confirmation; the candidate hash describes the domain proposal only, never the
+ * committed model. Discarding it is local: there is nothing on the server to discard.
  */
 export function SemanticChangePreviewPanel({
   preview,
@@ -174,16 +180,19 @@ export function SemanticChangePreviewPanel({
   );
 }
 
-/** The proposal ID and reason of one server preview awaiting explicit confirmation. */
+/** One server preview awaiting explicit confirmation, with the exact request it previewed. */
 interface PendingPreview {
   readonly preview: SemanticChangePreview;
+  readonly parts: string[];
   readonly reason: string;
 }
 
 /**
- * The requirement split workflow: preview (server-built create-class proposal, Hotfix 074), then an
- * explicit confirmation through POST /api/proposals/{id}/create with the same reason. A moved
- * baseline discards the preview and requires a new one; nothing is retried.
+ * The requirement split workflow: preview (server-built create-class proposal, Hotfix 074, never
+ * persisted), then an explicit confirmation that submits the reviewed preview through POST
+ * /api/requirements/{id}/split with the same request and the preview's identity, against the
+ * preview's baseline revision. A moved head (412) or a change that is no longer the previewed one
+ * (E_PREVIEW_MISMATCH) discards the preview and requires a new one; nothing is retried.
  */
 function SplitAction({ requirementId, etag }: { requirementId: string; etag: string | null }) {
   const queryClient = useQueryClient();
@@ -203,9 +212,9 @@ function SplitAction({ requirementId, etag }: { requirementId: string; etag: str
   // The confirmation is based on the reviewed preview, which states its baseline revision.
   const confirm = useVersionedMutation<WriteResult, PendingPreview>(
     (target, ifMatch) =>
-      apiClient.POST("/api/proposals/{id}/create", {
-        params: { path: { id: target.preview.proposal_id }, header: { "If-Match": ifMatch } },
-        body: { reason: target.reason },
+      apiClient.POST("/api/requirements/{id}/split", {
+        params: { path: { id: requirementId }, header: { "If-Match": ifMatch } },
+        body: { parts: target.parts, reason: target.reason, preview: previewConfirmation(target.preview) },
       }),
     (target) => revisionEtag(target.preview.revision),
   );
@@ -214,7 +223,7 @@ function SplitAction({ requirementId, etag }: { requirementId: string; etag: str
     setStale(false);
     confirm.reset();
     const body = { parts, reason };
-    preview.mutate(body, { onSuccess: (data) => setPending({ preview: data, reason: body.reason }) });
+    preview.mutate(body, { onSuccess: (data) => setPending({ preview: data, parts: body.parts, reason: body.reason }) });
   };
 
   const confirmPreview = () => {
@@ -229,7 +238,7 @@ function SplitAction({ requirementId, etag }: { requirementId: string; etag: str
         void queryClient.invalidateQueries();
       },
       onError: (error) => {
-        if (isBaselineChanged(error)) {
+        if (isPreviewMismatch(error)) {
           setPending(null);
           setStale(true);
           void queryClient.invalidateQueries();

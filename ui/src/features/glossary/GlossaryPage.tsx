@@ -6,7 +6,13 @@ import { isCursorBaselineChanged, useCursorPages, useCursorRecovery } from "../.
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
-import { errorCode, isBaselineChanged, SemanticChangePreviewPanel, type SemanticChangePreview } from "../requirements/RequirementDetail";
+import {
+  errorCode,
+  isPreviewMismatch,
+  previewConfirmation,
+  SemanticChangePreviewPanel,
+  type SemanticChangePreview,
+} from "../requirements/RequirementDetail";
 import { ReadFailure } from "../../components/ReadFailure";
 import { RoleGate } from "../../components/RoleGate";
 
@@ -99,6 +105,8 @@ function TermActions({ term, etag }: { term: GlossaryTerm; etag: string | null }
 
 interface PendingMerge {
   readonly preview: SemanticChangePreview;
+  readonly source: string;
+  readonly into: string;
   readonly reason: string;
 }
 
@@ -115,8 +123,9 @@ function Failure({ error }: { error: Error | null }) {
 
 /**
  * The glossary (v2 U3): the server term list with cursor pagination, and Term merge as an explicit
- * source/target/reason choice, a server preview (merge-class proposal, intake and semantic diff)
- * and an explicit confirmation through POST /api/proposals/{id}/merge with the same reason.
+ * source/target/reason choice, a server preview (merge-class proposal, intake and semantic diff;
+ * never persisted, H0.11) and an explicit confirmation that submits the reviewed preview through
+ * POST /api/glossary/{id}/merge with the same request and the preview's identity.
  */
 export function GlossaryPage() {
   const queryClient = useQueryClient();
@@ -141,9 +150,9 @@ export function GlossaryPage() {
   // The confirmation is based on the reviewed preview, which states its baseline revision.
   const confirm = useVersionedMutation<WriteResult, PendingMerge>(
     (merge, ifMatch) =>
-      apiClient.POST("/api/proposals/{id}/merge", {
-        params: { path: { id: merge.preview.proposal_id }, header: { "If-Match": ifMatch } },
-        body: { reason: merge.reason },
+      apiClient.POST("/api/glossary/{id}/merge", {
+        params: { path: { id: merge.source }, header: { "If-Match": ifMatch } },
+        body: { into: merge.into, reason: merge.reason, preview: previewConfirmation(merge.preview) },
       }),
     (merge) => revisionEtag(merge.preview.revision),
   );
@@ -154,7 +163,7 @@ export function GlossaryPage() {
     setStale(false);
     confirm.reset();
     const choice = { source, into: target, reason };
-    preview.mutate(choice, { onSuccess: (data) => setPending({ preview: data, reason: choice.reason }) });
+    preview.mutate(choice, { onSuccess: (data) => setPending({ preview: data, ...choice }) });
   };
 
   const confirmPreview = () => {
@@ -170,7 +179,7 @@ export function GlossaryPage() {
         void queryClient.invalidateQueries();
       },
       onError: (error) => {
-        if (isBaselineChanged(error)) {
+        if (isPreviewMismatch(error)) {
           setPending(null);
           setStale(true);
           void queryClient.invalidateQueries();

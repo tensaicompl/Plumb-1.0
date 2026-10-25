@@ -105,7 +105,9 @@ interface ProposalDecision {
  * answer_schema; POST /api/questions/{id}/answer returns a pending proposal, its server action, its
  * intake and the raw patch_preview, nothing committed. Confirmation uses only the endpoint of the
  * server-returned action (or reject) with the review-bar reason, which is distinct from the answer
- * rationale. A moved baseline discards the preview; nothing is retried.
+ * rationale. Discard (H0.11) moves the persisted pending proposal to abandoned on the server, so no
+ * unreachable pending proposal is left behind. A moved baseline discards the preview; nothing is
+ * retried.
  */
 export function QuestionAnswerCard({ question }: { question: Question }) {
   const queryClient = useQueryClient();
@@ -114,6 +116,7 @@ export function QuestionAnswerCard({ question }: { question: Question }) {
   const [preview, setPreview] = useState<AnswerResponse | null>(null);
   const [stale, setStale] = useState(false);
   const [done, setDone] = useState(false);
+  const [discarded, setDiscarded] = useState(false);
 
   const answer = useVersionedMutation<AnswerResponse, { answer: AnswerValue; rationale: string | null }>(
     (body, ifMatch) =>
@@ -134,6 +137,15 @@ export function QuestionAnswerCard({ question }: { question: Question }) {
         : proposalActionRequest(decision.kind, decision.proposalId, decision.reason, ifMatch),
     preview === null ? null : revisionEtag(preview.revision),
   );
+  // H0.11: the explicit discard of the persisted pending proposal (pending -> abandoned).
+  const discard = useVersionedMutation<WriteResult, string>(
+    (proposalId, ifMatch) =>
+      apiClient.POST("/api/proposals/{id}/discard", {
+        params: { path: { id: proposalId }, header: { "If-Match": ifMatch } },
+        body: { reason: null },
+      }),
+    preview === null ? null : revisionEtag(preview.revision),
+  );
 
   if (question.status !== "Open") {
     return (
@@ -146,7 +158,9 @@ export function QuestionAnswerCard({ question }: { question: Question }) {
   const submitAnswer = () => {
     setStale(false);
     setDone(false);
+    setDiscarded(false);
     decide.reset();
+    discard.reset();
     answer.mutate(
       { answer: value, rationale: rationale === "" ? null : rationale },
       { onSuccess: (response) => setPreview(response) },
@@ -186,6 +200,19 @@ export function QuestionAnswerCard({ question }: { question: Question }) {
     );
   };
 
+  const discardPreview = () => {
+    if (preview === null) {
+      return;
+    }
+    discard.mutate(preview.proposal_id, {
+      onSuccess: () => {
+        setPreview(null);
+        setDiscarded(true);
+        void invalidateU22(queryClient);
+      },
+    });
+  };
+
   return (
     <div className="space-y-2" data-question-card={question.id}>
       {preview === null && (
@@ -212,8 +239,10 @@ export function QuestionAnswerCard({ question }: { question: Question }) {
         </p>
       )}
       {done && <p data-testid="answer-done">{t("question.decided")}</p>}
+      {discarded && <p data-testid="answer-discarded">{t("question.discarded")}</p>}
       <WriteError error={answer.error} />
       {!stale && <WriteError error={decide.error} />}
+      <WriteError error={discard.error} />
       {preview !== null && (
         <section aria-label={t("question.preview.title")} className="space-y-2 rounded border border-amber-600 p-3 text-sm" data-testid="answer-preview">
           <h4 className="font-semibold">{t("question.preview.title")}</h4>
@@ -238,6 +267,16 @@ export function QuestionAnswerCard({ question }: { question: Question }) {
             enabledActions={[reviewAction(preview.action), "reject"]}
             onAction={onAction}
           />
+          <button
+            type="button"
+            className="rounded border px-3 py-1"
+            data-testid="answer-discard"
+            disabled={discard.isPending || decide.isPending}
+            onClick={discardPreview}
+          >
+            {t("question.preview.discard")}
+          </button>
+          <p className="text-xs text-slate-600">{t("question.preview.discardNote")}</p>
         </section>
       )}
     </div>

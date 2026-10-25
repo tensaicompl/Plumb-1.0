@@ -193,6 +193,10 @@ function handlers(
         return verb !== "reject" && options.confirm !== undefined ? options.confirm() : etagJson(WRITE);
       }),
     ),
+    http.post("*/api/proposals/:id/discard", async ({ request }) => {
+      await record(request, "POST");
+      return etagJson({ version: "rev:7", revision: "rev:7", semantic_hash: CURRENT, events: [] });
+    }),
     http.post("*/api/rounds", async ({ request }) => {
       await record(request, "POST");
       const body = (calls.at(-1)?.body ?? {}) as { stakeholder: string; max: number };
@@ -287,6 +291,27 @@ describe("QuestionsPage inbox", () => {
 // ------------------------------------------------------------------ answer and proposal
 
 describe("Question answer proposal", () => {
+  it("discards the persisted answer proposal explicitly (abandoned on the server, H0.11 / Fable #226)", async () => {
+    const calls: Call[] = [];
+    server.use(...handlers(calls, { action: "create" }));
+    renderQuestions();
+    const user = userEvent.setup();
+    await screen.findByText(Q_PERFORMER.text);
+    const preview = await answerPerformer(user);
+    await user.click(within(preview).getByTestId("answer-discard"));
+
+    const performer = card("q:performer");
+    expect(await within(performer).findByTestId("answer-discarded")).toBeTruthy();
+    // The pending proposal the answer persisted is discarded on the server against the reviewed
+    // preview's baseline revision; it is neither committed nor rejected.
+    expect(posts(calls, "/api/proposals/prop:answer-1/discard").map((c) => [c.ifMatch, c.body])).toEqual([[`"rev:7"`, { reason: null }]]);
+    expect(posts(calls, "/api/proposals/prop:answer-1/create")).toEqual([]);
+    expect(posts(calls, "/api/proposals/prop:answer-1/reject")).toEqual([]);
+    expect(within(performer).queryByTestId("answer-preview")).toBeNull();
+    // The question can be answered again.
+    expect(within(performer).getByTestId("answer-submit")).toBeTruthy();
+  });
+
   it("answers through the versioned client, shows the uncommitted server proposal and confirms only through /create", async () => {
     const calls: Call[] = [];
     server.use(...handlers(calls, { action: "create" }));

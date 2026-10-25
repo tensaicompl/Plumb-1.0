@@ -318,6 +318,7 @@ describe("Project room", () => {
       "/model/rules",
       "/model/calculations",
       "/questions",
+      "/proposals",
       "/decisions",
       "/gates",
     ]);
