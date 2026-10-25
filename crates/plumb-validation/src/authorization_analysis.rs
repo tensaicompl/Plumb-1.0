@@ -4,8 +4,10 @@
 //! `A inherits_role B` means A inherits B, so effective roles follow outgoing inheritance. A
 //! subject violates a static separation-of-duty constraint with roles R iff at least two roles
 //! of R are effective for it; dynamic separation of duty, mutual exclusion and required
-//! combination are reported as not evaluated. S2.8 compilation and S2.10 validation share this
-//! one implementation.
+//! combination are reported as not evaluated by the S2.8 [`separation_analysis`]. F2 validation
+//! (H0.7) evaluates every constraint kind through [`separation_constraint_violations`], whose
+//! static reading is the same predicate. S2.8 compilation and S2.10 validation share this one
+//! implementation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -182,6 +184,91 @@ pub fn separation_analysis(facts: &AuthorizationFacts) -> SeparationAnalysis {
     analysis.not_evaluated.sort();
     analysis.not_evaluated.dedup();
     analysis
+}
+
+/// One subject whose role assignments break one SeparationConstraint of any kind.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeparationViolation {
+    pub constraint_ref: Id,
+    pub constraint_kind: SeparationConstraintKind,
+    pub subject_ref: Id,
+    /// The governed roles involved, sorted: the conflicting ones for exclusion kinds, the
+    /// missing ones for a required combination.
+    pub role_refs: Vec<Id>,
+}
+
+/// Every kind of SeparationConstraint evaluated over the static role-assignment model (H0.7):
+///
+/// - static separation of duty and mutual exclusion: no subject has two or more governed roles
+///   effective;
+/// - dynamic separation of duty: the pilot has no sessions, so the satisfiable reading is that
+///   every assigned role can be activated alone; a subject violates it when one of its directly
+///   assigned roles by itself (with its inherited roles) makes two or more governed roles
+///   effective;
+/// - required combination: a subject with any governed role effective has all of them.
+pub fn separation_constraint_violations(facts: &AuthorizationFacts) -> Vec<SeparationViolation> {
+    let subjects: BTreeSet<&Id> = facts.assignments.iter().map(|(s, _)| s).collect();
+    let mut out = Vec::new();
+    for (constraint_ref, constraint) in &facts.constraints {
+        let governed: BTreeSet<&Id> = constraint.role_refs.iter().collect();
+        for subject in &subjects {
+            let effective: BTreeSet<Id> = effective_security_roles(facts, subject)
+                .into_iter()
+                .collect();
+            let held: Vec<Id> = effective
+                .iter()
+                .filter(|r| governed.contains(r))
+                .cloned()
+                .collect();
+            let role_refs = match constraint.constraint_kind {
+                SeparationConstraintKind::StaticSeparationOfDuty
+                | SeparationConstraintKind::MutualExclusion => (held.len() >= 2).then_some(held),
+                SeparationConstraintKind::DynamicSeparationOfDuty => {
+                    let mut conflicting = BTreeSet::new();
+                    for (_, role) in facts.assignments.iter().filter(|(s, _)| s == *subject) {
+                        let alone = AuthorizationFacts {
+                            assignments: vec![((*subject).clone(), role.clone())],
+                            inheritances: facts.inheritances.clone(),
+                            constraints: Vec::new(),
+                        };
+                        let activated: Vec<Id> = effective_security_roles(&alone, subject)
+                            .into_iter()
+                            .filter(|r| governed.contains(r))
+                            .collect();
+                        if activated.len() >= 2 {
+                            conflicting.extend(activated);
+                        }
+                    }
+                    (!conflicting.is_empty()).then(|| conflicting.into_iter().collect())
+                }
+                SeparationConstraintKind::RequiredCombination => {
+                    let missing: Vec<Id> = governed
+                        .iter()
+                        .filter(|r| !effective.contains(**r))
+                        .map(|r| (*r).clone())
+                        .collect();
+                    (!held.is_empty() && !missing.is_empty()).then_some(missing)
+                }
+            };
+            if let Some(role_refs) = role_refs {
+                out.push(SeparationViolation {
+                    constraint_ref: constraint_ref.clone(),
+                    constraint_kind: constraint.constraint_kind,
+                    subject_ref: (*subject).clone(),
+                    role_refs,
+                });
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Accepted-only evaluation of every SeparationConstraint kind (the baseline analyzer).
+pub fn accepted_separation_violations(graph: &Graph) -> Vec<SeparationViolation> {
+    separation_constraint_violations(&authorization_facts(graph, true))
 }
 
 /// The authorization facts of a graph: Accepted-only (baseline) or active (Proposed and

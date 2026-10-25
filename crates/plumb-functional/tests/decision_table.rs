@@ -560,7 +560,9 @@ mod decision_table_contract {
 
     #[test]
     fn decision_table_unsupported_and_not_analyzable() {
-        for policy in ["unique", "ANY", "COLLECT", "PRIORITY", ""] {
+        // Fable #164: ANY, COLLECT, PRIORITY (and the other overlap-permitting DMN policies)
+        // are analysable; only unknown spellings are unsupported structure.
+        for policy in ["unique", "any", "SOMETIMES", ""] {
             let spec = table(policy, vec![bool_col("flag")], vec![row(vec![b(true)])]);
             assert_eq!(
                 structure(&spec),

@@ -1861,7 +1861,11 @@ mod http_workflow {
             ] {
                 let r = write(&app, &uri, Some(body)).await;
                 assert_error(&r, StatusCode::UNPROCESSABLE_ENTITY, "E_SEMANTIC_INVARIANT");
-                assert_eq!(r.json()["details"]["error"], "RequirementNotEditable", "{uri}");
+                assert_eq!(
+                    r.json()["details"]["error"],
+                    "RequirementNotEditable",
+                    "{uri}"
+                );
             }
         }
         assert_eq!(revision(&app).await, start, "no write happened");

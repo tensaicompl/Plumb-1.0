@@ -17,11 +17,14 @@ use plumb_psg::{
     SeparationConstraintKind,
 };
 
-use crate::authorization_analysis::{accepted_role_hierarchy_cycles, accepted_separation_analysis};
+use crate::authorization_analysis::{
+    accepted_role_hierarchy_cycles, accepted_separation_violations,
+};
 use crate::calculation_analysis::{
     analyze_calculation_cycles, CalculationCycleAnalysis, CalculationIssue, CalculationScope,
 };
-use crate::decision_table_analysis::{analyze_decision_table, DecisionCoverage};
+use crate::decision_table_analysis::{analyze_decision_table, permits_overlap, DecisionCoverage};
+use crate::disposition::{event_disposition, state_disposition};
 use crate::evaluator::{
     EvaluationError, EvaluatorFailure, EvaluatorRegistry, F2ValidationInputs, RuleEvaluation,
     RuleEvaluator, ValidationContext,
@@ -30,7 +33,9 @@ use crate::expression_scope::{
     attribute_expression_type, canonical_attribute_owner, validate_expression_bindings,
 };
 use crate::model::RuleMetadata;
-use crate::process_analysis::{analyze_process, ProcessAnalysis, ProcessAnalysisMode};
+use crate::process_analysis::{
+    analyze_process, ProcessAnalysis, ProcessAnalysisMode, ProcessShapeRule,
+};
 
 const ATTRIBUTE_OWNER: &str = "PLUMB.F2.DOMAIN.ATTRIBUTE_OWNER";
 const RELATION_TYPED: &str = "PLUMB.F2.DOMAIN.RELATION_TYPED";
@@ -57,15 +62,11 @@ const SOD_NO_VIOLATION: &str = "PLUMB.F2.SOD.NO_VIOLATION";
 const INVARIANT_EXPRESSIBLE: &str = "PLUMB.F2.INVARIANT.EXPRESSIBLE";
 const NO_SEMANTIC_BLOCKER: &str = "PLUMB.F2.NO_UNRESOLVED_SEMANTIC_BLOCKER";
 
-const STATE_REACHABILITY_UNREPRESENTABLE: &str = "STATE_REACHABILITY_UNREPRESENTABLE";
 const F2_INPUTS_MISSING: &str = "F2_INPUTS_MISSING";
 const CALCULATION_ANALYSIS_ERROR: &str = "CALCULATION_ANALYSIS_ERROR";
 const DECISION_TABLE_ANALYSIS_UNAVAILABLE: &str = "DECISION_TABLE_ANALYSIS_UNAVAILABLE";
 const PROCESS_ANALYSIS_ERROR: &str = "PROCESS_ANALYSIS_ERROR";
 const PROCESS_UNSUPPORTED_SEMANTICS: &str = "PROCESS_UNSUPPORTED_SEMANTICS";
-const EVENT_SOURCE_CLASSIFICATION_UNAVAILABLE: &str = "EVENT_SOURCE_CLASSIFICATION_UNAVAILABLE";
-const EVENT_PURPOSE_CLASSIFICATION_UNAVAILABLE: &str = "EVENT_PURPOSE_CLASSIFICATION_UNAVAILABLE";
-const INVARIANT_SCOPE_ERROR: &str = "INVARIANT_SCOPE_ERROR";
 
 /// The four frozen DomainRelationship cardinalities.
 const CARDINALITIES: [&str; 4] = ["0..1", "1", "0..*", "1..*"];
@@ -344,45 +345,137 @@ fn transition_complete(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata)
     )
 }
 
-/// The v3 State payload has no initial, terminal or externally-entered markers, so reachability
-/// is not representable; no start State is invented.
+/// H0.7 §33.7: a state machine is the set of Accepted States an Accepted owner reaches through
+/// Accepted `has_state` relations; it declares its initial state(s) through the governed
+/// State disposition extension (directory `state_dispositions`), never by inference.
+/// The rule applies to the machines that declare an initial state (applies_when) and requires
+/// every non-terminal, not externally-entered State to be reachable from an initial State over
+/// the owner's Accepted Transitions between Accepted States. A malformed disposition is a
+/// violation of its State.
 fn state_reachability(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
-    let states: BTreeSet<Id> = accepted_nodes(graph, NodeType::State)
-        .into_iter()
-        .map(|n| n.id.clone())
-        .collect();
-    if states.is_empty() {
-        return not_applicable("No accepted State is in scope.");
+    // Owner -> its Accepted States.
+    let mut machines: BTreeMap<&Id, BTreeSet<&Id>> = BTreeMap::new();
+    for state in accepted_nodes(graph, NodeType::State) {
+        for e in accepted_edges(graph, &state.id, RelationKind::HasState, false) {
+            if graph.node(&e.from).is_some_and(accepted) {
+                machines.entry(&e.from).or_default().insert(&state.id);
+            }
+        }
     }
-    Err(failure_on(
-        STATE_REACHABILITY_UNREPRESENTABLE,
-        "The State payload cannot represent initial, terminal or externally-entered markers."
-            .to_owned(),
-        states,
-    ))
+    let mut verdict = Verdict::default();
+    let mut applicable = false;
+    for (owner, states) in &machines {
+        let mut dispositions = BTreeMap::new();
+        let mut invalid = BTreeSet::new();
+        for state in states {
+            match graph.node(state).map(state_disposition) {
+                Some(Ok(Some(d))) => {
+                    dispositions.insert(*state, d);
+                }
+                Some(Err(_)) => {
+                    invalid.insert(*state);
+                }
+                _ => {}
+            }
+        }
+        let initial: Vec<&Id> = states
+            .iter()
+            .copied()
+            .filter(|s| dispositions.get(s).is_some_and(|d| d.initial))
+            .collect();
+        if initial.is_empty() && invalid.is_empty() {
+            continue;
+        }
+        applicable = true;
+        let mut adjacency: BTreeMap<&Id, BTreeSet<&Id>> = BTreeMap::new();
+        for t in accepted_nodes(graph, NodeType::Transition) {
+            let NodePayload::Transition(t) = &t.payload else {
+                continue;
+            };
+            if &t.stateful_ref == *owner
+                && states.contains(&t.from_state)
+                && states.contains(&t.to_state)
+            {
+                adjacency
+                    .entry(&t.from_state)
+                    .or_default()
+                    .insert(&t.to_state);
+            }
+        }
+        let mut reached: BTreeSet<&Id> = initial.iter().copied().collect();
+        let mut frontier = initial.clone();
+        while let Some(s) = frontier.pop() {
+            for next in adjacency.get(s).into_iter().flatten() {
+                if reached.insert(next) {
+                    frontier.push(next);
+                }
+            }
+        }
+        for state in states {
+            verdict.check(state);
+            if invalid.contains(state) {
+                verdict.violate(state, format!("disposition_invalid:{state}"));
+                continue;
+            }
+            let exempt = dispositions
+                .get(state)
+                .is_some_and(|d| d.terminal || d.externally_entered);
+            if !reached.contains(state) && !exempt {
+                verdict.violate(state, format!("unreachable:{state}"));
+            }
+        }
+    }
+    if !applicable {
+        return not_applicable("No accepted state machine declares an initial state.");
+    }
+    verdict.conclude(
+        "state_unreachable_from_initial",
+        "Accepted non-terminal states must be reachable from a declared initial state unless explicitly externally entered.",
+        "Add the missing transition from the initial state, or govern the state as terminal or externally entered through the directory state dispositions.",
+    )
 }
 
 // ============================================================================ operations
 
+/// The architecture element types that can stand as an operation's owning system or component.
+const OWNING_SYSTEMS: [NodeType; 5] = [
+    NodeType::SoftwareSystem,
+    NodeType::Container,
+    NodeType::Component,
+    NodeType::Module,
+    NodeType::ExternalSystem,
+];
+
+/// The profile's two alternatives (H0.7): an Accepted `performed_by` Actor/BusinessRole, or an
+/// explicit owning system/component placeholder, represented as an Accepted `allocated_to`
+/// relation to an Accepted system or component element.
 fn operation_performer(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
     let mut verdict = Verdict::default();
     for operation in accepted_nodes(graph, NodeType::Operation) {
         verdict.check(&operation.id);
         let performers = [NodeType::Actor, NodeType::BusinessRole];
-        if !linked(
+        let performed = linked(
             graph,
             &operation.id,
             RelationKind::PerformedBy,
             true,
             &performers,
-        ) {
+        );
+        let owned = linked(
+            graph,
+            &operation.id,
+            RelationKind::AllocatedTo,
+            true,
+            &OWNING_SYSTEMS,
+        );
+        if !(performed || owned) {
             verdict.violate(&operation.id, format!("performer:{}", operation.id));
         }
     }
     verdict.conclude(
         "operation_performer_missing",
-        "Accepted operations need an Accepted Actor or BusinessRole performer.",
-        "Link the operation to its performing actor or business role.",
+        "Accepted operations need an Accepted Actor or BusinessRole performer or an explicit owning system or component.",
+        "Link the operation to its performing actor or business role, or allocate it to its owning system or component.",
     )
 }
 
@@ -576,10 +669,11 @@ fn accepted_tables<'g>(
 
 fn table_no_overlap(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Outcome {
     let inputs = inputs(ctx)?;
-    // FIRST tables permit overlap by row order.
+    // Overlap-permitting hit policies (FIRST, ANY, COLLECT, RULE ORDER, PRIORITY, OUTPUT ORDER)
+    // are outside the rule's applies_when (Fable #164); coverage is still analysed.
     let applicable: Vec<_> = accepted_tables(graph, inputs)?
         .into_iter()
-        .filter(|(_, hit_policy, _)| *hit_policy != "FIRST")
+        .filter(|(_, hit_policy, _)| !permits_overlap(hit_policy))
         .collect();
     if applicable.is_empty() {
         return not_applicable("No accepted decision table forbids overlapping matches.");
@@ -722,14 +816,7 @@ fn process_start_end(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> 
                 verdict.violate(p, format!("missing_end:{p}"));
             }
             let entry_or_end: BTreeSet<&Id> = a.start_refs.iter().chain(&a.end_refs).collect();
-            for s in &a.node_shape_violations {
-                if entry_or_end.contains(&s.node_ref) {
-                    verdict.violate(
-                        &s.node_ref,
-                        format!("shape:{}:{}", s.node_ref, tag(&s.violation, "shape")),
-                    );
-                }
-            }
+            shape_violations(graph, a, ProcessShapeRule::StartEnd, verdict);
             for t in &a.invalid_terminal_refs {
                 verdict.violate(t, format!("invalid_terminal:{t}"));
             }
@@ -745,10 +832,26 @@ fn process_start_end(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> 
     )
 }
 
+/// Reports the node-shape violations the exhaustive node-kind attribution assigns to `rule`.
+fn shape_violations(
+    graph: &Graph,
+    analysis: &ProcessAnalysis,
+    rule: ProcessShapeRule,
+    verdict: &mut Verdict,
+) {
+    for s in analysis.shape_violations_for(graph, rule) {
+        verdict.violate(
+            &s.node_ref,
+            format!("shape:{}:{}", s.node_ref, tag(&s.violation, "shape")),
+        );
+    }
+}
+
 fn process_reachable(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
     process_rule(
         graph,
         |a, verdict| {
+            shape_violations(graph, a, ProcessShapeRule::Reachable, verdict);
             for n in &a.unreachable_refs {
                 verdict.violate(n, format!("unreachable:{n}"));
             }
@@ -766,6 +869,7 @@ fn task_resolves(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outc
     process_rule(
         graph,
         |a, verdict| {
+            shape_violations(graph, a, ProcessShapeRule::TaskResolves, verdict);
             for t in &a.unresolved_task_refs {
                 let issue = serde_json::to_value(t.issue)
                     .ok()
@@ -797,6 +901,7 @@ fn gateway_balanced(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> O
     let mut verdict = Verdict::default();
     for a in &analyses {
         verdict.check(&a.process_ref);
+        shape_violations(graph, a, ProcessShapeRule::GatewayBalanced, &mut verdict);
         for issue in a.parallel_analysis.issues() {
             let kind = serde_json::to_value(issue.kind)
                 .ok()
@@ -853,35 +958,43 @@ fn event_payload_typed(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -
     )
 }
 
-/// Events whose classification the PSG cannot represent are an ERROR, never a FAIL.
+/// The Accepted Events `considered`-linked from an Accepted Operation or ProcessNode pass when
+/// they are also `proving`-linked, or when their governed Event disposition extension
+/// satisfies `declared` (H0.7 §33.7). Anything else is a violation, never an evaluator error;
+/// a malformed disposition is a violation of its Event.
+#[allow(clippy::too_many_arguments)]
 fn event_rule(
     graph: &Graph,
     considered: RelationKind,
     proving: RelationKind,
-    code: &str,
+    declared: impl Fn(&crate::disposition::EventDisposition) -> bool,
+    missing: &str,
     not_applicable_reason: &str,
+    condition: &str,
     message: &str,
+    resolution: &str,
 ) -> Outcome {
-    let events: Vec<&Id> = accepted_nodes(graph, NodeType::Event)
+    let events: Vec<&Node> = accepted_nodes(graph, NodeType::Event)
         .into_iter()
         .filter(|e| linked(graph, &e.id, considered.clone(), false, &EVENT_ACTORS))
-        .map(|e| &e.id)
         .collect();
     if events.is_empty() {
         return not_applicable(not_applicable_reason);
     }
-    let unproven: BTreeSet<Id> = events
-        .iter()
-        .filter(|e| !linked(graph, e, proving.clone(), false, &EVENT_ACTORS))
-        .map(|e| (*e).clone())
-        .collect();
-    if !unproven.is_empty() {
-        return Err(failure_on(code, message.to_owned(), unproven));
+    let mut verdict = Verdict::default();
+    for event in events {
+        let id = &event.id;
+        verdict.check(id);
+        if linked(graph, id, proving.clone(), false, &EVENT_ACTORS) {
+            continue;
+        }
+        match event_disposition(event) {
+            Ok(Some(d)) if declared(&d) => {}
+            Ok(_) => verdict.violate(id, format!("{missing}:{id}")),
+            Err(_) => verdict.violate(id, format!("disposition_invalid:{id}")),
+        }
     }
-    output(RuleEvaluation::pass(
-        events.into_iter().cloned().collect(),
-        Vec::new(),
-    ))
+    verdict.conclude(condition, message, resolution)
 }
 
 fn event_producer(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
@@ -889,9 +1002,12 @@ fn event_producer(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Out
         graph,
         RelationKind::Consumes,
         RelationKind::Produces,
-        EVENT_SOURCE_CLASSIFICATION_UNAVAILABLE,
+        |d| d.external_source,
+        "producer",
         "No accepted Event is consumed by an accepted Operation or ProcessNode.",
-        "Consumed events have no accepted producer and the PSG cannot represent an external source.",
+        "consumed_event_producer_missing",
+        "Consumed events need an accepted producer or a governed external-source disposition.",
+        "Link the producing Operation or ProcessNode, or govern the event's external source through the directory event dispositions.",
     )
 }
 
@@ -900,37 +1016,52 @@ fn event_consumer(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Out
         graph,
         RelationKind::Produces,
         RelationKind::Consumes,
-        EVENT_PURPOSE_CLASSIFICATION_UNAVAILABLE,
+        |d| d.terminal_purpose.is_some(),
+        "consumer",
         "No accepted Event is produced by an accepted Operation or ProcessNode.",
-        "Produced events have no accepted consumer and the PSG cannot represent a terminal or audit-only purpose.",
+        "produced_event_consumer_missing",
+        "Produced events need an accepted consumer or a governed terminal or audit-only purpose.",
+        "Link the consuming Operation or ProcessNode, or govern the event's terminal purpose through the directory event dispositions.",
     )
 }
 
 // ============================================================================ authorization
 
+/// Architecture §33.7: at least one `permits` target, every target an Accepted Operation, and
+/// exactly one `scoped_to` Accepted ResourceScope. Targets are the targets of the Permission's
+/// baseline-participating relations; a non-Accepted relation or target is not concrete.
 fn permission_concrete(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
     let mut verdict = Verdict::default();
+    let baseline = |id: &Id, kind: RelationKind| -> Vec<&Edge> {
+        graph
+            .outgoing_edge_ids(id)
+            .iter()
+            .filter_map(|e| graph.edge(e))
+            .filter(|e| e.kind == kind && plumb_psg::is_baseline(e.status))
+            .collect()
+    };
+    let concrete = |e: &Edge, target: NodeType| {
+        e.status == ElementStatus::Accepted && accepted_of(graph, &e.to, &[target])
+    };
     for permission in accepted_nodes(graph, NodeType::Permission) {
         let id = &permission.id;
         verdict.check(id);
-        for (kind, target) in [
-            (RelationKind::Permits, NodeType::Operation),
-            (RelationKind::ScopedTo, NodeType::ResourceScope),
-        ] {
-            let edges = accepted_edges(graph, id, kind.clone(), true);
-            let concrete = match edges.as_slice() {
-                [only] => accepted_of(graph, &only.to, &[target]),
-                _ => false,
-            };
-            if !concrete {
-                verdict.violate(id, format!("{}:{id}", kind.as_str()));
-            }
+        let permits = baseline(id, RelationKind::Permits);
+        if permits.is_empty() || !permits.iter().all(|e| concrete(e, NodeType::Operation)) {
+            verdict.violate(id, format!("permits:{id}"));
+        }
+        let scoped = match baseline(id, RelationKind::ScopedTo).as_slice() {
+            [only] => concrete(only, NodeType::ResourceScope),
+            _ => false,
+        };
+        if !scoped {
+            verdict.violate(id, format!("scoped_to:{id}"));
         }
     }
     verdict.conclude(
         "permission_not_concrete",
-        "Accepted permissions must permit exactly one Accepted Operation within exactly one Accepted ResourceScope.",
-        "Link the permission to its single operation and resource scope.",
+        "Accepted permissions must permit at least one Accepted Operation, every permitted target an Accepted Operation, within exactly one Accepted ResourceScope.",
+        "Link the permission to its operations and its single resource scope.",
     )
 }
 
@@ -986,36 +1117,45 @@ fn role_separation(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Ou
     )
 }
 
+/// Every Accepted SeparationConstraint is evaluated, whatever its kind (H0.7): static and
+/// dynamic separation of duty, mutual exclusion and required combination.
 fn sod_no_violation(graph: &Graph, _: &ValidationContext, _: &RuleMetadata) -> Outcome {
     let constraints: Vec<&Id> = accepted_nodes(graph, NodeType::SeparationConstraint)
         .into_iter()
-        .filter(|n| {
-            matches!(&n.payload, NodePayload::SeparationConstraint(c)
-                if c.constraint_kind == SeparationConstraintKind::StaticSeparationOfDuty)
-        })
         .map(|n| &n.id)
         .collect();
     if constraints.is_empty() {
-        return not_applicable("No accepted static separation-of-duty constraint is in scope.");
+        return not_applicable("No accepted separation constraint is in scope.");
     }
     let mut verdict = Verdict::default();
     for id in constraints {
         verdict.check(id);
     }
-    for v in accepted_separation_analysis(graph).static_sod_violations {
-        let evidence = format!("sod:{}:{}", v.constraint_ref, v.subject_ref);
+    for v in accepted_separation_violations(graph) {
+        let prefix = match v.constraint_kind {
+            SeparationConstraintKind::StaticSeparationOfDuty => "sod",
+            SeparationConstraintKind::DynamicSeparationOfDuty => "dynamic_sod",
+            SeparationConstraintKind::MutualExclusion => "mutual_exclusion",
+            SeparationConstraintKind::RequiredCombination => "required_combination",
+        };
+        let evidence = format!("{prefix}:{}:{}", v.constraint_ref, v.subject_ref);
         verdict.violate(&v.constraint_ref, evidence.clone());
         verdict.violate(&v.subject_ref, evidence);
     }
     verdict.conclude(
-        "static_separation_of_duty_violated",
-        "Accepted role assignments grant a combination forbidden by a static separation-of-duty constraint.",
-        "Remove one of the conflicting role assignments or record a governed exception.",
+        "separation_constraint_violated",
+        "Accepted role assignments break a separation constraint (a forbidden or an incomplete role combination).",
+        "Change the conflicting role assignments or record a governed exception.",
     )
 }
 
 // ============================================================================ invariants and blockers
 
+/// H0.7 adjudication: of the profile's two alternatives only the PlumbExpr one is representable
+/// in the pilot (the Invariant payload has no verification-method field and `verified_by` does
+/// not accept an Invariant), so an Invariant without a valid Boolean PlumbExpr under a valid
+/// explicit scope is a violation; a missing or invalid scope is a violation too, never an
+/// evaluator error.
 fn invariant_expressible(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Outcome {
     let inputs = inputs(ctx)?;
     let mut verdict = Verdict::default();
@@ -1025,14 +1165,14 @@ fn invariant_expressible(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadat
         };
         let id = &node.id;
         verdict.check(id);
-        let scope_error = |reason: String| {
-            failure_on(INVARIANT_SCOPE_ERROR, reason, BTreeSet::from([id.clone()]))
+        let Some(bindings) = inputs.invariant_bindings(id) else {
+            verdict.violate(id, format!("scope_missing:{id}"));
+            continue;
         };
-        let bindings = inputs
-            .invariant_bindings(id)
-            .ok_or_else(|| scope_error(format!("no expression scope for {id}")))?;
-        let scope = validate_expression_bindings(graph, bindings, &[])
-            .map_err(|issue| scope_error(format!("{issue:?}")))?;
+        let Ok(scope) = validate_expression_bindings(graph, bindings, &[]) else {
+            verdict.violate(id, format!("scope_invalid:{id}"));
+            continue;
+        };
         match parse(&invariant.expression) {
             Err(_) => verdict.violate(id, format!("parse:{id}")),
             Ok(ast) => match typecheck(&ast, &scope.env) {

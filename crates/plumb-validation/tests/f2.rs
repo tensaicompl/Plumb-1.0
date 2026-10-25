@@ -867,15 +867,87 @@ mod f2_contract {
         assert_eq!(targets(&fx, TRANSITION_COMPLETE), ["entity:customer"]);
     }
 
+    /// Sets a governed disposition extension on one node of `fx`.
+    fn disposed(mut fx: Fx, node_id: &str, key: &str, value: serde_json::Value) -> Fx {
+        for n in &mut fx.nodes {
+            if n.id == id(node_id) {
+                n.extensions.insert(key.parse().unwrap(), value.clone());
+            }
+        }
+        fx
+    }
+
+    fn state_disposition(initial: bool, terminal: bool, external: bool) -> serde_json::Value {
+        json!({"version": 1, "initial": initial, "terminal": terminal, "externally_entered": external})
+    }
+
+    /// H0.7: reachability from the declared initial state of a state machine.
     #[test]
-    fn f2_state_reachability_representability() {
+    fn f2_state_reachability_from_declared_initial_state() {
+        const KEY: &str = "plumb_functional:state_disposition";
         assert_eq!(Fx::clean().state(REACHABILITY), NA);
+        // States without a declared initial state: the rule does not apply (applies_when).
         let fx = lifecycle(Some("operation:approve"));
-        assert_eq!(
-            error_code(&fx, REACHABILITY),
-            "STATE_REACHABILITY_UNREPRESENTABLE"
+        assert_eq!(fx.state(REACHABILITY), NA);
+        // open is initial and closed is reached through the transition.
+        let reached = disposed(
+            lifecycle(Some("operation:approve")),
+            "state:open",
+            KEY,
+            state_disposition(true, false, false),
         );
-        assert_eq!(targets(&fx, REACHABILITY), ["state:closed", "state:open"]);
+        assert_eq!(reached.state(REACHABILITY), PASS);
+        assert_eq!(
+            targets(&reached, REACHABILITY),
+            ["state:closed", "state:open"]
+        );
+        // An isolated non-terminal state is unreachable: a violation, never an ERROR.
+        let isolated = reached
+            .clone()
+            .with(node(
+                "state:limbo",
+                Accepted,
+                NodePayload::State(State {
+                    name: "limbo".into(),
+                }),
+            ))
+            .rel(RelationKind::HasState, "entity:order", "state:limbo");
+        assert_eq!(isolated.state(REACHABILITY), FAIL);
+        assert_eq!(targets(&isolated, REACHABILITY), ["state:limbo"]);
+        assert_eq!(
+            rule(&isolated.report(), REACHABILITY).evidence,
+            ["unreachable:state:limbo"]
+        );
+        // Explicitly externally-entered or terminal states are exempt.
+        for (terminal, external) in [(false, true), (true, false)] {
+            let exempt = disposed(
+                isolated.clone(),
+                "state:limbo",
+                KEY,
+                state_disposition(false, terminal, external),
+            );
+            assert_eq!(exempt.state(REACHABILITY), PASS, "{terminal} {external}");
+        }
+        // A malformed disposition is a violation of its state.
+        let malformed = disposed(reached.clone(), "state:closed", KEY, json!({"version": 2}));
+        assert_eq!(malformed.state(REACHABILITY), FAIL);
+        assert_eq!(targets(&malformed, REACHABILITY), ["state:closed"]);
+        // Reaching the state only through a non-Accepted transition does not count.
+        let proposed = reached
+            .status("transition:close", Proposed)
+            .unrel(
+                RelationKind::TransitionsVia,
+                "transition:close",
+                "operation:approve",
+            )
+            .rel_as(
+                RelationKind::TransitionsVia,
+                "transition:close",
+                "operation:approve",
+                Proposed,
+            );
+        assert_eq!(proposed.state(REACHABILITY), FAIL);
+        assert_eq!(targets(&proposed, REACHABILITY), ["state:closed"]);
     }
 
     // ------------------------------------------------------------------ operations
@@ -889,6 +961,38 @@ mod f2_contract {
         // A Suspect performer does not count.
         let fx = Fx::clean().status("actor:bot", Suspect);
         assert_eq!(fx.state(PERFORMER), FAIL);
+    }
+
+    /// H0.7: the profile's "explicit owning system/component placeholder" alternative is an
+    /// Accepted allocated_to relation to an Accepted system or component.
+    #[test]
+    fn f2_operation_performer_owning_component_alternative() {
+        let component = |status| {
+            node(
+                "component:ledger",
+                status,
+                NodePayload::Component(plumb_psg::ArchitectureElement {
+                    name: "Ledger".into(),
+                    description: None,
+                    responsibilities: None,
+                    owner_ref: None,
+                }),
+            )
+        };
+        let base = Fx::clean().unrel(RelationKind::PerformedBy, "operation:approve", "actor:bot");
+        let owned = base.clone().with(component(Accepted)).rel(
+            RelationKind::AllocatedTo,
+            "operation:approve",
+            "component:ledger",
+        );
+        assert_eq!(owned.state(PERFORMER), PASS);
+        let draft = base.with(component(Proposed)).rel_as(
+            RelationKind::AllocatedTo,
+            "operation:approve",
+            "component:ledger",
+            Proposed,
+        );
+        assert_eq!(draft.state(PERFORMER), FAIL);
     }
 
     #[test]
@@ -1119,6 +1223,41 @@ mod f2_contract {
         assert_eq!(targets(&both, TABLE_NO_OVERLAP), ["dt:discount"]);
     }
 
+    /// Fable #164: overlap-permitting hit policies make NO_OVERLAP NOT_APPLICABLE while
+    /// coverage is still analysed; an unknown policy is genuinely unsupported (ERROR).
+    #[test]
+    fn f2_decision_table_overlap_permitting_hit_policies() {
+        for policy in ["ANY", "COLLECT", "RULE ORDER", "PRIORITY"] {
+            let fx = Fx::clean()
+                .without("dt:discount")
+                .with(decision_table("dt:multi", policy))
+                .tables(vec![spec(
+                    "dt:multi",
+                    policy,
+                    vec![row(flag(true), true), row(DecisionInputCell::Any, true)],
+                )]);
+            assert_eq!(fx.state(TABLE_NO_OVERLAP), NA, "{policy}");
+            assert_eq!(fx.state(TABLE_COVERAGE), PASS, "{policy}");
+            let gap = Fx::clean()
+                .without("dt:discount")
+                .with(decision_table("dt:multi", policy))
+                .tables(vec![spec("dt:multi", policy, vec![row(flag(true), true)])]);
+            assert_eq!(gap.state(TABLE_COVERAGE), FAIL, "{policy}");
+        }
+        let unknown = Fx::clean()
+            .without("dt:discount")
+            .with(decision_table("dt:odd", "SOMETIMES"))
+            .tables(vec![spec(
+                "dt:odd",
+                "SOMETIMES",
+                vec![row(flag(true), true)],
+            )]);
+        assert_eq!(
+            error_code(&unknown, TABLE_NO_OVERLAP),
+            "DECISION_TABLE_ANALYSIS_UNAVAILABLE"
+        );
+    }
+
     #[test]
     fn f2_decision_table_coverage() {
         assert_eq!(Fx::clean().state(TABLE_COVERAGE), PASS);
@@ -1302,6 +1441,37 @@ mod f2_contract {
         assert!(targets(&unbalanced, GATEWAY_BALANCED).contains(&P.to_owned()));
     }
 
+    /// H0.7 §33.7: every node-shape violation is reported by exactly one of the four process
+    /// rules, by node kind.
+    #[test]
+    fn f2_process_shape_violations_are_attributed_by_node_kind() {
+        // A service task with two outgoing flows: TASK_RESOLVES.
+        let task = next(
+            process().with(process_node("end2", K::End, None)),
+            "submit",
+            "end2",
+        );
+        assert_eq!(task.state(TASK_RESOLVES), FAIL);
+        assert_eq!(targets(&task, TASK_RESOLVES), ["pn:submit"]);
+        assert_eq!(task.state(PROCESS_REACHABLE), PASS);
+        // A message wait without message_ref: an "other" node kind, so REACHABLE.
+        let wait = process()
+            .unrel(RelationKind::Next, "pn:submit", "pn:end")
+            .with(process_node("wait", K::MessageEvent, None));
+        let wait = next(next(wait, "submit", "wait"), "wait", "end");
+        assert_eq!(wait.state(PROCESS_REACHABLE), FAIL);
+        assert_eq!(targets(&wait, PROCESS_REACHABLE), ["pn:wait"]);
+        assert_eq!(wait.state(TASK_RESOLVES), PASS);
+        assert_eq!(wait.state(PROCESS_START_END), PASS);
+        // A split with an extra incoming flow from a second start: GATEWAY_BALANCED.
+        let split = parallel(true).with(process_node("start2", K::Start, None));
+        let split = next(split, "start2", "split");
+        assert_eq!(split.state(GATEWAY_BALANCED), FAIL);
+        assert!(targets(&split, GATEWAY_BALANCED).contains(&"pn:split".to_owned()));
+        assert_eq!(split.state(TASK_RESOLVES), PASS);
+        assert_eq!(split.state(PROCESS_REACHABLE), PASS);
+    }
+
     #[test]
     fn f2_process_unsupported_semantics_error() {
         let fx = process().with(process_node("choice", K::ExclusiveGateway, None));
@@ -1354,11 +1524,45 @@ mod f2_contract {
             "operation:approve",
             "event:external",
         );
-        assert_eq!(
-            error_code(&external, EVENT_PRODUCER),
-            "EVENT_SOURCE_CLASSIFICATION_UNAVAILABLE"
-        );
+        // H0.7: without a producer and without a governed external source it is a
+        // violation, never an evaluator ERROR.
+        assert_eq!(external.state(EVENT_PRODUCER), FAIL);
         assert_eq!(targets(&external, EVENT_PRODUCER), ["event:external"]);
+        assert_eq!(
+            rule(&external.report(), EVENT_PRODUCER).evidence,
+            ["producer:event:external"]
+        );
+        let declared = disposed(
+            external.clone(),
+            "event:external",
+            EVENT_KEY,
+            event_disposition(true, None),
+        );
+        assert_eq!(declared.state(EVENT_PRODUCER), PASS);
+        let internal = disposed(
+            external.clone(),
+            "event:external",
+            EVENT_KEY,
+            event_disposition(false, Some("audit")),
+        );
+        assert_eq!(internal.state(EVENT_PRODUCER), FAIL);
+        let malformed = disposed(
+            external,
+            "event:external",
+            EVENT_KEY,
+            json!({"version": 1, "external_source": true}),
+        );
+        assert_eq!(malformed.state(EVENT_PRODUCER), FAIL);
+        assert_eq!(
+            rule(&malformed.report(), EVENT_PRODUCER).evidence,
+            ["disposition_invalid:event:external"]
+        );
+    }
+
+    const EVENT_KEY: &str = "plumb_functional:event_disposition";
+
+    fn event_disposition(external: bool, purpose: Option<&str>) -> serde_json::Value {
+        json!({"version": 1, "external_source": external, "terminal_purpose": purpose})
     }
 
     #[test]
@@ -1375,11 +1579,24 @@ mod f2_contract {
             "operation:submit",
             "event:audit",
         );
-        assert_eq!(
-            error_code(&audit, EVENT_CONSUMER),
-            "EVENT_PURPOSE_CLASSIFICATION_UNAVAILABLE"
-        );
+        assert_eq!(audit.state(EVENT_CONSUMER), FAIL);
         assert_eq!(targets(&audit, EVENT_CONSUMER), ["event:audit"]);
+        for purpose in ["terminal", "audit"] {
+            let declared = disposed(
+                audit.clone(),
+                "event:audit",
+                EVENT_KEY,
+                event_disposition(false, Some(purpose)),
+            );
+            assert_eq!(declared.state(EVENT_CONSUMER), PASS, "{purpose}");
+        }
+        let unclassified = disposed(
+            audit,
+            "event:audit",
+            EVENT_KEY,
+            event_disposition(true, None),
+        );
+        assert_eq!(unclassified.state(EVENT_CONSUMER), FAIL);
     }
 
     // ------------------------------------------------------------------ authorization
@@ -1387,6 +1604,28 @@ mod f2_contract {
     #[test]
     fn f2_permission_concrete_pass_fail() {
         assert_eq!(Fx::clean().state(PERMISSION_CONCRETE), PASS);
+        // H0.7 §33.7: the profile condition, at least one permits target, every target an
+        // Accepted Operation and exactly one Accepted ResourceScope; Proposed relations do
+        // not count.
+        let draft_target = Fx::clean()
+            .with(operation("operation:extra", Proposed))
+            .rel_as(
+                RelationKind::Permits,
+                "permission:approve",
+                "operation:extra",
+                Proposed,
+            );
+        assert_eq!(draft_target.state(PERMISSION_CONCRETE), PASS);
+        let report = Fx::clean().status("scope:orders", Suspect).report();
+        assert_eq!(rule(&report, PERMISSION_CONCRETE).state, FAIL);
+        assert_eq!(
+            rule(&report, PERMISSION_CONCRETE).evidence,
+            ["scoped_to:permission:approve"]
+        );
+        assert_eq!(
+            report.findings[0].payload.message,
+            "Accepted permissions must permit at least one Accepted Operation, every permitted target an Accepted Operation, within exactly one Accepted ResourceScope."
+        );
         let suspect_scope = Fx::clean().status("scope:orders", Suspect);
         assert_eq!(suspect_scope.state(PERMISSION_CONCRETE), FAIL);
         assert_eq!(
@@ -1492,20 +1731,64 @@ mod f2_contract {
         );
     }
 
+    /// H0.7: Dynamic SoD, MutualExclusion and RequiredCombination constraints are evaluated,
+    /// never NOT_APPLICABLE. The clean fixture assigns alice only secrole:approver.
     #[test]
-    fn f2_non_static_sod_only_not_applicable() {
-        for kind in [
-            SeparationConstraintKind::DynamicSeparationOfDuty,
-            SeparationConstraintKind::MutualExclusion,
-            SeparationConstraintKind::RequiredCombination,
-        ] {
-            let fx = Fx::clean().with(separation(kind)).rel(
+    fn f2_every_separation_constraint_kind_is_evaluated() {
+        use SeparationConstraintKind as S;
+        let both = |kind| {
+            Fx::clean().with(separation(kind)).rel(
                 RelationKind::AssignedRole,
                 "principal:alice",
                 "secrole:requester",
+            )
+        };
+        // Mutual exclusion: holding two of the roles is forbidden.
+        let single = Fx::clean().with(separation(S::MutualExclusion));
+        assert_eq!(single.state(SOD_NO_VIOLATION), PASS);
+        let fx = both(S::MutualExclusion);
+        assert_eq!(fx.state(SOD_NO_VIOLATION), FAIL);
+        assert_eq!(
+            targets(&fx, SOD_NO_VIOLATION),
+            ["principal:alice", "sod:approve-request"]
+        );
+        // Required combination: holding one role requires holding all of them.
+        let fx = Fx::clean().with(separation(S::RequiredCombination));
+        assert_eq!(fx.state(SOD_NO_VIOLATION), FAIL);
+        assert_eq!(
+            rule(&fx.report(), SOD_NO_VIOLATION).evidence,
+            ["required_combination:sod:approve-request:principal:alice"]
+        );
+        assert_eq!(both(S::RequiredCombination).state(SOD_NO_VIOLATION), PASS);
+        // Dynamic SoD: separately held roles can be activated in separate sessions...
+        assert_eq!(
+            both(S::DynamicSeparationOfDuty).state(SOD_NO_VIOLATION),
+            PASS
+        );
+        // ...but one role that inherits both cannot be activated without the combination.
+        let lead = Fx::clean()
+            .with(separation(S::DynamicSeparationOfDuty))
+            .with(security_role("secrole:lead", Accepted))
+            .rel(
+                RelationKind::InheritsRole,
+                "secrole:lead",
+                "secrole:approver",
+            )
+            .rel(
+                RelationKind::InheritsRole,
+                "secrole:lead",
+                "secrole:requester",
+            )
+            .rel(
+                RelationKind::AssignedRole,
+                "principal:alice",
+                "secrole:lead",
             );
-            assert_eq!(fx.state(SOD_NO_VIOLATION), NA);
-        }
+        assert_eq!(lead.state(SOD_NO_VIOLATION), FAIL);
+        assert_eq!(
+            rule(&lead.report(), SOD_NO_VIOLATION).evidence,
+            ["dynamic_sod:sod:approve-request:principal:alice"]
+        );
     }
 
     // ------------------------------------------------------------------ invariants and blockers
@@ -1768,7 +2051,23 @@ mod f2_contract {
             "operation:approve",
             "event:audit",
         );
-        fx
+        // An unbounded numeric decision column is not analyzable: the ERROR result class
+        // (H0.7 removed the unclassified-event ERROR this fixture used before).
+        fx.with(decision_table("dt:open", "UNIQUE"))
+            .table(F2DecisionTableInput {
+                decision_table_ref: id("dt:open"),
+                spec: DecisionTableSpec {
+                    hit_policy: "UNIQUE".into(),
+                    inputs: vec![DecisionColumn {
+                        name: "n".into(),
+                        ty: DecisionType::Int,
+                        domain: None,
+                    }],
+                    outputs: vec![bool_column("out")],
+                    rows: vec![row(DecisionInputCell::Any, true)],
+                    default_output: None,
+                },
+            })
     }
 
     #[test]

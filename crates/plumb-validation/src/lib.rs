@@ -6,6 +6,7 @@
 pub mod authorization_analysis;
 pub mod calculation_analysis;
 pub mod decision_table_analysis;
+pub mod disposition;
 pub mod evaluator;
 pub mod expression_scope;
 pub mod external;

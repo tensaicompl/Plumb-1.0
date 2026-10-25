@@ -1823,7 +1823,11 @@ mod f1_contract {
     fn f1_quality_skips_blank_statements() {
         let ev = fragments();
         let (mut nodes, _) = base();
-        nodes.push(req_node(A, "The operator shall respond within 2 days.", &[&ev[0]]));
+        nodes.push(req_node(
+            A,
+            "The operator shall respond within 2 days.",
+            &[&ev[0]],
+        ));
         nodes.push(req_node(B, " \t ", &[&ev[1]]));
         let g = graph(nodes, vec![]);
         let r = evaluate(&g, inputs(&g));

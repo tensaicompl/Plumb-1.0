@@ -69,9 +69,79 @@ mod decision_table_analysis_contract {
             analyze_decision_table(&table("UNIQUE", vec![], true)).coverage,
             DecisionCoverage::CompleteByDefault
         );
+        // Fable #164: overlap-permitting DMN hit policies are analysed (coverage too), and
+        // their overlaps are never illegal; an unknown policy stays structurally invalid.
+        for policy in OVERLAP_PERMITTING_HIT_POLICIES {
+            let a = analyze_decision_table(&table(policy, vec![row(Some(true)), row(None)], false));
+            assert!(a.structure.is_empty(), "{policy}");
+            assert!(
+                a.illegal_overlaps.is_empty() && !a.overlaps.is_empty(),
+                "{policy}"
+            );
+            assert_eq!(a.coverage, DecisionCoverage::Complete, "{policy}");
+            assert!(permits_overlap(policy));
+        }
+        assert!(!permits_overlap("UNIQUE") && !permits_overlap("any"));
         assert_eq!(
-            analyze_decision_table(&table("ANY", vec![], false)).coverage,
+            analyze_decision_table(&table("SOMETIMES", vec![], false)).coverage,
             DecisionCoverage::StructureInvalid
+        );
+    }
+
+    fn decimal_table(scale: u32, output: &str, bound: &str) -> DecisionTableSpec {
+        let decimal = |s: &str| s.parse::<rust_decimal::Decimal>().unwrap();
+        let column = |name: &str| DecisionColumn {
+            name: name.into(),
+            ty: DecisionType::Decimal { scale },
+            domain: None,
+        };
+        DecisionTableSpec {
+            hit_policy: "UNIQUE".into(),
+            inputs: vec![column("amount")],
+            outputs: vec![column("rate")],
+            rows: vec![DecisionRow {
+                inputs: vec![DecisionInputCell::Interval {
+                    interval: NumericInterval {
+                        lower: Some(NumericBound {
+                            value: decimal(bound),
+                            inclusive: true,
+                        }),
+                        upper: None,
+                    },
+                }],
+                outputs: vec![DecisionOutputCell::Decimal {
+                    value: decimal(output),
+                }],
+            }],
+            default_output: Some(vec![DecisionOutputCell::Decimal {
+                value: decimal(output),
+            }]),
+        }
+    }
+
+    /// Fable #162: Decimal output/default literals and Decimal interval bounds are
+    /// scale-checked after normalization (trailing zeros removed).
+    #[test]
+    fn decision_table_decimal_scale_is_checked_after_normalization() {
+        let structure = |spec: &DecisionTableSpec| analyze_decision_table(spec).structure;
+        assert_eq!(structure(&decimal_table(1, "1.50", "10.00")), vec![]);
+        assert_eq!(structure(&decimal_table(0, "2.000", "3.0")), vec![]);
+        assert_eq!(
+            structure(&decimal_table(1, "1.55", "10.0")),
+            vec![
+                DecisionStructureIssue::InvalidOutputCell {
+                    row: None,
+                    column: 0
+                },
+                DecisionStructureIssue::InvalidOutputCell {
+                    row: Some(0),
+                    column: 0
+                },
+            ]
+        );
+        assert_eq!(
+            structure(&decimal_table(1, "1.5", "10.25")),
+            vec![DecisionStructureIssue::InvalidInterval { row: 0, column: 0 }]
         );
     }
 

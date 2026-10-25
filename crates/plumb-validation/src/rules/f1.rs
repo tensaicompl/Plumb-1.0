@@ -555,7 +555,7 @@ fn criteria_for_behavior(graph: &Graph, _: &ValidationContext, _: &RuleMetadata)
 /// Lints every Accepted Requirement with a non-blank statement (Fable #126): a blank statement
 /// is owned by STATEMENT_PRESENT and skipped, and a lint error on one Requirement is a violation
 /// of that Requirement, never an evaluator ERROR for the others.
-fn quality_findings_clear(graph: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Outcome {
+fn quality_findings_clear(_: &Graph, ctx: &ValidationContext, _: &RuleMetadata) -> Outcome {
     let inputs = inputs(ctx)?;
     let mut checked = Vec::new();
     let mut violating = BTreeSet::new();
