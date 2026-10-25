@@ -14,13 +14,15 @@ import { buildHref, useGo } from "../../app/shell/navigation";
 import { useProject, useRunNextAction } from "../../app/shell/Toolbar";
 import { gatesQuery, useWorkCounts } from "../../app/work";
 import {
-  Avatar,
+  initials,
   Button,
   Card,
   cn,
   EnsoMark,
   Eyebrow,
-  GateLight,
+  GateDot,
+  gateName,
+  gateStateLabel,
   isPlainClick,
   ReadinessRing,
   Skeleton,
@@ -251,7 +253,7 @@ const STEP_META_TONE: Readonly<Record<StepState, string>> = {
   running: "text-running-fg",
   failed: "text-blocked-fg",
   stale: "text-neutral-fg",
-  not_started: "text-fg-4",
+  not_started: "text-fg-3",
 };
 
 function StepMark({ step, index }: { step: OverviewStep; index: number }) {
@@ -281,7 +283,7 @@ function StepMark({ step, index }: { step: OverviewStep; index: number }) {
       return <span aria-hidden="true" className={cn(base, "border-2 border-stale bg-card")} />;
     case "not_started":
       return (
-        <span aria-hidden="true" className={cn(base, "border border-dashed border-line-strong bg-card text-fg-4")}>
+        <span aria-hidden="true" className={cn(base, "border border-dashed border-line-strong bg-card text-fg-3")}>
           {String(index + 1)}
         </span>
       );
@@ -343,6 +345,14 @@ function gateLightState(status: GateStatus | undefined): GateLightState {
   return status.passed ? "pass" : "fail";
 }
 
+const GATE_TEXT: Readonly<Record<GateLightState, string>> = {
+  pass: "text-pass-fg",
+  fail: "text-blocked-fg",
+  stale: "text-neutral-fg",
+  not_evaluated: "text-neutral-fg",
+  running: "text-running-fg",
+};
+
 function GatesRow() {
   const gates = useQuery(gatesQuery);
   const byGate = new Map((Array.isArray(gates.data) ? gates.data : []).map((g) => [g.gate, g]));
@@ -371,9 +381,18 @@ function GatesRow() {
                 ) : (
                   <AppLink
                     href={buildHref("/quality/$gate", { gate })}
-                    className="flex h-full flex-col rounded-tile border border-line bg-card px-4 py-3.5 no-underline shadow-xs transition-[box-shadow,border-color] duration-[120ms] hover:border-line-strong hover:shadow-md"
+                    className="flex h-full flex-col gap-2 rounded-tile border border-line bg-card px-4 py-3.5 no-underline shadow-xs transition-[box-shadow,border-color] duration-[120ms] hover:border-line-strong hover:shadow-md"
                   >
-                    <GateLight gate={gate} state={state} detail={state === "fail" && blockers > 0 ? tc("overview.gates.blocking", blockers) : undefined} className="gap-2" />
+                    {/* The gate light of the kit, laid out so a long name truncates before the code. */}
+                    <span data-gate={gate} data-gate-state={state} className="flex min-w-0 items-center gap-2">
+                      <GateDot state={state} />
+                      <span className="min-w-0 truncate text-body font-semibold text-fg">{gateName(gate)}</span>
+                      <span className="ml-auto shrink-0 pl-1 font-mono text-eyebrow text-fg-3">{gate}</span>
+                    </span>
+                    <span className={cn("text-caption font-medium", GATE_TEXT[state])}>
+                      {gateStateLabel(state)}
+                      {state === "fail" && blockers > 0 && SEPARATOR + tc("overview.gates.blocking", blockers)}
+                    </span>
                   </AppLink>
                 )}
               </li>
@@ -502,7 +521,7 @@ function RecentDecisions() {
             const rationale = decision.rationale ?? null;
             return (
               <li key={decision.id} className="flex items-center gap-3 border-t border-line px-6 py-3 text-footnote">
-                <Avatar name={who} size={28} decorative className="bg-surface text-fg-2" />
+                <span aria-hidden="true" className="flex size-7 shrink-0 select-none items-center justify-center rounded-pill bg-surface text-[10px] font-semibold text-fg-2">{initials(who)}</span>
                 <span className="min-w-0 flex-1 text-fg">
                   <b className="font-semibold">{who}</b> {t(decisionWhat(decision))}
                   {rationale !== null && rationale !== "" && <span className="text-fg-3">{SEPARATOR + tf("overview.decision.rationale", { rationale })}</span>}

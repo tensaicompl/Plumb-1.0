@@ -149,7 +149,8 @@ export function useImportSource() {
       },
     );
   };
-  return { importFile, uploading, failure, busy: mutation.isPending };
+  // The upload is a write against the version the user sees: wait until it has loaded.
+  return { importFile, uploading, failure, busy: mutation.isPending || version.data === undefined };
 }
 
 export interface ImportDropZoneProps {

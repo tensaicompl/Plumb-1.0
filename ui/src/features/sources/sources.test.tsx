@@ -144,6 +144,15 @@ describe("Sources", () => {
     expect(screen.getByRole("button", { name: "Run Requirements step" })).toBeTruthy();
   });
 
+  it("accepts a document only once the model version it is imported against has loaded", async () => {
+    serve();
+    server.use(http.get("*/api/model/version", () => delay("infinite")));
+    renderApp("/sources");
+    await screen.findByRole("main");
+    const input = await within(main()).findByLabelText("Import document");
+    expect(input.hasAttribute("disabled")).toBe(true);
+  });
+
   it("imports a document dropped on the zone", async () => {
     const b = serve();
     renderApp("/sources");

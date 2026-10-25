@@ -2,7 +2,8 @@
 # E0.3 pilot runner: builds the HR pilot database with the CLI simulation (product operations
 # only: init, import, replayed stages, accept-set, confirm, findings, answers), serves it with
 # the real backend, starts the UI against it the supported way (npm run dev, see
-# docs/pilot/RUNNING-THE-UI.md) and runs the Playwright pilot workflow.
+# docs/pilot/RUNNING-THE-UI.md) and runs every Playwright spec in ui/e2e/ (the pilot workflow and the
+# screen specs).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
@@ -39,4 +40,4 @@ for _ in $(seq 1 60); do
   fi
   sleep 0.5
 done
-npx playwright test e2e/pilot.spec.ts --reporter=list
+npx playwright test --reporter=list

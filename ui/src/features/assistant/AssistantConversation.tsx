@@ -221,7 +221,7 @@ export function AssistantConversation({ requirementId }: AssistantConversationPr
             disabled={composerOff}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
-            className="min-w-0 flex-1 resize-none border-0 bg-transparent text-callout leading-normal text-fg outline-none placeholder:text-fg-4 disabled:cursor-not-allowed"
+            className="min-w-0 flex-1 resize-none border-0 bg-transparent text-callout leading-normal text-fg outline-none placeholder:text-fg-3 disabled:cursor-not-allowed"
           />
           <button
             type="submit"
