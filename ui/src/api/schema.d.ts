@@ -6878,12 +6878,12 @@ export interface operations {
     };
     search_model: {
         parameters: {
-            query?: {
+            query: {
                 /**
-                 * @description Search text
+                 * @description Search text; required and not blank (400 otherwise)
                  * @example example
                  */
-                q?: string;
+                q: string;
                 /**
                  * @description Search scope
                  * @example calculation
@@ -6906,7 +6906,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Search hits */
+            /** @description Search hits over Accepted elements only: Proposed, Rejected and other non-Accepted elements are never searchable */
             200: {
                 headers: {
                     /**

@@ -581,6 +581,8 @@
   "shell.search.score": "Score",
   "shell.search.submit": "Search",
   "shell.user": "User",
+  "shell.search.acceptedOnly": "Only accepted elements are searchable.",
+  "shell.search.close": "Close search results",
   "write.failed": "The change was not saved:",
   "write.transportFailed": "The server could not be reached; the change was not saved. Check the connection and try again.",
   "write.inferenceUnavailable": "The AI model is not available: no inference provider is configured for this server.",

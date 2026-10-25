@@ -355,6 +355,39 @@ describe("HomePage global search", () => {
     expect(methods.length).toBeGreaterThan(0);
     expect(methods.every((m) => m === "GET")).toBe(true);
   });
+
+  it("states that only Accepted elements are searchable, dismisses results and opens a hit's page (H0.11)", async () => {
+    const page: SearchPage = {
+      items: [{ id: "req:leave-1", kind: "requirement", path: "/api/requirements/req:leave-1", score: 0.75, snippet: "Employees shall submit leave requests." }],
+      next_cursor: null,
+    };
+    server.use(
+      ...shellHandlers(),
+      http.get("*/api/search", () => HttpResponse.json(page)),
+      http.get("*/api/requirements/:id", () => HttpResponse.json({ code: "E_NOT_FOUND", message: "x", details: {} }, { status: 404 })),
+      http.get("*/api/sessions/*", () => HttpResponse.json({}, { status: 404 })),
+    );
+    const { router } = renderApp();
+    await screen.findByTestId("home-revision");
+    const user = userEvent.setup();
+    const input = screen.getByRole("searchbox", { name: "Search the model" });
+    await user.type(input, "leave");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await screen.findByTestId("search-results");
+    expect(screen.getByTestId("search-scope-note").textContent).toBe("Only accepted elements are searchable.");
+    // Dismissal: the button, then Escape after a new search.
+    await user.click(screen.getByRole("button", { name: "Close search results" }));
+    expect(screen.queryByTestId("search-results")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await screen.findByTestId("search-results");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("search-results")).toBeNull();
+    // A hit with a page opens it in the app and closes the results.
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(await screen.findByRole("link", { name: "req:leave-1" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/requirements/req:leave-1"));
+    expect(screen.queryByTestId("search-results")).toBeNull();
+  });
 });
 
 // ------------------------------------------------------------------ versioned writes

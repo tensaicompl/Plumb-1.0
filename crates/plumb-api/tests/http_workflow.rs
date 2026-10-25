@@ -942,6 +942,32 @@ mod http_workflow {
         hex::encode(to_canonical_json(&cursor).unwrap())
     }
 
+    /// Fable #350: only Accepted elements are searchable; a Proposed requirement is never a hit
+    /// (the contract and the UI say so).
+    #[tokio::test]
+    async fn search_hits_only_accepted_elements() {
+        let app = app();
+        concurrent_commit(&app.path);
+        let r = get(&app, "/api/search?q=writer").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert!(
+            r.json()["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["id"] != "req:racer"),
+            "{}",
+            r.text()
+        );
+        for blank in ["/api/search", "/api/search?q=", "/api/search?q=%20"] {
+            assert_error(
+                &get(&app, blank).await,
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            );
+        }
+    }
+
     #[tokio::test]
     async fn http_workflow_search_ranks_filters_and_pages() {
         let app = app();

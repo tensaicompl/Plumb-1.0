@@ -2129,9 +2129,9 @@ mod stubs {
     pub fn get_gates() {}
 
     #[utoipa::path(get, path = "/api/search", operation_id = "search_model", tag = "meta",
-        params(("q" = Option<String>, Query, description = "Search text"),
+        params(("q" = String, Query, description = "Search text; required and not blank (400 otherwise)"),
                ("scope" = Option<SearchScope>, Query, description = "Search scope")),
-        responses((status = 200, description = "Search hits", body = SearchPage)))]
+        responses((status = 200, description = "Search hits over Accepted elements only: Proposed, Rejected and other non-Accepted elements are never searchable", body = SearchPage)))]
     pub fn search_model() {}
 
     #[utoipa::path(get, path = "/api/events", operation_id = "events_websocket", tag = "meta",

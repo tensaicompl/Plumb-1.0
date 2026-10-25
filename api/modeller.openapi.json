@@ -9500,11 +9500,11 @@
         "operationId": "search_model",
         "parameters": [
           {
-            "description": "Search text",
+            "description": "Search text; required and not blank (400 otherwise)",
             "example": "example",
             "in": "query",
             "name": "q",
-            "required": false,
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -9561,7 +9561,7 @@
                 }
               }
             },
-            "description": "Search hits",
+            "description": "Search hits over Accepted elements only: Proposed, Rejected and other non-Accepted elements are never searchable",
             "headers": {
               "ETag": {
                 "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",

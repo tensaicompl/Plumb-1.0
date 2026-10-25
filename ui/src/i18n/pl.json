@@ -581,6 +581,8 @@
   "shell.search.score": "Wynik",
   "shell.search.submit": "Szukaj",
   "shell.user": "Użytkownik",
+  "shell.search.acceptedOnly": "Wyszukiwane są tylko zaakceptowane elementy.",
+  "shell.search.close": "Zamknij wyniki wyszukiwania",
   "write.failed": "Zmiana nie została zapisana:",
   "write.transportFailed": "Nie udało się połączyć z serwerem; zmiana nie została zapisana. Sprawdź połączenie i spróbuj ponownie.",
   "write.inferenceUnavailable": "Model AI jest niedostępny: na tym serwerze nie skonfigurowano dostawcy wnioskowania.",

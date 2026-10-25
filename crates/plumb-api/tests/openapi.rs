@@ -2008,8 +2008,8 @@ mod openapi {
         // ProcessNodeView, ProcessNodeViewKind and ProcessFlowView; Hotfix 080 adds
         // FindingRuleClass; Hotfix 082 adds GateRuleState, GateRuleApplicabilityState,
         // GateRuleApplicability, GateRuleError, GateRuleResult, GateWaiver and GateSummaryView;
-        // H0.11 adds GateEvaluationState and GateStateReason.
-        assert_eq!(schemas.len(), 130);
+        // H0.11 adds GateEvaluationState, GateStateReason and ItemHealth.
+        assert_eq!(schemas.len(), 131);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -2190,6 +2190,16 @@ mod openapi {
         assert_eq!(
             query_param(&doc, "GET", "/api/search", "scope")["schema"],
             component_ref("SearchScope")
+        );
+        // Fable #269 / #350: q is required, and only Accepted elements are searchable.
+        let q = query_param(&doc, "GET", "/api/search", "q");
+        assert_eq!(q["required"], true);
+        assert_eq!(q["schema"], json!({"type": "string"}));
+        assert!(
+            operation(&doc, "GET", "/api/search")["responses"]["200"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Accepted elements only")
         );
 
         // Required reasons.

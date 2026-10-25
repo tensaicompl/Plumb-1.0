@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useMatch, useRouter, useRouterState } from "@tanstack/react-router";
-import { useState, type FormEvent, type MouseEvent } from "react";
+import { useEffect, useState, type FormEvent, type MouseEvent } from "react";
 
 import { apiClient, readData } from "../api/client";
 import type { components } from "../api/schema";
@@ -13,6 +13,7 @@ import { PILOT_NAVIGATION, type NavLink } from "./nav";
 import { ReadFailure } from "../components/ReadFailure";
 
 type SearchPage = components["schemas"]["SearchPage"];
+type SearchHit = components["schemas"]["SearchHit"];
 
 async function searchModel(q: string): Promise<SearchPage> {
   return (await readData(apiClient.GET("/api/search", { params: { query: { q } } })));
@@ -119,9 +120,48 @@ function Identity() {
   );
 }
 
+/** The app page of a search hit, by its server kind; null when the kind has no page. */
+export function hitPage(hit: SearchHit): string | null {
+  switch (hit.kind) {
+    case "requirement":
+      return "/requirements/" + hit.id;
+    case "rule":
+      return "/model/rules";
+    case "calculation":
+      return "/model/calculations";
+    case "scenario":
+      return "/model/scenarios";
+    case "concept":
+    case "term":
+      return "/model/glossary";
+    default:
+      return null;
+  }
+}
+
+/**
+ * The global search: server BM25 hits over Accepted elements only. Results refresh with every
+ * design event (all queries are invalidated), can be dismissed with the close control or Escape,
+ * and a hit with an app page opens it client-side and closes the results.
+ */
 function GlobalSearch() {
+  const router = useRouter();
   const [text, setText] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
+  const dismiss = () => setSubmitted(null);
+  const open = submitted !== null;
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSubmitted(null);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
   const results = useQuery({
     queryKey: ["search", submitted],
     queryFn: () => searchModel(submitted ?? ""),
@@ -149,15 +189,42 @@ function GlobalSearch() {
       </form>
       {submitted !== null && (
         <section aria-label={t("shell.search.results")} className="absolute right-0 z-10 mt-1 w-96 rounded border bg-white p-2 shadow">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-slate-600" data-testid="search-scope-note">
+              {t("shell.search.acceptedOnly")}
+            </p>
+            <button type="button" className="rounded border px-2 text-xs" onClick={dismiss}>
+              {t("shell.search.close")}
+            </button>
+          </div>
           {results.isError && <ReadFailure error={results.error} messageKey="shell.search.failed" />}
           {results.data !== undefined && results.data.items.length === 0 && <p>{t("shell.search.empty")}</p>}
           {results.data !== undefined && results.data.items.length > 0 && (
             <ol className="space-y-2" data-testid="search-results">
               {results.data.items.map((hit) => (
                 <li key={hit.id} className="text-sm">
-                  <span className="font-mono" data-testid="search-hit-id">
-                    {hit.id}
-                  </span>
+                  {hitPage(hit) === null ? (
+                    <span className="font-mono" data-testid="search-hit-id">
+                      {hit.id}
+                    </span>
+                  ) : (
+                    <a
+                      href={hitPage(hit) ?? undefined}
+                      className="font-mono underline"
+                      data-testid="search-hit-id"
+                      onClick={(event) => {
+                        const page = hitPage(hit);
+                        if (page === null || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+                          return;
+                        }
+                        event.preventDefault();
+                        dismiss();
+                        router.history.push(page);
+                      }}
+                    >
+                      {hit.id}
+                    </a>
+                  )}
                   <dl className="grid grid-cols-[auto_1fr] gap-x-2 text-xs">
                     <dt>{t("shell.search.kind")}</dt>
                     <dd>{hit.kind}</dd>
