@@ -71,17 +71,16 @@ test.describe("HR pilot", () => {
   test("an attribute can be typed from the Entities screen", async ({ page }) => {
     await page.goto("/model/entities");
     const row = page.locator("[data-attribute='leave type']");
-    await row.getByTestId("attribute-type-choice").selectOption("Int");
-    await row.getByTestId("attribute-type-save").click();
-    await expect(row.locator("td").nth(1).locator(".font-mono").first()).toHaveText("Int");
+    await row.getByRole("button", { name: /^Type · unit: String/ }).click();
+    await page.getByRole("menuitem", { name: "Int", exact: true }).click();
+    await expect(row.getByRole("button", { name: /^Type · unit: Int/ })).toBeVisible();
   });
 
-  test("selected scenarios run and show their verdicts", async ({ page }) => {
+  test("the scenarios run and show their verdicts", async ({ page }) => {
     await page.goto("/scenarios");
-    const boxes = page.locator("input[type=checkbox]");
-    await boxes.first().check();
-    await page.getByRole("button", { name: /run selected/i }).click();
-    await expect(page.getByText(/pass|fail|undecidable/i).first()).toBeVisible();
+    await page.getByRole("button", { name: "Run all" }).click();
+    await expect(page.getByText(/\d+ scenarios? ran · \d+ pass/)).toBeVisible();
+    await expect(page.getByRole("list", { name: "Scenarios" }).getByText(/^(Pass|Fail|Undecidable)$/).first()).toBeVisible();
   });
 
   test("the gates screen shows the waived duplicate blocker", async ({ page }) => {

@@ -42,6 +42,8 @@ export interface RouteHarness {
   readonly calls: Call[];
   /** Renders the app at `path` with `handlers` taking precedence over the shell fallbacks. */
   renderAt(path: string, ...handlers: RequestHandler[]): Promise<{ user: ReturnType<typeof userEvent.setup>; router: ReturnType<RouterModule["createAppRouter"]> }>;
+  /** Replaces handlers mid-test (later reads see the new answers). */
+  use(...handlers: RequestHandler[]): void;
   /** Non-GET requests. */
   writes(): Call[];
   /** GET requests other than the shell's own reads. */
@@ -119,6 +121,7 @@ export function setupRouteHarness(): RouteHarness {
       );
       return { user: userEvent.setup(), router };
     },
+    use: (...handlers) => server.use(...handlers),
     writes: () => calls.filter((call) => call.method !== "GET"),
     reads: () => calls.filter((call) => call.method === "GET" && !isShellRead(call.path)),
     mutation: () => mutationModule,

@@ -46,7 +46,9 @@ export function EntitiesView() {
   const go = useGo();
   const query = useQuery(entitiesQuery);
   const items = query.data?.items ?? [];
-  const selected = items.find((entity) => entity.id === params.id) ?? items[0] ?? null;
+  // Without a deep link, open the richest entity (most attributes and states), as the handoff does.
+  const richest = items.reduce<Entity | null>((best, entity) => (best === null || entity.attributes.length + entity.states.length > best.attributes.length + best.states.length ? entity : best), null);
+  const selected = items.find((entity) => entity.id === params.id) ?? richest;
   const open = (event: MouseEvent<HTMLAnchorElement>, href: string) => {
     if (isPlainClick(event)) {
       event.preventDefault();

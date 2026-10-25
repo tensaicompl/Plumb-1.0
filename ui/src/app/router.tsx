@@ -7,13 +7,13 @@ import { GatesPage } from "../features/gates/GatesPage";
 import { HomePage } from "../features/home/HomePage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
-import { ScenariosPage } from "../features/scenarios/ScenariosPage";
 import { GlossaryView } from "../features/model/GlossaryView";
 import { ModelScreen } from "../features/model/ModelScreen";
 import { EntitiesView } from "../features/model/EntitiesView";
 import { RulesView } from "../features/model/RulesView";
 import { CalculationsView } from "../features/model/CalculationsView";
 import { ProcessesView } from "../features/model/ProcessesView";
+import { ScenariosScreen } from "../features/scenarios/ScenariosScreen";
 import { AppShell } from "./AppShell";
 import { InboxInterim, Legacy, parseInboxFilter, QualityInterim, SourceInterim, SourcesInterim } from "./routes/interim";
 import { NotFoundPage, RouteErrorPage } from "./RouteStatus";
@@ -135,25 +135,9 @@ const processesRoutes = segmentRoutes("processes", ProcessesView);
 
 // ------------------------------------------------------------------ Scenarios
 
-const scenariosRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/scenarios",
-  component: () => (
-    <Legacy>
-      <ScenariosPage />
-    </Legacy>
-  ),
-});
+const scenariosRoute = createRoute({ getParentRoute: () => rootRoute, path: "/scenarios", component: ScenariosScreen });
 
-const scenarioRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/scenarios/$id",
-  component: () => (
-    <Legacy>
-      <ScenariosPage />
-    </Legacy>
-  ),
-});
+const scenarioRoute = createRoute({ getParentRoute: () => rootRoute, path: "/scenarios/$id", component: ScenariosScreen });
 
 // ------------------------------------------------------------------ Quality
 
