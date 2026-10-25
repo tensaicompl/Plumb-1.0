@@ -180,6 +180,8 @@ function handlers(backend: Backend) {
     ),
     http.get("*/api/gates", () => etagJson([])),
     http.get("*/api/requirements", () => etagJson({ items: [], next_cursor: null })),
+    http.get("*/api/requirements/:id/readiness", () => etagJson({ overall: null, contributing: [], sub: { clarity: null, completeness: null, confirmation: null, consistency: null, verifiability: null } })),
+    http.get("*/api/sources", () => etagJson({ items: [] })),
     http.get("*/api/glossary", () => etagJson({ items: [], next_cursor: null })),
     http.get("*/api/model/entities", () => etagJson({ items: [], next_cursor: null })),
     http.get("*/api/model/sentences", () => etagJson({ items: [], next_cursor: null })),
@@ -200,6 +202,10 @@ function handlers(backend: Backend) {
         lint_findings: [],
         ears_suggestion: null,
         linked: { operations: [], processes: [], scenarios: [] },
+        evidence: [],
+        labels: [],
+        lint_current: false,
+        source_identifier: null,
       });
     }),
     http.get("*/api/questions", async ({ request }) => {

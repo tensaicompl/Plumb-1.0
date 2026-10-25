@@ -135,6 +135,7 @@ const GATES: GateStatus[] = [
     rules: [
       {
         rule_id: "PLUMB.F1.REQ.NO_CONTRADICTION",
+        title: null,
         state: "FAIL",
         declared_severity: "blocker",
         effective_severity: "blocker",
@@ -483,11 +484,11 @@ describe("HomePage locale selection", () => {
     act(() => {
       void router.navigate({ to: "/quality" });
     });
-    expect(await screen.findByRole("heading", { level: 1, name: "Bramki" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Jakość" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Ustawienia" }));
     await user.click(within(await screen.findByRole("radiogroup", { name: "Język" })).getByRole("radio", { name: "English" }));
     await user.keyboard("{Escape}");
-    expect(await screen.findByRole("heading", { level: 1, name: "Gates" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Quality" })).toBeTruthy();
     window.localStorage.removeItem(i18n.LOCALE_STORAGE_KEY);
   });
 });

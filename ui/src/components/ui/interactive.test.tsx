@@ -196,6 +196,23 @@ describe("FilterChip", () => {
     expect(classOf(active)).toContain("border-primary");
     expect(await axeViolations()).toEqual([]);
   });
+
+  it("works as a Menu trigger (Kind, Status): a chevron, no pressed state, the menu opens", async () => {
+    const onPick = vi.fn();
+    render(
+      <Menu
+        trigger={<FilterChip label="Kind: Functional" active menu />}
+        items={[{ id: "quality", label: "Quality", onSelect: onPick }]}
+      />,
+    );
+    const chip = screen.getByRole("button", { name: "Kind: Functional" });
+    expect(chip.getAttribute("aria-pressed")).toBeNull();
+    expect(chip.querySelector("svg")).not.toBeNull();
+    expect(classOf(chip)).toContain("border-primary");
+    await userEvent.click(chip);
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Quality" }));
+    expect(onPick).toHaveBeenCalled();
+  });
 });
 
 describe("Tooltip and Menu", () => {

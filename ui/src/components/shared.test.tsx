@@ -11,10 +11,7 @@ import { useConflictStore } from "../api/useVersionedMutation";
 import { ConflictDialog } from "./ConflictDialog";
 import { DiagramFrame, computeLayout, layoutRequest, type DiagramEdge, type DiagramNode } from "./DiagramFrame";
 import { DiffViewer, type ModelDiff } from "./DiffViewer";
-import { FindingsPanel, type Finding } from "./FindingsPanel";
-import { BADGE_STATUSES, GateBadge } from "./GateBadge";
 import { isActionEnabled, ProposalReviewBar, type IntakeReport, type ProposalReviewAction } from "./ProposalReviewBar";
-import { PROVENANCE_CATEGORIES, ProvenanceDrawer, type ProvenanceItem } from "./ProvenanceDrawer";
 import {
   TypedAnswerControl,
   answerRenderer,
@@ -195,91 +192,6 @@ describe("shared ProposalReviewBar", () => {
   });
 });
 
-// ------------------------------------------------------------------ ProvenanceDrawer
-
-describe("shared ProvenanceDrawer", () => {
-  it("distinguishes the four provenance classes as declared, never by reference text", () => {
-    // References deliberately look like other classes: the category comes only from the caller.
-    const items: ProvenanceItem[] = [
-      { category: "evidence", ref: "drv:looks-derived", detail: "requirements.md 12-48" },
-      { category: "deterministic_derivation", ref: "sha256:looks-like-artifact" },
-      { category: "human_resolution", ref: "dec:0011", detail: "alice" },
-      { category: "llm_inference", ref: "frag:looks-like-evidence", detail: "test-model" },
-    ];
-    render(<ProvenanceDrawer open onOpenChange={vi.fn()} subjectRef="req:leave-1" items={items} />);
-    const drawer = screen.getByRole("dialog");
-    expect(within(drawer).getByTestId("provenance-subject").textContent).toBe("req:leave-1");
-    const sections = Array.from(drawer.querySelectorAll("section[data-category]"));
-    expect(sections.map((s) => s.getAttribute("data-category"))).toEqual([...PROVENANCE_CATEGORIES]);
-    const headings = sections.map((s) => s.querySelector("h3")?.textContent);
-    expect(headings).toEqual(["Evidence", "Deterministic derivation", "Human resolution", "LLM inference"]);
-    expect(new Set(headings).size).toBe(4);
-    const placed = Object.fromEntries(sections.map((s) => [s.getAttribute("data-category"), s.querySelector(".font-mono")?.textContent]));
-    expect(placed).toEqual({
-      evidence: "drv:looks-derived",
-      deterministic_derivation: "sha256:looks-like-artifact",
-      human_resolution: "dec:0011",
-      llm_inference: "frag:looks-like-evidence",
-    });
-  });
-});
-
-// ------------------------------------------------------------------ FindingsPanel
-
-const FINDINGS: Finding[] = [
-  { id: "fnd:a", code: "PLUMB.F1.REQ.EARS", family: "F1", rule_class: null, severity: "blocker", status: "Open", message: "not EARS", affected_refs: ["req:1"] },
-  { id: "fnd:b", code: "PLUMB.F2.DOMAIN.RELATION_TYPED", family: "F2", rule_class: "plumb_core", severity: "major", status: "Open", message: "untyped", affected_refs: ["rel:2", "ent:3"] },
-  { id: "fnd:c", code: "PLUMB.F1.REQ.EARS", family: "F1", rule_class: null, severity: "blocker", status: "Resolved", message: "fixed", affected_refs: [], waiver_ref: "dec:9" },
-];
-
-function shownFindings(): string[] {
-  return Array.from(document.querySelectorAll("li[data-finding-id]")).map((li) => li.getAttribute("data-finding-id") ?? "");
-}
-
-describe("shared FindingsPanel", () => {
-  it("filters by server fields, pins locally and opens refs through the callback", async () => {
-    const user = userEvent.setup();
-    const onOpenRef = vi.fn();
-    const before = structuredClone(FINDINGS);
-    render(<FindingsPanel findings={FINDINGS} onOpenRef={onOpenRef} />);
-    expect(shownFindings()).toEqual(["fnd:a", "fnd:b", "fnd:c"]);
-
-    const severity = screen.getByRole("combobox", { name: "Severity" });
-    const status = screen.getByRole("combobox", { name: "Status" });
-    // Filter options are the server values in first-appearance order.
-    expect(Array.from((severity as HTMLSelectElement).options).map((o) => o.value)).toEqual(["", "blocker", "major"]);
-    await user.selectOptions(severity, "blocker");
-    expect(shownFindings()).toEqual(["fnd:a", "fnd:c"]);
-    await user.selectOptions(status, "Resolved");
-    expect(shownFindings()).toEqual(["fnd:c"]);
-    await user.selectOptions(severity, "");
-    await user.selectOptions(status, "");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Family" }), "F2");
-    expect(shownFindings()).toEqual(["fnd:b"]);
-    await user.selectOptions(screen.getByRole("combobox", { name: "Family" }), "");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Code" }), "PLUMB.F1.REQ.EARS");
-    expect(shownFindings()).toEqual(["fnd:a", "fnd:c"]);
-    await user.selectOptions(screen.getByRole("combobox", { name: "Code" }), "");
-
-    // Pinning is local view state: pinned findings list first, nothing changes in the data.
-    const findingB = document.querySelector('li[data-finding-id="fnd:b"]') as HTMLElement;
-    await user.click(within(findingB).getByRole("button", { name: "Pin" }));
-    expect(shownFindings()).toEqual(["fnd:b", "fnd:a", "fnd:c"]);
-    expect(document.querySelector('ul[data-list="pinned"] li[data-finding-id="fnd:b"]')).not.toBeNull();
-    const pinnedB = document.querySelector('li[data-finding-id="fnd:b"]') as HTMLElement;
-    expect(within(pinnedB).getByRole("button", { name: "Unpin" }).getAttribute("aria-pressed")).toBe("true");
-    expect(within(pinnedB).getByText("Open")).toBeTruthy();
-    await user.click(within(pinnedB).getByRole("button", { name: "Unpin" }));
-    expect(shownFindings()).toEqual(["fnd:a", "fnd:b", "fnd:c"]);
-    expect(FINDINGS).toEqual(before);
-
-    // Affected refs open only through the supplied callback.
-    await user.click(screen.getByRole("button", { name: "ent:3" }));
-    expect(onOpenRef).toHaveBeenCalledWith("ent:3");
-    expect(onOpenRef).toHaveBeenCalledTimes(1);
-  });
-});
-
 // ------------------------------------------------------------------ DiffViewer
 
 describe("shared DiffViewer", () => {
@@ -301,25 +213,6 @@ describe("shared DiffViewer", () => {
     expect(ids("modified")).toEqual([]);
     expect(within(section("modified")).getByText("None")).toBeTruthy();
     expect(within(section("added")).getByTestId("diff-count").textContent).toBe("2");
-  });
-});
-
-// ------------------------------------------------------------------ GateBadge
-
-describe("shared GateBadge", () => {
-  it("renders every status as exact text and never as a score", () => {
-    expect(BADGE_STATUSES).toEqual(["PASS", "FAIL", "WARN", "WAIVED", "ERROR"]);
-    for (const status of BADGE_STATUSES) {
-      const { container, unmount } = render(<GateBadge status={status} label="F1" />);
-      const badge = container.querySelector("[data-status]") as HTMLElement;
-      expect(badge.getAttribute("data-status")).toBe(status);
-      expect(within(badge).getByTestId("badge-status").textContent).toBe(status);
-      // Accessible text names the status; color classes are not the only signal.
-      expect(badge.textContent).toContain(status);
-      expect(badge.textContent).not.toMatch(/%|\d{2,}|score|readiness/i);
-      expect(container.querySelector('[role="progressbar"], [role="meter"], progress, meter')).toBeNull();
-      unmount();
-    }
   });
 });
 

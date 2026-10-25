@@ -59,7 +59,7 @@ export function InboxInterim({ filter }: { filter: InboxFilter | undefined }) {
   );
 }
 
-// ------------------------------------------------------------------ Model and Quality
+// ------------------------------------------------------------------ Model
 
 const MODEL_SEGMENTS: readonly { segment: string; label: MessageKey }[] = [
   { segment: "glossary", label: "nav.glossary" },
@@ -81,25 +81,6 @@ export function ModelInterim() {
           label: t(label),
           active: pathname === "/model/" + segment || pathname.startsWith("/model/" + segment + "/"),
         }))}
-      />
-      <Outlet />
-    </Legacy>
-  );
-}
-
-/** /quality/*: Gates · Issues · History above the old pages. */
-export function QualityInterim() {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const tab = pathname.startsWith("/quality/history") ? "history" : pathname.startsWith("/quality/issues") ? "issues" : "gates";
-  return (
-    <Legacy>
-      <Views
-        labelKey="quality.views"
-        items={[
-          { href: "/quality", label: t("quality.view.gates"), active: tab === "gates" },
-          { href: "/quality/issues", label: t("quality.view.issues"), active: tab === "issues" },
-          { href: "/quality/history", label: t("quality.view.history"), active: tab === "history" },
-        ]}
       />
       <Outlet />
     </Legacy>
