@@ -964,6 +964,7 @@ pub struct OperationCandidateAnalysis {
 pub struct OperationAnalysisResult {
     pub candidates: Vec<OperationCandidateAnalysis>,
     pub proposals: Vec<Proposal>,
+    /// Analysis-level issues and every candidate issue, sorted.
     pub issues: Vec<OperationIssue>,
 }
 
@@ -1638,9 +1639,14 @@ pub fn analyze_operations(
     }
     candidates.sort_by(|a, b| a.operation_ref.cmp(&b.operation_ref));
     proposals.sort_by(|a, b| a.id.cmp(&b.id));
+    // Every candidate issue is also a result issue, so a dropped candidate is reported (H0.5).
+    let mut issues: Vec<OperationIssue> =
+        candidates.iter().flat_map(|c| c.issues.clone()).collect();
+    issues.sort();
+    issues.dedup();
     Ok(OperationAnalysisResult {
         candidates,
         proposals,
-        issues: Vec::new(),
+        issues,
     })
 }

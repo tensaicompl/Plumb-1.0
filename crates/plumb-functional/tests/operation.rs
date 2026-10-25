@@ -36,13 +36,13 @@ mod operation_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:2ea5e511280190ab54cb685f8bae2fd530f63053865b0db9f89af29bbac63d91";
+        "sha256:725046b13f6e18977c2c8ccae96cbef2ec59e0f66883964ca98980dbdfe9228d";
     const SCHEMA_HASH: &str =
         "sha256:4c581e771275e7516de8c2305e6eb79acf89f43e1d219310120225b30fca64b4";
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:68a5a788bc509400759ea64d7301ac0111a726432daae9bc0a9b322c6bd75728";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:825b8db60d4bf724a77414a819d0e4a474b806fe4ba462b1ca151cfb2ee74d08";
+        "sha256:0502e511c6f7ae0069aefcdc18441b680c465a93235da41426c963754ca99717";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and
@@ -555,6 +555,14 @@ mod operation_contract {
     ) -> (OperationCandidateAnalysis, Vec<Proposal>) {
         let result = run(graph, scope, vec![c]).unwrap();
         assert_eq!(result.candidates.len(), 1);
+        // A dropped candidate is reported (H0.5): the result carries every candidate issue.
+        for issue in &result.candidates[0].issues {
+            assert!(
+                result.issues.contains(issue),
+                "{issue:?} not in {:?}",
+                result.issues
+            );
+        }
         (result.candidates[0].clone(), result.proposals)
     }
 

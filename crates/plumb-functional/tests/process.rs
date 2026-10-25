@@ -470,6 +470,10 @@ mod process_contract {
     fn one(graph: &Graph, p: Json) -> (ProcessCandidateAnalysis, Vec<Proposal>) {
         let r = run(graph, vec![p]).unwrap();
         assert_eq!(r.candidates.len(), 1);
+        // A dropped candidate is reported (H0.5): the result carries every candidate issue.
+        for issue in &r.candidates[0].issues {
+            assert!(r.issues.contains(issue), "{issue:?} not in {:?}", r.issues);
+        }
         (r.candidates[0].clone(), r.proposals)
     }
 

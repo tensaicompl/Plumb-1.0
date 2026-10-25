@@ -37,6 +37,10 @@ Every range is `{"requirement_ref", "start", "end"}`: zero-based UTF-8 byte offs
 target requirement's statement, `end` exclusive, `start < end`. Do not repeat a range within
 one evidence list and do not repeat a target within one relation list.
 
+Every Operation needs at least one performer: Plumb does not propose an Operation without one.
+Ground the performer in any target requirement that names who performs the action (one
+requirement may state the action and another who performs it, such as who submits a request).
+
 Support nodes are context only. A relation is proposed only when the requirement text supports
 it. Do not return preconditions, postconditions, idempotency, transaction semantics, event
 types, permissions, processes, findings, questions, IDs of new nodes or prose.

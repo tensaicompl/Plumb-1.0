@@ -827,6 +827,15 @@ fn hr_pilot_real_model() {
     config["provider_policy"] = json!({"provider": "anthropic", "config": {
         "adapter_version": 1, "model": model, "max_tokens": 32000,
         "api_version": "2023-06-01", "effort": "high"}});
+    // Process analysis draws on the Accepted Operations, Events, Outcomes and Transitions (the
+    // scripted pilot leaves it unexercised); flows runs again once the Operations are Accepted.
+    config["process_scope"] = json!({
+        "operation_refs": {"$all": {"type": "Operation"}},
+        "performer_refs": {"$all": {"type": ["BusinessRole", "Actor"]}},
+        "event_refs": {"$all": {"type": "Event"}},
+        "outcome_refs": {"$all": {"type": "Outcome"}},
+        "transition_refs": {"$all": {"type": "Transition"}}
+    });
     let mut sim = Sim::new(config, hr_model);
     sim.real = Some(key);
     let mut log: Vec<Value> = Vec::new();
@@ -880,7 +889,7 @@ fn hr_pilot_real_model() {
     step("directory", code);
     sim.accept_all();
     sim.confirm_all(&[]);
-    for recipe in ["analyse", "flows", "analyse"] {
+    for recipe in ["analyse", "flows", "analyse", "flows"] {
         let code = settle(&sim, recipe);
         step(recipe, code);
     }

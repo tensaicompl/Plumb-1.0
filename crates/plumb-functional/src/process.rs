@@ -970,6 +970,7 @@ pub struct ProcessCandidateAnalysis {
 pub struct ProcessCompilationResult {
     pub candidates: Vec<ProcessCandidateAnalysis>,
     pub proposals: Vec<Proposal>,
+    /// Analysis-level issues and every candidate issue, sorted.
     pub issues: Vec<ProcessIssue>,
 }
 
@@ -1469,10 +1470,14 @@ pub fn analyze_processes(
     }
     candidates.sort_by(|a, b| a.process_ref.cmp(&b.process_ref));
     proposals.sort_by(|a, b| a.id.cmp(&b.id));
+    // Every candidate issue is also a result issue, so a dropped candidate is reported (H0.5).
+    let mut issues: Vec<ProcessIssue> = candidates.iter().flat_map(|c| c.issues.clone()).collect();
+    issues.sort();
+    issues.dedup();
     Ok(ProcessCompilationResult {
         candidates,
         proposals,
-        issues: Vec::new(),
+        issues,
     })
 }
 

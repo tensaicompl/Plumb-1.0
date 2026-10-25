@@ -236,6 +236,18 @@ mod prompts {
         ));
     }
 
+    /// Real-model run: "Submit leave request" was returned without a performer (HR-009 names
+    /// no actor) and so was never proposed. The prompt states that a command needs a performer
+    /// and that it may be grounded in any target requirement naming who performs the action.
+    #[test]
+    fn s2_operation_states_the_performer_requirement() {
+        let (_, prompt, _) = PAIRS.iter().find(|(p, _, _)| *p == "s2-operation").unwrap();
+        assert!(prompt.contains(
+            "Every Operation needs at least one performer: Plumb does not propose an Operation without one."
+        ));
+        assert!(prompt.contains("in any target requirement that names who performs the action"));
+    }
+
     // ------------------------------------------------------------------ Fable #65
 
     fn process_with_node(node: Value) -> Value {
