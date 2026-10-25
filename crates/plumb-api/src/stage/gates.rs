@@ -735,7 +735,7 @@ fn f2_inputs(
     // Calculation scope overrides: required exactly for origin-less Accepted Calculations.
     let mut stale = BTreeSet::new();
     let mut overrides = Vec::new();
-    for o in &a03.calculation_scope_overrides {
+    for o in &a03.calculation_scope_overrides_for(graph)? {
         let usable = |n: &Node| {
             n.status == ElementStatus::Accepted
                 && matches!(n.payload, NodePayload::Calculation(_))
@@ -795,7 +795,7 @@ fn f2_inputs(
     }
     // Invariant bindings: the external expression scopes whose owner is an Accepted Invariant.
     let mut invariants = Vec::new();
-    for scope in &a03.expression_scopes {
+    for scope in &a03.expression_scopes_for(graph)? {
         let node = graph.node(&scope.owner_ref);
         if !node.is_some_and(|n| matches!(n.payload, NodePayload::Invariant(_))) {
             continue; // an Operation, Rule or Transition scope belongs to execution
@@ -842,12 +842,11 @@ fn f4_applicability(
     a04: &A04Runtime,
 ) -> Result<(F4ApplicabilityInput, Vec<Id>), ApiError> {
     let gate = GateId::F4;
-    let config = a04.gates.f4.as_ref().ok_or_else(|| inputs_missing(gate))?;
-    let verification = a04
-        .verification_applicability
-        .as_ref()
-        .ok_or_else(|| inputs_missing(gate))?;
     let graph = &loaded.graph;
+    let config = &a04.f4_for(graph)?.ok_or_else(|| inputs_missing(gate))?;
+    let verification = &a04
+        .verification_applicability_for(graph)?
+        .ok_or_else(|| inputs_missing(gate))?;
     let mut stale = BTreeSet::new();
     let mut sources = Vec::new();
     for source in &verification.sources {

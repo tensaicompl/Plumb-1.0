@@ -472,21 +472,8 @@ fn run(regenerate: bool) -> Outcome {
     sim.accept_all();
     sim.confirm_all(&[]);
     sim.settle("analyse");
-    let mut domain = sim.accepted("Entity");
-    domain.extend(sim.accepted("Attribute"));
-    let mut performers = sim.accepted("BusinessRole");
-    performers.extend(sim.accepted("Actor"));
-    sim.set(
-        "operation_scope",
-        json!({"performer_refs": performers, "domain_refs": domain, "calculation_refs": [],
-               "governor_refs": sim.accepted("Rule"), "event_refs": [], "data_schema_refs": [],
-               "event_payload_attribute_refs": [], "support_refs": []}),
-    );
-    sim.set(
-        "process_scope",
-        json!({"operation_refs": [], "performer_refs": performers, "event_refs": [],
-               "outcome_refs": [], "transition_refs": []}),
-    );
+    // config.json names the generated elements of every stage scope by selector: the
+    // configuration is never edited during the flow.
     sim.settle("flows");
     let attribute = |name: &str| {
         sim.nodes()
@@ -506,14 +493,6 @@ fn run(regenerate: bool) -> Outcome {
         );
         assert_eq!(code, 0, "{out}");
     }
-    sim.set(
-        "calculation_scope",
-        json!({"bindings": [
-                   {"node_ref": attribute("pickup date"), "symbol": "pickup_date", "exposure": {"kind": "root"}},
-                   {"node_ref": attribute("return date"), "symbol": "return_date", "exposure": {"kind": "root"}},
-                   {"node_ref": attribute("half day"), "symbol": "day_fraction", "exposure": {"kind": "root"}}],
-               "calendar_refs": sim.accepted("Calendar")}),
-    );
     // Rerun of a semantic stage after downstream enrichment (attribute typing): no collision.
     for recipe in ["analyse", "calc", "rules", "scenarios", "tags", "run"] {
         sim.settle(recipe);

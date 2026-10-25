@@ -51,9 +51,99 @@
   "duplicate_policy": {
     "jaccard_threshold": "0.8"
   },
-  "calculation_scope": null,
-  "operation_scope": null,
-  "process_scope": null,
+  "calculation_scope": {
+    "bindings": [
+      {
+        "node_ref": {
+          "$one": {
+            "type": "Attribute",
+            "where": {
+              "name": "pickup date"
+            }
+          }
+        },
+        "symbol": "pickup_date",
+        "exposure": {
+          "kind": "root"
+        }
+      },
+      {
+        "node_ref": {
+          "$one": {
+            "type": "Attribute",
+            "where": {
+              "name": "return date"
+            }
+          }
+        },
+        "symbol": "return_date",
+        "exposure": {
+          "kind": "root"
+        }
+      },
+      {
+        "node_ref": {
+          "$one": {
+            "type": "Attribute",
+            "where": {
+              "name": "half day"
+            }
+          }
+        },
+        "symbol": "day_fraction",
+        "exposure": {
+          "kind": "root"
+        }
+      }
+    ],
+    "calendar_refs": {
+      "$all": {
+        "type": "Calendar"
+      }
+    }
+  },
+  "operation_scope": {
+    "performer_refs": {
+      "$all": {
+        "type": [
+          "BusinessRole",
+          "Actor"
+        ]
+      }
+    },
+    "domain_refs": {
+      "$all": {
+        "type": [
+          "Entity",
+          "Attribute"
+        ]
+      }
+    },
+    "calculation_refs": [],
+    "governor_refs": {
+      "$all": {
+        "type": "Rule"
+      }
+    },
+    "event_refs": [],
+    "data_schema_refs": [],
+    "event_payload_attribute_refs": [],
+    "support_refs": []
+  },
+  "process_scope": {
+    "operation_refs": [],
+    "performer_refs": {
+      "$all": {
+        "type": [
+          "BusinessRole",
+          "Actor"
+        ]
+      }
+    },
+    "event_refs": [],
+    "outcome_refs": [],
+    "transition_refs": []
+  },
   "authorization_draft": null,
   "scenario_derivation": {
     "decision_tables": [

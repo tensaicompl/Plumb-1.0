@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use crate::error::{echo, ApiError};
 use crate::openapi::StageName;
 use crate::runtime::ProviderMode;
+use crate::selector::Selections;
 use crate::stage::scenario_execution::runnable;
 use crate::state::{A03Runtime, A04Runtime};
 
@@ -223,8 +224,17 @@ impl Recipe {
         missing
     }
 
-    /// The recipe-relevant configuration values (compiler architecture, Hotfix 067).
-    pub(crate) fn inputs(self, a03: &A03Runtime, a04: &A04Runtime) -> Result<Value, ApiError> {
+    /// The recipe-relevant configuration values (compiler architecture, Hotfix 067), each
+    /// resolved against `graph` (the captured base): a selector form is recorded as its
+    /// resolved typed value, exactly the explicit form, plus `selections` naming what was
+    /// configured (absent when nothing is a selector form, so explicit inputs are unchanged).
+    pub(crate) fn inputs(
+        self,
+        a03: &A03Runtime,
+        a04: &A04Runtime,
+        graph: &Graph,
+    ) -> Result<Value, ApiError> {
+        let mut selections = Selections::default();
         let inputs = match self {
             Recipe::Intake => json!({ "validation_policy": v(&a04.validation_policy)? }),
             Recipe::Lint => json!({
@@ -238,30 +248,63 @@ impl Recipe {
                 "vocabulary_policy": v(&a04.vocabulary_policy)?,
                 "duplicate_policy": v(&a04.duplicate_policy)?,
             }),
-            Recipe::Calc => json!({ "calculation_scope": v(&a04.calculation_scope)? }),
-            Recipe::Analyse => json!({
-                "validation_policy": v(&a04.validation_policy)?,
-                "expression_scopes": v(&a03.expression_scopes)?,
-                "calculation_scope_overrides": v(&a03.calculation_scope_overrides)?,
-            }),
-            Recipe::Flows => json!({
-                "operation_scope": v(&a04.operation_scope)?,
-                "process_scope": v(&a04.process_scope)?,
-                "authorization_draft": v(&a04.authorization_draft)?,
-            }),
-            Recipe::Scenarios => json!({ "scenario_derivation": v(&a04.scenario_derivation)? }),
-            Recipe::Run => json!({
-                "validation_policy": v(&a04.validation_policy)?,
-                "verification_applicability": v(&a04.verification_applicability)?,
-                "f4": v(&a04.gates.f4)?,
-                "calendars": v(&a04.calendars)?,
-                "direct_managers": v(&a04.direct_managers)?,
-                "expression_scopes": v(&a03.expression_scopes)?,
-                "calculation_scope_overrides": v(&a03.calculation_scope_overrides)?,
-                "runtime_semantic_values": v(&a03.runtime_semantic_values)?,
-            }),
+            Recipe::Calc => {
+                selections.record("calculation_scope", a04.calculation_scope.as_ref());
+                json!({ "calculation_scope": v(&a04.calculation_scope_for(graph)?)? })
+            }
+            Recipe::Analyse => {
+                selections.record_entries("expression_scopes", &a03.expression_scopes);
+                selections.record_entries(
+                    "calculation_scope_overrides",
+                    &a03.calculation_scope_overrides,
+                );
+                json!({
+                    "validation_policy": v(&a04.validation_policy)?,
+                    "expression_scopes": v(&a03.expression_scopes_for(graph)?)?,
+                    "calculation_scope_overrides":
+                        v(&a03.calculation_scope_overrides_for(graph)?)?,
+                })
+            }
+            Recipe::Flows => {
+                selections.record("operation_scope", a04.operation_scope.as_ref());
+                selections.record("process_scope", a04.process_scope.as_ref());
+                selections.record("authorization_draft", a04.authorization_draft.as_ref());
+                json!({
+                    "operation_scope": v(&a04.operation_scope_for(graph)?)?,
+                    "process_scope": v(&a04.process_scope_for(graph)?)?,
+                    "authorization_draft": v(&a04.authorization_draft_for(graph)?)?,
+                })
+            }
+            Recipe::Scenarios => {
+                selections.record("scenario_derivation", a04.scenario_derivation.as_ref());
+                json!({ "scenario_derivation": v(&a04.scenario_derivation_for(graph)?)? })
+            }
+            Recipe::Run => {
+                selections.record(
+                    "verification_applicability",
+                    a04.verification_applicability.as_ref(),
+                );
+                selections.record("f4", a04.gates.f4.as_ref());
+                selections.record_entries("expression_scopes", &a03.expression_scopes);
+                selections.record_entries(
+                    "calculation_scope_overrides",
+                    &a03.calculation_scope_overrides,
+                );
+                selections.record_entries("runtime_semantic_values", &a03.runtime_semantic_values);
+                json!({
+                    "validation_policy": v(&a04.validation_policy)?,
+                    "verification_applicability": v(&a04.verification_applicability_for(graph)?)?,
+                    "f4": v(&a04.f4_for(graph)?)?,
+                    "calendars": v(&a04.calendars)?,
+                    "direct_managers": v(&a04.direct_managers)?,
+                    "expression_scopes": v(&a03.expression_scopes_for(graph)?)?,
+                    "calculation_scope_overrides":
+                        v(&a03.calculation_scope_overrides_for(graph)?)?,
+                    "runtime_semantic_values": v(&a03.runtime_semantic_values_for(graph)?)?,
+                })
+            }
         };
-        Ok(inputs)
+        Ok(selections.into_inputs(inputs))
     }
 }
 
@@ -292,13 +335,14 @@ pub(crate) fn recipe_config(
     recipe: Recipe,
     a03: &A03Runtime,
     a04: &A04Runtime,
+    graph: &Graph,
 ) -> Result<Value, ApiError> {
     Ok(json!({
         "version": RECIPE_VERSION,
         "recipe": recipe.as_str(),
         "provider": provider_projection(recipe, a03, &a04.provider_mode)?,
         "stage_actor_ref": a04.stage_actor_ref,
-        "inputs": recipe.inputs(a03, a04)?,
+        "inputs": recipe.inputs(a03, a04, graph)?,
     }))
 }
 

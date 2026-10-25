@@ -348,7 +348,7 @@ impl Run<'_> {
             &a04.stage_actor_ref,
             base.revision.created_at,
             &provider,
-            stage.inputs()?,
+            stage.inputs(&base.graph)?,
         );
         let ctx = CompileContext::from_loaded_revision(
             &base,
@@ -651,7 +651,7 @@ impl ApiState {
             )
             .with_details(json!({ "recipe": recipe.as_str(), "missing": missing })));
         }
-        let config = recipe_config(recipe, a03, a04)?;
+        let config = recipe_config(recipe, a03, a04, &loaded.graph)?;
         let capture = capture(self.branch(), &loaded, recipe, scope, &config)?;
         let job_id = capture.id()?;
         let new = NewStageRecipeJob {

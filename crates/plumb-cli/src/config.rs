@@ -14,6 +14,7 @@ use plumb_api::runtime::{
     CalendarConfig, DirectManagerFact, DirectManagerPredicates, GateInputsConfig, ProviderMode,
     WEEKDAY_NAMES,
 };
+use plumb_api::selector::Selectable;
 use plumb_api::ApiIdentity;
 use plumb_core::{to_canonical_json, Hash, Id};
 use plumb_functional::{
@@ -110,17 +111,20 @@ pub struct CliConfig {
     pub validation_policy: ValidationPolicy,
     pub calendars: Vec<CalendarConfig>,
     pub direct_managers: Vec<DirectManagerFact>,
-    pub expression_scopes: Vec<ExecutionExpressionScopeInput>,
-    pub calculation_scope_overrides: Vec<ExecutionCalculationScopeOverride>,
-    pub runtime_semantic_values: Vec<RuntimeSemanticValue>,
+    /// The ID-bearing stage values below accept, at any ID position, a selector
+    /// (`{"$one": QUERY}` / `{"$all": QUERY}`, see `plumb_api::selector`) resolved against
+    /// the graph each stage runs on; a value without selectors is the unchanged explicit form.
+    pub expression_scopes: Vec<Selectable<ExecutionExpressionScopeInput>>,
+    pub calculation_scope_overrides: Vec<Selectable<ExecutionCalculationScopeOverride>>,
+    pub runtime_semantic_values: Vec<Selectable<RuntimeSemanticValue>>,
     pub vocabulary_policy: VocabularyPolicy,
     pub duplicate_policy: DuplicatePolicy,
-    pub calculation_scope: Option<CalculationScope>,
-    pub operation_scope: Option<OperationScope>,
-    pub process_scope: Option<ProcessScope>,
-    pub authorization_draft: Option<AuthorizationDraft>,
-    pub scenario_derivation: Option<ScenarioDerivationInputs>,
-    pub verification_applicability: Option<VerificationApplicabilityInputs>,
+    pub calculation_scope: Option<Selectable<CalculationScope>>,
+    pub operation_scope: Option<Selectable<OperationScope>>,
+    pub process_scope: Option<Selectable<ProcessScope>>,
+    pub authorization_draft: Option<Selectable<AuthorizationDraft>>,
+    pub scenario_derivation: Option<Selectable<ScenarioDerivationInputs>>,
+    pub verification_applicability: Option<Selectable<VerificationApplicabilityInputs>>,
     pub gates: GateInputsConfig,
     /// The configured semantic directory (R0.6); absent means not configured.
     #[serde(default)]

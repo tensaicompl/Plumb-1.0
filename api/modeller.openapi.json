@@ -4120,6 +4120,11 @@
         "status": 409
       },
       {
+        "code": "E_STAGE_CONFIG_UNRESOLVED",
+        "meaning": "A configured selector cannot be resolved against the graph the stage runs on.",
+        "status": 422
+      },
+      {
         "code": "E_STAGE_EVALUATION_FAILED",
         "meaning": "A phase or gate cannot be evaluated; details.error names the typed error.",
         "status": 422

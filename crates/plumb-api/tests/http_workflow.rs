@@ -6296,7 +6296,7 @@ mod http_workflow {
         let mut config = runtime(&full.path, full.provider.clone());
         let scope: plumb_sim::ExecutionExpressionScopeInput =
             serde_json::from_value(json!({"owner_ref": "rule:positive", "bindings": []})).unwrap();
-        config.expression_scopes = vec![scope.clone(), scope];
+        config.expression_scopes = vec![scope.clone().into(), scope.into()];
         let duplicate = ApiState::new_with_runtime(
             BranchName::main(),
             SqliteRevisionStore::open(&full.path).unwrap(),
