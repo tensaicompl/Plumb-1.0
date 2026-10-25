@@ -182,7 +182,7 @@ function newBackend(overrides: Partial<Backend> = {}): Backend {
 async function renderScenarios(backend: Backend) {
   server.use(...handlers(backend));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/model/scenarios"] }));
+  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/scenarios"] }));
   render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />

@@ -1,5 +1,5 @@
-// U1.1 behaviour tests: the fixture shell and Home, global search, the versioned-write 412 path,
-// DesignEvent invalidation and exact role membership. Every HTTP call is answered by MSW and the
+// U1.1 behaviour tests: Home inside the shell, the versioned-write 412 path (the conflict sheet),
+// read retries, DesignEvent invalidation, locale selection and exact role membership. Every HTTP call is answered by MSW and the
 // WebSocket is an in-process fake; nothing touches the network.
 //
 // The generated client captures `fetch` and `Request` when its module is first evaluated, so the
@@ -27,7 +27,6 @@ import { server } from "../../test/msw";
 type Me = components["schemas"]["MeResponse"];
 type ModelVersion = components["schemas"]["ModelVersionResponse"];
 type GateStatus = components["schemas"]["GateStatus"];
-type SearchPage = components["schemas"]["SearchPage"];
 type PreconditionFailed = components["schemas"]["PreconditionFailedResponse"];
 
 interface AppModules {
@@ -183,85 +182,18 @@ function renderApp() {
   return { queryClient, router, view };
 }
 
-// ------------------------------------------------------------------ shell and Home
+// ------------------------------------------------------------------ Home (inside the new shell)
 
-describe("HomePage shell", () => {
-  it("renders the shell, identity, full navigation and I0-F4 from fixture data", async () => {
+// The shell itself (sidebar, toolbar, palette, settings, routes) is covered by src/app/shell.test.tsx.
+describe("HomePage", () => {
+  it("renders the current revision and I0-F4 from fixture data on /overview, with / redirecting there", async () => {
     server.use(...shellHandlers());
     const { router } = renderApp();
 
     expect(await screen.findByTestId("home-revision")).toHaveProperty("textContent", VERSION.revision);
+    expect(router.state.location.pathname).toBe("/overview");
     expect(screen.getByTestId("home-semantic-hash").textContent).toBe(VERSION.semantic_hash);
-    expect(screen.getByTestId("app-name").textContent).toBe("Plumb");
-
-    // Server identity is shown exactly as returned.
-    expect((await screen.findByTestId("identity-user")).textContent).toBe("alice");
-    expect(screen.getByTestId("identity-mode").textContent).toBe("pilot");
-    const roles = within(screen.getByTestId("identity-roles")).getAllByRole("listitem");
-    expect(roles.map((r) => r.textContent)).toEqual(["analyst", "reviewer"]);
-
-    // The full pilot navigation, in its frozen order, with stable final hrefs.
-    const nav = screen.getByRole("navigation", { name: "Pilot navigation" });
-    const ids = Array.from(nav.querySelectorAll("[data-nav-id]")).map((e) => e.getAttribute("data-nav-id"));
-    expect(ids).toEqual([
-      "home",
-      "requirements",
-      "model",
-      "glossary",
-      "sentences",
-      "entities",
-      "processes",
-      "scenarios",
-      "findings",
-      "rules",
-      "calculations",
-      "questions",
-      "proposals",
-      "decisions",
-      "gates",
-      "gate-list",
-    ]);
-    const hrefs = Object.fromEntries(
-      Array.from(nav.querySelectorAll("a[data-nav-id]")).map((a) => [a.getAttribute("data-nav-id"), a.getAttribute("href")]),
-    );
-    expect(hrefs).toEqual({
-      home: "/",
-      requirements: "/requirements",
-      glossary: "/model/glossary",
-      sentences: "/model/sentences",
-      entities: "/model/entities",
-      processes: "/model/processes",
-      scenarios: "/model/scenarios",
-      findings: "/model/findings",
-      rules: "/model/rules",
-      calculations: "/model/calculations",
-      questions: "/questions",
-      proposals: "/proposals",
-      decisions: "/decisions",
-      gates: "/gates",
-    });
-    const labels = Array.from(nav.querySelectorAll("[data-nav-id]")).map((e) => e.textContent);
-    expect(labels).toEqual([
-      "Home",
-      "Requirements",
-      "Model",
-      "Glossary",
-      "Sentences",
-      "Entities",
-      "Processes",
-      "Scenarios",
-      "Findings & Assumptions",
-      "Rules",
-      "Calculations",
-      "Questions",
-      "Proposals",
-      "Decisions",
-      "Gates",
-      "I0F1F2F3F4",
-    ]);
-    // Home is the active destination.
-    expect(within(nav).getByRole("link", { name: "Home" }).getAttribute("aria-current")).toBe("page");
-    expect(within(nav).getByRole("link", { name: "Requirements" }).getAttribute("aria-current")).toBeNull();
+    expect(within(screen.getByRole("navigation", { name: "Main navigation" })).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
 
     // I0-F4 in order: returned pass/fail, absent gates unevaluated (never fail).
     const rows = Array.from(document.querySelectorAll("tr[data-gate]"));
@@ -272,126 +204,7 @@ describe("HomePage shell", () => {
       ["F3", "Unevaluated"],
       ["F4", "Unevaluated"],
     ]);
-
-    // Only implemented pages are registered routes: no placeholder for a future page.
-    expect(Object.keys(router.routesByPath).sort()).toEqual(
-      [
-        "/",
-        "/decisions",
-        "/gates",
-        "/model/calculations",
-        "/model/entities",
-        "/model/findings",
-        "/model/glossary",
-        "/model/processes",
-        "/model/rules",
-        "/model/scenarios",
-        "/model/sentences",
-        "/proposals",
-        "/questions",
-        "/requirements",
-        "/requirements/$requirementId",
-        "/sessions",
-      ],
-    );
-  });
-
-  it("navigation data is the frozen pilot list", () => {
     expect(app.nav.PILOT_GATES).toEqual(["I0", "F1", "F2", "F3", "F4"]);
-    expect(app.nav.PILOT_NAVIGATION.map((e) => (e.kind === "group" ? e.id : e.link.id))).toEqual([
-      "home",
-      "requirements",
-      "model",
-      "questions",
-      "proposals",
-      "decisions",
-      "gates",
-    ]);
-  });
-});
-
-// ------------------------------------------------------------------ global search
-
-describe("HomePage global search", () => {
-  it("never sends a blank query and renders server results without writing", async () => {
-    const queries: string[] = [];
-    const methods: string[] = [];
-    server.events.on("request:start", ({ request }) => {
-      methods.push(request.method);
-    });
-    const page: SearchPage = {
-      items: [
-        { id: "req:leave-1", kind: "requirement", path: "/api/requirements/req:leave-1", score: 0.75, snippet: "Employees shall submit leave requests." },
-        { id: "term:leave", kind: "term", path: null, score: 0.5, snippet: "Leave" },
-      ],
-      next_cursor: null,
-    };
-    server.use(
-      ...shellHandlers(),
-      http.get("*/api/search", ({ request }) => {
-        queries.push(new URL(request.url).searchParams.get("q") ?? "");
-        return HttpResponse.json(page);
-      }),
-    );
-    renderApp();
-    await screen.findByTestId("home-revision");
-    const user = userEvent.setup();
-    const input = screen.getByRole("searchbox", { name: "Search the model" });
-    const submit = screen.getByRole("button", { name: "Search" });
-
-    await user.click(submit);
-    await user.type(input, "   ");
-    await user.click(submit);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(queries).toEqual([]);
-
-    await user.clear(input);
-    await user.type(input, "leave");
-    await user.click(submit);
-    const results = await screen.findByTestId("search-results");
-    expect(queries).toEqual(["leave"]);
-    const ids = within(results).getAllByTestId("search-hit-id").map((e) => e.textContent);
-    expect(ids).toEqual(["req:leave-1", "term:leave"]);
-    expect(results.textContent).toContain("Employees shall submit leave requests.");
-    expect(results.textContent).toContain("/api/requirements/req:leave-1");
-    expect(results.textContent).toContain("requirement");
-    expect(results.textContent).toContain("0.75");
-    // Only reads happened.
-    expect(methods.length).toBeGreaterThan(0);
-    expect(methods.every((m) => m === "GET")).toBe(true);
-  });
-
-  it("states that only Accepted elements are searchable, dismisses results and opens a hit's page (H0.11)", async () => {
-    const page: SearchPage = {
-      items: [{ id: "req:leave-1", kind: "requirement", path: "/api/requirements/req:leave-1", score: 0.75, snippet: "Employees shall submit leave requests." }],
-      next_cursor: null,
-    };
-    server.use(
-      ...shellHandlers(),
-      http.get("*/api/search", () => HttpResponse.json(page)),
-      http.get("*/api/requirements/:id", () => HttpResponse.json({ code: "E_NOT_FOUND", message: "x", details: {} }, { status: 404 })),
-      http.get("*/api/sessions/*", () => HttpResponse.json({}, { status: 404 })),
-    );
-    const { router } = renderApp();
-    await screen.findByTestId("home-revision");
-    const user = userEvent.setup();
-    const input = screen.getByRole("searchbox", { name: "Search the model" });
-    await user.type(input, "leave");
-    await user.click(screen.getByRole("button", { name: "Search" }));
-    await screen.findByTestId("search-results");
-    expect(screen.getByTestId("search-scope-note").textContent).toBe("Only accepted elements are searchable.");
-    // Dismissal: the button, then Escape after a new search.
-    await user.click(screen.getByRole("button", { name: "Close search results" }));
-    expect(screen.queryByTestId("search-results")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Search" }));
-    await screen.findByTestId("search-results");
-    await user.keyboard("{Escape}");
-    expect(screen.queryByTestId("search-results")).toBeNull();
-    // A hit with a page opens it in the app and closes the results.
-    await user.click(screen.getByRole("button", { name: "Search" }));
-    await user.click(await screen.findByRole("link", { name: "req:leave-1" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/requirements/req:leave-1"));
-    expect(screen.queryByTestId("search-results")).toBeNull();
   });
 });
 
@@ -401,6 +214,7 @@ describe("HomePage versioned mutation", () => {
   it("sends the ETag of the reviewed read once, never fetches a version inside the mutation, and surfaces a 412 without retrying", async () => {
     const counts = { version: 0, reviewed: 0 };
     const ifMatch: (string | null)[] = [];
+    const versionsAtWrite: number[] = [];
     const rejected: PreconditionFailed = {
       code: "E_PRECONDITION_FAILED",
       message: "the branch head moved",
@@ -416,6 +230,7 @@ describe("HomePage versioned mutation", () => {
       }),
       http.post("*/api/proposals/:id/reject", ({ request }) => {
         ifMatch.push(request.headers.get("If-Match"));
+        versionsAtWrite.push(counts.version);
         return HttpResponse.json(rejected, { status: 412 });
       }),
     );
@@ -459,18 +274,19 @@ describe("HomePage versioned mutation", () => {
     const versionsBefore = counts.version;
     await user.click(write);
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("The model has changed")).toBeTruthy();
+    expect(within(dialog).getByText("This changed since you looked")).toBeTruthy();
     expect(within(dialog).getByTestId("conflict-revision").textContent).toBe(rejected.revision);
     expect(within(dialog).getByTestId("conflict-semantic-hash").textContent).toBe(rejected.semantic_hash);
     // The precondition is exactly the reviewed read's ETag; no version is fetched to make it.
     expect(ifMatch).toEqual(['"rev:6:reviewedreviewed"']);
-    expect(counts.version).toBe(versionsBefore);
+    // The shell may refresh its version display after the 412 invalidation, never before the write.
+    expect(versionsAtWrite).toEqual([versionsBefore]);
     expect(invalidate).toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId("mutation-status").textContent).toBe("error"));
     expect(screen.getByTestId("mutation-error").textContent).toBe("PreconditionFailedError");
 
     // Refreshing is explicit and never replays the rejected write.
-    await user.click(within(dialog).getByRole("button", { name: "Refresh latest" }));
+    await user.click(within(dialog).getByRole("button", { name: /Review again/ }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(ifMatch).toHaveLength(1);
@@ -654,84 +470,23 @@ describe("HomePage locale selection", () => {
     const { router } = renderApp();
     await screen.findByTestId("home-revision");
     const user = userEvent.setup();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Language" }), "pl");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(within(await screen.findByRole("radiogroup", { name: "Language" })).getByRole("radio", { name: "Polski" }));
+    await user.keyboard("{Escape}");
     expect(await screen.findByRole("heading", { level: 1, name: "Strona główna" })).toBeTruthy();
     expect(window.localStorage.getItem(i18n.LOCALE_STORAGE_KEY)).toBe("pl");
     expect(document.documentElement.lang).toBe("pl");
     expect(i18n.initialLocale()).toBe("pl");
     // Another route renders in Polish too.
     act(() => {
-      void router.navigate({ to: "/gates" });
+      void router.navigate({ to: "/quality" });
     });
     expect(await screen.findByRole("heading", { level: 1, name: "Bramki" })).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: "Język" })).toBeTruthy();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Język" }), "en");
+    await user.click(screen.getByRole("button", { name: "Ustawienia" }));
+    await user.click(within(await screen.findByRole("radiogroup", { name: "Język" })).getByRole("radio", { name: "English" }));
+    await user.keyboard("{Escape}");
     expect(await screen.findByRole("heading", { level: 1, name: "Gates" })).toBeTruthy();
     window.localStorage.removeItem(i18n.LOCALE_STORAGE_KEY);
-  });
-});
-
-describe("HomePage routing and accessibility", () => {
-  const ROUTES = [
-    "/",
-    "/requirements",
-    "/requirements/req:a",
-    "/model/glossary",
-    "/model/sentences",
-    "/questions",
-    "/sessions",
-    "/model/processes",
-    "/model/scenarios",
-    "/model/entities",
-    "/model/findings",
-    "/model/rules",
-    "/model/calculations",
-    "/gates",
-    "/decisions",
-  ];
-
-  /** Every other read fails with a typed 503, so each page also shows its failure state. */
-  function failingReads() {
-    return [
-      http.get("*/api/me", () => HttpResponse.json(ME)),
-      http.get("*/api/*", () => HttpResponse.json({ code: "E_A03_RUNTIME_UNAVAILABLE", message: "not configured", details: {} }, { status: 503 })),
-    ];
-  }
-
-  it("gives every routed page exactly one h1, in loading and failure states alike (Fable #352)", async () => {
-    for (const path of ROUTES) {
-      server.use(...failingReads());
-      const queryClient = newQueryClient();
-      const router = app.router.createAppRouter(createMemoryHistory({ initialEntries: [path] }));
-      const view = renderRouter(router, queryClient);
-      await waitFor(() => expect(router.state.location.pathname).toBe(path));
-      expect(document.querySelectorAll("main h1"), path).toHaveLength(1);
-      await waitFor(() => expect(queryClient.isFetching()).toBe(0));
-      expect(document.querySelectorAll("main h1"), path + " after loading").toHaveLength(1);
-      view.unmount();
-      server.resetHandlers();
-    }
-  });
-
-  it("renders a typed not-found page inside the shell for an unknown route (Fable #352, #225)", async () => {
-    server.use(...shellHandlers());
-    const router = app.router.createAppRouter(createMemoryHistory({ initialEntries: ["/no/such/page"] }));
-    renderRouter(router, newQueryClient());
-    expect(await screen.findByRole("heading", { level: 1, name: "Page not found" })).toBeTruthy();
-    expect(screen.getByTestId("not-found-path").textContent).toBe("/no/such/page");
-    // The shell stays: navigation and identity are present.
-    expect(screen.getByRole("navigation", { name: "Pilot navigation" })).toBeTruthy();
-    expect(document.querySelectorAll("main h1")).toHaveLength(1);
-  });
-
-  it("marks the nav section of a nested route and gives tables captions and scoped headers (Fable #225)", async () => {
-    server.use(...failingReads());
-    const router = app.router.createAppRouter(createMemoryHistory({ initialEntries: ["/requirements/req:a"] }));
-    renderRouter(router, newQueryClient());
-    const nav = await screen.findByRole("navigation", { name: "Pilot navigation" });
-    const link = nav.querySelector("[data-nav-id='requirements']") as HTMLElement;
-    expect(link.getAttribute("aria-current")).toBe("location");
-    expect((nav.querySelector("[data-nav-id='home']") as HTMLElement).getAttribute("aria-current")).toBeNull();
   });
 });
 

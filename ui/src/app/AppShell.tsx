@@ -1,333 +1,66 @@
-import { useQuery } from "@tanstack/react-query";
-import { Outlet, useMatch, useRouter, useRouterState } from "@tanstack/react-router";
-import { useEffect, useState, type FormEvent, type MouseEvent } from "react";
+import { Outlet } from "@tanstack/react-router";
+import { useCallback, useEffect } from "react";
 
-import { apiClient, readData } from "../api/client";
-import type { components } from "../api/schema";
 import { useEvents } from "../api/useEvents";
 import { ConflictDialog } from "../components/ConflictDialog";
-import { SessionPanel } from "../features/sessions/SessionPanel";
-import { LOCALES, t, useLocaleStore, type Locale } from "../i18n";
-import { useMe } from "./auth";
-import { PILOT_NAVIGATION, type NavLink } from "./nav";
-import { ReadFailure } from "../components/ReadFailure";
-
-type SearchPage = components["schemas"]["SearchPage"];
-type SearchHit = components["schemas"]["SearchHit"];
-
-async function searchModel(q: string): Promise<SearchPage> {
-  return (await readData(apiClient.GET("/api/search", { params: { query: { q } } })));
-}
-
-/** `page` for the link of the current route, `location` for the section of a nested route. */
-export function navCurrent(href: string, pathname: string): "page" | "location" | undefined {
-  if (pathname === href) {
-    return "page";
-  }
-  return href !== "/" && pathname.startsWith(href + "/") ? "location" : undefined;
-}
-
-/** One navigation anchor; plain left clicks navigate client-side through the router history. */
-function NavAnchor({ link, pathname }: { link: NavLink; pathname: string }) {
-  const router = useRouter();
-  const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-      return;
-    }
-    event.preventDefault();
-    router.history.push(link.href);
-  };
-  return (
-    <a
-      href={link.href}
-      onClick={onClick}
-      aria-current={navCurrent(link.href, pathname)}
-      data-nav-id={link.id}
-      className="block rounded px-2 py-1 hover:bg-slate-100 aria-[current=page]:font-semibold"
-    >
-      {t(link.label)}
-    </a>
-  );
-}
-
-function Navigation() {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  return (
-    <nav aria-label={t("nav.label")} className="w-56 shrink-0 border-r p-3">
-      <ul className="space-y-1">
-        {PILOT_NAVIGATION.map((entry) => {
-          switch (entry.kind) {
-            case "link":
-              return (
-                <li key={entry.link.id}>
-                  <NavAnchor link={entry.link} pathname={pathname} />
-                </li>
-              );
-            case "group":
-              return (
-                <li key={entry.id}>
-                  <span className="block px-2 pt-2 text-xs font-semibold uppercase text-slate-500" data-nav-id={entry.id}>
-                    {t(entry.label)}
-                  </span>
-                  <ul className="ml-2">
-                    {entry.links.map((link) => (
-                      <li key={link.id}>
-                        <NavAnchor link={link} pathname={pathname} />
-                      </li>
-                    ))}
-                  </ul>
-                </li>
-              );
-            case "gates":
-              return (
-                <li key={entry.link.id}>
-                  <NavAnchor link={entry.link} pathname={pathname} />
-                  <ul className="ml-4 flex gap-2 text-xs font-mono" data-nav-id="gate-list">
-                    {entry.gates.map((gate) => (
-                      <li key={gate}>{gate}</li>
-                    ))}
-                  </ul>
-                </li>
-              );
-          }
-        })}
-      </ul>
-    </nav>
-  );
-}
-
-function Identity() {
-  const me = useMe();
-  if (me.isError) {
-    return <ReadFailure error={me.error} messageKey="shell.identityFailed" />;
-  }
-  if (me.data === undefined) {
-    return null;
-  }
-  return (
-    <dl className="flex gap-4 text-sm" data-testid="identity">
-      <div className="flex gap-1">
-        <dt className="text-slate-500">{t("shell.user")}</dt>
-        <dd data-testid="identity-user">{me.data.user}</dd>
-      </div>
-      <div className="flex gap-1">
-        <dt className="text-slate-500">{t("shell.mode")}</dt>
-        <dd data-testid="identity-mode">{me.data.mode}</dd>
-      </div>
-      <div className="flex gap-1">
-        <dt className="text-slate-500">{t("shell.roles")}</dt>
-        <dd>
-          <ul className="flex gap-1" data-testid="identity-roles">
-            {me.data.roles.map((role) => (
-              <li key={role}>{role}</li>
-            ))}
-          </ul>
-        </dd>
-      </div>
-    </dl>
-  );
-}
-
-/** The app page of a search hit, by its server kind; null when the kind has no page. */
-export function hitPage(hit: SearchHit): string | null {
-  switch (hit.kind) {
-    case "requirement":
-      return "/requirements/" + hit.id;
-    case "rule":
-      return "/model/rules";
-    case "calculation":
-      return "/model/calculations";
-    case "scenario":
-      return "/model/scenarios";
-    case "concept":
-    case "term":
-      return "/model/glossary";
-    default:
-      return null;
-  }
-}
+import { Toaster } from "../components/ui";
+import { t, useLocaleStore } from "../i18n";
+import { applyAppearance, useAppearanceStore, useShellStore } from "./preferences";
+import { useJobPolling } from "./run";
+import { CommandPalette } from "./shell/CommandPalette";
+import { ExportSheet } from "./shell/ExportSheet";
+import { useGo } from "./shell/navigation";
+import { AssistantPanel, ConnectionBanner } from "./shell/Panels";
+import { SettingsSheet } from "./shell/SettingsSheet";
+import { Sidebar } from "./shell/Sidebar";
+import { Toolbar } from "./shell/Toolbar";
+import { useGlobalKeys } from "./shell/useGlobalKeys";
 
 /**
- * The global search: server BM25 hits over Accepted elements only. Results refresh with every
- * design event (all queries are invalidated), can be dismissed with the close control or Escape,
- * and a hit with an app page opens it client-side and closes the results.
+ * The application shell (design handoff "Global shell"): sidebar, toolbar, connection banner, the
+ * routed screen, the Assistant panel, and the global overlays (command palette, settings, export,
+ * the write-conflict sheet and toasts). It owns the DesignEvent subscription, the stage-job poll
+ * and the global keys; it owns no model data.
  */
-function GlobalSearch() {
-  const router = useRouter();
-  const [text, setText] = useState("");
-  const [submitted, setSubmitted] = useState<string | null>(null);
-  const dismiss = () => setSubmitted(null);
-  const open = submitted !== null;
-  useEffect(() => {
-    if (!open) {
-      return undefined;
-    }
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setSubmitted(null);
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open]);
-  const results = useQuery({
-    queryKey: ["search", submitted],
-    queryFn: () => searchModel(submitted ?? ""),
-    enabled: submitted !== null,
-  });
-  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (text.trim() !== "") {
-      setSubmitted(text);
-    }
-  };
-  return (
-    <div className="relative">
-      <form role="search" onSubmit={onSubmit} className="flex gap-2">
-        <input
-          type="search"
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          aria-label={t("shell.search.label")}
-          className="rounded border px-2 py-1"
-        />
-        <button type="submit" className="rounded border px-3 py-1">
-          {t("shell.search.submit")}
-        </button>
-      </form>
-      {submitted !== null && (
-        <section aria-label={t("shell.search.results")} className="absolute right-0 z-10 mt-1 w-96 rounded border bg-white p-2 shadow">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-slate-600" data-testid="search-scope-note">
-              {t("shell.search.acceptedOnly")}
-            </p>
-            <button type="button" className="rounded border px-2 text-xs" onClick={dismiss}>
-              {t("shell.search.close")}
-            </button>
-          </div>
-          {results.isError && <ReadFailure error={results.error} messageKey="shell.search.failed" />}
-          {results.data !== undefined && results.data.items.length === 0 && <p>{t("shell.search.empty")}</p>}
-          {results.data !== undefined && results.data.items.length > 0 && (
-            <ol className="space-y-2" data-testid="search-results">
-              {results.data.items.map((hit) => (
-                <li key={hit.id} className="text-sm">
-                  {hitPage(hit) === null ? (
-                    <span className="font-mono" data-testid="search-hit-id">
-                      {hit.id}
-                    </span>
-                  ) : (
-                    <a
-                      href={hitPage(hit) ?? undefined}
-                      className="font-mono underline"
-                      data-testid="search-hit-id"
-                      onClick={(event) => {
-                        const page = hitPage(hit);
-                        if (page === null || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-                          return;
-                        }
-                        event.preventDefault();
-                        dismiss();
-                        router.history.push(page);
-                      }}
-                    >
-                      {hit.id}
-                    </a>
-                  )}
-                  <dl className="grid grid-cols-[auto_1fr] gap-x-2 text-xs">
-                    <dt>{t("shell.search.kind")}</dt>
-                    <dd>{hit.kind}</dd>
-                    <dt>{t("shell.search.path")}</dt>
-                    <dd className="font-mono">{hit.path}</dd>
-                    <dt>{t("shell.search.score")}</dt>
-                    <dd>{hit.score}</dd>
-                  </dl>
-                  <p className="text-xs">{hit.snippet}</p>
-                </li>
-              ))}
-            </ol>
-          )}
-        </section>
-      )}
-    </div>
-  );
-}
-
-/** The supported locale selection (English, Polish), persisted per browser. */
-function LocaleSelect() {
-  const locale = useLocaleStore((state) => state.locale);
-  const setLocale = useLocaleStore((state) => state.setLocale);
-  return (
-    <label className="text-sm">
-      {t("shell.language")}
-      <select className="ml-1 rounded border" value={locale} onChange={(event) => setLocale(event.target.value as Locale)}>
-        {LOCALES.map((option) => (
-          <option key={option} value={option}>
-            {t(option === "en" ? "shell.language.en" : "shell.language.pl")}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-/**
- * The application shell: identity header, global search, the pilot navigation, the DesignEvent
- * subscription, the single global ConflictDialog and the current route. It owns no model data.
- */
-/** The shell-level Project room launcher (Hotfix 077): client-side navigation to /sessions. */
-function ProjectRoomLauncher() {
-  const router = useRouter();
-  const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-      return;
-    }
-    event.preventDefault();
-    router.history.push("/sessions");
-  };
-  return (
-    <a href="/sessions" onClick={onClick} data-testid="project-room-launcher" className="rounded border px-2 py-1 text-sm">
-      {t("session.projectRoom")}
-    </a>
-  );
-}
-
 export function AppShell() {
   useEvents();
+  useGlobalKeys();
+  const go = useGo();
+  useJobPolling({ openInbox: useCallback(() => go("/inbox"), [go]) });
   const locale = useLocaleStore((state) => state.locale);
+  const appearance = useAppearanceStore((state) => state.appearance);
+  const assistantOpen = useShellStore((state) => state.assistantOpen);
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
-  // Hotfix 077: the only resource-scoped session view is the exact requirement-detail match; its
-  // decoded route parameter is the candidate scope.
-  const requirementId = useMatch({
-    from: "/requirements/$requirementId",
-    shouldThrow: false,
-    select: (match) => match.params.requirementId,
-  });
+  useEffect(() => {
+    applyAppearance(appearance);
+  }, [appearance]);
   // A locale change re-renders every view in the new locale (view state below the shell resets).
   return (
-    <div key={locale} className="flex min-h-screen flex-col">
-      <header className="flex items-center justify-between gap-4 border-b px-4 py-2">
-        <span className="text-lg font-semibold" data-testid="app-name">
-          {t("app.name")}
-        </span>
-        <GlobalSearch />
-        <ProjectRoomLauncher />
-        <LocaleSelect />
-        <Identity />
-      </header>
-      <div className="flex flex-1">
-        <Navigation />
-        <main className="flex-1 p-4">
-          <Outlet />
-        </main>
-        {requirementId !== undefined && (
-          <aside className="w-96 shrink-0 border-l p-3" data-testid="scoped-session-aside">
-            <SessionPanel key={requirementId} mode="requirement" requirementId={requirementId} />
-          </aside>
-        )}
+    <div key={locale} className="flex h-screen overflow-hidden bg-page font-sans text-body text-fg">
+      <a
+        href="#main"
+        className="sr-only z-[90] rounded-control bg-card px-3 py-2 text-footnote font-semibold text-fg shadow-md focus:not-sr-only focus:fixed focus:left-3 focus:top-3"
+      >
+        {t("shell.skip")}
+      </a>
+      <Sidebar />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Toolbar />
+        <ConnectionBanner />
+        <div className="flex min-h-0 flex-1">
+          <main id="main" tabIndex={-1} className="flex min-h-0 min-w-0 flex-1 flex-col outline-none">
+            <Outlet />
+          </main>
+          {assistantOpen && <AssistantPanel />}
+        </div>
       </div>
+      <CommandPalette />
+      <SettingsSheet />
+      <ExportSheet />
       <ConflictDialog />
+      <Toaster />
     </div>
   );
 }

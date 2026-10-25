@@ -1,3 +1,5 @@
+import { FileText, FlaskConical, House, Inbox, LayoutGrid, List, ShieldCheck, type LucideIcon } from "lucide-react";
+
 import type { components } from "../api/schema";
 import type { MessageKey } from "../i18n";
 
@@ -7,45 +9,40 @@ export type GateName = components["schemas"]["GateName"];
 /** The pilot gates, in their fixed order. */
 export const PILOT_GATES: readonly GateName[] = ["I0", "F1", "F2", "F3", "F4"];
 
-/** One navigable destination with its stable final href. */
-export interface NavLink {
-  readonly id: string;
+export type DestinationId = "overview" | "inbox" | "requirements" | "model" | "scenarios" | "quality" | "sources";
+
+/** One sidebar destination (spec §3): ⌘1–7 jump to them in this order. */
+export interface Destination {
+  readonly id: DestinationId;
   readonly label: MessageKey;
+  /** The destination's landing URL. */
   readonly href: string;
+  /** Every URL under this prefix belongs to the destination. */
+  readonly prefix: string;
+  readonly icon: LucideIcon;
 }
 
-/** A top-level navigation entry: a link, a group of links, or the gates entry. */
-export type NavEntry =
-  | { readonly kind: "link"; readonly link: NavLink }
-  | { readonly kind: "group"; readonly id: string; readonly label: MessageKey; readonly links: readonly NavLink[] }
-  | { readonly kind: "gates"; readonly link: NavLink; readonly gates: readonly GateName[] };
-
-/**
- * The frozen pilot navigation (v3 U1.1, Hotfix 071), in display order. Every destination carries
- * its final href; a page that is not implemented yet is registered by its own later task, never
- * by a placeholder route.
- */
-export const PILOT_NAVIGATION: readonly NavEntry[] = [
-  { kind: "link", link: { id: "home", label: "nav.home", href: "/" } },
-  { kind: "link", link: { id: "requirements", label: "nav.requirements", href: "/requirements" } },
-  {
-    kind: "group",
-    id: "model",
-    label: "nav.model",
-    links: [
-      { id: "glossary", label: "nav.glossary", href: "/model/glossary" },
-      { id: "sentences", label: "nav.sentences", href: "/model/sentences" },
-      { id: "entities", label: "nav.entities", href: "/model/entities" },
-      { id: "processes", label: "nav.processes", href: "/model/processes" },
-      { id: "scenarios", label: "nav.scenarios", href: "/model/scenarios" },
-      { id: "findings", label: "nav.findings", href: "/model/findings" },
-      { id: "rules", label: "nav.rules", href: "/model/rules" },
-      { id: "calculations", label: "nav.calculations", href: "/model/calculations" },
-    ],
-  },
-  { kind: "link", link: { id: "questions", label: "nav.questions", href: "/questions" } },
-  // H0.11 (architecture §33.12): proposal discovery and governance.
-  { kind: "link", link: { id: "proposals", label: "nav.proposals", href: "/proposals" } },
-  { kind: "link", link: { id: "decisions", label: "nav.decisions", href: "/decisions" } },
-  { kind: "gates", link: { id: "gates", label: "nav.gates", href: "/gates" }, gates: PILOT_GATES },
+/** The seven sidebar destinations, in display and shortcut order. */
+export const DESTINATIONS: readonly Destination[] = [
+  { id: "overview", label: "nav.overview", href: "/overview", prefix: "/overview", icon: House },
+  { id: "inbox", label: "nav.inbox", href: "/inbox", prefix: "/inbox", icon: Inbox },
+  { id: "requirements", label: "nav.requirements", href: "/requirements", prefix: "/requirements", icon: List },
+  { id: "model", label: "nav.model", href: "/model/glossary", prefix: "/model", icon: LayoutGrid },
+  { id: "scenarios", label: "nav.scenarios", href: "/scenarios", prefix: "/scenarios", icon: FlaskConical },
+  { id: "quality", label: "nav.quality", href: "/quality", prefix: "/quality", icon: ShieldCheck },
+  { id: "sources", label: "nav.sources", href: "/sources", prefix: "/sources", icon: FileText },
 ];
+
+/** The destination a pathname belongs to (null for unknown routes). */
+export function destinationOf(pathname: string): DestinationId | null {
+  const match = DESTINATIONS.find((d) => pathname === d.prefix || pathname.startsWith(d.prefix + "/"));
+  return match?.id ?? null;
+}
+
+/** `page` on the destination's landing URL, `location` anywhere else inside it. */
+export function navCurrent(destination: Destination, pathname: string): "page" | "location" | undefined {
+  if (pathname === destination.href) {
+    return "page";
+  }
+  return destinationOf(pathname) === destination.id ? "location" : undefined;
+}

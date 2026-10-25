@@ -124,7 +124,7 @@ export function RequirementsPage() {
                 {page.data.items.map((item) => (
                   <tr key={item.id} data-requirement-id={item.id}>
                     <td className="font-mono">
-                      <Link to="/requirements/$requirementId" params={{ requirementId: item.id }}>
+                      <Link to="/requirements/$id" params={{ id: item.id }}>
                         {item.id}
                       </Link>
                     </td>

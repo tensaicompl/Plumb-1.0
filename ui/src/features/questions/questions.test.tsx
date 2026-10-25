@@ -210,7 +210,7 @@ function handlers(
 
 function renderQuestions() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/questions"] }));
+  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/inbox?filter=questions"] }));
   render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />

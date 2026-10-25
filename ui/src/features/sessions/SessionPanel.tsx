@@ -167,12 +167,8 @@ export function SessionPanel(props: SessionPanelProps) {
       data-session-mode={props.mode}
       data-testid="session-panel"
     >
-      {/* The project room is a routed page (its h1); the scoped panel is an aside next to one. */}
-      {props.mode === "project" ? (
-        <h1 className="text-xl font-semibold">{t("session.projectRoom")}</h1>
-      ) : (
-        <h2 className="text-lg font-semibold">{t("session.scopedTitle")}</h2>
-      )}
+      {/* The session lives in the shell's Assistant panel, next to the routed page's h1. */}
+      <h2 className="text-lg font-semibold">{t(props.mode === "project" ? "session.projectRoom" : "session.scopedTitle")}</h2>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 text-sm">
         <dt>{t("session.scope")}</dt>
         <dd data-testid="session-scope">

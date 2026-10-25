@@ -4,18 +4,24 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
+// The spec §3 destinations of the new shell (old pages render inside them until each screen lane
+// replaces its screen).
 const ROUTES = [
-  "/",
+  "/overview",
+  "/inbox",
+  "/inbox?filter=questions",
+  "/inbox?filter=wording",
   "/requirements",
   "/model/glossary",
   "/model/entities",
   "/model/calculations",
   "/model/rules",
-  "/model/scenarios",
-  "/questions",
-  "/proposals",
-  "/gates",
-  "/decisions",
+  "/model/processes",
+  "/scenarios",
+  "/quality",
+  "/quality/issues",
+  "/quality/history",
+  "/sources",
 ];
 
 async function noSeriousA11yViolations(page: Page) {
@@ -26,6 +32,8 @@ async function noSeriousA11yViolations(page: Page) {
 
 test.describe("HR pilot", () => {
   test("every gate passes and every route renders without serious a11y violations", async ({ page }) => {
+    // Fifteen destinations, each loaded and axe-checked against the dev server.
+    test.setTimeout(120_000);
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(String(e)));
     await page.goto("/");
@@ -37,9 +45,11 @@ test.describe("HR pilot", () => {
       await page.waitForLoadState("networkidle");
       await noSeriousA11yViolations(page);
     }
-    // H0.11: proposal discovery is reachable from the navigation and lists from the real API.
+    // H0.11: proposal discovery is reachable from the sidebar (Inbox) and lists from the real API.
     await page.goto("/");
-    await page.getByRole("navigation", { name: "Pilot navigation" }).getByRole("link", { name: "Proposals" }).click();
+    await expect(page).toHaveURL(/\/overview$/);
+    await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: /Inbox/ }).click();
+    await expect(page).toHaveURL(/\/inbox$/);
     await expect(page.getByRole("heading", { level: 1, name: "Proposals" })).toBeVisible();
     await expect(page.getByText(/No proposal is pending\.|Pending proposals/).first()).toBeVisible();
     expect(errors).toEqual([]);
@@ -67,7 +77,7 @@ test.describe("HR pilot", () => {
   });
 
   test("selected scenarios run and show their verdicts", async ({ page }) => {
-    await page.goto("/model/scenarios");
+    await page.goto("/scenarios");
     const boxes = page.locator("input[type=checkbox]");
     await boxes.first().check();
     await page.getByRole("button", { name: /run selected/i }).click();
@@ -75,7 +85,7 @@ test.describe("HR pilot", () => {
   });
 
   test("the gates screen shows the waived duplicate blocker", async ({ page }) => {
-    await page.goto("/gates");
+    await page.goto("/quality");
     await expect(page.getByText("PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED").first()).toBeVisible();
     await expect(page.getByText(/waived/i).first()).toBeVisible();
   });

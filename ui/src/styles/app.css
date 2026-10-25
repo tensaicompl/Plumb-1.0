@@ -1,0 +1,252 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/* Dark-mode variants follow the token appearance (System via media query, or an explicit choice). */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-appearance="light"]) & {
+      @slot;
+    }
+  }
+  :root[data-appearance="dark"] & {
+    @slot;
+  }
+}
+
+/*
+ * Semantic theme: screens use these classes (bg-card, text-fg-3, border-line, rounded-card,
+ * text-callout, shadow-md, ease-standard...), never raw hex values. `inline` keeps each utility
+ * pointing at the token variable, so the appearance switch needs no rebuild.
+ */
+@theme inline {
+  /* surfaces */
+  --color-page: var(--bg-page);
+  --color-card: var(--bg-card);
+  --color-surface: var(--bg-surface);
+  --color-sidebar: var(--bg-sidebar);
+  --color-toolbar: var(--bg-toolbar);
+  --color-inspector: var(--bg-inspector);
+  --color-assistant: var(--bg-assistant);
+  --color-subtle-row: var(--bg-subtle-row);
+
+  /* text */
+  --color-fg: var(--fg-1);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-fg-4: var(--fg-4);
+  --color-fg-3-surface: var(--fg-3-surface);
+
+  /* separators */
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-edge: var(--edge);
+
+  /* primary (midnight) */
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-on-primary: var(--primary-fg);
+  --color-primary-soft: var(--primary-soft);
+  --color-muted-ring: var(--muted-ring);
+  --color-disabled: var(--disabled-bg);
+
+  /* hero (dark) surfaces */
+  --color-hero: var(--hero);
+  --color-hero-raised: var(--hero-raised);
+  --color-on-hero: var(--hero-fg);
+  --color-hero-sub: var(--hero-sub);
+  --color-toast: var(--toast-bg);
+  --color-toast-action: var(--toast-action);
+  --color-toast-icon: var(--toast-icon);
+
+  /* accent */
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-pressed: var(--accent-pressed);
+  --color-on-accent: var(--accent-fg);
+  --color-accent-wash: var(--accent-wash);
+  --color-accent-wash-hover: var(--accent-wash-hover);
+  --color-accent-tint: var(--accent-tint);
+  --color-accent-on-dark: var(--accent-on-dark);
+
+  /* status */
+  --color-pass: var(--pass);
+  --color-pass-fg: var(--pass-fg);
+  --color-pass-tint: var(--pass-tint);
+  --color-attention: var(--attention);
+  --color-attention-fg: var(--attention-fg);
+  --color-attention-tint: var(--attention-tint);
+  --color-blocked: var(--blocked);
+  --color-blocked-fg: var(--blocked-fg);
+  --color-blocked-tint: var(--blocked-tint);
+  --color-blocked-hover: var(--blocked-hover);
+  --color-running: var(--running);
+  --color-running-fg: var(--running-fg);
+  --color-running-tint: var(--running-tint);
+  --color-neutral: var(--neutral);
+  --color-neutral-fg: var(--neutral-fg);
+  --color-neutral-tint: var(--neutral-tint);
+  --color-stale: var(--stale-ring);
+
+  /* diff */
+  --color-diff-add: var(--diff-add-fg);
+  --color-diff-add-bg: var(--diff-add-bg);
+  --color-diff-add-word: var(--diff-add-word);
+  --color-diff-del: var(--diff-del-fg);
+  --color-diff-del-bg: var(--diff-del-bg);
+  --color-diff-del-word: var(--diff-del-word);
+
+  /* banner, scrim */
+  --color-banner: var(--banner-bg);
+  --color-on-banner: var(--banner-fg);
+  --color-scrim: var(--scrim);
+
+  /* type */
+  --font-sans: var(--ff-body);
+  --font-display: var(--ff-display);
+  --font-mono: var(--ff-mono);
+
+  /* sizes used by the handoff: 40 / 28 / 24 / 22 / 20 / 18 / 16 / 15 / 14 / 13.5 / 13 / 12 / 11 */
+  --text-eyebrow: 11px;
+  --text-eyebrow--line-height: 1;
+  --text-caption: 12px;
+  --text-caption--line-height: 1.4;
+  --text-footnote: 13px;
+  --text-footnote--line-height: 1.45;
+  --text-callout: 13.5px;
+  --text-callout--line-height: 1.45;
+  --text-body: 14px;
+  --text-body--line-height: 1.5;
+  --text-subhead: 15px;
+  --text-subhead--line-height: 1.4;
+  --text-lead: 16px;
+  --text-lead--line-height: 1.6;
+  --text-title-sm: 18px;
+  --text-title-sm--line-height: 1.3;
+  --text-title: 20px;
+  --text-title--line-height: 1.25;
+  --text-title-lg: 22px;
+  --text-title-lg--line-height: 1.25;
+  --text-headline: 24px;
+  --text-headline--line-height: 1.2;
+  --text-h2: 28px;
+  --text-h2--line-height: 1.2;
+  --text-h1: 40px;
+  --text-h1--line-height: 1.1;
+
+  --tracking-display: var(--ls-tight);
+  --tracking-eyebrow: var(--ls-eyebrow);
+
+  /* radii: 4 tags · 8 controls · 10 fields · 12 tiles · 16 cards · 20 sheets */
+  --radius-tag: 4px;
+  --radius-control: 8px;
+  --radius-field: 10px;
+  --radius-tile: 12px;
+  --radius-card: 16px;
+  --radius-sheet: 20px;
+  --radius-pill: 999px;
+
+  /* shadows */
+  --shadow-xs: var(--elev-xs);
+  --shadow-sm: var(--elev-sm);
+  --shadow-md: var(--elev-md);
+  --shadow-lg: var(--elev-lg);
+  --shadow-xl: var(--elev-xl);
+  --shadow-segment: var(--elev-segment);
+  --shadow-focus: var(--focus-ring);
+
+  /* motion */
+  --ease-standard: var(--motion-standard);
+  --ease-entrance: var(--motion-entrance);
+  --animate-shimmer: plumb-shimmer 1.4s linear infinite;
+  --animate-pulse-dot: plumb-dot 1.2s ease-in-out infinite;
+  --animate-inspector-in: plumb-slide-in var(--dur-base) var(--motion-entrance);
+  --animate-fade-in: plumb-fade-in var(--dur-base) var(--motion-entrance);
+  --animate-overlay-in: plumb-overlay-in var(--dur-base) var(--motion-entrance);
+
+  @keyframes plumb-shimmer {
+    0% {
+      background-position: -200px 0;
+    }
+    100% {
+      background-position: 200px 0;
+    }
+  }
+  @keyframes plumb-dot {
+    0%,
+    80%,
+    100% {
+      opacity: 0.25;
+    }
+    40% {
+      opacity: 1;
+    }
+  }
+  @keyframes plumb-slide-in {
+    from {
+      transform: translateX(16px);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+  @keyframes plumb-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes plumb-overlay-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    margin: 0;
+    background: var(--bg-page);
+    color: var(--fg-1);
+    font-family: var(--ff-body);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  /* Focus ring: 3px violet halo + 1px violet outline, always visible on keyboard navigation. */
+  :focus-visible {
+    outline: 1px solid var(--focus-outline);
+    outline-offset: 0;
+    box-shadow: var(--focus-ring);
+  }
+  ::selection {
+    background: var(--accent-wash);
+  }
+}
+
+/* Reduced motion: no animation or transition anywhere. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

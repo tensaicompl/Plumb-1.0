@@ -66,3 +66,33 @@ export const useLocaleStore = create<LocaleState>()((set) => ({
 export function t(key: MessageKey, locale: Locale = useLocaleStore.getState().locale): string {
   return catalogues[locale][key] ?? catalogues[DEFAULT_LOCALE][key];
 }
+
+/** The message `key` with every `{name}` placeholder replaced by `params[name]`. */
+export function tf(
+  key: MessageKey,
+  params: Readonly<Record<string, string | number>>,
+  locale: Locale = useLocaleStore.getState().locale,
+): string {
+  return t(key, locale).replace(/\{(\w+)\}/g, (match, name: string) => (name in params ? String(params[name]) : match));
+}
+
+/** A plural message family: the keys `<base>.one`, `.few`, `.many` and `.other` all exist. */
+export type PluralBase = {
+  [K in MessageKey]: K extends `${infer Base}.other` ? (`${Base}.one` extends MessageKey ? Base : never) : never;
+}[MessageKey];
+
+/**
+ * The plural form of `base` for `count` in `locale` (CLDR categories through Intl.PluralRules:
+ * English one/other, Polish one/few/many), with `{count}` and `params` substituted.
+ */
+export function tc(
+  base: PluralBase,
+  count: number,
+  params: Readonly<Record<string, string | number>> = {},
+  locale: Locale = useLocaleStore.getState().locale,
+): string {
+  const category = new Intl.PluralRules(locale).select(count);
+  const candidate = `${base}.${category}`;
+  const key = (candidate in catalogues[locale] ? candidate : `${base}.other`) as MessageKey;
+  return tf(key, { count, ...params }, locale);
+}

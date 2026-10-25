@@ -249,9 +249,9 @@ const fieldOf = (element: HTMLElement, name: string) => element.querySelector("[
 
 describe("FindingsPage", () => {
   it("renders every server finding field with the server rule class next to the family", async () => {
-    const { router } = await renderAt("/model/findings");
+    const { router } = await renderAt("/quality/issues");
     await screen.findByText("Message of fnd:std.");
-    expect(router.state.location.pathname).toBe("/model/findings");
+    expect(router.state.location.pathname).toBe("/quality/issues");
     const std = item("data-finding-id", "fnd:std");
     for (const [name, text] of [
       ["id", "fnd:std"],
@@ -274,7 +274,7 @@ describe("FindingsPage", () => {
   });
 
   it("labels only the server rule_class, keeping the raw policy wire value", async () => {
-    await renderAt("/model/findings");
+    await renderAt("/quality/issues");
     await screen.findByText("Message of fnd:std.");
     const badge = (id: string) => fieldOf(item("data-finding-id", id), "rule_class").querySelector("[data-rule-class]") as HTMLElement;
     const expected: [string, string, string][] = [
@@ -296,7 +296,7 @@ describe("FindingsPage", () => {
   });
 
   it("renders the server assumptions read-only with exact typed defaults", async () => {
-    await renderAt("/model/findings");
+    await renderAt("/quality/issues");
     await screen.findByText("Half days count as 0.5.");
     expect(gets("/api/assumptions")).toHaveLength(1);
     const half = item("data-assumption-id", "assumption:half-days");
@@ -491,7 +491,7 @@ describe("RulesPage", () => {
     expect(post?.ifMatch).toBe(TEST_ETAG);
     // The exact entered text: no reparsing or recanonicalisation in the browser.
     expect(post?.body).toEqual({ cell: "row:1:output:0", outcome, reason: "   Managers review long leave." });
-    expect(calls.filter((c) => c.path.startsWith("/api/proposals"))).toEqual([]);
+    expect(calls.filter((c) => c.path.startsWith("/api/proposals/"))).toEqual([]);
     // The rows stay the server's: nothing was patched locally from the form.
     const row1 = item("data-rule-id", "dt:leave").querySelector("[data-row='1']") as HTMLElement;
     expect(row1.querySelector("[data-cells='then']")?.textContent).toBe('"review"');
@@ -512,7 +512,7 @@ describe("RulesPage", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(writes()).toHaveLength(1);
     expect(writes()[0]?.path).toBe("/api/model/rules/dt:bonus/cells");
-    expect(calls.filter((c) => c.path.startsWith("/api/proposals"))).toEqual([]);
+    expect(calls.filter((c) => c.path.startsWith("/api/proposals/"))).toEqual([]);
   });
 });
 

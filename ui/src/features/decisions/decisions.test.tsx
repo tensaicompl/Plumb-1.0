@@ -88,7 +88,7 @@ async function renderDecisions() {
     http.get("*/api/decisions", () => HttpResponse.json(PAGE)),
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/decisions"] }));
+  const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/quality/history"] }));
   render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
@@ -104,7 +104,7 @@ const fieldOf = (element: HTMLElement, name: string) => (element.querySelector("
 describe("DecisionsPage", () => {
   it("renders every record as a Resolution decision with its exact fields", async () => {
     const router = await renderDecisions();
-    expect(router.state.location.pathname).toBe("/decisions");
+    expect(router.state.location.pathname).toBe("/quality/history");
     expect(document.querySelectorAll("[data-decision-id]")).toHaveLength(2);
     // The type is never inferred from IDs, refs or rationale.
     expect([...document.querySelectorAll("[data-testid='decision-type']")].map((e) => e.textContent)).toEqual(["Resolution decision", "Resolution decision"]);
@@ -137,7 +137,8 @@ describe("DecisionsPage", () => {
     const decisions = calls.filter((c) => c.path === "/api/decisions");
     expect(decisions).toHaveLength(1);
     expect(decisions[0]?.search.toString()).toBe("");
-    expect(calls.filter((c) => c.path.startsWith("/api/proposals"))).toEqual([]);
+    // No proposal action is ever called (the shell's own pending-proposal count is a plain read).
+    expect(calls.filter((c) => c.path.startsWith("/api/proposals/"))).toEqual([]);
     expect(document.querySelectorAll("main form, main input, main textarea, main select, main button")).toHaveLength(0);
   });
 });
