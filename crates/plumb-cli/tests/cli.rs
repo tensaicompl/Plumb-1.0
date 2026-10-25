@@ -1728,6 +1728,90 @@ mod cli {
     }
 
     #[test]
+    fn directory_outcome_selections_reach_the_psg_only_through_governed_proposals() {
+        // H0.4 (architecture §33.4): the configuration carries outcome_selections inside
+        // `directory`; `directory` proposes one HUMAN_CONFIRM SetNodeExtension per Outcome.
+        let mut c = directory_config();
+        c["directory"]["outcome_selections"] = json!([
+            {"outcome_ref": "outcome:low-balance", "operation_ref": "op:submit",
+             "on_failures": ["precondition_rejected"]}
+        ]);
+        let env = bare_env_with(c);
+        let (code, _, err) = env.run(&["init", "--project", PROJECT]);
+        assert_eq!(code, 0, "{err}");
+        env.import();
+        let audit =
+            json!({"created_by": ACTOR, "created_at": T0, "updated_by": null, "updated_at": null});
+        commit_node(
+            &env.db,
+            json!({
+                "id": "op:submit", "revision": 1, "status": "Accepted",
+                "payload": {"type": "Operation", "data": {
+                    "name": "op:submit", "operation_kind": "command", "input_schema_ref": null,
+                    "output_schema_ref": null, "preconditions": null, "postconditions": null,
+                    "idempotency": null, "transaction_semantics": null
+                }},
+                "evidence": [], "derivations": [], "standards": [], "tags": [], "extensions": {},
+                "audit": audit
+            }),
+        );
+        commit_node(
+            &env.db,
+            json!({
+                "id": "outcome:low-balance", "revision": 1, "status": "Accepted",
+                "payload": {"type": "Outcome", "data": {
+                    "name": "LowBalance", "outcome_kind": "business_failure"}},
+                "evidence": [], "derivations": [], "standards": [], "tags": [], "extensions": {},
+                "audit": audit
+            }),
+        );
+        let before = head_graph(&env.db).revision.semantic_hash;
+        let (code, elements) = env.json(&["directory"]);
+        assert_eq!(code, 0, "{elements}");
+        let selection = elements
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["element_ref"] == "outcome:low-balance")
+            .unwrap_or_else(|| panic!("{elements}"))
+            .clone();
+        assert_eq!(selection["node_type"], "Outcome");
+        assert_eq!(selection["disposition"], "proposed");
+        // Nothing reaches the PSG before the governed acceptance.
+        assert_eq!(head_graph(&env.db).revision.semantic_hash, before);
+        let proposal = selection["proposal_id"].as_str().unwrap();
+        assert_eq!(
+            proposal_state(&env.db, proposal),
+            WorkflowProposalState::Pending
+        );
+        let action = selection["action"].as_str().unwrap();
+        let (code, write) = env.json(&[
+            "accept-set",
+            &format!("{proposal}={action}"),
+            "--reason",
+            "Outcome selection reviewed.",
+        ]);
+        assert_eq!(code, 0, "{write}");
+        let graph = head_graph(&env.db).graph;
+        let node = graph.node(&id("outcome:low-balance")).unwrap();
+        assert_eq!(
+            node.extensions[&"plumb_sim:outcome_selection".parse().unwrap()],
+            json!({"version": 1, "selections": [
+                {"operation_ref": "op:submit", "on_failures": ["precondition_rejected"]}]})
+        );
+        // A malformed family is a configuration error.
+        let mut c = directory_config();
+        c["directory"]["outcome_selections"] = json!([
+            {"outcome_ref": "outcome:low-balance", "operation_ref": "op:submit",
+             "on_failures": ["postcondition_violation"]}
+        ]);
+        let bad = env_with(c);
+        let (code, _, err) = bad.run(&["vocab"]);
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains("configuration"), "{err}");
+    }
+
+    #[test]
     fn directory_confirm_ask_answer_round_trip() {
         // R0.1 bootstrap: the configured human Agent decides every governed acceptance.
         let env = bare_env_with(directory_config());

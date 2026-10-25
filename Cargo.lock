@@ -1800,6 +1800,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "serde_yaml",
  "thiserror",
 ]
 

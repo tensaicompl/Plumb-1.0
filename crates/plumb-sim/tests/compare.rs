@@ -2254,6 +2254,69 @@ mod compare_contract {
         ));
     }
 
+    /// [Fable #118] The frozen interpreter verdict of every immutable HR fixture scenario whose
+    /// Then asserts an attribute value the S4.2 interpreter never writes (it never invents
+    /// attribute writes): Fail with a value diff, whatever `expected_post_answers` says, until
+    /// the contract gains human-confirmed effect semantics. A write is a Then value of a Given
+    /// state key that differs from its Given value.
+    const FIXTURE_WRITE_VERDICTS: [(&str, ScenarioVerdict); 3] = [
+        ("SCN-019", ScenarioVerdict::Fail),
+        ("SCN-025", ScenarioVerdict::Fail),
+        ("SCN-034", ScenarioVerdict::Fail),
+    ];
+
+    #[test]
+    fn fixture_attribute_write_expectations_have_frozen_interpreter_verdicts() {
+        // The fixture is read only as an oracle.
+        let fixture: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../../../fixtures/hr-leave/scenarios.yaml"))
+                .unwrap();
+        // Then keys that are lifecycle, event, outcome or calculation expectations.
+        let not_writes = ["status", "event", "outcome", "working_days"];
+        let mut writes = BTreeSet::new();
+        for s in fixture["scenarios"].as_sequence().unwrap() {
+            let given = &s["given"];
+            let Some(then) = s["then"].as_mapping() else {
+                continue;
+            };
+            for (key, value) in then {
+                let key = key.as_str().unwrap();
+                let written = given.get(key).is_some_and(|g| g != value);
+                if !not_writes.contains(&key) && written {
+                    writes.insert(s["id"].as_str().unwrap().to_owned());
+                }
+            }
+        }
+        let frozen: BTreeSet<String> = FIXTURE_WRITE_VERDICTS
+            .iter()
+            .map(|(id, _)| (*id).to_owned())
+            .collect();
+        assert_eq!(writes, frozen);
+        // The verdict follows from the interpreter contract: the SCN-019 shape (approval
+        // deducts the balance) executes, the balance is never written, so it is a Fail.
+        let mut w = hr_leave_world();
+        let mut t = then();
+        t.states_active = vec![id(L_APPROVED)];
+        t.attribute_values
+            .insert(id(BALANCE), lit(decimal("18.0", None)));
+        w.scenario_then(
+            given_states(&[(BALANCE, lit(decimal("20.0", None)))], &[L_SUBMITTED]),
+            ScenarioWhen::Operation(id(APPROVE)),
+            t,
+        );
+        let (_, c) = hr_compare(&w, Some(MANAGER)).unwrap();
+        assert_eq!(c.result, FIXTURE_WRITE_VERDICTS[0].1);
+        assert_eq!(
+            c.diffs,
+            vec![ScenarioDiff::ValueMismatch {
+                semantic_ref: id(BALANCE),
+                location: DiffLocation::AttributeValue,
+                expected: decimal("18.0", None),
+                actual: decimal("20.0", None),
+            }]
+        );
+    }
+
     #[test]
     fn then_calculation_result_refs_resolve_to_the_execution_result() {
         // H0.10: result:<key> resolves to the named Calculation's execution result in the trace.
