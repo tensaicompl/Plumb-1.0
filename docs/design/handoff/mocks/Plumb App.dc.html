@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="./tokens.css">
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#FAFAFA}
+*{box-sizing:border-box}
+a{color:#0F172A;text-decoration:none}
+a:hover{color:#7C3AED}
+textarea,input{font-family:Inter,system-ui,sans-serif}
+@keyframes plShimmer{0%{background-position:-200px 0}100%{background-position:200px 0}}
+@keyframes plDot{0%,80%,100%{opacity:.25}40%{opacity:1}}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</helmet>
+<div style="display:flex;height:100vh;overflow:hidden;background:var(--bg-page);font-family:var(--font-body);color:var(--fg-1);font-size:14px">
+
+  <!-- Sidebar -->
+  <aside style="width:{{ sbW }}px;flex-shrink:0;background:#fff;border-right:1px solid var(--border);display:flex;flex-direction:column;transition:width 200ms cubic-bezier(0.4,0,0.2,1)">
+    <div style="height:56px;display:flex;align-items:center;gap:4px;padding:0 12px;border-bottom:1px solid var(--border)">
+      <img src="./assets/icon-black.svg" alt="" style="width:40px;height:40px;flex-shrink:0">
+      <sc-if value="{{ sbOpen }}" hint-placeholder-val="{{ true }}">
+        <span style="font-family:var(--font-display);font-weight:800;font-size:18px;letter-spacing:-0.02em">Plumb</span>
+      </sc-if>
+    </div>
+    <nav style="display:flex;flex-direction:column;gap:2px;padding:12px 8px">
+      <sc-for list="{{ nav }}" as="n" hint-placeholder-count="7">
+        <button onClick="{{ n.go }}" title="{{ n.label }}" style="display:flex;align-items:center;gap:10px;height:36px;padding:0 10px;border:0;border-radius:8px;background:{{ n.bg }};color:{{ n.fg }};font:{{ n.fw }} 13.5px/1 var(--font-body);cursor:pointer;text-align:left;width:100%">
+          {{ n.icon }}
+          <sc-if value="{{ sbOpen }}" hint-placeholder-val="{{ true }}"><span style="flex:1">{{ n.label }}</span></sc-if>
+          <sc-if value="{{ n.hasBadge }}"><span style="min-width:22px;height:20px;padding:0 6px;border-radius:999px;background:{{ n.badgeBg }};color:{{ n.badgeFg }};font:600 11px/20px var(--font-mono);text-align:center">{{ n.badge }}</span></sc-if>
+        </button>
+      </sc-for>
+    </nav>
+    <div style="height:1px;background:var(--border);margin:4px 16px"></div>
+    <div style="display:flex;flex-direction:column;gap:2px;padding:8px">
+      <button onClick="{{ toggleAsst }}" style="display:flex;align-items:center;gap:10px;height:36px;padding:0 10px;border:0;border-radius:8px;background:{{ asstNavBg }};color:var(--fg-2);font:500 13.5px/1 var(--font-body);cursor:pointer;text-align:left" style-hover="background:var(--bg-surface)">{{ ic.chat }}<sc-if value="{{ sbOpen }}"><span>Assistant</span></sc-if></button>
+      <button onClick="{{ openSettings }}" style="display:flex;align-items:center;gap:10px;height:36px;padding:0 10px;border:0;border-radius:8px;background:transparent;color:var(--fg-2);font:500 13.5px/1 var(--font-body);cursor:pointer;text-align:left" style-hover="background:var(--bg-surface)">{{ ic.sliders }}<sc-if value="{{ sbOpen }}"><span>Settings</span></sc-if></button>
+    </div>
+    <div style="margin-top:auto;display:flex;align-items:center;gap:10px;padding:14px 16px;border-top:1px solid var(--border)">
+      <div style="width:32px;height:32px;border-radius:999px;background:var(--color-midnight);color:#fff;font:700 12px/32px var(--font-body);text-align:center;flex-shrink:0">MN</div>
+      <sc-if value="{{ sbOpen }}"><div style="min-width:0"><div style="font-size:13px;font-weight:600">Marta Nowak</div><div style="font-size:11px;color:var(--fg-3)">Analyst · Reviewer</div></div></sc-if>
+    </div>
+  </aside>
+
+  <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+    <!-- Toolbar -->
+    <header style="height:56px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--border);background:rgba(255,255,255,0.8);backdrop-filter:blur(12px)">
+      <button style="display:flex;align-items:center;gap:8px;border:0;background:transparent;padding:6px 8px;border-radius:8px;cursor:pointer;font:600 15px/1 var(--font-display);color:var(--fg-1);letter-spacing:-0.01em;white-space:nowrap;min-width:0;flex-shrink:1;overflow:hidden" style-hover="background:var(--bg-surface)"><span style="overflow:hidden;text-overflow:ellipsis">HR Leave Management</span> {{ ic.chevDown }}</button>
+      <button onClick="{{ version.onClick }}" style="display:flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:#fff;font:500 12px/1 var(--font-body);color:var(--fg-2);cursor:pointer;white-space:nowrap;flex-shrink:0">
+        <span style="width:6px;height:6px;border-radius:999px;background:{{ version.dot }}"></span><span style="font-family:var(--font-mono);color:var(--fg-3)">v42</span><sc-if value="{{ showVerText }}" hint-placeholder-val="{{ true }}">{{ version.text }}</sc-if>
+      </button>
+      <div style="flex:1 1 0;min-width:0"></div>
+      <button onClick="{{ openPal }}" style="display:flex;align-items:center;gap:8px;flex:1 1 260px;min-width:{{ searchMin }}px;max-width:{{ searchMax }}px;height:34px;padding:0 {{ searchPad }}px;border-radius:8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--fg-3);font:400 13px/1 var(--font-body);cursor:pointer;text-align:left;white-space:nowrap;overflow:hidden">{{ ic.search }}<sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}"><span style="flex:1;overflow:hidden;text-overflow:ellipsis">Search or run a command</span><span style="font:500 11px/1 var(--font-mono);color:var(--fg-4)">⌘K</span></sc-if></button>
+      <button onClick="{{ next.go }}" style="display:flex;align-items:center;gap:8px;height:34px;padding:0 16px;border-radius:999px;border:0;background:var(--accent);color:#fff;font:600 13px/1 var(--font-body);cursor:pointer;white-space:nowrap" style-hover="background:var(--accent-hover)" style-active="background:var(--accent-pressed)">{{ next.short }} {{ ic.arrowR }}</button>
+      <div style="position:relative;display:flex">
+        <button onClick="{{ runNext }}" style="display:flex;align-items:center;gap:8px;height:34px;padding:0 12px 0 14px;border-radius:999px 0 0 999px;border:1px solid var(--border);border-right:0;background:#fff;color:var(--fg-1);font:600 13px/1 var(--font-body);cursor:pointer;white-space:nowrap;position:relative;overflow:hidden" style-hover="background:var(--bg-surface)">
+          <sc-if value="{{ running }}"><span style="position:absolute;left:0;bottom:0;height:2px;width:{{ runPct }}%;background:var(--accent);transition:width 200ms"></span></sc-if>
+          {{ runIcon }}{{ runLabel }}
+        </button>
+        <button onClick="{{ toggleRunMenu }}" style="width:30px;height:34px;border-radius:0 999px 999px 0;border:1px solid var(--border);background:#fff;color:var(--fg-2);cursor:pointer;display:flex;align-items:center;justify-content:center" style-hover="background:var(--bg-surface)">{{ ic.chevDown }}</button>
+        <sc-if value="{{ runMenu }}">
+          <div style="position:absolute;top:40px;right:0;width:240px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg);padding:6px;z-index:30">
+            <div style="padding:8px 10px 6px;font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3)">Run a step</div>
+            <sc-for list="{{ stepMenu }}" as="s" hint-placeholder-count="8">
+              <button onClick="{{ s.run }}" style="display:flex;align-items:center;justify-content:space-between;width:100%;height:34px;padding:0 10px;border:0;border-radius:8px;background:transparent;font:500 13px/1 var(--font-body);color:var(--fg-1);cursor:pointer;text-align:left" style-hover="background:var(--bg-surface)"><span>{{ s.label }}</span><span style="font-size:11px;color:var(--fg-3)">{{ s.meta }}</span></button>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+      <button onClick="{{ toggleAsst }}" title="Assistant" style="width:34px;height:34px;border-radius:8px;border:0;background:{{ asstNavBg }};color:var(--fg-2);cursor:pointer;display:flex;align-items:center;justify-content:center" style-hover="background:var(--bg-surface)">{{ ic.chat }}</button>
+    </header>
+
+    <sc-if value="{{ offline }}">
+      <div style="display:flex;align-items:center;gap:10px;justify-content:center;height:34px;background:#FEF3C7;color:#92400E;font-size:13px;font-weight:500;flex-shrink:0">{{ ic.refresh }} Live connection lost. Reconnecting… Your data refreshes when it's back.</div>
+    </sc-if>
+
+    <div style="flex:1;min-height:0;display:flex">
+      <main style="flex:1;min-width:0;display:flex;min-height:0">
+
+        <!-- OVERVIEW -->
+        <sc-if value="{{ is.overview }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:1;overflow-y:auto">
+            <sc-if value="{{ ov.firstRun }}">
+              <div style="max-width:720px;margin:0 auto;padding:96px 32px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:16px">
+                <img src="./assets/icon-black.svg" alt="" style="width:160px;height:160px;opacity:0.9">
+                <div style="font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3)">New project</div>
+                <h1 style="font-size:40px;line-height:1.15;margin:0;text-wrap:pretty">Import your requirements document</h1>
+                <p style="font-size:16px;color:var(--fg-2);max-width:480px;margin:0">Plumb reads it, proposes a structure, and asks you to confirm each piece. Nothing enters the specification until you accept it.</p>
+                <button onClick="{{ fakeImport }}" style="margin-top:16px;width:100%;border:1px dashed #CBD5E1;border-radius:16px;background:#fff;padding:40px;display:flex;flex-direction:column;align-items:center;gap:10px;cursor:pointer;color:var(--fg-2);font:500 14px/1.4 var(--font-body)" style-hover="border-color:var(--color-midnight);background:var(--bg-surface)">
+                  {{ ic24.upload }}
+                  <span style="font-weight:600;color:var(--fg-1)">Drop a file here, or choose one</span>
+                  <span style="font-size:12px;color:var(--fg-3)">Markdown, plain text or Word · .md .txt .docx</span>
+                </button>
+              </div>
+            </sc-if>
+            <sc-if value="{{ ov.notFirst }}" hint-placeholder-val="{{ true }}">
+              <div style="max-width:960px;margin:0 auto;padding:40px 32px 64px;display:flex;flex-direction:column;gap:24px">
+                <sc-if value="{{ aiOff }}">
+                  <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:12px;background:var(--bg-surface);font-size:13px;color:var(--fg-2)">{{ ic.info }}<span style="flex:1">AI analysis is off. Add an API key in Settings to run AI steps. You can still review, answer and export.</span><button onClick="{{ openSettings }}" style="border:0;background:transparent;font:600 13px/1 var(--font-body);color:var(--fg-1);cursor:pointer">Open Settings</button></div>
+                </sc-if>
+                <div style="display:flex;align-items:center;gap:32px">
+                  <div style="flex:1;min-width:0">
+                    <div style="font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3);margin-bottom:10px">Overview</div>
+                    <h1 style="font-size:40px;line-height:1.1;margin:0">HR Leave Management</h1>
+                    <div style="margin-top:10px;font-size:13px;color:var(--fg-3)">Updated 4 minutes ago by Plumb · 32 requirements from requirements.md</div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:20px;padding:16px 20px;background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-sm)">
+                    <div style="position:relative;width:96px;height:96px">{{ ov.ring }}<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center"><span style="font:700 24px/1 var(--font-display)">{{ ov.ready }}%</span><span style="font-size:10px;color:var(--fg-3);margin-top:3px">ready</span></div></div>
+                    <div style="display:flex;flex-direction:column;gap:6px;width:180px">
+                      <sc-for list="{{ ov.subs }}" as="s" hint-placeholder-count="5">
+                        <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-2)"><span style="width:84px">{{ s.label }}</span><span style="flex:1;height:4px;border-radius:2px;background:var(--bg-surface);overflow:hidden"><span style="display:block;height:100%;width:{{ s.v }}%;background:var(--color-midnight)"></span></span><span style="font:500 11px/1 var(--font-mono);color:var(--fg-3);width:26px;text-align:right">{{ s.v }}</span></div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </div>
+
+                <div style="background:var(--color-midnight);color:#fff;border-radius:20px;padding:28px 32px;display:flex;align-items:center;gap:24px">
+                  <div style="flex:1;min-width:0">
+                    <div style="font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-sub-dark);margin-bottom:10px">Next action</div>
+                    <div style="font:600 24px/1.25 var(--font-display);letter-spacing:-0.01em;text-wrap:pretty">{{ next.title }}</div>
+                    <div style="font-size:14px;color:var(--fg-sub-dark);margin-top:6px">{{ next.sub }}</div>
+                    <sc-if value="{{ running }}"><div style="margin-top:16px;height:4px;border-radius:2px;background:var(--color-midnight-light);overflow:hidden"><div style="height:100%;width:{{ runPct }}%;background:var(--color-violet-light);transition:width 200ms"></div></div></sc-if>
+                  </div>
+                  <button onClick="{{ next.go }}" style="height:44px;padding:0 22px;border-radius:999px;border:0;background:#fff;color:var(--color-midnight);font:600 14px/1 var(--font-body);cursor:pointer;display:flex;align-items:center;gap:8px;white-space:nowrap" style-hover="background:var(--color-surface)">{{ next.btn }} {{ ic.arrowR }}</button>
+                </div>
+
+                <section style="background:#fff;border:1px solid var(--border);border-radius:16px;padding:24px;box-shadow:var(--shadow-sm)">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:20px"><h4 style="margin:0;font-size:16px">Pipeline</h4><span style="font-size:12px;color:var(--fg-3)">Click a step to see what it produced</span></div>
+                  <div style="display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:4px">
+                    <sc-for list="{{ ov.steps }}" as="s" hint-placeholder-count="9">
+                      <button onClick="{{ s.go }}" style="display:flex;flex-direction:column;align-items:center;gap:8px;border:0;background:transparent;padding:8px 2px;border-radius:10px;cursor:pointer;position:relative" style-hover="background:var(--bg-surface)">
+                        <span style="width:30px;height:30px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:{{ s.bg }};color:{{ s.fg }};border:{{ s.border }};font:600 11px/1 var(--font-mono)">{{ s.mark }}</span>
+                        <span style="font-size:12px;font-weight:500;color:var(--fg-1);text-align:center;line-height:1.25">{{ s.label }}</span>
+                        <span style="font-size:11px;color:{{ s.metaFg }}">{{ s.meta }}</span>
+                      </button>
+                    </sc-for>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px"><h4 style="margin:0;font-size:16px">Quality gates</h4><a href="#" onClick="{{ goQuality }}" style="font-size:13px;font-weight:500">Open Quality</a></div>
+                  <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px">
+                    <sc-for list="{{ gatesOv }}" as="g" hint-placeholder-count="5">
+                      <button onClick="{{ g.open }}" style="text-align:left;background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px;cursor:pointer;display:flex;flex-direction:column;gap:8px;box-shadow:var(--shadow-xs)" style-hover="box-shadow:var(--shadow-md);border-color:#CBD5E1">
+                        <div style="display:flex;align-items:center;gap:8px"><span style="width:10px;height:10px;border-radius:999px;background:{{ g.dot }};border:{{ g.ring }}"></span><span style="font-weight:600;font-size:14px">{{ g.name }}</span><span style="margin-left:auto;font:500 11px/1 var(--font-mono);color:var(--fg-4)">{{ g.code }}</span></div>
+                        <span style="font-size:12px;color:{{ g.fg }};font-weight:500">{{ g.stateLabel }}</span>
+                      </button>
+                    </sc-for>
+                  </div>
+                </section>
+
+                <section>
+                  <h4 style="margin:0 0 12px;font-size:16px">At a glance</h4>
+                  <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+                    <sc-for list="{{ ov.tiles }}" as="t" hint-placeholder-count="4">
+                      <button onClick="{{ t.go }}" style="text-align:left;background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px;cursor:pointer;box-shadow:var(--shadow-xs)" style-hover="box-shadow:var(--shadow-md);border-color:#CBD5E1">
+                        <div style="font-size:12px;color:var(--fg-3);font-weight:500">{{ t.label }}</div>
+                        <div style="font:700 28px/1.2 var(--font-display);margin-top:6px">{{ t.value }}</div>
+                        <div style="font-size:12px;color:var(--fg-2);margin-top:2px">{{ t.sub }}</div>
+                      </button>
+                    </sc-for>
+                  </div>
+                </section>
+
+                <section style="background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-sm)">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;padding:18px 24px 10px"><h4 style="margin:0;font-size:16px">Recent decisions</h4><a href="#" onClick="{{ goHistory }}" style="font-size:13px;font-weight:500">History</a></div>
+                  <sc-for list="{{ historyTop }}" as="h" hint-placeholder-count="5">
+                    <div style="display:flex;align-items:center;gap:12px;padding:12px 24px;border-top:1px solid var(--border);font-size:13px">
+                      <span style="width:28px;height:28px;border-radius:999px;background:var(--bg-surface);display:flex;align-items:center;justify-content:center;font:600 10px/1 var(--font-body);color:var(--fg-2);flex-shrink:0">{{ h.ini }}</span>
+                      <span style="flex:1;min-width:0;color:var(--fg-1)"><b style="font-weight:600">{{ h.who }}</b> {{ h.what }}</span>
+                      <span style="font-size:12px;color:var(--fg-3);white-space:nowrap">{{ h.when }}</span>
+                    </div>
+                  </sc-for>
+                </section>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <!-- INBOX -->
+        <sc-if value="{{ is.inbox }}">
+          <div style="width:clamp(180px,16vw,220px);flex-shrink:0;border-right:1px solid var(--border);padding:20px 10px;overflow-y:auto;background:#fff">
+            <div style="padding:0 10px 12px;font:600 20px/1 var(--font-display);letter-spacing:-0.01em">Inbox</div>
+            <sc-for list="{{ ib.filters }}" as="f" hint-placeholder-count="5">
+              <button onClick="{{ f.go }}" style="display:flex;align-items:center;justify-content:space-between;width:100%;height:34px;padding:0 10px;border:0;border-radius:8px;background:{{ f.bg }};color:{{ f.fg }};font:{{ f.fw }} 13px/1 var(--font-body);cursor:pointer"><span>{{ f.label }}</span><span style="font:500 11px/1 var(--font-mono);opacity:0.7">{{ f.n }}</span></button>
+            </sc-for>
+            <div style="padding:18px 10px 8px;font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3)">By origin</div>
+            <sc-for list="{{ ib.origins }}" as="f" hint-placeholder-count="3">
+              <button onClick="{{ f.go }}" style="display:flex;align-items:center;justify-content:space-between;width:100%;height:34px;padding:0 10px;border:0;border-radius:8px;background:{{ f.bg }};color:{{ f.fg }};font:{{ f.fw }} 13px/1 var(--font-body);cursor:pointer"><span>{{ f.label }}</span><span style="font:500 11px/1 var(--font-mono);opacity:0.7">{{ f.n }}</span></button>
+            </sc-for>
+            <div style="margin:24px 10px 0;padding:12px;border-radius:10px;background:var(--bg-surface);font-size:11px;color:var(--fg-3);line-height:1.8">
+              <div style="font-weight:600;color:var(--fg-2);margin-bottom:2px">Keyboard</div>
+              <span style="font-family:var(--font-mono)">J K</span> move · <span style="font-family:var(--font-mono)">A</span> accept · <span style="font-family:var(--font-mono)">R</span> reject · <span style="font-family:var(--font-mono)">⇧/⌘ click</span> select many
+            </div>
+          </div>
+
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0">
+            <div style="height:52px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--border)">
+              <span style="font-weight:600;font-size:14px">{{ ib.title }}</span><span style="font-size:13px;color:var(--fg-3)">{{ ib.countLabel }}</span>
+              <div style="flex:1"></div>
+              <sc-if value="{{ ib.hasFlows }}"><button onClick="{{ acceptAllFlows }}" style="display:flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);color:var(--fg-1);cursor:pointer;white-space:nowrap" style-hover="background:var(--bg-surface)">{{ ic.checks }} Accept all from Flows</button></sc-if>
+            </div>
+            <sc-if value="{{ ib.empty }}">
+              <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:32px">
+                <span style="width:56px;height:56px;border-radius:999px;background:rgba(16,185,129,0.12);color:#047857;display:flex;align-items:center;justify-content:center">{{ ic24.check }}</span>
+                <div style="font:600 22px/1.2 var(--font-display)">You're all caught up</div>
+                <div style="font-size:14px;color:var(--fg-2)">Nothing is waiting for your decision. The next step is Calculations &amp; rules.</div>
+                <button onClick="{{ runNext }}" style="margin-top:8px;height:36px;padding:0 18px;border-radius:999px;border:0;background:var(--color-midnight);color:#fff;font:600 13px/1 var(--font-body);cursor:pointer">Run Calculations &amp; rules</button>
+              </div>
+            </sc-if>
+            <div style="flex:1;overflow-y:auto">
+              <sc-for list="{{ ib.rows }}" as="r" hint-placeholder-count="8">
+                <div onClick="{{ r.pick }}" style="display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 20px;border-bottom:1px solid var(--border);background:{{ r.bg }};cursor:pointer;user-select:none">
+                  <span style="width:30px;height:30px;border-radius:8px;background:{{ r.iconBg }};color:var(--fg-2);display:flex;align-items:center;justify-content:center;flex-shrink:0">{{ r.icon }}</span>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:13.5px;font-weight:{{ r.fw }};color:var(--fg-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.title }}</div>
+                    <div style="font-size:12px;color:var(--fg-3);margin-top:2px">{{ r.typeLabel }} · {{ r.origin }}</div>
+                  </div>
+                  <sc-if value="{{ r.stale }}"><span style="height:20px;padding:0 8px;border-radius:999px;background:rgba(245,158,11,0.14);color:#B45309;font:600 11px/20px var(--font-body)">Stale</span></sc-if>
+                  <span style="font-size:12px;color:var(--fg-3);white-space:nowrap">{{ r.age }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <aside style="width:clamp(320px,32vw,420px);flex-shrink:0;border-left:1px solid var(--border);background:#fff;display:flex;flex-direction:column;min-height:0">
+            <sc-if value="{{ ib.isMulti }}">
+              <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:32px;text-align:center">
+                <div style="font:700 40px/1 var(--font-display)">{{ ib.multiN }}</div>
+                <div style="font-size:14px;color:var(--fg-2)">items selected</div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                  <button onClick="{{ acceptMulti }}" style="height:40px;padding:0 20px;border-radius:999px;border:0;background:var(--color-midnight);color:#fff;font:600 14px/1 var(--font-body);cursor:pointer;display:flex;align-items:center;gap:8px">{{ ic.check }} Accept {{ ib.multiN }}</button>
+                  <button onClick="{{ clearMulti }}" style="height:40px;padding:0 18px;border-radius:999px;border:1px solid var(--border);background:#fff;color:var(--fg-1);font:600 14px/1 var(--font-body);cursor:pointer">Clear</button>
+                </div>
+                <div style="font-size:12px;color:var(--fg-3);max-width:260px">Accepted together as one change. If any item is out of date, none are applied.</div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ ib.noSel }}">
+              <div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--fg-3);font-size:14px">Select an item</div>
+            </sc-if>
+            <sc-if value="{{ ib.hasSel }}" hint-placeholder-val="{{ true }}">
+              <div style="flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:20px">
+                <div>
+                  <div style="font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3);margin-bottom:10px">{{ sel.eyebrow }}</div>
+                  <div style="font:600 20px/1.3 var(--font-display);letter-spacing:-0.01em;text-wrap:pretty">{{ sel.title }}</div>
+                </div>
+                <sc-if value="{{ sel.stale }}">
+                  <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:12px;background:rgba(245,158,11,0.12);color:#92400E;font-size:13px">{{ ic.alert }}<span style="flex:1">Proposed on an older version (v40). Refresh to check it against the current model.</span><button onClick="{{ refreshSel }}" style="height:28px;padding:0 12px;border-radius:999px;border:0;background:#fff;color:#92400E;font:600 12px/1 var(--font-body);cursor:pointer">Refresh proposal</button></div>
+                </sc-if>
+
+                <sc-if value="{{ sel.isCreate }}">
+                  <div style="display:grid;grid-template-columns:110px 1fr;row-gap:10px;font-size:13px">
+                    <sc-for list="{{ sel.facts }}" as="f" hint-placeholder-count="4"><span style="color:var(--fg-3)">{{ f.k }}</span><span style="color:var(--fg-1);font-weight:500">{{ f.v }}</span></sc-for>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ sel.isLink }}">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div style="border:1px solid var(--border);border-radius:12px;padding:14px"><div style="font-size:11px;color:var(--fg-3);margin-bottom:6px">Operation</div><div style="font-weight:600;font-size:13.5px">Cancel leave request</div><div style="font-size:12px;color:var(--fg-2);margin-top:6px">Employee · Approved → Cancelled</div></div>
+                    <div style="border:1px solid var(--border);border-radius:12px;padding:14px"><div style="font-size:11px;color:var(--fg-3);margin-bottom:6px">Requirement <span style="font-family:var(--font-mono)">HR-019</span></div><div style="font-size:12.5px;color:var(--fg-1);line-height:1.45">An employee shall be able to cancel an Approved leave request before its start date.</div></div>
+                  </div>
+                  <div style="font-size:13px;color:var(--fg-2)">After linking, HR-019 counts as implemented by this operation.</div>
+                </sc-if>
+
+                <sc-if value="{{ sel.isQuestion }}">
+                  <div style="font-size:13px;color:var(--fg-2);line-height:1.55">{{ sel.why }}</div>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap"><sc-for list="{{ sel.linked }}" as="c" hint-placeholder-count="2"><span style="height:24px;padding:0 10px;border-radius:999px;background:var(--bg-surface);border:1px solid var(--border);font:500 12px/22px var(--font-body)">{{ c }}</span></sc-for></div>
+                  <div>
+                    <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:8px">Answer</div>
+                    <div style="display:flex;flex-direction:{{ sel.optDir }};gap:6px;padding:{{ sel.optPad }};background:{{ sel.optBg }};border-radius:10px">
+                      <sc-for list="{{ sel.opts }}" as="o" hint-placeholder-count="2">
+                        <button onClick="{{ o.pick }}" style="flex:1;min-height:36px;padding:8px 14px;border-radius:8px;border:{{ o.border }};background:{{ o.bg }};color:{{ o.fg }};font:600 13px/1.2 var(--font-body);cursor:pointer;text-align:{{ o.align }};box-shadow:{{ o.shadow }}">{{ o.label }}</button>
+                      </sc-for>
+                    </div>
+                  </div>
+                  <div>
+                    <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:8px">Rationale <span style="font-weight:400;color:var(--fg-3)">· optional</span></div>
+                    <textarea placeholder="Why is this the answer? It's recorded with the decision." style="width:100%;min-height:72px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;outline:none" style-focus="border-color:#6D28D9;box-shadow:0 0 0 3px rgba(109,40,217,0.2)"></textarea>
+                  </div>
+                  <div style="font-size:12px;color:var(--fg-3)">Routed to HR · asked 2 days ago</div>
+                </sc-if>
+
+                <sc-if value="{{ sel.isWording }}">
+                  <div style="display:flex;flex-direction:column;gap:8px">
+                    <div style="font-size:12px;font-weight:600;color:var(--fg-3)">Original</div>
+                    <div style="padding:12px 14px;border-radius:10px;background:var(--bg-surface);font-size:13.5px;line-height:1.55;color:var(--fg-2)">The leave-request submission operation <span style="background:rgba(220,38,38,0.12);color:#B91C1C;text-decoration:line-through">should</span> complete within 2 seconds under normal office load.</div>
+                    <div style="font-size:12px;font-weight:600;color:var(--fg-3);margin-top:6px">Suggested</div>
+                    <div style="padding:12px 14px;border-radius:10px;border:1px solid var(--border);font-size:13.5px;line-height:1.55"><span style="background:rgba(16,185,129,0.14);color:#047857">When an employee submits a leave request,</span> the system <span style="background:rgba(16,185,129,0.14);color:#047857">shall</span> complete the submission within 2 seconds under normal office load.</div>
+                  </div>
+                  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+                    <sc-for list="{{ sel.slots }}" as="s" hint-placeholder-count="4"><div style="padding:10px 12px;border:1px solid var(--border);border-radius:10px"><div style="font-size:11px;color:var(--fg-3)">{{ s.k }}</div><div style="font-size:13px;font-weight:600;margin-top:2px">{{ s.v }}</div></div></sc-for>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ sel.isAnswer }}">
+                  <div style="font-size:13px;color:var(--fg-2)">{{ sel.why }}</div>
+                  <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;font:400 12px/1.7 var(--font-mono)">
+                    <div style="padding:8px 12px;background:var(--bg-surface);font:600 11px/1 var(--font-body);color:var(--fg-3);border-bottom:1px solid var(--border)">Model change · Calculation RequestedWorkingDays</div>
+                    <div style="padding:6px 12px;background:rgba(220,38,38,0.06);color:#B91C1C">− {{ sel.minus }}</div>
+                    <div style="padding:6px 12px;background:rgba(16,185,129,0.08);color:#047857">+ {{ sel.plus }}</div>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ sel.isIssue }}">
+                  <div style="display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:12px;background:rgba(220,38,38,0.08);color:#B91C1C;font-size:13px">{{ ic.alert }}<span style="flex:1;line-height:1.5"><b>Blocker</b> in the Requirements gate. Two statements describe the same behaviour, which makes the model ambiguous.<br><span style="font:400 11px/1 var(--font-mono);opacity:0.8">F1.dup_candidate</span></span></div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div style="border:1px solid var(--border);border-radius:12px;padding:12px;font-size:12.5px;line-height:1.45"><div style="font:500 11px/1 var(--font-mono);color:var(--fg-3);margin-bottom:6px">HR-023</div>The system shall notify the employee when their leave request is approved.</div>
+                    <div style="border:1px solid var(--border);border-radius:12px;padding:12px;font-size:12.5px;line-height:1.45"><div style="font:500 11px/1 var(--font-mono);color:var(--fg-3);margin-bottom:6px">HR-024</div>The system shall notify the employee when their leave request is rejected.</div>
+                  </div>
+                  <div style="font-size:13px;color:var(--fg-2)">Fix it by merging or marking one as a duplicate, or waive it with a reason.</div>
+                </sc-if>
+
+                <sc-if value="{{ sel.hasEvidence }}">
+                  <div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:12px;font-weight:600;color:var(--fg-2)">Evidence</span><span style="font-size:11px;color:var(--fg-3)">Space to toggle</span></div>
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                      <sc-for list="{{ sel.evidence }}" as="e" hint-placeholder-count="2">
+                        <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+                          <div style="font-size:13px;line-height:1.55;color:var(--fg-2)"><span style="background:var(--accent-wash);color:var(--fg-1);border-radius:3px;padding:1px 0">{{ e.hl }}</span>{{ e.post }}</div>
+                          <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:var(--fg-3)"><span><span style="font-family:var(--font-mono)">{{ e.id }}</span> · requirements.md</span><a href="#" onClick="{{ goSources }}" style="font-weight:600">Open in source</a></div>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ sel.hasDiff }}">
+                  <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px">
+                    <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:8px">What changes in the model</div>
+                    <sc-for list="{{ sel.diff }}" as="d" hint-placeholder-count="2"><div style="font:400 12px/1.8 var(--font-mono);color:#047857">+ {{ d }}</div></sc-for>
+                  </div>
+                </sc-if>
+              </div>
+              <div style="flex-shrink:0;border-top:1px solid var(--border);padding:14px 20px;display:flex;gap:8px;align-items:center;background:#fff">
+                <button onClick="{{ sel.primary }}" disabled="{{ sel.primaryDisabled }}" style="height:38px;padding:0 18px;border-radius:999px;border:0;background:{{ sel.primaryBg }};color:#fff;font:600 13px/1 var(--font-body);cursor:pointer;display:flex;align-items:center;gap:8px" style-hover="opacity:0.92">{{ ic.check }} {{ sel.primaryLabel }}</button>
+                <button onClick="{{ sel.secondary }}" style="height:38px;padding:0 16px;border-radius:999px;border:1px solid var(--border);background:#fff;color:var(--fg-1);font:600 13px/1 var(--font-body);cursor:pointer" style-hover="background:var(--bg-surface)">{{ sel.secondaryLabel }}</button>
+                <div style="flex:1"></div>
+                <button title="More" style="width:38px;height:38px;border-radius:999px;border:1px solid var(--border);background:#fff;color:var(--fg-2);cursor:pointer;display:flex;align-items:center;justify-content:center" style-hover="background:var(--bg-surface)">{{ ic.more }}</button>
+              </div>
+            </sc-if>
+          </aside>
+        </sc-if>
+
+        <!-- REQUIREMENTS -->
+        <sc-if value="{{ is.requirements }}">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0">
+            <div style="padding:24px 24px 0;display:flex;align-items:center;gap:12px">
+              <h2 style="font-size:28px;margin:0">Requirements</h2><span style="font-size:13px;color:var(--fg-3)">32 · from requirements.md</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;padding:16px 24px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+              <div style="display:flex;align-items:center;gap:8px;height:32px;width:240px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--fg-3)">{{ ic.search }}<input placeholder="Search requirements" style="border:0;outline:0;flex:1;font-size:13px;background:transparent"></div>
+              <sc-for list="{{ reqChips }}" as="c" hint-placeholder-count="5">
+                <button onClick="{{ c.go }}" style="height:30px;padding:0 12px;border-radius:999px;border:1px solid {{ c.bd }};background:{{ c.bg }};color:{{ c.fg }};font:500 12px/1 var(--font-body);cursor:pointer;display:flex;align-items:center;gap:6px">{{ c.label }}</button>
+              </sc-for>
+              <div style="flex:1"></div>
+              <span style="font-size:12px;color:var(--fg-3)">Sort: Document order {{ ic.chevDown }}</span>
+            </div>
+            <div style="flex:1;overflow-y:auto">
+              <sc-for list="{{ reqRows }}" as="r" hint-placeholder-count="10">
+                <div onClick="{{ r.pick }}" style="display:flex;align-items:center;gap:14px;min-height:64px;padding:10px 24px;border-bottom:1px solid var(--border);background:{{ r.bg }};cursor:pointer" style-hover="background:#F8FAFC">
+                  <span style="font:500 12px/1 var(--font-mono);color:var(--fg-3);width:52px;flex-shrink:0">{{ r.id }}</span>
+                  <sc-if value="{{ r.err }}"><span style="flex:1;display:flex;align-items:center;gap:8px;font-size:13px;color:#B91C1C">{{ ic.alert }} Couldn't load HR-017. <a href="#" style="font-weight:600;color:#B91C1C;text-decoration:underline">Retry</a></span></sc-if>
+                  <sc-if value="{{ r.ok }}" hint-placeholder-val="{{ true }}">
+                    <span style="flex:1;min-width:0;font-size:13.5px;line-height:1.45;color:var(--fg-1);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ r.text }}</span>
+                    <span style="height:22px;padding:0 8px;border-radius:4px;background:var(--bg-surface);font:500 11px/22px var(--font-body);color:var(--fg-2);white-space:nowrap">{{ r.kind }}</span>
+                    <span style="width:44px;display:flex;justify-content:flex-end"><sc-if value="{{ r.hasIssues }}"><span style="display:flex;align-items:center;gap:4px;font-size:12px;font-weight:600;color:#B45309">{{ ic.alert }}{{ r.issueN }}</span></sc-if></span>
+                    <span style="display:flex;gap:6px;color:{{ r.covFg }};width:40px">{{ ic.op }}{{ ic.flask }}</span>
+                    <span style="display:flex;align-items:center;gap:6px;width:60px;justify-content:flex-end"><span style="font:500 11px/1 var(--font-mono);color:var(--fg-3)">{{ r.ready }}</span>{{ r.ring }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <aside style="width:clamp(320px,32vw,420px);flex-shrink:0;border-left:1px solid var(--border);background:#fff;display:flex;flex-direction:column;min-height:0">
+            <div style="flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:22px">
+              <div>
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span style="font:500 12px/1 var(--font-mono);color:var(--fg-3)">{{ rq.id }}</span><span style="height:22px;padding:0 8px;border-radius:4px;background:var(--bg-surface);font:500 11px/22px var(--font-body);color:var(--fg-2)">{{ rq.kind }}</span><span style="height:22px;padding:0 9px;border-radius:999px;background:rgba(16,185,129,0.12);color:#047857;font:600 11px/22px var(--font-body)">Accepted</span>
+                  <div style="margin-left:auto;position:relative">
+                    <button onClick="{{ toggleReqMore }}" style="width:30px;height:30px;border-radius:8px;border:0;background:transparent;color:var(--fg-2);cursor:pointer;display:flex;align-items:center;justify-content:center" style-hover="background:var(--bg-surface)">{{ ic.more }}</button>
+                    <sc-if value="{{ reqMore }}">
+                      <div style="position:absolute;right:0;top:34px;width:220px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg);padding:6px;z-index:20">
+                        <sc-for list="{{ reqMoreItems }}" as="m" hint-placeholder-count="3"><button onClick="{{ m.go }}" style="display:block;width:100%;height:34px;padding:0 10px;border:0;border-radius:8px;background:transparent;font:500 13px/1 var(--font-body);color:var(--fg-1);cursor:pointer;text-align:left" style-hover="background:var(--bg-surface)">{{ m.label }}</button></sc-for>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+                <div style="font:500 18px/1.45 var(--font-body);color:var(--fg-1);user-select:text;text-wrap:pretty">{{ rq.text }}</div>
+              </div>
+              <sc-if value="{{ rq.hasEars }}">
+                <div style="border:1px solid var(--border);border-radius:12px;padding:14px">
+                  <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:6px">Wording suggestion</div>
+                  <div style="font-size:13px;line-height:1.5;color:var(--fg-1)">{{ rq.ears }}</div>
+                  <button onClick="{{ acceptEars }}" style="margin-top:10px;height:30px;padding:0 12px;border-radius:999px;border:0;background:var(--color-midnight);color:#fff;font:600 12px/1 var(--font-body);cursor:pointer">Accept wording</button>
+                </div>
+              </sc-if>
+              <div>
+                <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:10px">Readiness</div>
+                <div style="display:flex;gap:16px;align-items:center">
+                  <div style="position:relative;width:72px;height:72px;flex-shrink:0">{{ rq.ring }}<span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:700 18px/1 var(--font-display)">{{ rq.ready }}</span></div>
+                  <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+                    <sc-for list="{{ rq.subs }}" as="s" hint-placeholder-count="5"><div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--fg-2)">{{ s.label }}</span><span style="color:var(--fg-3)">{{ s.note }}</span></div></sc-for>
+                  </div>
+                </div>
+              </div>
+              <sc-if value="{{ rq.hasIssues }}">
+                <div>
+                  <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:8px">Quality issues</div>
+                  <sc-for list="{{ rq.issues }}" as="i" hint-placeholder-count="1">
+                    <div style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid var(--border);border-radius:10px;margin-bottom:6px"><span style="color:#B45309;margin-top:1px">{{ ic.alert }}</span><div style="flex:1"><div style="font-size:13px;font-weight:500">{{ i.msg }}</div><div style="font:400 11px/1.6 var(--font-mono);color:var(--fg-3)">{{ i.code }}</div></div><button onClick="{{ waiveReq }}" style="height:26px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 11px/1 var(--font-body);cursor:pointer">Waive</button></div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <div>
+                <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:8px">Evidence</div>
+                <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.6;color:var(--fg-3)">§3 Leave requests · … <span style="background:var(--accent-wash);color:var(--fg-1);border-radius:3px">{{ rq.text }}</span> …<div style="margin-top:8px;font-size:11px;display:flex;justify-content:space-between"><span>requirements.md · line {{ rq.line }}</span><a href="#" onClick="{{ goSources }}" style="font-weight:600">Open in source</a></div></div>
+              </div>
+              <div>
+                <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:8px">Linked</div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px">
+                  <sc-for list="{{ rq.links }}" as="l" hint-placeholder-count="2"><button onClick="{{ l.go }}" style="display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:var(--bg-surface);font:500 12px/1 var(--font-body);color:var(--fg-1);cursor:pointer" style-hover="background:#fff">{{ l.icon }}{{ l.label }}</button></sc-for>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </sc-if>
+
+        <!-- MODEL -->
+        <sc-if value="{{ is.model }}">
+          <div style="flex:1;min-width:0;overflow-y:auto">
+            <div style="padding:24px 28px 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+              <h2 style="font-size:28px;margin:0">Model</h2>
+              <div style="display:flex;padding:3px;background:var(--bg-surface);border-radius:10px">
+                <sc-for list="{{ segs }}" as="s" hint-placeholder-count="5"><button onClick="{{ s.go }}" style="height:30px;padding:0 14px;border-radius:8px;border:0;background:{{ s.bg }};color:{{ s.fg }};box-shadow:{{ s.sh }};font:600 13px/1 var(--font-body);cursor:pointer">{{ s.label }}</button></sc-for>
+              </div>
+              <div style="flex:1"></div>
+              <button onClick="{{ openCoverage }}" style="height:32px;padding:0 12px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer;display:flex;align-items:center;gap:6px">{{ ic.grid }} Coverage</button>
+              <button onClick="{{ openChanges }}" style="height:32px;padding:0 12px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer;display:flex;align-items:center;gap:6px">{{ ic.diff }} Changes <span style="font:500 11px/1 var(--font-mono);color:var(--fg-3)">+3</span></button>
+            </div>
+
+            <sc-if value="{{ m.glossary }}">
+              <div style="padding:20px 28px 48px">
+                <div style="background:#fff;border:1px solid var(--border);border-radius:16px;overflow:hidden">
+                  <div style="display:grid;grid-template-columns:200px 1fr 220px 110px;padding:10px 20px;font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3);border-bottom:1px solid var(--border)"><span>Term</span><span>Definition</span><span>Aliases</span><span>Status</span></div>
+                  <sc-for list="{{ glossary }}" as="g" hint-placeholder-count="5">
+                    <div style="display:grid;grid-template-columns:200px 1fr 220px 110px;align-items:center;padding:14px 20px;border-bottom:1px solid var(--border);font-size:13px">
+                      <span style="font-weight:600">{{ g.term }}</span>
+                      <span style="color:var(--fg-2);padding-right:16px;line-height:1.45">{{ g.def }} <span style="font:500 11px/1 var(--font-mono);color:var(--fg-4)">{{ g.src }}</span></span>
+                      <span style="display:flex;gap:4px;flex-wrap:wrap"><sc-for list="{{ g.aliases }}" as="a"><span style="height:22px;padding:0 8px;border-radius:999px;background:var(--bg-surface);font:500 11px/22px var(--font-body)">{{ a }}</span></sc-for></span>
+                      <span><span style="height:22px;padding:0 9px;border-radius:999px;background:{{ g.pbg }};color:{{ g.pfg }};font:600 11px/22px var(--font-body);display:inline-block">{{ g.status }}</span></span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ m.entities }}" hint-placeholder-val="{{ true }}">
+              <div style="padding:20px 28px 48px;display:flex;flex-direction:column;gap:20px">
+                <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px">
+                  <sc-for list="{{ entities }}" as="e" hint-placeholder-count="5">
+                    <button onClick="{{ e.pick }}" style="text-align:left;background:#fff;border:1px solid {{ e.bd }};border-radius:12px;padding:14px;cursor:pointer;box-shadow:{{ e.sh }}" style-hover="box-shadow:var(--shadow-md)">
+                      <div style="font-weight:600;font-size:14px">{{ e.name }}</div>
+                      <div style="font-size:12px;color:var(--fg-3);margin-top:4px">{{ e.meta }}</div>
+                    </button>
+                  </sc-for>
+                </div>
+                <div style="background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-sm)">
+                  <div style="padding:20px 24px;display:flex;align-items:baseline;gap:12px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:22px">{{ ent.name }}</h3><span style="font-size:13px;color:var(--fg-3)">{{ ent.meta }}</span></div>
+                  <div style="display:grid;grid-template-columns:110px 1fr 1fr 90px 120px;padding:10px 24px;font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3)"><span></span><span>Attribute</span><span>Type · unit</span><span>Nullable</span><span>Data class</span></div>
+                  <sc-for list="{{ ent.attrs }}" as="a" hint-placeholder-count="4">
+                    <div style="display:grid;grid-template-columns:110px 1fr 1fr 90px 120px;align-items:center;padding:10px 24px;border-top:1px solid var(--border);font-size:13px">
+                      <span></span>
+                      <span style="font-weight:500">{{ a.name }}</span>
+                      <span><button style="height:26px;padding:0 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-surface);font:500 12px/1 var(--font-mono);cursor:pointer;display:inline-flex;align-items:center;gap:4px" style-hover="border-color:#94A3B8">{{ a.type }} {{ ic.chevDown }}</button></span>
+                      <span style="color:var(--fg-3)">{{ a.nullable }}</span>
+                      <span><sc-if value="{{ a.hasClass }}"><span style="height:22px;padding:0 8px;border-radius:4px;background:rgba(245,158,11,0.14);color:#B45309;font:600 11px/22px var(--font-mono)">{{ a.cls }}</span></sc-if></span>
+                    </div>
+                  </sc-for>
+                  <sc-if value="{{ ent.hasStates }}">
+                    <div style="padding:20px 24px 24px;border-top:1px solid var(--border)">
+                      <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:16px">States</div>
+                      <div style="display:flex;align-items:center;gap:0;overflow-x:auto;padding-bottom:4px">
+                        <span style="padding:8px 14px;border:1px solid var(--color-midnight);border-radius:999px;font-weight:600;font-size:13px;white-space:nowrap">Draft</span>
+                        <span style="display:flex;flex-direction:column;align-items:center;min-width:120px;font-size:11px;color:var(--fg-3)">Submit leave request<span style="width:100%;height:1px;background:#94A3B8;margin-top:4px"></span></span>
+                        <span style="padding:8px 14px;border:1px solid var(--color-midnight);border-radius:999px;font-weight:600;font-size:13px;white-space:nowrap">Submitted</span>
+                        <span style="width:40px;height:1px;background:#94A3B8"></span>
+                        <div style="display:flex;flex-direction:column;gap:10px;border-left:1px solid #94A3B8;padding-left:0">
+                          <div style="display:flex;align-items:center"><span style="width:14px;height:1px;background:#94A3B8"></span><span style="font-size:11px;color:var(--fg-3);width:110px;text-align:center">Approve</span><span style="padding:7px 12px;border:1px solid var(--border);border-radius:999px;font-weight:600;font-size:13px">Approved</span><span style="font-size:11px;color:var(--fg-3);width:90px;text-align:center">Cancel</span><span style="padding:7px 12px;border:1px solid var(--border);border-radius:999px;font-weight:600;font-size:13px">Cancelled</span></div>
+                          <div style="display:flex;align-items:center"><span style="width:14px;height:1px;background:#94A3B8"></span><span style="font-size:11px;color:var(--fg-3);width:110px;text-align:center">Reject</span><span style="padding:7px 12px;border:1px solid var(--border);border-radius:999px;font-weight:600;font-size:13px">Rejected</span></div>
+                          <div style="display:flex;align-items:center"><span style="width:14px;height:1px;background:#94A3B8"></span><span style="font-size:11px;color:var(--fg-3);width:110px;text-align:center">Withdraw</span><span style="padding:7px 12px;border:1px solid var(--border);border-radius:999px;font-weight:600;font-size:13px">Withdrawn</span></div>
+                        </div>
+                      </div>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ m.rules }}">
+              <div style="padding:20px 28px 48px;display:grid;grid-template-columns:260px 1fr;gap:20px;align-items:start">
+                <div style="background:#fff;border:1px solid var(--border);border-radius:12px;overflow:hidden">
+                  <div style="padding:12px 16px;background:var(--bg-surface);font-weight:600;font-size:13px;display:flex;justify-content:space-between">Annual leave eligibility<span style="height:20px;padding:0 8px;border-radius:999px;background:{{ rule.badgeBg }};color:{{ rule.badgeFg }};font:600 11px/20px var(--font-body)">{{ rule.badge }}</span></div>
+                  <div style="padding:12px 16px;font-size:13px;border-top:1px solid var(--border);color:var(--fg-2)">Approval routing</div>
+                  <div style="padding:12px 16px;font-size:13px;border-top:1px solid var(--border);color:var(--fg-2)">Cancellation window</div>
+                </div>
+                <div style="background:#fff;border:1px solid var(--border);border-radius:16px;padding:24px;box-shadow:var(--shadow-sm)">
+                  <h3 style="margin:0;font-size:20px">Annual leave eligibility</h3>
+                  <div style="font-size:13px;color:var(--fg-3);margin:4px 0 20px">Decision table · 2 conditions · 1 outcome · from HR-013, HR-014</div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr 1fr 100px;border:1px solid var(--border);border-radius:10px;overflow:hidden;font-size:13px">
+                    <span style="padding:10px 14px;background:var(--bg-surface);font-weight:600;font-size:12px;color:var(--fg-2)">When employment type</span><span style="padding:10px 14px;background:var(--bg-surface);font-weight:600;font-size:12px;color:var(--fg-2)">and leave type</span><span style="padding:10px 14px;background:var(--bg-surface);font-weight:600;font-size:12px;color:var(--fg-2)">Then eligible</span><span style="padding:10px 14px;background:var(--bg-surface);font-weight:600;font-size:12px;color:var(--fg-2)">Source</span>
+                    <sc-for list="{{ rule.rows }}" as="r" hint-placeholder-count="4">
+                      <span style="padding:12px 14px;border-top:1px solid var(--border)">{{ r.a }}</span><span style="padding:12px 14px;border-top:1px solid var(--border)">{{ r.b }}</span>
+                      <span style="padding:6px 8px;border-top:1px solid var(--border)">
+                        <sc-if value="{{ r.covered }}" hint-placeholder-val="{{ true }}"><span style="display:inline-block;padding:6px;font-weight:600">{{ r.out }}</span></sc-if>
+                        <sc-if value="{{ r.gap }}"><button onClick="{{ setOutcome }}" style="width:100%;height:32px;border:1px dashed #F59E0B;border-radius:6px;background:rgba(245,158,11,0.08);color:#B45309;font:600 12px/1 var(--font-body);cursor:pointer">Uncovered · Set outcome</button></sc-if>
+                      </span>
+                      <span style="padding:12px 14px;border-top:1px solid var(--border);font:500 11px/1.6 var(--font-mono);color:var(--fg-3)">{{ r.src }}</span>
+                    </sc-for>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ m.calcs }}">
+              <div style="padding:20px 28px 48px;max-width:880px">
+                <div style="background:#fff;border:1px solid var(--border);border-radius:16px;padding:28px;box-shadow:var(--shadow-sm);display:flex;flex-direction:column;gap:20px">
+                  <div style="display:flex;align-items:center;gap:10px"><h3 style="margin:0;font-size:22px">RequestedWorkingDays</h3><span style="height:22px;padding:0 9px;border-radius:999px;background:{{ calc.pbg }};color:{{ calc.pfg }};font:600 11px/22px var(--font-body)">{{ calc.status }}</span></div>
+                  <div style="padding:16px 18px;border-radius:10px;background:var(--color-midnight);color:#F8FAFC;font:400 14px/1.7 var(--font-mono)">working_days([start date, end date], office calendar, inclusive end) × day fraction</div>
+                  <div><div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:6px">In plain language</div><div style="font-size:14px;line-height:1.6">The number of working days between the start and end date, counting both, using the office calendar, multiplied by the day fraction (1 for a full day, 0.5 for a half day).</div></div>
+                  <div style="border:1px solid var(--border);border-radius:12px;padding:16px">
+                    <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:10px">Worked example</div>
+                    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                      <sc-for list="{{ calc.days }}" as="d" hint-placeholder-count="7"><span style="width:56px;padding:8px 0;border-radius:8px;text-align:center;background:{{ d.bg }};color:{{ d.fg }};font-size:12px"><b style="display:block;font-size:14px">{{ d.n }}</b>{{ d.w }}</span></sc-for>
+                      <span style="margin-left:12px;font:600 15px/1 var(--font-body)">→ 5 working days</span>
+                    </div>
+                    <div style="font-size:12px;color:var(--fg-3);margin-top:10px">3 Jan – 7 Jan 2027 (Mon–Fri), full days, no public holidays.</div>
+                  </div>
+                  <div><button onClick="{{ confirmCalc }}" style="height:36px;padding:0 18px;border-radius:999px;border:0;background:var(--color-midnight);color:#fff;font:600 13px/1 var(--font-body);cursor:pointer">{{ calc.btn }}</button></div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ m.processes }}">
+              <div style="padding:20px 28px 48px;display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:20px;align-items:start">
+                <div style="background:#fff;border:1px solid var(--border);border-radius:16px;overflow:auto;box-shadow:var(--shadow-sm)">
+                  <div style="padding:16px 20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border)"><span style="font-weight:600">Leave request approval</span><span style="height:20px;padding:0 8px;border-radius:999px;background:rgba(16,185,129,0.12);color:#047857;font:600 11px/20px var(--font-body)">Valid</span><div style="flex:1"></div><span style="font-size:12px;color:var(--fg-3)">Import Mermaid · Export</span></div>
+                  <div style="position:relative;width:1180px;height:360px">
+                    <sc-for list="{{ lanes }}" as="l" hint-placeholder-count="3"><div style="position:absolute;left:0;right:0;top:{{ l.top }}px;height:120px;border-bottom:1px solid var(--border);background:{{ l.bg }}"><span style="position:absolute;left:0;top:0;bottom:0;width:96px;display:flex;align-items:center;justify-content:center;font:600 12px/1 var(--font-body);color:var(--fg-2);border-right:1px solid var(--border)">{{ l.name }}</span></div></sc-for>
+                    {{ procEdges }}
+                    <sc-for list="{{ nodes }}" as="n" hint-placeholder-count="9">
+                      <button onClick="{{ n.pick }}" style="position:absolute;left:{{ n.x }}px;top:{{ n.top }}px;width:{{ n.w }}px;height:{{ n.h }}px;border-radius:{{ n.r }};border:{{ n.bd }};background:{{ n.bg }};color:{{ n.fg }};font:500 12px/1.2 var(--font-body);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0 8px;transform:{{ n.tf }};box-shadow:{{ n.sh }}"><span style="transform:{{ n.itf }}">{{ n.label }}</span></button>
+                    </sc-for>
+                  </div>
+                </div>
+                <div style="background:#fff;border:1px solid var(--border);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:12px">
+                  <div style="font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3)">{{ node.kind }}</div>
+                  <div style="font:600 18px/1.3 var(--font-display)">{{ node.label }}</div>
+                  <div style="display:grid;grid-template-columns:90px 1fr;row-gap:8px;font-size:13px"><span style="color:var(--fg-3)">Performer</span><span>{{ node.lane }}</span><span style="color:var(--fg-3)">Operation</span><span>{{ node.op }}</span><span style="color:var(--fg-3)">Produces</span><span>{{ node.ev }}</span></div>
+                  <div style="height:1px;background:var(--border)"></div>
+                  <div style="font-size:12px;font-weight:600;color:var(--fg-2)">Steps</div>
+                  <sc-for list="{{ nodeList }}" as="s" hint-placeholder-count="7"><div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-2)"><span style="font:500 11px/1 var(--font-mono);color:var(--fg-4);width:16px">{{ s.i }}</span>{{ s.label }}</div></sc-for>
+                  <button style="height:30px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer">Edit steps</button>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <!-- SCENARIOS -->
+        <sc-if value="{{ is.scenarios }}">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0">
+            <div style="padding:24px 24px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+              <h2 style="font-size:28px;margin:0">Scenarios</h2><span style="font-size:13px;color:var(--fg-3)">7 · 7 pass</span>
+              <div style="flex:1"></div>
+              <button onClick="{{ confirmAllScen }}" style="height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 13px/1 var(--font-body);cursor:pointer;white-space:nowrap">Confirm all derived</button>
+              <button onClick="{{ runScen }}" style="height:34px;padding:0 16px;border-radius:999px;border:0;background:var(--color-midnight);color:#fff;font:600 13px/1 var(--font-body);cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap">{{ ic.play }} Run all</button>
+            </div>
+            <div style="flex:1;overflow-y:auto">
+              <sc-for list="{{ scenRows }}" as="s" hint-placeholder-count="7">
+                <div onClick="{{ s.pick }}" style="display:flex;align-items:center;gap:14px;min-height:60px;padding:10px 24px;border-bottom:1px solid var(--border);background:{{ s.bg }};cursor:pointer" style-hover="background:#F8FAFC">
+                  <div style="flex:1;min-width:0"><div style="font-size:13.5px;font-weight:500">{{ s.title }}</div><div style="font-size:12px;color:var(--fg-3);margin-top:2px">{{ s.src }}</div></div>
+                  <span style="height:22px;padding:0 9px;border-radius:999px;background:var(--bg-surface);color:var(--fg-2);font:600 11px/22px var(--font-body)">{{ s.conf }}</span>
+                  <span style="display:flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;background:{{ s.vbg }};color:{{ s.vfg }};font:600 11px/22px var(--font-body);min-width:64px;justify-content:center">{{ s.vicon }}{{ s.verdict }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <aside style="width:clamp(320px,32vw,440px);flex-shrink:0;border-left:1px solid var(--border);background:#fff;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:20px">
+            <div><div style="font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3);margin-bottom:10px">Scenario</div><div style="font:600 20px/1.3 var(--font-display)">{{ sc.title }}</div></div>
+            <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">
+              <sc-for list="{{ scGwt }}" as="gw" hint-placeholder-count="3">
+                <div style="display:grid;grid-template-columns:64px 1fr;padding:12px 14px;border-bottom:1px solid var(--border);font-size:13px;line-height:1.5"><span style="font:600 11px/1.9 var(--font-body);letter-spacing:0.1em;text-transform:uppercase;color:var(--fg-3)">{{ gw.label }}</span><span>{{ gw.text }}</span></div>
+              </sc-for>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:12px;background:rgba(16,185,129,0.1);color:#047857;font-size:13px;font-weight:500">{{ ic.check }} Pass · the run matched every expected fact.</div>
+            <div>
+              <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:10px">Trace</div>
+              <sc-for list="{{ sc.trace }}" as="t" hint-placeholder-count="4">
+                <div style="display:flex;gap:12px">
+                  <div style="display:flex;flex-direction:column;align-items:center"><span style="width:20px;height:20px;border-radius:999px;background:rgba(16,185,129,0.14);color:#047857;display:flex;align-items:center;justify-content:center">{{ ic.checkSm }}</span><span style="flex:1;width:1px;background:var(--border);min-height:16px"></span></div>
+                  <div style="padding-bottom:14px;font-size:13px"><div style="font-weight:500">{{ t.a }}</div><div style="font:400 11.5px/1.6 var(--font-mono);color:var(--fg-3)">{{ t.b }}</div></div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="font-size:13px;color:var(--fg-2)">Derived from <a href="#" onClick="{{ goModel }}" style="font-weight:600">{{ sc.src }}</a></div>
+            <div style="display:flex;gap:8px"><button style="height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer">Confirm</button><button style="height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer">Correct expected outcome</button><button onClick="{{ runScen }}" style="height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer">Run this one</button></div>
+          </aside>
+        </sc-if>
+
+        <!-- QUALITY -->
+        <sc-if value="{{ is.quality }}">
+          <div style="flex:1;min-width:0;overflow-y:auto">
+            <div style="max-width:1040px;margin:0 auto;padding:24px 28px 64px">
+              <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px">
+                <h2 style="font-size:28px;margin:0">Quality</h2>
+                <div style="display:flex;padding:3px;background:var(--bg-surface);border-radius:10px">
+                  <sc-for list="{{ qTabs }}" as="s" hint-placeholder-count="3"><button onClick="{{ s.go }}" style="height:30px;padding:0 14px;border-radius:8px;border:0;background:{{ s.bg }};color:{{ s.fg }};box-shadow:{{ s.sh }};font:600 13px/1 var(--font-body);cursor:pointer">{{ s.label }}</button></sc-for>
+                </div>
+                <div style="flex:1"></div>
+                <button onClick="{{ openExport }}" style="height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 13px/1 var(--font-body);cursor:pointer;display:flex;align-items:center;gap:6px">{{ ic.download }} Export</button>
+              </div>
+
+              <sc-if value="{{ qv.gates }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;gap:10px">
+                  <sc-for list="{{ gates }}" as="g" hint-placeholder-count="5">
+                    <div style="background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-xs);overflow:hidden">
+                      <button onClick="{{ g.toggle }}" style="width:100%;display:flex;align-items:center;gap:14px;padding:18px 20px;border:0;background:transparent;cursor:pointer;text-align:left">
+                        <span style="width:12px;height:12px;border-radius:999px;background:{{ g.dot }};border:{{ g.ring }};flex-shrink:0"></span>
+                        <span style="width:150px"><span style="font-weight:600;font-size:15px">{{ g.name }}</span> <span style="font:500 11px/1 var(--font-mono);color:var(--fg-4)">{{ g.code }}</span></span>
+                        <span style="width:110px;font-size:13px;font-weight:600;color:{{ g.fg }}">{{ g.stateLabel }}</span>
+                        <span style="flex:1;font-size:13px;color:var(--fg-2)">{{ g.sum }}</span>
+                        <span style="color:var(--fg-3);transform:{{ g.chev }};transition:transform 200ms">{{ ic.chevDown }}</span>
+                      </button>
+                      <sc-if value="{{ g.open }}">
+                        <div style="border-top:1px solid var(--border);padding:8px 20px 16px">
+                          <sc-for list="{{ g.groups }}" as="gr" hint-placeholder-count="2">
+                            <div style="font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3);padding:14px 0 8px">{{ gr.label }}</div>
+                            <sc-for list="{{ gr.rows }}" as="r">
+                              <div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-bottom:1px solid #F1F5F9;font-size:13px">
+                                <span style="color:{{ gr.fg }};margin-top:1px">{{ gr.icon }}</span>
+                                <div style="flex:1;min-width:0"><div style="font-weight:500">{{ r.msg }}</div><div style="font-size:12px;color:var(--fg-3);margin-top:2px"><span style="font-family:var(--font-mono)">{{ r.code }}</span> {{ r.note }}</div></div>
+                                <span style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;max-width:260px"><sc-for list="{{ r.items }}" as="c"><span style="height:22px;padding:0 8px;border-radius:999px;background:var(--bg-surface);border:1px solid var(--border);font:500 11px/20px var(--font-mono)">{{ c }}</span></sc-for></span>
+                              </div>
+                            </sc-for>
+                          </sc-for>
+                          <div style="display:flex;gap:8px;margin-top:14px"><button onClick="{{ runNext }}" style="height:30px;padding:0 12px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer;display:flex;align-items:center;gap:6px">{{ ic.refresh }} Re-check</button><button onClick="{{ goReq }}" style="height:30px;padding:0 12px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer">Show affected</button></div>
+                        </div>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ qv.issues }}">
+                <div style="background:#fff;border:1px solid var(--border);border-radius:16px;overflow:hidden">
+                  <sc-for list="{{ issues }}" as="i" hint-placeholder-count="5">
+                    <div style="display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--border)">
+                      <span style="display:flex;align-items:center;gap:6px;width:96px;font-size:12px;font-weight:600;color:{{ i.fg }}">{{ i.icon }}{{ i.sev }}</span>
+                      <div style="flex:1;min-width:0"><div style="font-size:13.5px;font-weight:500">{{ i.msg }}</div><div style="font-size:12px;color:var(--fg-3);margin-top:2px"><span style="font-family:var(--font-mono)">{{ i.code }}</span> · {{ i.items }}</div><sc-if value="{{ i.waived }}"><div style="font-size:12px;color:var(--fg-2);margin-top:4px">Waived by {{ i.by }}: “{{ i.reason }}”</div></sc-if></div>
+                      <sc-if value="{{ i.open }}" hint-placeholder-val="{{ true }}"><button onClick="{{ i.waive }}" style="height:30px;padding:0 12px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer">Waive with reason</button></sc-if>
+                      <sc-if value="{{ i.waived }}"><span style="height:22px;padding:0 9px;border-radius:999px;background:var(--bg-surface);color:var(--fg-2);font:600 11px/22px var(--font-body)">Waived</span></sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ qv.history }}">
+                <div style="background:#fff;border:1px solid var(--border);border-radius:16px;overflow:hidden">
+                  <div style="display:grid;grid-template-columns:150px 140px 1fr;padding:10px 20px;font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3);border-bottom:1px solid var(--border)"><span>When</span><span>Who</span><span>Decision</span></div>
+                  <sc-for list="{{ history }}" as="h" hint-placeholder-count="6">
+                    <div style="display:grid;grid-template-columns:150px 140px 1fr;padding:14px 20px;border-bottom:1px solid var(--border);font-size:13px;align-items:start">
+                      <span style="color:var(--fg-3)">{{ h.when }}</span><span style="font-weight:500">{{ h.who }}</span>
+                      <div><div>{{ h.what }}</div><sc-if value="{{ h.hasWhy }}"><div style="font-size:12px;color:var(--fg-3);margin-top:3px">“{{ h.why }}”</div></sc-if></div>
+                    </div>
+                  </sc-for>
+                  <div style="padding:10px 20px;font-size:11px;color:var(--fg-3)">Times in Europe/Warsaw</div>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- SOURCES -->
+        <sc-if value="{{ is.sources }}">
+          <div style="width:300px;flex-shrink:0;border-right:1px solid var(--border);background:#fff;padding:20px 12px;display:flex;flex-direction:column;gap:12px">
+            <div style="padding:0 8px;font:600 20px/1 var(--font-display)">Sources</div>
+            <button onClick="{{ fakeImport }}" style="border:1px dashed #CBD5E1;border-radius:12px;background:#fff;padding:18px;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;font:500 13px/1.3 var(--font-body);color:var(--fg-2)" style-hover="border-color:var(--color-midnight)">{{ ic.upload }}<span style="font-weight:600;color:var(--fg-1)">Import document</span><span style="font-size:11px;color:var(--fg-3)">.md .txt .docx</span></button>
+            <sc-if value="{{ uploading }}"><div style="padding:10px 12px;border-radius:10px;background:var(--bg-surface);font-size:12px"><div style="display:flex;justify-content:space-between"><span style="font-weight:600">leave-policy-2027.docx</span><span>{{ upPct }}%</span></div><div style="height:3px;background:var(--border);border-radius:2px;margin-top:8px;overflow:hidden"><div style="height:100%;width:{{ upPct }}%;background:var(--color-midnight)"></div></div></div></sc-if>
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:var(--bg-surface)">
+              <span style="width:32px;height:32px;border-radius:8px;background:#fff;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--fg-2)">{{ ic.file }}</span>
+              <div style="flex:1;min-width:0"><div style="font:500 13px/1.3 var(--font-mono)">requirements.md</div><div style="font-size:11px;color:var(--fg-3)">Markdown · 38 passages · imported today</div></div>
+            </div>
+          </div>
+          <div style="flex:1;min-width:0;overflow-y:auto;background:#fff">
+            <article style="max-width:720px;margin:0 auto;padding:40px 32px 80px;font-size:15px;line-height:1.75;color:var(--fg-2)">
+              <div style="font:500 12px/1 var(--font-mono);color:var(--fg-3);margin-bottom:20px">requirements.md · 38 passages · 32 became requirements</div>
+              <h3 style="font-size:24px;margin:0 0 16px">3. Leave requests</h3>
+              <sc-for list="{{ srcParas }}" as="p" hint-placeholder-count="6">
+                <p style="margin:0 0 14px;color:var(--fg-2)">{{ p.pre }}<span onClick="{{ p.go }}" title="{{ p.tip }}" style="background:{{ p.bg }};color:var(--fg-1);border-radius:3px;cursor:pointer;padding:1px 0" style-hover="background:#DDD6FE">{{ p.hl }}</span>{{ p.post }} <sup style="font:500 10px/1 var(--font-mono);color:var(--fg-3)">{{ p.id }}</sup></p>
+              </sc-for>
+            </article>
+          </div>
+        </sc-if>
+      </main>
+
+      <!-- ASSISTANT -->
+      <sc-if value="{{ asst }}">
+        <aside style="width:400px;flex-shrink:0;border-left:1px solid var(--border);background:var(--bg-page);display:flex;flex-direction:column;min-height:0">
+          <div style="height:52px;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--border);background:#fff">
+            <span style="font-weight:600;font-size:14px">Assistant</span>
+            <span style="height:22px;padding:0 8px;border-radius:999px;border:1px solid var(--border);font:500 11px/20px var(--font-body);color:var(--fg-2)">Scope · HR-015, HR-026</span>
+            <div style="flex:1"></div>
+            <button onClick="{{ toggleAsst }}" style="width:30px;height:30px;border-radius:8px;border:0;background:transparent;color:var(--fg-2);cursor:pointer;display:flex;align-items:center;justify-content:center" style-hover="background:var(--bg-surface)">{{ ic.x }}</button>
+          </div>
+          <div style="flex:1;overflow-y:auto;padding:20px 16px;display:flex;flex-direction:column;gap:14px">
+            <sc-for list="{{ msgs }}" as="mm" hint-placeholder-count="2">
+              <div style="display:flex;justify-content:{{ mm.justify }}">
+                <div style="max-width:88%;display:flex;flex-direction:column;gap:8px">
+                  <div style="padding:11px 14px;border-radius:16px;background:{{ mm.bg }};color:{{ mm.fg }};border:{{ mm.bd }};font-size:13.5px;line-height:1.55">{{ mm.text }}</div>
+                  <sc-if value="{{ mm.hasProp }}">
+                    <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px;box-shadow:var(--shadow-sm)">
+                      <div style="font:600 10px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3);margin-bottom:8px">Proposal · New operation</div>
+                      <div style="font-weight:600;font-size:14px">View leave balance</div>
+                      <div style="font-size:12px;color:var(--fg-2);margin-top:4px">Performed by Employee · reads Employee → annual leave balance</div>
+                      <sc-if value="{{ mm.pending }}" hint-placeholder-val="{{ true }}"><div style="display:flex;gap:6px;margin-top:12px"><button onClick="{{ acceptAsst }}" style="height:30px;padding:0 14px;border-radius:999px;border:0;background:var(--color-midnight);color:#fff;font:600 12px/1 var(--font-body);cursor:pointer">Accept</button><button onClick="{{ rejectAsst }}" style="height:30px;padding:0 14px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 12px/1 var(--font-body);cursor:pointer">Reject</button></div></sc-if>
+                      <sc-if value="{{ mm.decided }}"><div style="margin-top:10px;font-size:12px;font-weight:600;color:{{ mm.decFg }}">{{ mm.decLabel }}</div></sc-if>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-for>
+            <sc-if value="{{ typing }}"><div style="display:flex;gap:4px;padding:12px 14px;background:#fff;border:1px solid var(--border);border-radius:16px;width:60px">{{ dots }}</div></sc-if>
+          </div>
+          <div style="padding:12px 16px 16px">
+            <sc-if value="{{ aiOff }}"><div style="font-size:12px;color:var(--fg-3);padding:0 4px 8px">AI is off, so the Assistant is read-only. Add an API key in Settings.</div></sc-if>
+            <div style="background:#fff;border:1px solid var(--border);border-radius:16px;padding:10px 10px 10px 14px;display:flex;align-items:flex-end;gap:8px" style-focus-within="border-color:#6D28D9">
+              <textarea value="{{ draft }}" onChange="{{ setDraft }}" onKeyDown="{{ draftKey }}" disabled="{{ composerOff }}" placeholder="Ask about the specification, or ask for a change" rows="2" style="flex:1;border:0;outline:0;resize:none;font-size:13.5px;line-height:1.5;background:transparent"></textarea>
+              <button onClick="{{ send }}" disabled="{{ composerOff }}" style="width:32px;height:32px;border-radius:999px;border:0;background:var(--color-midnight);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0">{{ ic.arrowUp }}</button>
+            </div>
+          </div>
+        </aside>
+      </sc-if>
+    </div>
+  </div>
+
+  <!-- Command palette -->
+  <sc-if value="{{ pal }}">
+    <div onClick="{{ closeAll }}" style="position:fixed;inset:0;background:rgba(15,23,42,0.6);z-index:50;display:flex;justify-content:center;padding-top:12vh">
+      <div onClick="{{ stop }}" style="width:620px;max-height:480px;background:#fff;border-radius:16px;box-shadow:var(--shadow-xl);display:flex;flex-direction:column;overflow:hidden;align-self:flex-start">
+        <div style="display:flex;align-items:center;gap:10px;padding:0 18px;height:56px;border-bottom:1px solid var(--border);color:var(--fg-3)">{{ ic20.search }}<input autoFocus="{{ true }}" value="{{ q }}" onChange="{{ setQ }}" placeholder="Search requirements, terms, entities, or type a command" style="flex:1;border:0;outline:0;font-size:15px;color:var(--fg-1)"><span style="font:500 11px/1 var(--font-mono)">esc</span></div>
+        <div style="overflow-y:auto;padding:8px">
+          <sc-if value="{{ palNone }}"><div style="padding:32px;text-align:center;color:var(--fg-3);font-size:13px">No results for “{{ q }}”. Try a requirement ID like HR-009.</div></sc-if>
+          <sc-for list="{{ palGroups }}" as="g" hint-placeholder-count="2">
+            <div style="padding:10px 10px 6px;font:600 11px/1 var(--font-body);letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-3)">{{ g.label }}</div>
+            <sc-for list="{{ g.items }}" as="it">
+              <button onClick="{{ it.go }}" style="display:flex;align-items:center;gap:12px;width:100%;min-height:40px;padding:6px 10px;border:0;border-radius:8px;background:transparent;cursor:pointer;text-align:left" style-hover="background:var(--bg-surface)">
+                <span style="color:var(--fg-3)">{{ it.icon }}</span><span style="font-size:13.5px;font-weight:500;color:var(--fg-1)">{{ it.label }}</span><span style="font-size:12px;color:var(--fg-3);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ it.sub }}</span>
+              </button>
+            </sc-for>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- Sheet -->
+  <sc-if value="{{ hasSheet }}">
+    <div onClick="{{ closeAll }}" style="position:fixed;inset:0;background:rgba(15,23,42,0.6);z-index:60;display:flex;align-items:center;justify-content:center">
+      <div onClick="{{ stop }}" style="width:{{ sheet.w }}px;background:#fff;border-radius:20px;box-shadow:var(--shadow-xl);padding:24px;display:flex;flex-direction:column;gap:14px">
+        <div style="font:600 18px/1.3 var(--font-display)">{{ sheet.title }}</div>
+        <div style="font-size:13.5px;color:var(--fg-2);line-height:1.5">{{ sheet.desc }}</div>
+        <sc-if value="{{ sheet.isReason }}" hint-placeholder-val="{{ true }}">
+          <textarea autoFocus="{{ true }}" value="{{ reason }}" onChange="{{ setReason }}" onKeyDown="{{ reasonKey }}" placeholder="{{ sheet.ph }}" style="width:100%;min-height:96px;padding:12px;border:1px solid var(--border);border-radius:10px;font-size:13.5px;resize:vertical;outline:none" style-focus="border-color:#6D28D9;box-shadow:0 0 0 3px rgba(109,40,217,0.2)"></textarea>
+        </sc-if>
+        <sc-if value="{{ sheet.isList }}">
+          <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:12px;overflow:hidden">
+            <sc-for list="{{ sheet.list }}" as="l"><div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--border);font-size:13px"><span style="width:18px;height:18px;border-radius:5px;background:{{ l.bg }};color:#fff;display:flex;align-items:center;justify-content:center;border:{{ l.bd }}">{{ l.icon }}</span><span style="flex:1;font-weight:500">{{ l.k }}</span><span style="color:var(--fg-3);font:400 12px/1 var(--font-mono)">{{ l.v }}</span></div></sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ sheet.isMatrix }}">
+          <div style="display:grid;grid-template-columns:200px repeat(5,1fr);border:1px solid var(--border);border-radius:12px;overflow:hidden;font-size:12px">
+            <sc-for list="{{ matrix }}" as="c"><span title="{{ c.tip }}" style="padding:9px 10px;border-bottom:1px solid var(--border);background:{{ c.bg }};font:{{ c.font }};color:{{ c.fg }};text-align:{{ c.align }}">{{ c.v }}</span></sc-for>
+          </div>
+        </sc-if>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
+          <button onClick="{{ closeAll }}" style="height:38px;padding:0 16px;border-radius:999px;border:1px solid var(--border);background:#fff;font:600 13px/1 var(--font-body);cursor:pointer">{{ sheet.cancel }}</button>
+          <sc-if value="{{ sheet.hasConfirm }}" hint-placeholder-val="{{ true }}"><button onClick="{{ sheetConfirm }}" disabled="{{ sheet.disabled }}" style="height:38px;padding:0 18px;border-radius:999px;border:0;background:{{ sheet.btnBg }};color:#fff;font:600 13px/1 var(--font-body);cursor:pointer;opacity:{{ sheet.op }}">{{ sheet.confirm }} <span style="font:500 11px/1 var(--font-mono);opacity:0.6;margin-left:6px">⌘↩</span></button></sc-if>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- Settings -->
+  <sc-if value="{{ settings }}">
+    <div onClick="{{ closeAll }}" style="position:fixed;inset:0;background:rgba(15,23,42,0.6);z-index:60;display:flex;align-items:center;justify-content:center">
+      <div onClick="{{ stop }}" style="width:520px;background:#fff;border-radius:20px;box-shadow:var(--shadow-xl);padding:28px;display:flex;flex-direction:column;gap:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center"><div style="font:600 20px/1 var(--font-display)">Settings</div><button onClick="{{ closeAll }}" style="width:30px;height:30px;border-radius:8px;border:0;background:transparent;cursor:pointer;color:var(--fg-2)">{{ ic.x }}</button></div>
+        <div style="display:grid;grid-template-columns:120px 1fr;gap:16px 12px;align-items:center;font-size:13px">
+          <span style="color:var(--fg-3)">Language</span><div style="display:flex;padding:3px;background:var(--bg-surface);border-radius:10px;width:max-content"><span style="padding:6px 14px;border-radius:8px;background:#fff;box-shadow:var(--shadow-xs);font-weight:600">English</span><span style="padding:6px 14px;font-weight:600;color:var(--fg-3)">Polski</span></div>
+          <span style="color:var(--fg-3)">Appearance</span><div style="display:flex;padding:3px;background:var(--bg-surface);border-radius:10px;width:max-content"><span style="padding:6px 14px;border-radius:8px;background:#fff;box-shadow:var(--shadow-xs);font-weight:600">System</span><span style="padding:6px 14px;font-weight:600;color:var(--fg-3)">Light</span><span style="padding:6px 14px;font-weight:600;color:var(--fg-3)">Dark</span></div>
+          <span style="color:var(--fg-3)">Project</span><span>HR Leave Management · <span style="font-family:var(--font-mono)">hr-leave</span> · v42</span>
+          <span style="color:var(--fg-3)">Database</span><span style="font:400 12px/1.4 var(--font-mono);color:var(--fg-2)">~/plumb/hr-leave/plumb.db</span>
+          <span style="color:var(--fg-3)">AI</span><span style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:999px;background:{{ aiDot }}"></span>{{ aiText }}</span>
+        </div>
+        <div style="font-size:12px;color:var(--fg-3);line-height:1.5;padding:12px 14px;background:var(--bg-surface);border-radius:10px">To change the AI key, set <span style="font-family:var(--font-mono);color:var(--fg-1)">PLUMB_API_KEY</span> on the server and restart. Keys are never entered here.</div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- Toast -->
+  <sc-if value="{{ hasToast }}">
+    <div style="position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:70;display:flex;align-items:center;gap:14px;padding:12px 14px 12px 18px;border-radius:999px;background:var(--color-midnight);color:#fff;box-shadow:var(--shadow-lg);font-size:13px;font-weight:500">
+      <span style="color:#6EE7B7">{{ ic.check }}</span>{{ toast.msg }}
+      <sc-if value="{{ toast.hasAction }}"><button onClick="{{ toast.go }}" style="height:28px;padding:0 12px;border-radius:999px;border:0;background:var(--color-midnight-light);color:#fff;font:600 12px/1 var(--font-body);cursor:pointer">{{ toast.action }}</button></sc-if>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;overviewState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Needs review&quot;,&quot;All green&quot;,&quot;First run&quot;],&quot;default&quot;:&quot;Needs review&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;States&quot;},&quot;aiAvailable&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;States&quot;},&quot;connectionLost&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;States&quot;},&quot;sidebarCollapsed&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Layout&quot;}}">
+const P={
+home:'<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+inbox:'<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+list:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+grid:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
+flask:'<path d="M9 3h6"/><path d="M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2h12.4a1.5 1.5 0 0 0 1.3-2L14 9V3"/>',
+shield:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
+file:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8"/>',
+chat:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+sliders:'<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+search:'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+check:'<path d="M20 6 9 17l-5-5"/>',
+checks:'<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
+x:'<path d="M18 6 6 18M6 6l12 12"/>',
+play:'<path d="M6 3l14 9-14 9z"/>',
+chevDown:'<path d="m6 9 6 6 6-6"/>',
+more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+alert:'<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/>',
+help:'<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/>',
+plus:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/>',
+link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+pen:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+reply:'<path d="M9 17l-5-5 5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>',
+arrowR:'<path d="M5 12h14M12 5l7 7-7 7"/>',
+arrowUp:'<path d="m5 12 7-7 7 7M12 19V5"/>',
+upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/>',
+download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/>',
+refresh:'<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+info:'<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
+op:'<path d="M13 2 3 14h9l-1 8 10-12h-9z"/>',
+diff:'<path d="M12 3v14M5 10h14M5 21h14"/>',
+cmd:'<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>'
+};
+function I(n,s){s=s||16;return React.createElement('svg',{width:s,height:s,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:1.6,strokeLinecap:'round',strokeLinejoin:'round',style:{flexShrink:0,display:'block'},dangerouslySetInnerHTML:{__html:P[n]}});}
+function ring(p,size,sw){const r=(size-sw)/2,c=2*Math.PI*r;const col=p>=85?'#0F172A':p>=70?'#64748B':'#F59E0B';return React.createElement('svg',{width:size,height:size,style:{display:'block',transform:'rotate(-90deg)'}},React.createElement('circle',{cx:size/2,cy:size/2,r,fill:'none',stroke:'#E2E8F0',strokeWidth:sw}),React.createElement('circle',{cx:size/2,cy:size/2,r,fill:'none',stroke:col,strokeWidth:sw,strokeLinecap:'round',strokeDasharray:(c*p/100)+' '+c}));}
+const ST={pass:{fg:'#047857',bg:'rgba(16,185,129,0.12)',dot:'#10B981'},warn:{fg:'#B45309',bg:'rgba(245,158,11,0.14)',dot:'#F59E0B'},fail:{fg:'#B91C1C',bg:'rgba(220,38,38,0.10)',dot:'#DC2626'},neutral:{fg:'#6B7280',bg:'#F1F5F9',dot:'#9CA3AF'},run:{fg:'#5B21B6',bg:'#EDE9FE',dot:'#6D28D9'}};
+const EV={
+'HR-008':{hl:'An employee shall be able to submit a Draft leave request to their manager.',post:' The manager is the employee\u2019s line manager in the HR directory.'},
+'HR-009':{hl:'Submitting a valid leave request shall change its status from Draft to Submitted.',post:''},
+'HR-030':{hl:'The leave-request submission operation should complete within 2 seconds',post:' under normal office load.'},
+'HR-011':{hl:'A manager shall be able to approve a Submitted leave request of an employee who reports to them.',post:''},
+'HR-015':{hl:'Approving a leave request shall deduct the requested working days',post:' from the employee\u2019s annual leave balance.'},
+'HR-012':{hl:'A manager should decide on a submitted leave request within 2 days.',post:' The manager may reject it with a reason.'},
+'HR-018':{hl:'An employee shall be able to withdraw a Submitted leave request before a decision is made.',post:''},
+'HR-023':{hl:'The system shall notify the employee when their leave request is approved.',post:''}
+};
+const evid=ids=>ids.map(id=>Object.assign({id},EV[id]));
+const INBOX=[
+{id:'p1',type:'create',kind:'operation',title:'Add operation Submit leave request',origin:'Flows step',age:'4 min',facts:[['Performed by','Employee'],['Reads','Leave request (Draft)'],['Writes','Leave request \u2192 Submitted'],['Produces','Leave request submitted']],ev:['HR-008','HR-009','HR-030'],diff:['operation Submit leave request','transition Draft \u2192 Submitted']},
+{id:'p2',type:'create',kind:'operation',title:'Add operation Approve leave request',origin:'Flows step',age:'4 min',facts:[['Performed by','Manager'],['Reads','Leave request (Submitted)'],['Writes','Leave request \u2192 Approved, annual leave balance'],['Produces','Leave request approved']],ev:['HR-011','HR-015'],diff:['operation Approve leave request','transition Submitted \u2192 Approved']},
+{id:'p3',type:'create',kind:'operation',title:'Add operation Reject leave request',origin:'Flows step',age:'4 min',facts:[['Performed by','Manager'],['Reads','Leave request (Submitted)'],['Writes','Leave request \u2192 Rejected'],['Produces','Leave request rejected']],ev:['HR-012'],diff:['operation Reject leave request','transition Submitted \u2192 Rejected']},
+{id:'p4',type:'create',kind:'event',title:'Add event Leave request submitted',origin:'Flows step',age:'4 min',facts:[['Produced by','Submit leave request'],['Consumed by','Notify manager'],['Carries','leave request, employee']],ev:['HR-008'],diff:['event Leave request submitted']},
+{id:'p5',type:'create',kind:'event',title:'Add event Leave request approved',origin:'Flows step',age:'4 min',facts:[['Produced by','Approve leave request'],['Consumed by','Notify employee'],['Carries','leave request']],ev:['HR-023'],diff:['event Leave request approved']},
+{id:'p6',type:'create',kind:'operation',title:'Add operation Withdraw leave request',origin:'Flows step',age:'4 min',facts:[['Performed by','Employee'],['Reads','Leave request (Submitted)'],['Writes','Leave request \u2192 Withdrawn']],ev:['HR-018'],diff:['operation Withdraw leave request','transition Submitted \u2192 Withdrawn']},
+{id:'p7',type:'link',title:'Link Cancel leave request to HR-019',origin:'Flows step',age:'1 h',stale:true},
+{id:'q1',type:'question',title:'Does the requested duration include the end date?',origin:'Questions step',age:'2 d',why:'The working-days calculation counts days between the start and end date. Whether the end date counts changes every leave balance.',linked:['RequestedWorkingDays','HR-005'],opts:['Yes','No'],seg:true,answerText:{Yes:'both start and end dates count',No:'the end date is not counted'}},
+{id:'q2',type:'question',title:'Can a manager approve their own leave request?',origin:'Questions step',age:'2 d',why:'HR-011 lets a manager approve requests of their reports. Managers are also employees, so the model needs a rule for self-approval.',linked:['Approve leave request','HR-011'],opts:['No \u2014 HR must approve','Yes','Yes, and HR is notified'],answerText:{}},
+{id:'w1',type:'wording',title:'Restate HR-030 as a structured requirement',origin:'Glossary & quality step',age:'1 d'},
+{id:'a1',type:'answer',title:'HR answered: public holidays are excluded',origin:'From a question',age:'3 h',why:'Anna Kowalska (HR) answered \u201cAre public holidays counted as working days?\u201d with No.',minus:'working_days([start, end], office calendar)',plus:'working_days([start, end], office calendar \u2212 public holidays)'},
+{id:'i1',type:'issue',title:'HR-023 and HR-024 look like duplicates',origin:'Quality check',age:'1 d'}
+];
+const TYPE={create:{icon:'plus'},link:{icon:'link',label:'Link'},question:{icon:'help',label:'Question'},wording:{icon:'pen',label:'Wording'},answer:{icon:'reply',label:'Answer to confirm'},issue:{icon:'alert',label:'Issue to decide'}};
+const REQ=[
+['HR-001','An employee shall be able to create a leave request in Draft status.','Functional',95,[],1,1],
+['HR-002','A leave request shall specify a start date, an end date and a leave type.','Data',94,[],1,1],
+['HR-003','The end date of a leave request shall not be earlier than its start date.','Constraint',90,[],1,1],
+['HR-005','The system shall calculate the requested duration in working days using the office calendar.','Functional',78,[],1,1],
+['HR-008','An employee shall be able to submit a Draft leave request to their manager.','Functional',91,[],1,1],
+['HR-009','Submitting a valid leave request shall change its status from Draft to Submitted.','Functional',92,[],1,1],
+['HR-011','A manager shall be able to approve a Submitted leave request of an employee who reports to them.','Functional',88,[],1,1],
+['HR-012','A manager should decide on a submitted leave request within 2 days.','Operational',61,[['Relative time without anchor: \u2018within 2 days\u2019','F1.relative_time'],['Weak modality \u2018should\u2019','F1.weak_modality']],1,0],
+['HR-014','Contractors shall not be eligible for annual leave.','Compliance',96,[],0,1],
+['HR-015','Approving a leave request shall deduct the requested working days from the employee\u2019s annual leave balance.','Functional',89,[],1,1],
+['HR-017',null],
+['HR-019','An employee shall be able to cancel an Approved leave request before its start date.','Functional',84,[],0,0],
+['HR-023','The system shall notify the employee when their leave request is approved.','Interface',86,[],1,0],
+['HR-024','The system shall notify the employee when their leave request is rejected.','Interface',86,[],1,0],
+['HR-026','Only the employee, their manager and HR shall be able to view a leave request.','Security',80,[],0,0],
+['HR-030','The leave-request submission operation should complete within 2 seconds under normal office load.','Quality',64,[['Weak modality \u2018should\u2019','F1.weak_modality']],1,0]
+];
+const SCEN=[
+['s1','Submit a valid draft \u2192 Submitted','Transition Draft \u2192 Submitted','Confirmed',['a Draft leave request with start 3 Jan and end 7 Jan 2027','the employee submits it','its status is Submitted and the event Leave request submitted is produced']],
+['s2','Manager approves a submitted request','Transition Submitted \u2192 Approved','Confirmed',['a Submitted leave request of an employee who reports to the manager','the manager approves it','its status is Approved and the event Leave request approved is produced']],
+['s3','Manager rejects a submitted request','Transition Submitted \u2192 Rejected','Derived',['a Submitted leave request','the manager rejects it with a reason','its status is Rejected and the reason is recorded']],
+['s4','Contractor requests annual leave \u2192 not eligible','Rule Annual leave eligibility, row 3','Confirmed',['an employee whose employment type is Contractor','they create an annual leave request','the request is refused as not eligible (HR-014)']],
+['s5','Submitted \u2192 Withdrawn by employee before decision','Transition Submitted \u2192 Withdrawn','Derived',['a Submitted leave request with no manager decision','the employee withdraws it','its status is Withdrawn']],
+['s6','End date before start date is refused','Requirement HR-003','Derived',['a Draft leave request with start 7 Jan and end 3 Jan','the employee submits it','the submission is refused and the status stays Draft']],
+['s7','Approval deducts 5 working days from the balance','Calculation RequestedWorkingDays','Confirmed',['an employee with an annual leave balance of 20 days and a Submitted request for 3\u20137 Jan 2027','the manager approves it','the annual leave balance is 15 days']]
+];
+const HIST=[
+{ini:'MN',who:'Marta Nowak',what:'waived \u201cHR-023 and HR-024 look like duplicates\u201d',why:'They notify different outcomes.',when:'Today, 10:42'},
+{ini:'AK',who:'Anna Kowalska',what:'answered \u201cAre public holidays counted as working days?\u201d \u2014 No',why:'Policy \u00a74.2 excludes statutory holidays.',when:'Today, 09:15'},
+{ini:'MN',who:'Marta Nowak',what:'accepted 6 proposals from the Model step',why:'',when:'Yesterday, 16:30'},
+{ini:'TW',who:'Tomasz Wi\u015bniewski',what:'confirmed calculation RequestedWorkingDays',why:'',when:'Yesterday, 14:02'},
+{ini:'MN',who:'Marta Nowak',what:'changed the kind of HR-026 to Security',why:'Access control, not a functional behaviour.',when:'Yesterday, 11:20'},
+{ini:'AK',who:'Anna Kowalska',what:'answered \u201cAre contractors eligible for annual leave?\u201d \u2014 No',why:'Contractors are not employees under the labour code.',when:'21 Oct, 15:48'}
+];
+const STEPS=['Import','Requirements','Glossary & quality','Model','Flows','Calculations & rules','Scenarios','Questions','Ready'];
+const LANES=['Employee','Manager','System'];
+const NODES=[
+['n1','start','',0,110,24],['n2','task','Create draft',0,160,130],['n3','task','Submit leave request',0,320,160],['n4','service','Calculate working days',2,510,170],
+['n5','gw','',1,712,36],['n6','task','Approve leave request',1,790,170,-26],['n7','task','Reject leave request',1,790,170,26],['n8','service','Deduct balance',2,1000,130],['n9','end','',2,1140,24]
+];
+const EDGES=[['n1','n2'],['n2','n3'],['n3','n4'],['n4','n5'],['n5','n6'],['n5','n7'],['n6','n8'],['n8','n9'],['n7','n9']];
+const ENT=[
+{id:'lr',name:'Leave request',meta:'6 attributes · 6 states',attrs:[['start date','Date','required'],['end date','Date','required'],['leave type','String','required','pii'],['status','Enum(LeaveStatus)','required'],['requested working days','Decimal(2) · days','required'],['reason','String','nullable','pii']],states:true},
+{id:'em',name:'Employee',meta:'4 attributes · 1 relation',attrs:[['name','String','required','pii'],['employment type','Enum(Employee, Contractor)','required'],['annual leave balance','Decimal(2) · days','required','financial'],['manager','\u2192 Manager','required']]},
+{id:'md',name:'Manager decision',meta:'3 attributes',attrs:[['outcome','Enum(Approve, Reject)','required'],['decided at','DateTime','required'],['reason','String','nullable']]},
+{id:'ph',name:'Public holiday',meta:'3 attributes',attrs:[['date','Date','required'],['name','String','required'],['calendar','\u2192 Office calendar','required']]},
+{id:'ar',name:'Approval record',meta:'3 attributes',attrs:[['leave request','\u2192 Leave request','required'],['approver','\u2192 Manager','required'],['recorded at','DateTime','required']]}
+];
+
+class Component extends DCLogic {
+  state={route:'overview',inbox:INBOX.map(x=>Object.assign({},x)),selId:'p1',multi:[],filter:'all',ans:{},reqSel:'HR-009',reqMore:false,seg:'entities',entSel:'lr',nodeSel:'n3',scenSel:'s4',qTab:'gates',gateOpen:'F1',asst:false,
+    msgs:[{u:true,text:'Employees should be able to see their remaining balance.'},{u:false,text:'I can add an operation View leave balance performed by Employee, reading Employee \u2192 annual leave balance. It would implement a new requirement derived from HR-015.',prop:'pending'}],
+    draft:'',typing:false,pal:false,q:'',sheet:null,reason:'',toast:null,settings:false,run:null,runMenu:false,ruleSet:false,calcOk:false,waivedReq:false,uploading:null,issuesW:{},firstRunDone:false};
+
+  componentDidMount(){
+    this._k=e=>{
+      const s=this.state, tag=(e.target.tagName||'').toLowerCase(), typing=tag==='input'||tag==='textarea';
+      if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();this.setState({pal:!s.pal,q:''});return;}
+      if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&s.sheet){e.preventDefault();this.sheetConfirm();return;}
+      if((e.metaKey||e.ctrlKey)&&/^[1-7]$/.test(e.key)){e.preventDefault();this.go(['overview','inbox','requirements','model','scenarios','quality','sources'][+e.key-1]);return;}
+      if(e.key==='Escape'){this.closeAll();return;}
+      if(typing||s.pal||s.sheet||s.route!=='inbox')return;
+      const rows=this.visibleInbox(), i=rows.findIndex(r=>r.id===s.selId);
+      if(e.key==='j'&&rows.length)this.setState({selId:rows[Math.min(rows.length-1,i+1)].id,multi:[]});
+      if(e.key==='k'&&rows.length)this.setState({selId:rows[Math.max(0,i-1)].id,multi:[]});
+      if(e.key==='a'){const it=rows[i];if(it&&!it.stale&&it.type!=='question')this.accept(it.id);}
+      if(e.key==='r'){const it=rows[i];if(it)this.reject(it.id);}
+    };
+    window.addEventListener('keydown',this._k);
+    this._rs=()=>this.setState({vw:window.innerWidth});this._rs();window.addEventListener('resize',this._rs);
+  }
+  componentWillUnmount(){window.removeEventListener('keydown',this._k);window.removeEventListener('resize',this._rs);clearInterval(this._run);clearTimeout(this._t);clearInterval(this._up);}
+
+  go(route,extra){this.setState(Object.assign({route,reqMore:false,runMenu:false,pal:false},extra||{}));}
+  toast(msg,action,go){clearTimeout(this._t);this.setState({toast:{msg,action,go}});this._t=setTimeout(()=>this.setState({toast:null}),3800);}
+  closeAll=()=>this.setState({pal:false,sheet:null,settings:false,runMenu:false,reqMore:false,reason:''});
+  visibleInbox(){const {inbox,filter}=this.state;const f={all:()=>true,proposals:x=>['create','link','answer'].includes(x.type),questions:x=>x.type==='question',wording:x=>x.type==='wording',issues:x=>x.type==='issue',steps:x=>/step|check/i.test(x.origin),fromq:x=>x.origin==='From a question',asst:x=>x.origin==='Assistant'}[filter];return inbox.filter(f);}
+  removeItems(ids){const rows=this.visibleInbox();const idx=rows.findIndex(r=>r.id===this.state.selId);const rest=rows.filter(r=>!ids.includes(r.id));const next=rest[Math.min(Math.max(idx,0),rest.length-1)];this.setState(s=>({inbox:s.inbox.filter(x=>!ids.includes(x.id)),selId:next?next.id:null,multi:[]}));}
+  accept(id){const it=this.state.inbox.find(x=>x.id===id);this.removeItems([id]);const msg=it.type==='wording'?'HR-030 reworded':it.type==='answer'?'Model updated · RequestedWorkingDays':it.kind==='event'?'Event added to the model':it.type==='link'?'HR-019 linked':'Operation added to the model';this.toast(msg,'View in Model',()=>this.go('model',{seg:it.type==='answer'?'calcs':'processes'}));}
+  reject(id){const it=this.state.inbox.find(x=>x.id===id);if(it.type==='question'){this.toast('Question skipped for now');return;}
+    const issue=it.type==='issue', disc=it.type==='answer';
+    this.setState({reason:'',sheet:{title:issue?'Waive this finding':disc?'Discard this answer':'Reject proposal',desc:issue?'A waiver accepts the finding as is. Your reason is recorded in the decision history and shown in the Requirements gate.':disc?'The answer stays in History but will not change the model.':'\u201c'+it.title+'\u201d will not be added. Plumb will not propose it again for this version.',ph:issue?'Why is this acceptable?':'Reason (required)',confirm:issue?'Waive':disc?'Discard':'Reject',danger:!issue,required:true,on:()=>{this.removeItems([id]);this.toast(issue?'Finding waived · Requirements gate passes':disc?'Answer discarded':'Proposal rejected');}}});}
+  sheetConfirm=()=>{const s=this.state.sheet;if(!s)return;if(s.required&&!this.state.reason.trim())return;const on=s.on;this.setState({sheet:null,reason:''});on&&on();};
+  startRun(label){if(this.props.aiAvailable===false){this.toast('AI analysis is off. Add an API key in Settings.');return;}clearInterval(this._run);this.setState({run:{pct:4,label},runMenu:false});this._run=setInterval(()=>{const r=this.state.run;if(!r)return;if(r.pct>=100){clearInterval(this._run);this.setState({run:null});this.toast(label+' step finished · 3 new proposals','Review',()=>this.go('inbox'));return;}this.setState({run:{pct:Math.min(100,r.pct+6),label}});},400);}
+  answer(it){const v=this.state.ans[it.id];if(!v)return;const txt=it.answerText[v]||v.toLowerCase();const nu={id:it.id+'a',type:'answer',title:'HR answered: '+txt,origin:'From a question',age:'now',why:'You answered \u201c'+it.title+'\u201d with '+v+'.',minus:it.id==='q1'?'working_days([start date, end date), office calendar)':'Approve leave request · performer: Manager',plus:it.id==='q1'?(v==='Yes'?'working_days([start date, end date], office calendar, inclusive end)':'working_days([start date, end date), office calendar, exclusive end)'):'Approve leave request · performer: Manager \u2260 requester'};
+    this.setState(s=>({inbox:s.inbox.map(x=>x.id===it.id?nu:x),selId:nu.id}));this.toast('Answer recorded · it now needs your confirmation');}
+  fakeImport=()=>{clearInterval(this._up);this.setState({uploading:5});this._up=setInterval(()=>{const u=this.state.uploading;if(u>=100){clearInterval(this._up);this.setState({uploading:null,firstRunDone:true});this.toast('38 passages imported from requirements.md','Run Requirements step',()=>this.startRun('Requirements'));return;}this.setState({uploading:u+15});},250);};
+
+  renderVals(){
+    const s=this.state, p=this.props;
+    const aiOff=p.aiAvailable===false;
+    const ovProp=p.overviewState||'Needs review';
+    const firstRun=ovProp==='First run'&&!s.firstRunDone;
+    const allGreen=ovProp==='All green';
+    const running=!!s.run;
+    const inbox=s.inbox, nFlows=inbox.filter(x=>x.origin==='Flows step').length, nQ=inbox.filter(x=>x.type==='question').length;
+    const inboxN=allGreen?0:inbox.length;
+    const ic={},ic20={},ic24={};Object.keys(P).forEach(k=>{ic[k]=I(k,16);ic20[k]=I(k,20);ic24[k]=I(k,24);});ic.checkSm=I('check',12);
+    const goInbox=()=>this.go('inbox');
+    // next action
+    let next;
+    if(firstRun) next={title:'Import your requirements document',sub:'Start by adding a source.',btn:'Import',short:'Import document',go:this.fakeImport};
+    else if(running) next={title:'Plumb is analysing your '+s.run.label.toLowerCase()+'\u2026 '+s.run.pct+'%',sub:'You can keep working. Results arrive in your Inbox.',btn:'View details',short:'Analysing\u2026 '+s.run.pct+'%',go:()=>{}};
+    else if(allGreen||inbox.length===0) next={title:'Your specification is ready',sub:'All five gates pass. Export the functional model, glossary, scenarios and reports.',btn:'Export',short:'Export',go:()=>this.openExport()};
+    else if(nFlows>0) next={title:'Review '+nFlows+' proposals from the Flows step',sub:'Operations and events Plumb found in your requirements. Nothing changes until you accept.',btn:'Review proposals',short:'Review '+nFlows+' proposals',go:()=>this.go('inbox',{filter:'steps',selId:inbox.find(x=>x.origin==='Flows step').id})};
+    else if(nQ>0) next={title:nQ+(nQ>1?' questions are':' question is')+' waiting for HR',sub:'Answers unblock the Decisions gate.',btn:'Open questions',short:'Answer '+nQ+' questions',go:()=>this.go('inbox',{filter:'questions',selId:inbox.find(x=>x.type==='question').id})};
+    else next={title:'Review '+inbox.length+' items in your Inbox',sub:'Wording suggestions, answers and issues.',btn:'Open Inbox',short:'Review '+inbox.length+' items',go:goInbox};
+    // nav
+    const NAV=[['overview','Overview','home'],['inbox','Inbox','inbox'],['requirements','Requirements','list'],['model','Model','grid'],['scenarios','Scenarios','flask'],['quality','Quality','shield'],['sources','Sources','file']];
+    const sbOpen=!p.sidebarCollapsed;
+    const nav=NAV.map(([id,label,icon])=>{const a=s.route===id;return {label,icon:I(icon,18),go:()=>this.go(id),bg:a?'#0F172A':'transparent',fg:a?'#fff':'#334155',fw:a?600:500,hasBadge:id==='inbox'&&inboxN>0,badge:inboxN>99?'99+':inboxN,badgeBg:a?'#334155':'#F1F5F9',badgeFg:a?'#fff':'#0F172A'};});
+    const version=p.connectionLost?{dot:'#F59E0B',text:'Changed \u2014 Refresh',onClick:()=>this.toast('Refreshed to version 42')}:running?{dot:'#6D28D9',text:'Updating\u2026'}:{dot:'#10B981',text:'Up to date'};
+    // overview
+    const stepState=i=>{if(firstRun)return 'todo';if(allGreen)return 'done';if(running&&STEPS[i]===s.run.label)return 'run';if(i===4)return nFlows>0?'review':'done';if(i===7)return nQ>0?'review':'done';if(i===8)return 'todo';return 'done';};
+    const steps=STEPS.map((label,i)=>{const st=stepState(i);const m={done:{bg:'#0F172A',fg:'#fff',border:'0',mark:I('check',14),meta:'Done',metaFg:'#6B7280'},review:{bg:'#fff',fg:'#0F172A',border:'1.5px solid #0F172A',mark:i===4?nFlows:nQ,meta:'Needs review',metaFg:'#B45309'},run:{bg:'#EDE9FE',fg:'#5B21B6',border:'0',mark:I('refresh',14),meta:(s.run?s.run.pct:0)+'%',metaFg:'#5B21B6'},todo:{bg:'#fff',fg:'#9CA3AF',border:'1px dashed #CBD5E1',mark:i+1,meta:'Not started',metaFg:'#9CA3AF'}}[st];return Object.assign({label,go:()=>i===4||i===7?goInbox():this.go(['sources','requirements','model','model','model','model','scenarios','inbox','quality'][i])},m);});
+    const ready=allGreen?100:86;
+    const subs=[['Clarity',92],['Completeness',84],['Confirmation',78],['Consistency',95],['Verifiability',81]].map(([label,v])=>({label,v:allGreen?100:v}));
+    const gateDefs=[['I0','Evidence','pass','1 source · 38 passages, all addressable'],['F1','Requirements','pass','0 blockers failed · 1 waived · 2 warnings'],['F2','Model',running?'stale':'pass',running?'Needs a current Flows run':'0 blockers · 1 warning'],['F3','Decisions',(nQ>0&&!allGreen)?'fail':'pass',(nQ>0&&!allGreen)?nQ+' blocking questions open':'14 decisions recorded'],['F4','Behaviour','pass','7 of 7 required scenarios pass']];
+    const GROUPS={F1:[{label:'Waived',fg:'#6B7280',icon:I('shield',16),rows:[{msg:'HR-023 and HR-024 look like duplicates',code:'F1.dup_candidate',note:'· waived by Marta Nowak: they notify different outcomes',items:['HR-023','HR-024']}]},{label:'Warn',fg:'#B45309',icon:I('alert',16),rows:[{msg:'Requirements without intent lineage (32)',code:'F1.intent_lineage',note:'· non-blocking',items:['32 requirements']},{msg:'Behaviour without acceptance criteria (16)',code:'F1.acceptance_criteria',note:'· non-blocking',items:['16 requirements']}]},{label:'Pass',fg:'#047857',icon:I('check',16),rows:[{msg:'Every requirement is grounded in a source passage',code:'F1.grounded',note:'',items:[]},{msg:'Every requirement has a kind',code:'F1.typed',note:'',items:[]},{msg:'No unresolved ambiguous terms',code:'F1.ambiguity',note:'',items:[]}]},{label:'Not applicable',fg:'#9CA3AF',icon:I('info',16),rows:[{msg:'Regulatory references resolve',code:'F1.reg_refs',note:'· no regulatory references in the sources',items:[]}]}],
+      F3:[{label:'Fail',fg:'#B91C1C',icon:I('alert',16),rows:[{msg:'Blocking questions are unanswered',code:'F3.open_blocking',note:'· routed to HR',items:['Duration includes end date?','Manager self-approval?']}]},{label:'Pass',fg:'#047857',icon:I('check',16),rows:[{msg:'Every waiver has a reason and an owner',code:'F3.waiver_governed',note:'',items:[]}]}]};
+    const defGroups=c=>[{label:'Pass',fg:'#047857',icon:I('check',16),rows:[{msg:'All rules for this gate pass',code:c+'.*',note:'',items:[]}]}];
+    const gates=gateDefs.map(([code,name,st,sum])=>{const t=st==='stale'?{dot:'transparent',ring:'2px solid #9CA3AF',fg:'#6B7280',label:'Outdated'}:{dot:ST[st].dot,ring:'0',fg:ST[st].fg,label:st==='pass'?'Passes':'Blocked'};const open=s.gateOpen===code;return {code,name,sum,dot:t.dot,ring:t.ring,fg:t.fg,stateLabel:t.label+(st==='fail'?' · '+sum:''),open,chev:open?'rotate(180deg)':'none',groups:GROUPS[code]||defGroups(code),toggle:()=>this.setState({gateOpen:open?null:code}),open_:0,openGate:null};});
+    gates.forEach(g=>{const code=g.code;g.open=s.gateOpen===code;});
+    const gatesOv=gates.map(g=>Object.assign({},g,{open:()=>this.go('quality',{qTab:'gates',gateOpen:g.code})}));
+    const tiles=[{label:'Requirements',value:32,sub:'2 with issues',go:()=>this.go('requirements')},{label:'Model',value:'6 entities',sub:'6 states · 8 operations',go:()=>this.go('model')},{label:'Scenarios',value:7,sub:'7 pass',go:()=>this.go('scenarios')},{label:'Open questions',value:allGreen?0:nQ,sub:nQ&&!allGreen?'Waiting for HR':'None waiting',go:()=>this.go('inbox',{filter:'questions'})}];
+    // inbox
+    const fdef=[['all','All',inbox.length],['proposals','Proposals',inbox.filter(x=>['create','link','answer'].includes(x.type)).length],['questions','Questions',nQ],['wording','Wording',inbox.filter(x=>x.type==='wording').length],['issues','Issues to decide',inbox.filter(x=>x.type==='issue').length]];
+    const odef=[['steps','From steps',inbox.filter(x=>/step|check/i.test(x.origin)).length],['fromq','From questions',inbox.filter(x=>x.origin==='From a question').length],['asst','From the Assistant',0]];
+    const fmap=([id,label,n])=>{const a=s.filter===id;return {label,n,go:()=>this.setState({filter:id,multi:[]}),bg:a?'#F1F5F9':'transparent',fg:a?'#0F172A':'#334155',fw:a?600:500};};
+    const vis=this.visibleInbox();
+    const rows=vis.map(x=>{const sel=s.multi.length?s.multi.includes(x.id):x.id===s.selId;return {title:x.title,origin:x.origin,age:x.age,stale:!!x.stale,icon:I(TYPE[x.type].icon,16),iconBg:sel?'#fff':'#F1F5F9',typeLabel:x.type==='create'?'New '+x.kind:TYPE[x.type].label,bg:sel?'#F1F5F9':'#fff',fw:sel?600:500,
+      pick:e=>{if(e.shiftKey||e.metaKey||e.ctrlKey){const base=s.multi.length?s.multi:(s.selId?[s.selId]:[]);const m=base.includes(x.id)?base.filter(i=>i!==x.id):base.concat(x.id);this.setState({multi:m.length>1?m:[],selId:m[m.length-1]||x.id});}else this.setState({selId:x.id,multi:[]});}};});
+    const it=s.multi.length?null:vis.find(x=>x.id===s.selId)||null;
+    let sel={};
+    if(it){
+      const t=it.type, a=s.ans[it.id];
+      sel={title:it.title,stale:!!it.stale,isCreate:t==='create',isLink:t==='link',isQuestion:t==='question',isWording:t==='wording',isAnswer:t==='answer',isIssue:t==='issue',
+        eyebrow:(t==='create'?'New '+it.kind:TYPE[t].label)+' · '+it.origin,
+        facts:(it.facts||[]).map(([k,v])=>({k,v})),evidence:evid(it.ev||[]),hasEvidence:!!(it.ev&&it.ev.length),diff:it.diff||[],hasDiff:!!it.diff,
+        why:it.why,linked:it.linked||[],minus:it.minus,plus:it.plus,
+        slots:[{k:'Class',v:'Quality \u00b7 performance'},{k:'Level',v:'System'},{k:'Modality',v:'shall'},{k:'Pattern',v:'Event-driven (When \u2026)'}],
+        optDir:it.seg?'row':'column',optPad:it.seg?'3px':'0',optBg:it.seg?'#F1F5F9':'transparent',
+        opts:(it.opts||[]).map(o=>{const on=a===o;return it.seg?{label:o,pick:()=>this.setState({ans:Object.assign({},s.ans,{[it.id]:o})}),bg:on?'#fff':'transparent',fg:on?'#0F172A':'#6B7280',border:'0',shadow:on?'0 1px 3px rgba(15,23,42,0.1)':'none',align:'center'}:{label:o,pick:()=>this.setState({ans:Object.assign({},s.ans,{[it.id]:o})}),bg:on?'#F1F5F9':'#fff',fg:'#0F172A',border:on?'1px solid #0F172A':'1px solid #E2E8F0',shadow:'none',align:'left'};}),
+        primaryLabel:t==='question'?'Answer':t==='issue'?'Fix':'Accept',
+        primary:t==='question'?()=>this.answer(it):t==='issue'?()=>this.go('requirements',{reqSel:'HR-023'}):()=>this.accept(it.id),
+        primaryDisabled:!!it.stale||(t==='question'&&!a),
+        primaryBg:(it.stale||(t==='question'&&!a))?'#CBD5E1':'#0F172A',
+        secondaryLabel:t==='question'?'Skip for now':t==='issue'?'Waive with reason':t==='answer'?'Discard':'Reject',
+        secondary:()=>this.reject(it.id)};
+    }
+    const ib={filters:fdef.map(fmap),origins:odef.map(fmap),rows,title:{all:'All items',proposals:'Proposals',questions:'Questions',wording:'Wording',issues:'Issues to decide',steps:'From steps',fromq:'From questions',asst:'From the Assistant'}[s.filter],countLabel:vis.length+' waiting',empty:vis.length===0,hasFlows:vis.some(x=>x.origin==='Flows step'&&!x.stale),isMulti:s.multi.length>1,multiN:s.multi.length,hasSel:!!it,noSel:!it&&s.multi.length<2&&vis.length>0};
+    // requirements
+    const reqs=REQ.map(r=>r[1]?{id:r[0],text:r[1],kind:r[2],ready:r[3],issues:r[4],ops:r[5],scen:r[6]}:{id:r[0],err:true});
+    const reqRows=reqs.map(r=>r.err?{id:r.id,err:true,ok:false,bg:'#fff',pick:()=>{}}:{id:r.id,text:r.text,kind:r.kind,ready:r.ready,ring:ring(r.ready,20,3),err:false,ok:true,hasIssues:r.issues.length>0&&!(r.id==='HR-030'&&s.waivedReq),issueN:r.issues.length,covFg:r.ops&&r.scen?'#0F172A':'#CBD5E1',bg:r.id===s.reqSel?'#F1F5F9':'#fff',pick:()=>this.setState({reqSel:r.id,reqMore:false})});
+    const R=reqs.find(r=>r.id===s.reqSel&&!r.err)||reqs[5];
+    const rq={id:R.id,text:R.text,kind:R.kind,ready:R.ready,ring:ring(R.ready,72,6),line:12+REQ.findIndex(x=>x[0]===R.id)*3,
+      subs:[['Clarity',R.issues.length?'Weak wording':'Clear'],['Completeness','All slots filled'],['Confirmation',R.ready>85?'Confirmed by HR':'Not yet confirmed'],['Consistency','No conflicts'],['Verifiability',R.scen?'Covered by a scenario':'No scenario yet']].map(([label,note])=>({label,note})),
+      issues:R.issues.map(([msg,code])=>({msg,code})),hasIssues:R.issues.length>0&&!(R.id==='HR-030'&&s.waivedReq),
+      hasEars:R.id==='HR-030'||R.id==='HR-012',ears:R.id==='HR-030'?'When an employee submits a leave request, the system shall complete the submission within 2 seconds under normal office load.':'When a leave request is submitted, the manager shall decide on it within 2 working days of submission.',
+      links:[R.ops?{label:R.id==='HR-011'?'Approve leave request':'Submit leave request',icon:I('op',14),go:()=>this.go('model',{seg:'processes'})}:null,R.scen?{label:'Scenario: '+(R.id==='HR-014'?'Contractor not eligible':'Submit valid draft'),icon:I('flask',14),go:()=>this.go('scenarios')}:null].filter(Boolean)};
+    const reqChips=['Kind','Status','Has issues','Low readiness','Uncovered'].map(l=>({label:l,bd:'#E2E8F0',bg:'#fff',fg:'#334155',go:()=>{}}));
+    // model
+    const segs=[['glossary','Glossary'],['entities','Entities'],['rules','Rules'],['calcs','Calculations'],['processes','Processes']].map(([id,label])=>{const a=s.seg===id;return {label,go:()=>this.setState({seg:id}),bg:a?'#fff':'transparent',fg:a?'#0F172A':'#6B7280',sh:a?'0 1px 3px rgba(15,23,42,0.1)':'none'};});
+    const glossary=[['leave request','A request by an employee for time away from work, with a start date, end date and leave type.','HR-002',['request'],'Confirmed'],['annual leave balance','The number of working days of annual leave an employee has left in the current year.','HR-015',['balance','remaining leave'],'Confirmed'],['public holiday','A statutory non-working day in the office calendar.','HR-005',['holiday'],'Proposed'],['manager decision','A manager\u2019s approval or rejection of a submitted leave request.','HR-011',['decision'],'Confirmed'],['working day','A day that is not a weekend or public holiday in the office calendar.','HR-005',[],'Proposed']].map(([term,def,src,aliases,status])=>({term,def,src,aliases,status,pbg:status==='Confirmed'?ST.pass.bg:ST.neutral.bg,pfg:status==='Confirmed'?ST.pass.fg:ST.neutral.fg}));
+    const E=ENT.find(e=>e.id===s.entSel);
+    const entities=ENT.map(e=>({name:e.name,meta:e.meta,pick:()=>this.setState({entSel:e.id}),bd:e.id===s.entSel?'#0F172A':'#E2E8F0',sh:e.id===s.entSel?'var(--shadow-md)':'var(--shadow-xs)'}));
+    const ent={name:E.name,meta:E.meta,hasStates:!!E.states,attrs:E.attrs.map(([name,type,nullable,cls])=>({name,type,nullable,cls,hasClass:!!cls}))};
+    const rule={badge:s.ruleSet?'Complete':'1 gap',badgeBg:s.ruleSet?ST.pass.bg:ST.warn.bg,badgeFg:s.ruleSet?ST.pass.fg:ST.warn.fg,rows:[['Employee','Annual','Yes','HR-013'],['Employee','Sick','Yes','HR-016'],['Contractor','Annual','No','HR-014'],['Contractor','Sick',s.ruleSet?'Yes':null,s.ruleSet?'Set by you':'\u2014']].map(([a,b,out,src])=>({a,b,out,src,covered:!!out,gap:!out}))};
+    const days=[['3','Mon',1],['4','Tue',1],['5','Wed',1],['6','Thu',1],['7','Fri',1],['8','Sat',0],['9','Sun',0]].map(([n,w,on])=>({n,w,bg:on?'#0F172A':'#F1F5F9',fg:on?'#fff':'#9CA3AF'}));
+    const calc={days,status:s.calcOk?'Confirmed':'Proposed',pbg:s.calcOk?ST.pass.bg:ST.neutral.bg,pfg:s.calcOk?ST.pass.fg:ST.neutral.fg,btn:s.calcOk?'Confirmed':'Confirm calculation'};
+    const pos={};NODES.forEach(([id,type,label,lane,x,w,dy])=>{const h=type==='task'||type==='service'?40:w;const cy=60+lane*120+(dy||0);pos[id]={x,w,cy};});
+    const nodes=NODES.map(([id,type,label,lane,x,w,dy])=>{const h=type==='task'||type==='service'?40:w;const cy=60+lane*120+(dy||0);const on=s.nodeSel===id;const round=type==='start'||type==='end';return {label,x,w,h,top:cy-h/2,r:round?'999px':type==='gw'?'4px':'10px',bd:type==='end'?'3px solid #0F172A':on?'1.5px solid #0F172A':'1px solid #CBD5E1',bg:type==='service'?'#F1F5F9':round?'#fff':'#fff',fg:'#0F172A',tf:type==='gw'?'rotate(45deg)':'none',itf:'none',sh:on?'0 0 0 3px rgba(15,23,42,0.12)':'none',pick:()=>this.setState({nodeSel:id})};});
+    const edges=React.createElement('svg',{width:1180,height:360,style:{position:'absolute',left:0,top:0,pointerEvents:'none'}},React.createElement('defs',null,React.createElement('marker',{id:'ah',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto'},React.createElement('path',{d:'M0 0 10 5 0 10z',fill:'#94A3B8'}))),EDGES.map(([a,b],i)=>{const A=pos[a],B=pos[b];const x1=A.x+A.w+(a==='n5'?4:0),x2=B.x-(b==='n5'?4:2),mx=(x1+x2)/2;return React.createElement('path',{key:i,d:`M${x1} ${A.cy} H${mx} V${B.cy} H${x2}`,fill:'none',stroke:'#94A3B8',strokeWidth:1.2,markerEnd:'url(#ah)'});}));
+    const ND=NODES.find(n=>n[0]===s.nodeSel);const ndLabel=ND[2]||(ND[1]==='gw'?'Manager decides':ND[1]==='start'?'Start':'End');
+    const node={label:ndLabel,kind:{task:'Human task',service:'Service task',gw:'Gateway',start:'Start event',end:'End event'}[ND[1]],lane:LANES[ND[3]],op:ND[2]||'\u2014',ev:{n3:'Leave request submitted',n6:'Leave request approved',n7:'Leave request rejected'}[ND[0]]||'\u2014'};
+    const nodeList=NODES.filter(n=>n[2]).map((n,i)=>({i:i+1,label:n[2]}));
+    const lanes=LANES.map((name,i)=>({name,top:i*120,bg:i%2?'#FCFCFD':'#fff'}));
+    // scenarios
+    const scenRows=SCEN.map(([id,title,src,conf])=>({title,src,conf,verdict:'Pass',vicon:I('check',12),vbg:ST.pass.bg,vfg:ST.pass.fg,bg:id===s.scenSel?'#F1F5F9':'#fff',pick:()=>this.setState({scenSel:id})}));
+    const SC=SCEN.find(x=>x[0]===s.scenSel);
+    const sc={title:SC[1],src:SC[2],gwt:[['Given',SC[4][0]],['When',SC[4][1]],['Then',SC[4][2]]].map(([k,v])=>({k,v})),trace:[{a:'Set up the given facts',b:'3 facts asserted'},{a:'Run '+(SC[0]==='s4'?'Create leave request':'the operation'),b:SC[0]==='s4'?'rule Annual leave eligibility → row 3 → eligible = No':'preconditions hold'},{a:'Compare the outcome',b:'expected = actual'},{a:'Check produced events',b:'0 unexpected events'}]};
+    // quality
+    const qTabs=[['gates','Gates'],['issues','Issues'],['history','History']].map(([id,label])=>{const a=s.qTab===id;return {label,go:()=>this.setState({qTab:id}),bg:a?'#fff':'transparent',fg:a?'#0F172A':'#6B7280',sh:a?'0 1px 3px rgba(15,23,42,0.1)':'none'};});
+    const ISS=[['i1','Error','fail','Behaviour without acceptance criteria','F1.acceptance_criteria','16 requirements'],['i2','Error','fail','Requirements without intent lineage','F1.intent_lineage','32 requirements'],['i3','Warning','warn','Relative time without anchor: \u2018within 2 days\u2019','F1.relative_time','HR-012'],['i4','Warning','warn','Weak modality \u2018should\u2019','F1.weak_modality','HR-012, HR-030'],['i5','Warning','warn','Event without consumer: Leave request rejected','F2.event_consumer','Reject leave request'],['i6','Blocker','neutral','HR-023 and HR-024 look like duplicates','F1.dup_candidate','HR-023, HR-024',true]];
+    const issues=ISS.map(([id,sev,st,msg,code,items,w])=>{const waived=w||!!s.issuesW[id];return {sev,msg,code,items,fg:ST[st].fg,icon:I(st==='neutral'?'shield':'alert',14),waived,open:!waived,by:w?'Marta Nowak':'you',reason:w?'They notify different outcomes.':s.issuesW[id],waive:()=>this.setState({reason:'',sheet:{title:'Waive this finding',desc:'\u201c'+msg+'\u201d will be accepted as is. Your reason is recorded in the decision history.',ph:'Why is this acceptable?',confirm:'Waive',required:true,on:()=>{this.setState(x=>({issuesW:Object.assign({},x.issuesW,{[id]:this.state.reason||'Accepted for this release.'})}));this.toast('Finding waived · recorded in History');},keep:true}})};});
+    const history=HIST.map(h=>Object.assign({},h,{hasWhy:!!h.why}));
+    // sources
+    const PARAS=[['HR-001','','An employee shall be able to create a leave request in Draft status.',''],['HR-002','Each request has a clear scope. ','A leave request shall specify a start date, an end date and a leave type.',' Leave types are annual, sick and unpaid.'],['HR-003','','The end date of a leave request shall not be earlier than its start date.',''],['HR-005','Duration matters for balances. ','The system shall calculate the requested duration in working days using the office calendar.',' The office calendar lists public holidays per year.'],['HR-008','','An employee shall be able to submit a Draft leave request to their manager.',' The manager is the employee\u2019s line manager in the HR directory.'],['HR-009','','Submitting a valid leave request shall change its status from Draft to Submitted.',''],['HR-011','','A manager shall be able to approve a Submitted leave request of an employee who reports to them.',''],['HR-012','','A manager should decide on a submitted leave request within 2 days.',' The manager may reject it with a reason.']];
+    const srcParas=PARAS.map(([id,pre,hl,post])=>({id,pre,hl,post,tip:'Became requirement '+id+' \u00b7 click to open',bg:'#EDE9FE',go:()=>this.go('requirements',{reqSel:id})}));
+    // assistant
+    const msgs=s.msgs.map(m=>({text:m.text,justify:m.u?'flex-end':'flex-start',bg:m.u?'#0F172A':'#fff',fg:m.u?'#fff':'#0F172A',bd:m.u?'0':'1px solid #E2E8F0',hasProp:!!m.prop,pending:m.prop==='pending',decided:m.prop&&m.prop!=='pending',decLabel:m.prop==='accepted'?'Accepted \u00b7 added to the model':'Rejected',decFg:m.prop==='accepted'?'#047857':'#6B7280'}));
+    const dots=[0,1,2].map(i=>React.createElement('span',{key:i,style:{width:6,height:6,borderRadius:999,background:'#94A3B8',animation:`plDot 1.2s ${i*0.15}s infinite`}}));
+    // palette
+    const PAL=[['Commands','Run next step','Calculations & rules','play',()=>{this.closeAll();this.startRun('Calculations & rules');}],['Commands','Go to Inbox','\u23181\u20137 to jump','inbox',goInbox],['Commands','Go to Quality','','shield',()=>this.go('quality')],['Commands','Export specification','Model, glossary, scenarios, reports','download',()=>{this.closeAll();this.openExport();}],['Commands','Switch to dark appearance','','sliders',()=>{this.closeAll();this.toast('Dark appearance is part of the next iteration');}],
+      ['Requirements','HR-009','Submitting a valid leave request shall change its status\u2026','list',()=>this.go('requirements',{reqSel:'HR-009'})],['Requirements','HR-030','The leave-request submission operation should complete\u2026','list',()=>this.go('requirements',{reqSel:'HR-030'})],['Glossary','leave request','alias: request','grid',()=>this.go('model',{seg:'glossary'})],['Entities','Leave request','6 attributes · 6 states','grid',()=>this.go('model',{seg:'entities',entSel:'lr'})],['Rules','Annual leave eligibility','1 uncovered cell','grid',()=>this.go('model',{seg:'rules'})],['Scenarios','Contractor requests annual leave','Pass','flask',()=>this.go('scenarios',{scenSel:'s4'})]];
+    const ql=s.q.trim().toLowerCase();
+    const hits=PAL.filter(x=>!ql?(x[0]==='Commands'||x[1]==='HR-009'||x[1]==='Leave request'):(x[1]+' '+x[2]+' '+x[0]).toLowerCase().includes(ql));
+    const gl=[];hits.forEach(([g,label,sub,icon,go])=>{let G=gl.find(x=>x.k===g);if(!G){G={k:g,label:!ql&&g!=='Commands'?'Recent':g,items:[]};gl.push(G);}G.items.push({label,sub,icon:I(icon,16),go});});
+    // sheet
+    const sh=s.sheet;
+    const sheet=sh?{title:sh.title,desc:sh.desc,ph:sh.ph,confirm:sh.confirm,cancel:sh.cancel||'Cancel',isReason:!sh.kind,isList:sh.kind==='list',isMatrix:sh.kind==='matrix',list:(sh.list||[]).map(([k,v,on])=>({k,v,bg:on?'#0F172A':'#fff',bd:on?'0':'1px solid #CBD5E1',icon:on?I('check',12):null})),hasConfirm:!!sh.confirm,w:sh.kind==='matrix'?760:480,btnBg:sh.danger?'#DC2626':'#0F172A',disabled:sh.required&&!s.reason.trim(),op:sh.required&&!s.reason.trim()?0.4:1}:{};
+    const ops=['Create leave request','Submit leave request','Approve leave request','Reject leave request','Withdraw leave request','Cancel leave request','View leave balance'];
+    const cols=['Leave request','Employee','Manager decision','Public holiday','Approval record'];
+    const M={0:['C','R','','',''],1:['U','R','','R',''],2:['U','U','C','R','C'],3:['U','R','C','',''],4:['U','','','',''],5:['U','U','','R',''],6:['','R','','','']};
+    const matrix=[{v:'Operation',bg:'#F1F5F9',font:'600 11px/1.4 Inter',fg:'#6B7280',align:'left'}].concat(cols.map(c=>({v:c,bg:'#F1F5F9',font:'600 11px/1.4 Inter',fg:'#6B7280',align:'center'})));
+    ops.forEach((o,i)=>{matrix.push({v:o,bg:'#fff',font:'500 12px/1.4 Inter',fg:'#0F172A',align:'left'});M[i].forEach((c,j)=>matrix.push({v:c||'\u00b7',tip:c?o+' '+{C:'creates',R:'reads',U:'updates',D:'deletes'}[c]+' '+cols[j]:'',bg:'#fff',font:c?'600 12px/1.4 JetBrains Mono':'400 12px/1.4 Inter',fg:c?'#0F172A':'#CBD5E1',align:'center'}));});
+    return {
+      ic,ic20,ic24,sbOpen,sbW:sbOpen?232:64,nav,version,next,aiOff,offline:!!p.connectionLost,
+      is:{overview:s.route==='overview',inbox:s.route==='inbox',requirements:s.route==='requirements',model:s.route==='model',scenarios:s.route==='scenarios',quality:s.route==='quality',sources:s.route==='sources'},
+      running,runPct:running?s.run.pct:0,wide:(s.vw||1440)>=1280,showVerText:(s.vw||1440)>=1280||running||!!p.connectionLost,searchMin:(s.vw||1440)>=1280?120:34,searchMax:(s.vw||1440)>=1280?260:34,searchPad:(s.vw||1440)>=1280?12:9,
+      runLabel:running?s.run.pct+'%':((s.vw||1440)>=1280?'Run next step':''),runIcon:running?I('refresh',14):I('play',14),runMenu:s.runMenu,
+      runNext:()=>{if(!running)this.startRun('Calculations & rules');},toggleRunMenu:()=>this.setState({runMenu:!s.runMenu}),
+      stepMenu:STEPS.slice(1,8).map((l,i)=>({label:l+' step',meta:stepState(i+1)==='done'?'Done':stepState(i+1)==='review'?'Needs review':'',run:()=>this.startRun(l)})),
+      ov:{firstRun,notFirst:!firstRun,ring:ring(ready,96,8),ready,subs,steps,tiles},gates,gatesOv,scGwt:sc.gwt.map(x=>({label:x.k,text:x.v})),historyTop:HIST.slice(0,5),
+      goQuality:e=>{e.preventDefault();this.go('quality',{qTab:'gates'});},goHistory:e=>{e.preventDefault();this.go('quality',{qTab:'history'});},goSources:e=>{e&&e.preventDefault&&e.preventDefault();this.go('sources');},goModel:e=>{e.preventDefault();this.go('model',{seg:'rules'});},goReq:()=>this.go('requirements'),
+      ib,sel,acceptAllFlows:()=>{const ids=inbox.filter(x=>x.origin==='Flows step'&&!x.stale).map(x=>x.id);this.removeItems(ids);this.toast(ids.length+' proposals accepted'+(inbox.some(x=>x.stale)?' · 1 needs a refresh':''),'View in Model',()=>this.go('model',{seg:'processes'}));},
+      acceptMulti:()=>{const ids=s.multi.filter(id=>{const x=inbox.find(y=>y.id===id);return x&&!x.stale&&x.type!=='question';});this.removeItems(ids);this.toast(ids.length+' items accepted together');},clearMulti:()=>this.setState({multi:[]}),
+      refreshSel:()=>{this.setState(x=>({inbox:x.inbox.map(y=>y.id===s.selId?Object.assign({},y,{stale:false,age:'now'}):y)}));this.toast('Proposal refreshed against version 42');},
+      reqRows,rq,reqChips,reqMore:s.reqMore,toggleReqMore:()=>this.setState({reqMore:!s.reqMore}),
+      reqMoreItems:[{label:'Change kind\u2026',go:()=>{this.setState({reqMore:false});this.toast('Kind menu: nine classes');}},{label:'Split into two\u2026',go:()=>this.setState({reqMore:false,sheet:{kind:'list',title:'Split '+R.id+' into two',desc:'Preview the resulting requirements before committing. Evidence and links are copied to both.',list:[[R.id+'a','Part 1',true],[R.id+'b','Part 2',true]],confirm:'Split',on:()=>this.toast(R.id+' split into 2 requirements')}})},{label:'Mark as duplicate of\u2026',go:()=>{this.setState({reqMore:false});this.toast('Pick the requirement it duplicates');}}],
+      acceptEars:()=>this.toast('Wording accepted for '+R.id),waiveReq:()=>this.setState({reason:'',sheet:{title:'Waive this finding',desc:'The finding stays visible, marked as waived, with your reason.',ph:'Why is this acceptable?',confirm:'Waive',required:true,on:()=>{this.setState({waivedReq:true});this.toast('Finding waived');}}}),
+      segs,m:{glossary:s.seg==='glossary',entities:s.seg==='entities',rules:s.seg==='rules',calcs:s.seg==='calcs',processes:s.seg==='processes'},glossary,entities,ent,rule,calc,nodes,procEdges:edges,node,nodeList,lanes,
+      setOutcome:()=>this.setState({reason:'',sheet:{title:'Set outcome · Contractor × Sick',desc:'Contractor + Sick leave isn\u2019t covered by any requirement. Set the outcome to Yes; your reason is recorded as a decision.',ph:'Reason (required)',confirm:'Set to Yes',required:true,on:()=>{this.setState({ruleSet:true});this.toast('Rule updated · decision recorded');}}}),
+      confirmCalc:()=>{this.setState({calcOk:true});this.toast('Calculation confirmed');},
+      openCoverage:()=>this.setState({sheet:{kind:'matrix',title:'Coverage',desc:'Operations \u00d7 entities. C create · R read · U update · D delete. Hover a cell for detail.',cancel:'Close'}}),
+      openChanges:()=>this.setState({sheet:{kind:'list',title:'Changes since your last visit',desc:'Version 39 \u2192 42 · 3 added, 1 modified, 0 removed.',list:[['Added','operation Submit leave request',true],['Added','operation Approve leave request',true],['Added','event Leave request submitted',true],['Modified','calculation RequestedWorkingDays',false]],cancel:'Close'}}),
+      scenRows,sc,runScen:()=>this.toast('7 scenarios ran · 7 pass'),confirmAllScen:()=>this.toast('3 derived scenarios confirmed'),
+      qTabs,qv:{gates:s.qTab==='gates',issues:s.qTab==='issues',history:s.qTab==='history'},issues,history,
+      srcParas,uploading:s.uploading!=null,upPct:s.uploading||0,fakeImport:this.fakeImport,
+      asst:s.asst,toggleAsst:()=>this.setState({asst:!s.asst}),asstNavBg:s.asst?'#F1F5F9':'transparent',msgs,typing:s.typing,dots,draft:s.draft,composerOff:aiOff||s.typing,
+      setDraft:e=>this.setState({draft:e.target.value}),
+      draftKey:e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();this.send();}},
+      send:()=>this.send(),
+      acceptAsst:()=>{this.setState(x=>({msgs:x.msgs.map(m=>m.prop==='pending'?Object.assign({},m,{prop:'accepted'}):m)}));this.toast('View leave balance added to the model');},
+      rejectAsst:()=>this.setState(x=>({msgs:x.msgs.map(m=>m.prop==='pending'?Object.assign({},m,{prop:'rejected'}):m)})),
+      pal:s.pal,q:s.q,setQ:e=>this.setState({q:e.target.value}),palGroups:gl,palNone:gl.length===0,openPal:()=>this.setState({pal:true,q:''}),
+      hasSheet:!!sh,sheet,matrix,reason:s.reason,setReason:e=>this.setState({reason:e.target.value}),reasonKey:()=>{},sheetConfirm:this.sheetConfirm,
+      settings:s.settings,openSettings:()=>this.setState({settings:true}),aiDot:aiOff?'#9CA3AF':'#10B981',aiText:aiOff?'Off \u2014 no API key configured':'Available · claude-sonnet-4-5',
+      hasToast:!!s.toast,toast:s.toast?{msg:s.toast.msg,action:s.toast.action,hasAction:!!s.toast.action,go:()=>{const g=s.toast.go;this.setState({toast:null});g&&g();}}:{},
+      closeAll:this.closeAll,stop:e=>e.stopPropagation()
+    };
+  }
+  openExport(){this.setState({sheet:{kind:'list',title:'Export specification',desc:'Choose the files to include. They download as one archive.',list:[['Functional model','model.json',true],['Glossary','glossary.md',true],['Scenarios','scenarios.feature',true],['Report','report.md',true],['Gate report','gates.json',true],['Decisions','decisions.csv',true]],confirm:'Download',on:()=>this.toast('hr-leave-spec-v42.zip downloaded')}});}
+  send(){const t=this.state.draft.trim();if(!t||this.state.typing)return;this.setState(s=>({msgs:s.msgs.concat({u:true,text:t}),draft:'',typing:true}));setTimeout(()=>this.setState(s=>({typing:false,msgs:s.msgs.concat({u:false,text:'HR-015 says approving deducts the requested working days from the annual leave balance. Rejected and withdrawn requests don\u2019t change it. Want me to propose a scenario for a withdrawn request?'})})),1400);}
+}
+</script>
+</body>
+</html>

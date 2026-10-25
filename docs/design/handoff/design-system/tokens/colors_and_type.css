@@ -1,0 +1,215 @@
+/* =============================================================
+   TensAI · Design System · Colors & Type
+   Source of truth: BrandBook_TensAI/kolory_marki/brand_colors.docx
+   ============================================================= */
+
+/* ---------- Typography (web fonts) ---------- */
+@import url("https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  /* =========================================================
+     COLOR · Brand foundation
+     ========================================================= */
+
+  /* Backgrounds */
+  --color-bg-black:         #000000;
+  --color-bg-white:         #FAFAFA;
+
+  /* Primary — Violet */
+  --color-violet:           #6D28D9;  /* base · primary actions */
+  --color-violet-hover:     #7C3AED;  /* hover state */
+  --color-violet-pressed:   #5B21B6;  /* active / pressed */
+  --color-violet-light:     #C4B5FD;  /* text on dark */
+  --color-violet-wash:      #EDE9FE;  /* tinted backgrounds, callouts */
+  --color-violet-tint:      rgba(109, 40, 217, 0.12); /* overlays */
+
+  /* Midnight (deep neutral / dark surfaces) */
+  --color-midnight:         #0F172A;  /* headlines, dark sections */
+  --color-midnight-light:   #1E293B;  /* cards / surfaces on black */
+  --color-midnight-muted:   #334155;  /* body text */
+  --color-midnight-subtext: #94A3B8;  /* secondary on dark */
+  --color-midnight-on-dark: #F8FAFC;  /* primary text on dark */
+
+  /* Gray & Surface */
+  --color-gray:             #6B7280;  /* helper, captions */
+  --color-gray-light:       #9CA3AF;  /* input placeholders */
+  --color-surface:          #F1F5F9;  /* cards, raised areas */
+  --color-border:           #E2E8F0;  /* dividers, input borders */
+
+  /* =========================================================
+     SEMANTIC · Roles
+     ========================================================= */
+  --fg-1:        var(--color-midnight);        /* primary text */
+  --fg-2:        var(--color-midnight-muted);  /* body */
+  --fg-3:        var(--color-gray);            /* secondary */
+  --fg-4:        var(--color-gray-light);      /* placeholder */
+  --fg-on-dark:  var(--color-midnight-on-dark);
+  --fg-sub-dark: var(--color-midnight-subtext);
+
+  --bg-page:     var(--color-bg-white);
+  --bg-surface:  var(--color-surface);
+  --bg-card:     #FFFFFF;
+  --bg-dark:     var(--color-midnight);
+  --bg-darker:   var(--color-bg-black);
+  --bg-elevated-dark: var(--color-midnight-light);
+
+  --border:      var(--color-border);
+  --border-dark: var(--color-midnight-muted);
+
+  --accent:          var(--color-violet);
+  --accent-hover:    var(--color-violet-hover);
+  --accent-pressed:  var(--color-violet-pressed);
+  --accent-wash:     var(--color-violet-wash);
+  --accent-tint:     var(--color-violet-tint);
+  --accent-on-dark:  var(--color-violet-light);
+
+  /* Status (derived to harmonize with brand) */
+  --status-success: #10B981;
+  --status-warning: #F59E0B;
+  --status-danger:  #DC2626;
+  --status-info:    var(--color-violet);
+
+  /* =========================================================
+     TYPOGRAPHY
+     - Wordmark in the logo is a geometric grotesque (Montserrat
+       is the closest free match; flag for designer review).
+     - Body uses Inter — neutral, screen-optimized.
+     ========================================================= */
+  --font-display: "Montserrat", "Helvetica Neue", system-ui, -apple-system, sans-serif;
+  --font-body:    "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --fw-regular:   400;
+  --fw-medium:    500;
+  --fw-semibold:  600;
+  --fw-bold:      700;
+  --fw-extrabold: 800;
+
+  /* Scale (1.25 / major third) */
+  --fs-display:   72px;   /* hero headlines */
+  --fs-h1:        56px;
+  --fs-h2:        40px;
+  --fs-h3:        28px;
+  --fs-h4:        22px;
+  --fs-lead:      20px;
+  --fs-body:      16px;
+  --fs-small:     14px;
+  --fs-caption:   12px;
+  --fs-eyebrow:   11px;
+
+  --lh-tight:     1.05;
+  --lh-snug:      1.2;
+  --lh-normal:    1.45;
+  --lh-relaxed:   1.6;
+
+  --tracking-tight:    -0.02em;
+  --tracking-normal:   0;
+  --tracking-wide:     0.04em;
+  --tracking-eyebrow:  0.14em;  /* uppercase eyebrow labels */
+
+  /* =========================================================
+     SPACING (4px grid)
+     ========================================================= */
+  --space-0:  0;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+  --space-32: 128px;
+
+  /* =========================================================
+     RADII
+     - Brand is geometric / generous. Default to 12-16px on cards,
+       8px on inputs, full pill on chips & primary CTAs.
+     ========================================================= */
+  --radius-xs:  4px;
+  --radius-sm:  8px;
+  --radius-md:  12px;
+  --radius-lg:  16px;
+  --radius-xl:  24px;
+  --radius-2xl: 32px;
+  --radius-pill: 999px;
+
+  /* =========================================================
+     SHADOWS
+     - Soft, low-spread on light surfaces.
+     - Violet-tinted accent shadow under hero CTAs.
+     ========================================================= */
+  --shadow-xs:  0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm:  0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md:  0 4px 12px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.04);
+  --shadow-lg:  0 12px 32px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.04);
+  --shadow-xl:  0 24px 64px rgba(15, 23, 42, 0.14), 0 8px 16px rgba(15, 23, 42, 0.06);
+  --shadow-accent: 0 12px 32px rgba(109, 40, 217, 0.28);
+  --shadow-inset:  inset 0 1px 0 rgba(255, 255, 255, 0.06);
+
+  /* =========================================================
+     MOTION
+     ========================================================= */
+  --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:   cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast:    120ms;
+  --dur-base:    200ms;
+  --dur-slow:    320ms;
+  --dur-page:    480ms;
+}
+
+/* =============================================================
+   Base typography reset
+   ============================================================= */
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+body {
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  line-height: var(--lh-normal);
+  color: var(--fg-1);
+  background: var(--bg-page);
+}
+
+h1, h2, h3, h4, h5, h6 { font-family: var(--font-display); color: var(--fg-1); margin: 0; }
+h1 { font-size: var(--fs-h1); font-weight: var(--fw-bold);     letter-spacing: var(--tracking-tight); line-height: var(--lh-tight); }
+h2 { font-size: var(--fs-h2); font-weight: var(--fw-bold);     letter-spacing: var(--tracking-tight); line-height: var(--lh-snug); }
+h3 { font-size: var(--fs-h3); font-weight: var(--fw-semibold); letter-spacing: var(--tracking-tight); line-height: var(--lh-snug); }
+h4 { font-size: var(--fs-h4); font-weight: var(--fw-semibold); line-height: var(--lh-snug); }
+
+p { margin: 0; color: var(--fg-2); line-height: var(--lh-relaxed); }
+small { font-size: var(--fs-small); color: var(--fg-3); }
+
+a { color: var(--accent); text-decoration: none; transition: color var(--dur-fast) var(--ease-out); }
+a:hover { color: var(--accent-hover); }
+
+code, pre, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+code {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  color: var(--fg-1);
+}
+
+.eyebrow {
+  font-family: var(--font-body);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--fg-3);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-size: var(--fs-display);
+  font-weight: var(--fw-extrabold);
+  letter-spacing: -0.025em;
+  line-height: var(--lh-tight);
+}

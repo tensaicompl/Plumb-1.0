@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TensAI — Card base</title>
+<link rel="stylesheet" href="../tokens/colors_and_type.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #FAFAFA; }
+  .card {
+    box-sizing: border-box;
+    width: 700px;
+    padding: 24px;
+    background: #FFFFFF;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    font-family: var(--font-body);
+    color: var(--fg-1);
+  }
+  .row { display: flex; align-items: center; gap: 16px; }
+  .grid { display: grid; gap: 12px; }
+  .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-3); }
+  .val   { font-family: var(--font-mono); font-size: 12px; color: var(--fg-2); }
+</style>
+</head>
+<body><div class="card"><!-- override per card --></div></body>
+</html>

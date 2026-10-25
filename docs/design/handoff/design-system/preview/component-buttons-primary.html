@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<link rel="stylesheet" href="../tokens/colors_and_type.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #FAFAFA; font-family: var(--font-body); }
+  .card { box-sizing: border-box; width: 700px; padding: 28px; background: #FFFFFF; border: 1px solid var(--border); border-radius: 16px; color: var(--fg-1); }
+  .label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-3); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .sub { font-size: 12px; color: var(--fg-3); margin-top: 4px; }
+  .btn { background:#6D28D9; color:#fff; border:0; padding:12px 22px; font:600 14px/1 var(--font-body); cursor:pointer; box-shadow:0 6px 16px rgba(109,40,217,0.20); }
+  .btn.hov     { background:#7C3AED; box-shadow:0 6px 16px rgba(109,40,217,0.28); }
+  .btn.press   { background:#5B21B6; box-shadow:none; }
+  .btn.disabled{ background:#C4B5FD; cursor:not-allowed; box-shadow:none; }
+  .btn.sm { padding:8px 14px; font-size:12px; }
+  .btn.lg { padding:16px 28px; font-size:16px; }
+  .pill    { border-radius: 999px; }
+  .rounded { border-radius: 10px; }
+</style></head>
+<body>
+<div class="card">
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+    <div>
+      <div class="label">Pill — marketing CTAs</div>
+      <div class="sub">Primary website actions, hero buttons</div>
+      <div class="row" style="margin-top:14px;">
+        <button class="btn pill">Get started</button>
+        <button class="btn pill hov">Hover</button>
+        <button class="btn pill press">Pressed</button>
+        <button class="btn pill disabled" disabled>Disabled</button>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn pill sm">Small</button>
+        <button class="btn pill">Default</button>
+        <button class="btn pill lg">Large</button>
+      </div>
+    </div>
+    <div>
+      <div class="label">Rounded — in-product</div>
+      <div class="sub">Default product surface, forms, toolbars</div>
+      <div class="row" style="margin-top:14px;">
+        <button class="btn rounded">Save changes</button>
+        <button class="btn rounded hov">Hover</button>
+        <button class="btn rounded press">Pressed</button>
+        <button class="btn rounded disabled" disabled>Disabled</button>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn rounded sm">Small</button>
+        <button class="btn rounded">Default</button>
+        <button class="btn rounded lg">Large</button>
+      </div>
+    </div>
+  </div>
+  <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border); font-size:12px; color:var(--fg-3); line-height:1.55;">
+    <strong style="color:var(--fg-2);">Rule of thumb:</strong> pill for the one hero CTA per marketing surface · rounded (10–12px) for everything inside the product (forms, modals, toolbars).
+  </div>
+</div>
+</body></html>

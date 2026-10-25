@@ -1,0 +1,72 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<link rel="stylesheet" href="../tokens/colors_and_type.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #FAFAFA; font-family: var(--font-body); }
+  .card {
+    box-sizing: border-box;
+    width: 700px;
+    padding: 28px;
+    background: #FFFFFF;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    color: var(--fg-1);
+  }
+  .card.dark { background: var(--color-midnight); color: var(--fg-on-dark); border-color: var(--color-midnight-light); }
+  .card.black { background: #000; color: #fff; border-color: #1a1a1a; }
+  .row { display: flex; align-items: center; gap: 16px; }
+  .col { display: flex; flex-direction: column; }
+  .grid { display: grid; gap: 12px; }
+  .label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-3); }
+  .label.dark { color: var(--fg-sub-dark); }
+  .val   { font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); }
+  .val.dark { color: var(--fg-sub-dark); }
+</style></head><body><div class="card ">
+<div class="label" style="margin-bottom:14px;">Brand · Violet scale</div>
+<div style="display:grid; grid-template-columns:repeat(5, 1fr); gap:14px;">
+  
+  <div style="display:flex; flex-direction:column; gap:8px;">
+    <div style="background:#EDE9FE; aspect-ratio:1.4; border-radius:10px; border:1px solid rgba(15,23,42,0.08);"></div>
+    <div>
+      <div style="font-size:13px; font-weight:600; color:var(--fg-1);">Wash</div>
+      <div style="font-family:var(--font-mono); font-size:11px; color:var(--fg-3); margin-top:2px;">#EDE9FE</div>
+      <div style="font-size:11px; color:var(--fg-3); margin-top:2px;">Callouts</div>
+    </div>
+  </div>
+  
+  <div style="display:flex; flex-direction:column; gap:8px;">
+    <div style="background:#C4B5FD; aspect-ratio:1.4; border-radius:10px; border:1px solid rgba(15,23,42,0.08);"></div>
+    <div>
+      <div style="font-size:13px; font-weight:600; color:var(--fg-1);">Light</div>
+      <div style="font-family:var(--font-mono); font-size:11px; color:var(--fg-3); margin-top:2px;">#C4B5FD</div>
+      <div style="font-size:11px; color:var(--fg-3); margin-top:2px;">On dark</div>
+    </div>
+  </div>
+  
+  <div style="display:flex; flex-direction:column; gap:8px;">
+    <div style="background:#7C3AED; aspect-ratio:1.4; border-radius:10px; border:1px solid rgba(15,23,42,0.08);"></div>
+    <div>
+      <div style="font-size:13px; font-weight:600; color:var(--fg-1);">Hover</div>
+      <div style="font-family:var(--font-mono); font-size:11px; color:var(--fg-3); margin-top:2px;">#7C3AED</div>
+      <div style="font-size:11px; color:var(--fg-3); margin-top:2px;">Hover state</div>
+    </div>
+  </div>
+  
+  <div style="display:flex; flex-direction:column; gap:8px;">
+    <div style="background:#6D28D9; aspect-ratio:1.4; border-radius:10px; border:1px solid rgba(15,23,42,0.08);"></div>
+    <div>
+      <div style="font-size:13px; font-weight:600; color:var(--fg-1);">Base</div>
+      <div style="font-family:var(--font-mono); font-size:11px; color:var(--fg-3); margin-top:2px;">#6D28D9</div>
+      <div style="font-size:11px; color:var(--fg-3); margin-top:2px;">Primary</div>
+    </div>
+  </div>
+  
+  <div style="display:flex; flex-direction:column; gap:8px;">
+    <div style="background:#5B21B6; aspect-ratio:1.4; border-radius:10px; border:1px solid rgba(15,23,42,0.08);"></div>
+    <div>
+      <div style="font-size:13px; font-weight:600; color:var(--fg-1);">Pressed</div>
+      <div style="font-family:var(--font-mono); font-size:11px; color:var(--fg-3); margin-top:2px;">#5B21B6</div>
+      <div style="font-size:11px; color:var(--fg-3); margin-top:2px;">Active</div>
+    </div>
+  </div>
+</div>
+</div></body></html>

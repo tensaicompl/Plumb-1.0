@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<link rel="stylesheet" href="../tokens/colors_and_type.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #FAFAFA; font-family: var(--font-body); }
+  .card { box-sizing: border-box; width: 700px; padding: 28px; background: #FFFFFF; border: 1px solid var(--border); border-radius: 16px; color: var(--fg-1); }
+  .label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-3); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+  .sub { font-size: 12px; color: var(--fg-3); margin-top: 4px; }
+  .pill    { border-radius: 999px; }
+  .rounded { border-radius: 10px; }
+  button { font:600 14px/1 var(--font-body); cursor:pointer; }
+  .midnight { background:#0F172A; color:#fff; border:0; padding:12px 22px; }
+  .outline  { background:#fff; color:#0F172A; border:1px solid #E2E8F0; padding:11px 21px; }
+  .ghost    { background:transparent; color:#6D28D9; border:0; padding:10px 14px; border-radius:8px; }
+  .ghost:hover { background:var(--accent-wash); }
+  .link     { background:transparent; color:#6D28D9; border:0; padding:0; display:inline-flex; align-items:center; gap:6px; }
+</style></head>
+<body>
+<div class="card">
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+    <div>
+      <div class="label">Pill — marketing</div>
+      <div class="sub">Secondary actions paired with hero CTA</div>
+      <div class="row">
+        <button class="midnight pill">Midnight</button>
+        <button class="outline pill">Outline</button>
+      </div>
+    </div>
+    <div>
+      <div class="label">Rounded — in-product</div>
+      <div class="sub">Cancel, secondary, toolbar actions</div>
+      <div class="row">
+        <button class="midnight rounded">Midnight</button>
+        <button class="outline rounded">Outline</button>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:18px; padding-top:18px; border-top:1px solid var(--border);">
+    <div class="label">Shape-agnostic</div>
+    <div class="sub">Always rounded-only or borderless — never pill</div>
+    <div class="row">
+      <button class="ghost">Ghost</button>
+      <button class="link">Learn more <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg></button>
+    </div>
+  </div>
+
+  <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border); font-size:12px; color:var(--fg-3); line-height:1.55;">
+    <strong style="color:var(--fg-2);">Match the primary.</strong> Pair pill secondaries next to pill primaries (marketing), rounded next to rounded (product). Don't mix shapes inside one cluster.
+  </div>
+</div>
+</body></html>

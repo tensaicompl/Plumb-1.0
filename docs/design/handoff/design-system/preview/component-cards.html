@@ -1,0 +1,29 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<link rel="stylesheet" href="../tokens/colors_and_type.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #FAFAFA; font-family: var(--font-body); }
+  .card {
+    box-sizing: border-box;
+    width: 700px;
+    padding: 28px;
+    background: #FFFFFF;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    color: var(--fg-1);
+  }
+  .card.dark { background: var(--color-midnight); color: var(--fg-on-dark); border-color: var(--color-midnight-light); }
+  .label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-3); }
+  .val   { font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); }
+</style></head><body><div class="card ">
+<div class="label" style="margin-bottom:14px;">Cards · default & elevated</div>
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+  <div style="background:#fff; border:1px solid #E2E8F0; border-radius:16px; padding:20px; box-shadow:0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);">
+    <div style="font-family:var(--font-display); font-weight:600; font-size:18px; color:#0F172A;">Default card</div>
+    <div style="font-size:13px; color:#6B7280; margin-top:6px; line-height:1.55;">1px border, radius 16, shadow-sm. The default surface on light backgrounds.</div>
+  </div>
+  <div style="background:#fff; border:1px solid #E2E8F0; border-radius:16px; padding:20px; box-shadow:0 12px 32px rgba(15,23,42,0.10), 0 4px 8px rgba(15,23,42,0.04);">
+    <div style="font-family:var(--font-display); font-weight:600; font-size:18px; color:#0F172A;">Elevated card</div>
+    <div style="font-size:13px; color:#6B7280; margin-top:6px; line-height:1.55;">Hovered or modal. Shadow lifts one level — no scale.</div>
+  </div>
+</div>
+</div></body></html>
