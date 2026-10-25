@@ -980,6 +980,31 @@
         ],
         "type": "object"
       },
+      "EvidenceExcerpt": {
+        "additionalProperties": false,
+        "description": "One evidence reference of a requirement with its source (H0.11, Fable #351): `text` is the\nexact text the importer extracted for that EvidenceFragment, `null` when the reference is not\nan EvidenceFragment carrying extracted text.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "ExportFormat": {
         "enum": [
           "functional",
@@ -1407,6 +1432,17 @@
           "into": {
             "type": "string"
           },
+          "preview": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PreviewConfirmation",
+                "description": "The reviewed preview this merge submits; absent for a merge without preview."
+              }
+            ]
+          },
           "reason": {
             "type": "string"
           }
@@ -1799,6 +1835,84 @@
         ],
         "type": "object"
       },
+      "PendingProposal": {
+        "additionalProperties": false,
+        "description": "One pending workflow proposal occurrence (H0.11 proposal discovery).",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ProposalKind",
+            "description": "The one positive action that can commit it."
+          },
+          "base_revision": {
+            "description": "The revision it was built on.",
+            "type": "string"
+          },
+          "discardable": {
+            "description": "Whether `POST /api/proposals/{id}/discard` applies (an answer or intake proposal).",
+            "type": "boolean"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/ProposalOrigin"
+          },
+          "origin_ref": {
+            "description": "The Question of an answer, the session of a session turn; null otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "recipe_job_id": {
+            "description": "The recipe job and stage job of a stage proposal; null otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires_reason": {
+            "description": "Whether its stored intake requires a reason for a positive action.",
+            "type": "boolean"
+          },
+          "stage_job_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stale": {
+            "description": "Built on another revision than the head: it is never rebased; only reject (and, when\ndiscardable, discard) still apply.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "action",
+          "origin",
+          "base_revision",
+          "requires_reason",
+          "stale",
+          "discardable"
+        ],
+        "type": "object"
+      },
+      "PendingProposalList": {
+        "additionalProperties": false,
+        "description": "Every pending workflow proposal, sorted by proposal ID then base revision. Not paged: the\npending set changes without a revision (a discard or reject commits nothing), so a cursor\ncould not pin it.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PendingProposal"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
       "PreconditionFailedResponse": {
         "additionalProperties": false,
         "description": "412: the request's If-Match did not name the current branch-head revision. `revision` and\n`semantic_hash` are the current branch-head values.",
@@ -1825,6 +1939,23 @@
           "details",
           "revision",
           "semantic_hash"
+        ],
+        "type": "object"
+      },
+      "PreviewConfirmation": {
+        "additionalProperties": false,
+        "description": "The reviewed semantic change preview a direct write submits (H0.11, architecture §33.12):\nthe previewed `proposal_id` and the `built_at` instant the preview's Proposal was built at.\nThe write rebuilds the Proposal at `built_at` on the current head and commits it only when\nit is exactly the previewed one (409 `E_PREVIEW_MISMATCH` otherwise); `built_at` must lie\nbetween the head revision's creation and now.",
+        "properties": {
+          "built_at": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "built_at"
         ],
         "type": "object"
       },
@@ -2183,6 +2314,16 @@
         ],
         "type": "string"
       },
+      "ProposalOrigin": {
+        "description": "Where a pending workflow proposal came from.",
+        "enum": [
+          "intake",
+          "question",
+          "session",
+          "stage"
+        ],
+        "type": "string"
+      },
       "Question": {
         "additionalProperties": false,
         "description": "The persisted projection of one Accepted PSG Question (Hotfix 065). Generation-time slots\nare not persisted and are not part of the contract; `answer_schema` is the typed-answer\nauthority and `context_refs` are the exact persisted context IDs.",
@@ -2466,6 +2607,13 @@
               "null"
             ]
           },
+          "evidence": {
+            "description": "The evidence references of `spans`, in the same order, with their source text.",
+            "items": {
+              "$ref": "#/components/schemas/EvidenceExcerpt"
+            },
+            "type": "array"
+          },
           "id": {
             "type": "string"
           },
@@ -2517,6 +2665,7 @@
           "smells",
           "coverage",
           "spans",
+          "evidence",
           "lint_findings",
           "linked",
           "lint_current"
@@ -3051,10 +3200,14 @@
       },
       "SemanticChangePreviewResponse": {
         "additionalProperties": false,
-        "description": "A server-authoritative semantic change preview (Hotfix 073): the exact domain Proposal is\npersisted as a pending workflow proposal bound to the baseline revision and nothing is\ncommitted. `version`, `revision` and `semantic_hash` are the baseline; `events` is empty.\nConfirmation is the existing proposal action on `proposal_id`.",
+        "description": "A server-authoritative semantic change preview (Hotfix 073, H0.11): the exact domain\nProposal built at `built_at` on the baseline revision, with its intake and semantic element\ndiff. Nothing is persisted or committed. `version`, `revision` and `semantic_hash` are the\nbaseline; `events` is empty. Confirmation is the direct write with the same request and\n`preview: {proposal_id, built_at}`, sent with the baseline revision as If-Match.",
         "properties": {
           "action": {
             "$ref": "#/components/schemas/ProposalKind"
+          },
+          "built_at": {
+            "description": "The instant the previewed Proposal was built at (part of its identity).",
+            "type": "string"
           },
           "diff": {
             "$ref": "#/components/schemas/SemanticElementDiff"
@@ -3087,6 +3240,7 @@
           "semantic_hash",
           "events",
           "proposal_id",
+          "built_at",
           "action",
           "intake",
           "diff"
@@ -3570,6 +3724,17 @@
             },
             "type": "array"
           },
+          "preview": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PreviewConfirmation",
+                "description": "The reviewed preview this split submits; absent for a split without preview."
+              }
+            ]
+          },
           "reason": {
             "type": "string"
           }
@@ -3690,7 +3855,7 @@
     }
   },
   "info": {
-    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72) and U2.1 (the two semantic change previews, operations 73-74).",
+    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74) and H0.11 (proposal discovery and discard, operations 75-76).",
     "title": "Plumb Modeller API",
     "version": "0.1.0",
     "x-plumb-error-codes": [
@@ -3970,6 +4135,11 @@
         "status": 400
       },
       {
+        "code": "E_PROPOSAL_NOT_DISCARDABLE",
+        "meaning": "Only a pending answer or intake proposal can be discarded.",
+        "status": 409
+      },
+      {
         "code": "E_PROPOSAL_NOT_PENDING",
         "meaning": "The proposal is not pending.",
         "status": 409
@@ -3982,6 +4152,11 @@
       {
         "code": "E_PROPOSAL_SET_CONFLICT",
         "meaning": "The proposals of the set are not compatible on their shared base.",
+        "status": 409
+      },
+      {
+        "code": "E_PREVIEW_MISMATCH",
+        "meaning": "The submitted change is not the reviewed preview's proposal.",
         "status": 409
       },
       {
@@ -5177,6 +5352,7 @@
               "application/json": {
                 "example": {
                   "action": "accept",
+                  "built_at": "example",
                   "diff": {
                     "added": [
                       "example"
@@ -5255,7 +5431,7 @@
                 }
               }
             },
-            "description": "Pending merge proposal, intake and semantic element diff; nothing is committed"
+            "description": "The exact merge proposal, intake and semantic element diff; nothing is persisted or committed"
           },
           "412": {
             "content": {
@@ -7203,6 +7379,48 @@
         ]
       }
     },
+    "/api/proposals": {
+      "get": {
+        "operationId": "list_proposals",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "items": [
+                    {
+                      "action": "accept",
+                      "base_revision": "example",
+                      "discardable": true,
+                      "origin": "intake",
+                      "proposal_id": "example",
+                      "requires_reason": true,
+                      "stale": true
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PendingProposalList"
+                }
+              }
+            },
+            "description": "Every pending workflow proposal",
+            "headers": {
+              "ETag": {
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
+                "example": "example",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "proposals"
+        ]
+      }
+    },
     "/api/proposals/intake": {
       "post": {
         "operationId": "intake_proposal",
@@ -7473,6 +7691,90 @@
               }
             },
             "description": "Write result"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "example",
+                  "details": {},
+                  "message": "example",
+                  "revision": "example",
+                  "semantic_hash": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PreconditionFailedResponse"
+                }
+              }
+            },
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
+          }
+        },
+        "tags": [
+          "proposals"
+        ]
+      }
+    },
+    "/api/proposals/{id}/discard": {
+      "post": {
+        "operationId": "discard_proposal",
+        "parameters": [
+          {
+            "description": "Proposal ID",
+            "example": "example",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
+            "example": "example",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {},
+              "schema": {
+                "$ref": "#/components/schemas/ProposalActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "events": [
+                    {
+                      "ids": [
+                        "example"
+                      ],
+                      "kind": "example",
+                      "version": "example"
+                    }
+                  ],
+                  "revision": "example",
+                  "semantic_hash": "example",
+                  "version": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/WriteResult"
+                }
+              }
+            },
+            "description": "The pending answer or intake proposal is abandoned; nothing is committed"
           },
           "412": {
             "content": {
@@ -8290,6 +8592,11 @@
                       "example"
                     ]
                   },
+                  "evidence": [
+                    {
+                      "id": "example"
+                    }
+                  ],
                   "id": "HR-001",
                   "linked": {
                     "operations": [
@@ -8785,6 +9092,7 @@
               "application/json": {
                 "example": {
                   "action": "accept",
+                  "built_at": "example",
                   "diff": {
                     "added": [
                       "example"
@@ -8863,7 +9171,7 @@
                 }
               }
             },
-            "description": "Pending create-class split proposal, intake and semantic element diff; nothing is committed"
+            "description": "The exact create-class split proposal, intake and semantic element diff; nothing is persisted or committed"
           },
           "412": {
             "content": {

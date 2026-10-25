@@ -14,14 +14,16 @@ use crate::StoreError;
 /// Version of the physical SQLite schema recorded in `schema_meta`. Version 2 (Hotfix 065)
 /// adds the durable workflow tables; version 3 (A0.4, Hotfix 067) admits the `stage` workflow
 /// origin and adds the stage-orchestration tables; version 4 (H0.10, architecture §33.11) keys
-/// workflow proposals and their stage links by occurrence `(proposal_id, base_revision_id)`.
-/// Valid v1, v2 and v3 stores are migrated transactionally.
-pub const STORE_SCHEMA_VERSION: i64 = 4;
+/// workflow proposals and their stage links by occurrence `(proposal_id, base_revision_id)`;
+/// version 5 (H0.11, architecture §33.12) admits the terminal proposal state `abandoned`.
+/// Valid v1, v2, v3 and v4 stores are migrated transactionally.
+pub const STORE_SCHEMA_VERSION: i64 = 5;
 
 /// The earlier store schema versions that are migrated.
 const STORE_SCHEMA_VERSION_V1: i64 = 1;
 const STORE_SCHEMA_VERSION_V2: i64 = 2;
 const STORE_SCHEMA_VERSION_V3: i64 = 3;
+const STORE_SCHEMA_VERSION_V4: i64 = 4;
 
 /// Version of the persisted PSG interpretation/validation contract a snapshot was written under
 /// (owned by `plumb-psg`, next to the serialized forms it versions).
@@ -130,9 +132,10 @@ CREATE TABLE ledger_events (
 );
 ";
 
-/// The v4 `workflow_proposals` definition under `name`: one row per proposal occurrence
-/// `(proposal_id, base_revision_id)` with its durable `occurrence_id` (H0.10, architecture
-/// §33.11); the `stage` origin (Hotfix 067) has no `origin_ref`. Workflow rows never participate
+/// The v5 `workflow_proposals` definition under `name`: one row per proposal occurrence
+/// `(proposal_id, base_revision_id)` with its durable `occurrence_id` (v4, H0.10, architecture
+/// §33.11) and the terminal `abandoned` state (v5, H0.11); the `stage` origin (Hotfix 067) has
+/// no `origin_ref`. Workflow rows never participate
 /// in a revision, its hashes or its identity; they hold canonical opaque JSON and lifecycle
 /// state.
 fn create_workflow_proposals(name: &str) -> String {
@@ -146,7 +149,7 @@ CREATE TABLE {name} (
   proposal_kind TEXT NOT NULL
     CHECK (proposal_kind IN ('link', 'merge', 'supersede', 'create', 'accept')),
   state TEXT NOT NULL
-    CHECK (state IN ('prepared', 'pending', 'accepted', 'rejected', 'failed')),
+    CHECK (state IN ('prepared', 'pending', 'accepted', 'rejected', 'failed', 'abandoned')),
   origin_kind TEXT NOT NULL CHECK (origin_kind IN ('intake', 'question', 'session', 'stage')),
   origin_ref TEXT NULL,
   created_at TEXT NOT NULL,
@@ -185,7 +188,7 @@ CREATE TABLE {name} (
     )
 }
 
-/// The v2/v3 -> v4 rebuild of `workflow_proposals`: every row is copied unchanged as its own
+/// The v2/v3 -> v5 rebuild of `workflow_proposals`: every row is copied unchanged as its own
 /// occurrence, with its occurrence key computed from `(proposal_id, base_revision_id)`.
 fn migrate_workflow_proposals(tx: &Transaction<'_>) -> Result<(), StoreError> {
     tx.execute_batch(&create_workflow_proposals("workflow_proposals_v4"))?;
@@ -220,6 +223,24 @@ fn migrate_workflow_proposals(tx: &Transaction<'_>) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// The v4 -> v5 rebuild of `workflow_proposals` (H0.11): only the state CHECK changes, so every
+/// row is copied unchanged, column for column. The stage links keep referencing the table by
+/// name.
+fn migrate_v4_proposal_states(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    tx.execute_batch(&create_workflow_proposals("workflow_proposals_v5"))?;
+    tx.execute_batch(
+        "INSERT INTO workflow_proposals_v5 (proposal_id, base_revision_id, proposal_json, \
+           intake_json, proposal_kind, state, origin_kind, origin_ref, created_at, resolved_at, \
+           resolved_revision_id, occurrence_id) \
+         SELECT proposal_id, base_revision_id, proposal_json, intake_json, proposal_kind, state, \
+           origin_kind, origin_ref, created_at, resolved_at, resolved_revision_id, occurrence_id \
+           FROM workflow_proposals;
+         DROP TABLE workflow_proposals;
+         ALTER TABLE workflow_proposals_v5 RENAME TO workflow_proposals;",
+    )?;
+    Ok(())
+}
+
 /// The v3 -> v4 rebuild of `stage_job_proposals`: each link is bound to the occurrence of its
 /// proposal (v3 has exactly one row per proposal ID).
 fn migrate_stage_job_proposals(tx: &Transaction<'_>) -> Result<(), StoreError> {
@@ -243,7 +264,7 @@ fn require_foreign_keys(tx: &Transaction<'_>) -> Result<(), StoreError> {
         })?;
     if violations != 0 {
         return Err(StoreError::CorruptStoreSchema {
-            reason: format!("{violations} foreign key violations after the v4 migration"),
+            reason: format!("{violations} foreign key violations after the migration"),
         });
     }
     Ok(())
@@ -391,12 +412,14 @@ pub(crate) fn durability_of(conn: &Connection) -> Result<Durability, StoreError>
 
 enum SchemaState {
     Fresh,
-    /// A valid version-1 store that must be migrated to version 4.
+    /// A valid version-1 store that must be migrated to version 5.
     V1,
-    /// A valid version-2 store that must be migrated to version 4.
+    /// A valid version-2 store that must be migrated to version 5.
     V2,
-    /// A valid version-3 store that must be migrated to version 4.
+    /// A valid version-3 store that must be migrated to version 5.
     V3,
+    /// A valid version-4 store that must be migrated to version 5.
+    V4,
     Current,
 }
 
@@ -447,6 +470,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
         STORE_SCHEMA_VERSION_V1 => SchemaState::V1,
         STORE_SCHEMA_VERSION_V2 => SchemaState::V2,
         STORE_SCHEMA_VERSION_V3 => SchemaState::V3,
+        STORE_SCHEMA_VERSION_V4 => SchemaState::V4,
         found => return Err(StoreError::UnsupportedStoreSchemaVersion { found }),
     };
     let missing = missing_tables(&tables, &REQUIRED_V1_TABLES);
@@ -455,7 +479,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
             reason: format!("missing v1 tables: {}", missing.join(", ")),
         });
     }
-    if let SchemaState::V2 | SchemaState::V3 | SchemaState::Current = state {
+    if let SchemaState::V2 | SchemaState::V3 | SchemaState::V4 | SchemaState::Current = state {
         let missing = missing_tables(&tables, &WORKFLOW_TABLES);
         if !missing.is_empty() {
             return Err(StoreError::CorruptStoreSchema {
@@ -463,7 +487,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
             });
         }
     }
-    if let SchemaState::V3 | SchemaState::Current = state {
+    if let SchemaState::V3 | SchemaState::V4 | SchemaState::Current = state {
         let missing = missing_tables(&tables, &STAGE_TABLES);
         if !missing.is_empty() {
             return Err(StoreError::CorruptStoreSchema {
@@ -515,15 +539,16 @@ fn is_not_a_project(error: &rusqlite::Error) -> bool {
     )
 }
 
-/// Configures `conn` and brings the database to store schema v4, or fails without altering it.
+/// Configures `conn` and brings the database to store schema v5, or fails without altering it.
 ///
 /// In `CreateOrMigrate` mode a fresh database (optionally holding only the F0.2 `artifacts`
-/// table) is initialized at v4 in one transaction; in every mode a fresh database is otherwise
-/// [`StoreError::DatabaseNotInitialized`]. A valid v1, v2 or v3 store is migrated to v4 in one
+/// table) is initialized at v5 in one transaction; in every mode a fresh database is otherwise
+/// [`StoreError::DatabaseNotInitialized`]. A valid v1, v2, v3 or v4 store is migrated to v5 in one
 /// transaction (never in `ReadOnly` mode: [`StoreError::DatabaseReadOnly`]); any failure rolls
 /// the whole migration back; existing revision, artifact and workflow rows are never rewritten
 /// (v2/v3 workflow proposals are copied unchanged into the rebuilt table, each as its own
-/// occurrence); a versioned v4 store is verified and left unchanged; anything else is rejected.
+/// occurrence; v4 rows are copied unchanged); a versioned v5 store is verified and left
+/// unchanged; anything else is rejected.
 ///
 /// The durability profile is frozen (Fable #199, `docs/operations.md`): WAL journal and
 /// `synchronous = FULL`, so a committed transaction survives power loss. A `ReadOnly`
@@ -600,6 +625,11 @@ fn migrate(conn: &mut Connection, mode: StoreOpenMode) -> Result<(), StoreError>
             migrate_stage_job_proposals(&tx)?;
             require_foreign_keys(&tx)?;
             set_version(&tx, STORE_SCHEMA_VERSION_V3)?;
+        }
+        SchemaState::V4 => {
+            migrate_v4_proposal_states(&tx)?;
+            require_foreign_keys(&tx)?;
+            set_version(&tx, STORE_SCHEMA_VERSION_V4)?;
         }
         SchemaState::Current => {}
     }

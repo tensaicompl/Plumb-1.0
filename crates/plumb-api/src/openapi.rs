@@ -1,6 +1,7 @@
 //! The pilot HTTP API contract (plan A0.1, Hotfix 062): compatibility DTOs, contract-only
-//! utoipa operation stubs for the 74 NOW operations (the 72 of Hotfix 062 plus the two U2.1
-//! semantic change previews of Hotfix 073), deterministic compatibility patches,
+//! utoipa operation stubs for the 76 NOW operations (the 72 of Hotfix 062, the two U2.1
+//! semantic change previews of Hotfix 073 and the two H0.11 proposal-governance operations),
+//! deterministic compatibility patches,
 //! HR-fixture-seeded and schema-fallback examples, and the rendered OpenAPI document and API
 //! reference.
 //!
@@ -57,7 +58,8 @@ pub struct OperationSpec {
     /// Returns `Page {items, next_cursor}` and takes `cursor` and `limit`.
     pub pageable: bool,
     /// The implementation task that owns the runtime handler (Hotfix 063; Hotfix 065 moves
-    /// `run_stage` and `get_job` to A0.4; Hotfix 073 adds the two U2.1 previews).
+    /// `run_stage` and `get_job` to A0.4; Hotfix 073 adds the two U2.1 previews; H0.11 adds
+    /// proposal listing and discard).
     pub owner: &'static str,
 }
 
@@ -81,9 +83,10 @@ const fn op(
     }
 }
 
-/// The 74 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
-/// accept (01-72, Hotfix 062), then the two U2.1 semantic change previews (73-74, Hotfix 073).
-pub const OPERATIONS: [OperationSpec; 74] = [
+/// The 76 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
+/// accept (01-72, Hotfix 062), the two U2.1 semantic change previews (73-74, Hotfix 073), then
+/// proposal discovery and discard (75-76, H0.11, architecture §33.12).
+pub const OPERATIONS: [OperationSpec; 76] = [
     op(1, "GET", "/api/me", "get_me", "meta", false, "A0.2"),
     op(
         2,
@@ -734,6 +737,24 @@ pub const OPERATIONS: [OperationSpec; 74] = [
         false,
         "U2.1",
     ),
+    op(
+        75,
+        "GET",
+        "/api/proposals",
+        "list_proposals",
+        "proposals",
+        false,
+        "H0.11",
+    ),
+    op(
+        76,
+        "POST",
+        "/api/proposals/{id}/discard",
+        "discard_proposal",
+        "proposals",
+        false,
+        "H0.11",
+    ),
 ];
 
 /// The WebSocket compatibility operation.
@@ -1179,6 +1200,17 @@ pub struct RequirementLinks {
     pub scenarios: Vec<String>,
 }
 
+/// One evidence reference of a requirement with its source (H0.11, Fable #351): `text` is the
+/// exact text the importer extracted for that EvidenceFragment, `null` when the reference is not
+/// an EvidenceFragment carrying extracted text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceExcerpt {
+    pub id: String,
+    pub source_ref: Option<String>,
+    pub text: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RequirementDetail {
@@ -1191,6 +1223,8 @@ pub struct RequirementDetail {
     pub coverage: RequirementCoverage,
     pub readiness: Option<f64>,
     pub spans: Vec<String>,
+    /// The evidence references of `spans`, in the same order, with their source text.
+    pub evidence: Vec<EvidenceExcerpt>,
     /// IDs of the current F1 gate report's findings whose affected refs include this
     /// requirement. Always `[]` when `lint_current` is false.
     pub lint_findings: Vec<String>,
@@ -1237,11 +1271,26 @@ pub struct AcceptEarsRequest {
     pub text: String,
 }
 
+/// The reviewed semantic change preview a direct write submits (H0.11, architecture §33.12):
+/// the previewed `proposal_id` and the `built_at` instant the preview's Proposal was built at.
+/// The write rebuilds the Proposal at `built_at` on the current head and commits it only when
+/// it is exactly the previewed one (409 `E_PREVIEW_MISMATCH` otherwise); `built_at` must lie
+/// between the head revision's creation and now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewConfirmation {
+    pub proposal_id: String,
+    pub built_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SplitRequest {
     pub parts: Vec<String>,
     pub reason: String,
+    /// The reviewed preview this split submits; absent for a split without preview.
+    #[serde(default)]
+    pub preview: Option<PreviewConfirmation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1284,6 +1333,9 @@ pub struct GlossaryEditRequest {
 pub struct GlossaryMergeRequest {
     pub into: String,
     pub reason: String,
+    /// The reviewed preview this merge submits; absent for a merge without preview.
+    #[serde(default)]
+    pub preview: Option<PreviewConfirmation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1954,10 +2006,11 @@ pub struct SemanticElementDiff {
     pub modified: Vec<String>,
 }
 
-/// A server-authoritative semantic change preview (Hotfix 073): the exact domain Proposal is
-/// persisted as a pending workflow proposal bound to the baseline revision and nothing is
-/// committed. `version`, `revision` and `semantic_hash` are the baseline; `events` is empty.
-/// Confirmation is the existing proposal action on `proposal_id`.
+/// A server-authoritative semantic change preview (Hotfix 073, H0.11): the exact domain
+/// Proposal built at `built_at` on the baseline revision, with its intake and semantic element
+/// diff. Nothing is persisted or committed. `version`, `revision` and `semantic_hash` are the
+/// baseline; `events` is empty. Confirmation is the direct write with the same request and
+/// `preview: {proposal_id, built_at}`, sent with the baseline revision as If-Match.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticChangePreviewResponse {
@@ -1966,6 +2019,8 @@ pub struct SemanticChangePreviewResponse {
     pub semantic_hash: String,
     pub events: Vec<DesignEvent>,
     pub proposal_id: String,
+    /// The instant the previewed Proposal was built at (part of its identity).
+    pub built_at: String,
     pub action: ProposalKind,
     pub intake: IntakeReportView,
     pub diff: SemanticElementDiff,
@@ -1976,6 +2031,49 @@ pub struct SemanticChangePreviewResponse {
 #[serde(deny_unknown_fields)]
 pub struct ProposalActionRequest {
     pub reason: Option<String>,
+}
+
+/// Where a pending workflow proposal came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalOrigin {
+    Intake,
+    Question,
+    Session,
+    Stage,
+}
+
+/// One pending workflow proposal occurrence (H0.11 proposal discovery).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PendingProposal {
+    pub proposal_id: String,
+    /// The one positive action that can commit it.
+    pub action: ProposalKind,
+    pub origin: ProposalOrigin,
+    /// The Question of an answer, the session of a session turn; null otherwise.
+    pub origin_ref: Option<String>,
+    /// The recipe job and stage job of a stage proposal; null otherwise.
+    pub recipe_job_id: Option<String>,
+    pub stage_job_id: Option<String>,
+    /// The revision it was built on.
+    pub base_revision: String,
+    /// Whether its stored intake requires a reason for a positive action.
+    pub requires_reason: bool,
+    /// Built on another revision than the head: it is never rebased; only reject (and, when
+    /// discardable, discard) still apply.
+    pub stale: bool,
+    /// Whether `POST /api/proposals/{id}/discard` applies (an answer or intake proposal).
+    pub discardable: bool,
+}
+
+/// Every pending workflow proposal, sorted by proposal ID then base revision. Not paged: the
+/// pending set changes without a revision (a discard or reject commits nothing), so a cursor
+/// could not pin it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PendingProposalList {
+    pub items: Vec<PendingProposal>,
 }
 
 // ============================================================================ sessions, decisions, readiness, export
@@ -2535,17 +2633,27 @@ mod stubs {
     #[utoipa::path(post, path = "/api/requirements/{id}/split/preview", operation_id = "preview_requirement_split", tag = "requirements",
         params(("id" = String, Path, description = "Requirement ID")),
         request_body(content = SplitRequest),
-        responses((status = 200, description = "Pending create-class split proposal, intake and semantic element diff; nothing is committed", body = SemanticChangePreviewResponse)))]
+        responses((status = 200, description = "The exact create-class split proposal, intake and semantic element diff; nothing is persisted or committed", body = SemanticChangePreviewResponse)))]
     pub fn preview_requirement_split() {}
 
     #[utoipa::path(post, path = "/api/glossary/{id}/merge/preview", operation_id = "preview_glossary_merge", tag = "glossary",
         params(("id" = String, Path, description = "Term ID")),
         request_body(content = GlossaryMergeRequest),
-        responses((status = 200, description = "Pending merge proposal, intake and semantic element diff; nothing is committed", body = SemanticChangePreviewResponse)))]
+        responses((status = 200, description = "The exact merge proposal, intake and semantic element diff; nothing is persisted or committed", body = SemanticChangePreviewResponse)))]
     pub fn preview_glossary_merge() {}
+
+    #[utoipa::path(get, path = "/api/proposals", operation_id = "list_proposals", tag = "proposals",
+        responses((status = 200, description = "Every pending workflow proposal", body = PendingProposalList)))]
+    pub fn list_proposals() {}
+
+    #[utoipa::path(post, path = "/api/proposals/{id}/discard", operation_id = "discard_proposal", tag = "proposals",
+        params(("id" = String, Path, description = "Proposal ID")),
+        request_body(content = ProposalActionRequest),
+        responses((status = 200, description = "The pending answer or intake proposal is abandoned; nothing is committed", body = WriteResult)))]
+    pub fn discard_proposal() {}
 }
 
-/// The utoipa base contract of the 74 operations.
+/// The utoipa base contract of the 76 operations.
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Plumb Modeller API"),
@@ -2572,7 +2680,7 @@ mod stubs {
         stubs::create_session_turn, stubs::get_session, stubs::get_session_metrics,
         stubs::list_decisions, stubs::get_requirement_readiness, stubs::get_readiness,
         stubs::export_model, stubs::get_model_diff, stubs::preview_requirement_split,
-        stubs::preview_glossary_merge,
+        stubs::preview_glossary_merge, stubs::list_proposals, stubs::discard_proposal,
     ),
     components(schemas(
         DesignEvent, PreconditionFailedResponse, CursorConflictResponse, CursorErrorCode, StageName,
@@ -3097,7 +3205,7 @@ fn check_inventory(doc: &Value) -> Result<(), OpenApiContractError> {
     expected.sort();
     if found != expected {
         return Err(invariant(
-            "operations differ from the frozen 74-operation inventory",
+            "operations differ from the frozen 76-operation inventory",
         ));
     }
     Ok(())
@@ -3342,7 +3450,7 @@ pub fn openapi_document() -> Result<Value, OpenApiContractError> {
     let mut api = ApiDoc::openapi();
     api.info.version = env!("CARGO_PKG_VERSION").to_owned();
     api.info.description = Some(
-        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72) and U2.1 (the two semantic change previews, operations 73-74)."
+        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74) and H0.11 (proposal discovery and discard, operations 75-76)."
             .to_owned(),
     );
     api.info.license = None;
@@ -3383,7 +3491,7 @@ The machine-readable contract is `api/modeller.openapi.json`, the source of the 
         OPERATIONS.len()
     ));
     out.push_str(
-        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72 and U2.1 those of operations 73-74. \
+        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74 and H0.11 those of operations 75-76. \
 An operation listed here is not operational until its handler task is done.\n\n",
     );
     out.push_str("## Conventions\n\n");
@@ -3421,7 +3529,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
             .count()
     };
     out.push_str("\n## Implementation ownership\n\n");
-    for owner in ["A0.2", "A0.3", "A0.4", "U2.1"] {
+    for owner in ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11"] {
         out.push_str(&format!(
             "- {owner}: {} operations ({} POST, {} GET).\n",
             owned(owner, ""),
@@ -3432,7 +3540,9 @@ An operation listed here is not operational until its handler task is done.\n\n"
     for line in [
         "Hotfix 065 froze the deferred A0.3 compatibility semantics (contract version 3).",
         "A0.4 owns `run_stage` and `get_job` and must not start before its separate stage-orchestration contract freeze.",
-        "Hotfix 073 appends operations 73 and 74, the U2.1 semantic change previews: the server builds the exact domain Proposal, persists it pending on the baseline revision and returns its semantic element diff without committing; `candidate_semantic_hash` is not a prediction of the committed `semantic_hash`. Confirmation is the existing proposal action: create for a requirement split (Hotfix 074), merge for a Term merge.",
+        "Hotfix 073 appends operations 73 and 74, the U2.1 semantic change previews: the server builds the exact domain Proposal and returns its semantic element diff without committing; `candidate_semantic_hash` is not a prediction of the committed `semantic_hash`.",
+        "H0.11 (architecture §33.12): a preview never persists a pending proposal. It returns the previewed `proposal_id` and `built_at`; confirmation is the direct write (split or merge) with the same request plus `preview: {proposal_id, built_at}` and the baseline revision as If-Match, which commits only exactly the previewed proposal (409 `E_PREVIEW_MISMATCH` otherwise).",
+        "H0.11 appends operations 75 and 76: `GET /api/proposals` lists every pending workflow proposal (not paged), and `POST /api/proposals/{id}/discard` moves a pending answer or intake proposal to the terminal state `abandoned` without a revision. Accepted, rejected and abandoned proposals are kept as history.",
     ] {
         out.push_str(&format!("- {line}\n"));
     }

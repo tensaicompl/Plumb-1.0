@@ -65,6 +65,8 @@ enum ActionArg {
     Merge,
     Supersede,
     Reject,
+    /// Discard a pending answer or intake proposal (it becomes abandoned).
+    Discard,
 }
 
 impl ActionArg {
@@ -76,6 +78,7 @@ impl ActionArg {
             ActionArg::Merge => ProposalAction::Merge,
             ActionArg::Supersede => ProposalAction::Supersede,
             ActionArg::Reject => ProposalAction::Reject,
+            ActionArg::Discard => ProposalAction::Discard,
         }
     }
 }

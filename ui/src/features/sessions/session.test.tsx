@@ -204,7 +204,7 @@ function handlers(backend: Backend) {
     }),
     http.post("*/api/questions/:id/answer", async ({ request }) => {
       await record(request, "POST");
-      return etagJson({ code: "E_UNEXPECTED", message: "not in these tests", details: {} }, { status: 500 });
+      return etagJson({ code: "E_INTERNAL", message: "not in these tests", details: {} }, { status: 500 });
     }),
     http.post("*/api/sessions", async ({ request }) => {
       await record(request, "POST");
@@ -223,7 +223,7 @@ function handlers(backend: Backend) {
         await hold;
       }
       if (backend.turnFails) {
-        return etagJson({ code: "E_PROVIDER_FAILED", message: "provider failed", details: {} }, { status: 502 });
+        return etagJson({ code: "E_SESSION_TURN_IN_FLIGHT", message: "a turn of this session is already in flight", details: {} }, { status: 409 });
       }
       const next = backend.turns.shift();
       return etagJson(next ?? turnResponse("(no reply configured)"));
@@ -318,6 +318,7 @@ describe("Project room", () => {
       "/model/rules",
       "/model/calculations",
       "/questions",
+      "/proposals",
       "/decisions",
       "/gates",
     ]);
@@ -500,7 +501,7 @@ describe("Session turns", () => {
     await sendTurn(user, "Keep this draft.");
     // Fable #355: a turn-specific failure with the backend typed code and message.
     const failure = await screen.findByTestId("turn-failed");
-    expect(failure.textContent).toBe("The turn failed: E_PROVIDER_FAILED provider failed");
+    expect(failure.textContent).toBe("The turn failed: E_SESSION_TURN_IN_FLIGHT a turn of this session is already in flight");
     expect(screen.getByTestId("session-transcript").querySelectorAll("[data-role]")).toHaveLength(0);
     expect((screen.getByTestId("session-text") as HTMLTextAreaElement).value).toBe("Keep this draft.");
     await new Promise((resolve) => setTimeout(resolve, 50));

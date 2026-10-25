@@ -612,6 +612,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_proposals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/proposals/intake": {
         parameters: {
             query?: never;
@@ -654,6 +670,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["create_proposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/proposals/{id}/discard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["discard_proposal"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1448,6 +1480,16 @@ export interface components {
             operation?: string | null;
             to: string;
         };
+        /**
+         * @description One evidence reference of a requirement with its source (H0.11, Fable #351): `text` is the
+         *     exact text the importer extracted for that EvidenceFragment, `null` when the reference is not
+         *     an EvidenceFragment carrying extracted text.
+         */
+        EvidenceExcerpt: {
+            id: string;
+            source_ref?: string | null;
+            text?: string | null;
+        };
         /** @enum {string} */
         ExportFormat: "functional" | "report" | "decisions" | "glossary" | "scenarios" | "gate_report";
         Finding: {
@@ -1568,6 +1610,7 @@ export interface components {
         };
         GlossaryMergeRequest: {
             into: string;
+            preview?: null | components["schemas"]["PreviewConfirmation"];
             reason: string;
         };
         /** @description A page of results; `next_cursor` is null on the last page. */
@@ -1678,6 +1721,37 @@ export interface components {
             /** @description Compatibility alias of `revision`. */
             version: string;
         };
+        /** @description One pending workflow proposal occurrence (H0.11 proposal discovery). */
+        PendingProposal: {
+            /** @description The one positive action that can commit it. */
+            action: components["schemas"]["ProposalKind"];
+            /** @description The revision it was built on. */
+            base_revision: string;
+            /** @description Whether `POST /api/proposals/{id}/discard` applies (an answer or intake proposal). */
+            discardable: boolean;
+            origin: components["schemas"]["ProposalOrigin"];
+            /** @description The Question of an answer, the session of a session turn; null otherwise. */
+            origin_ref?: string | null;
+            proposal_id: string;
+            /** @description The recipe job and stage job of a stage proposal; null otherwise. */
+            recipe_job_id?: string | null;
+            /** @description Whether its stored intake requires a reason for a positive action. */
+            requires_reason: boolean;
+            stage_job_id?: string | null;
+            /**
+             * @description Built on another revision than the head: it is never rebased; only reject (and, when
+             *     discardable, discard) still apply.
+             */
+            stale: boolean;
+        };
+        /**
+         * @description Every pending workflow proposal, sorted by proposal ID then base revision. Not paged: the
+         *     pending set changes without a revision (a discard or reject commits nothing), so a cursor
+         *     could not pin it.
+         */
+        PendingProposalList: {
+            items: components["schemas"]["PendingProposal"][];
+        };
         /**
          * @description 412: the request's If-Match did not name the current branch-head revision. `revision` and
          *     `semantic_hash` are the current branch-head values.
@@ -1688,6 +1762,17 @@ export interface components {
             message: string;
             revision: string;
             semantic_hash: string;
+        };
+        /**
+         * @description The reviewed semantic change preview a direct write submits (H0.11, architecture §33.12):
+         *     the previewed `proposal_id` and the `built_at` instant the preview's Proposal was built at.
+         *     The write rebuilds the Proposal at `built_at` on the current head and commits it only when
+         *     it is exactly the previewed one (409 `E_PREVIEW_MISMATCH` otherwise); `built_at` must lie
+         *     between the head revision's creation and now.
+         */
+        PreviewConfirmation: {
+            built_at: string;
+            proposal_id: string;
         };
         Process: {
             branches: string[];
@@ -1795,6 +1880,11 @@ export interface components {
          */
         ProposalKind: "link" | "merge" | "supersede" | "create" | "accept";
         /**
+         * @description Where a pending workflow proposal came from.
+         * @enum {string}
+         */
+        ProposalOrigin: "intake" | "question" | "session" | "stage";
+        /**
          * @description The persisted projection of one Accepted PSG Question (Hotfix 065). Generation-time slots
          *     are not persisted and are not part of the contract; `answer_schema` is the typed-answer
          *     authority and `context_refs` are the exact persisted context IDs.
@@ -1885,6 +1975,8 @@ export interface components {
              *     on the current head (R0.6); `null` when there is none. Paired with `ears_proposal_ref`.
              */
             ears_suggestion?: string | null;
+            /** @description The evidence references of `spans`, in the same order, with their source text. */
+            evidence: components["schemas"]["EvidenceExcerpt"][];
             id: string;
             linked: components["schemas"]["RequirementLinks"];
             /**
@@ -2053,13 +2145,16 @@ export interface components {
          */
         SearchScope: "requirement" | "concept" | "rule" | "calculation" | "scenario" | "evidence";
         /**
-         * @description A server-authoritative semantic change preview (Hotfix 073): the exact domain Proposal is
-         *     persisted as a pending workflow proposal bound to the baseline revision and nothing is
-         *     committed. `version`, `revision` and `semantic_hash` are the baseline; `events` is empty.
-         *     Confirmation is the existing proposal action on `proposal_id`.
+         * @description A server-authoritative semantic change preview (Hotfix 073, H0.11): the exact domain
+         *     Proposal built at `built_at` on the baseline revision, with its intake and semantic element
+         *     diff. Nothing is persisted or committed. `version`, `revision` and `semantic_hash` are the
+         *     baseline; `events` is empty. Confirmation is the direct write with the same request and
+         *     `preview: {proposal_id, built_at}`, sent with the baseline revision as If-Match.
          */
         SemanticChangePreviewResponse: {
             action: components["schemas"]["ProposalKind"];
+            /** @description The instant the previewed Proposal was built at (part of its identity). */
+            built_at: string;
             diff: components["schemas"]["SemanticElementDiff"];
             events: components["schemas"]["DesignEvent"][];
             intake: components["schemas"]["IntakeReportView"];
@@ -2200,6 +2295,7 @@ export interface components {
         };
         SplitRequest: {
             parts: string[];
+            preview?: null | components["schemas"]["PreviewConfirmation"];
             reason: string;
         };
         /**
@@ -3044,7 +3140,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Pending merge proposal, intake and semantic element diff; nothing is committed */
+            /** @description The exact merge proposal, intake and semantic element diff; nothing is persisted or committed */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3053,6 +3149,7 @@ export interface operations {
                     /**
                      * @example {
                      *       "action": "accept",
+                     *       "built_at": "example",
                      *       "diff": {
                      *         "added": [
                      *           "example"
@@ -4817,6 +4914,46 @@ export interface operations {
             };
         };
     };
+    list_proposals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every pending workflow proposal */
+            200: {
+                headers: {
+                    /**
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
+                     * @example example
+                     */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "items": [
+                     *         {
+                     *           "action": "accept",
+                     *           "base_revision": "example",
+                     *           "discardable": true,
+                     *           "origin": "intake",
+                     *           "proposal_id": "example",
+                     *           "requires_reason": true,
+                     *           "stale": true
+                     *         }
+                     *       ]
+                     *     }
+                     */
+                    "application/json": components["schemas"]["PendingProposalList"];
+                };
+            };
+        };
+    };
     intake_proposal: {
         parameters: {
             query?: never;
@@ -5034,6 +5171,77 @@ export interface operations {
         };
         responses: {
             /** @description Write result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "events": [
+                     *         {
+                     *           "ids": [
+                     *             "example"
+                     *           ],
+                     *           "kind": "example",
+                     *           "version": "example"
+                     *         }
+                     *       ],
+                     *       "revision": "example",
+                     *       "semantic_hash": "example",
+                     *       "version": "example"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["WriteResult"];
+                };
+            };
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": "example",
+                     *       "details": {},
+                     *       "message": "example",
+                     *       "revision": "example",
+                     *       "semantic_hash": "example"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["PreconditionFailedResponse"];
+                };
+            };
+        };
+    };
+    discard_proposal: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
+                 * @example example
+                 */
+                "If-Match": string;
+            };
+            path: {
+                /**
+                 * @description Proposal ID
+                 * @example example
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /** @example {} */
+                "application/json": components["schemas"]["ProposalActionRequest"];
+            };
+        };
+        responses: {
+            /** @description The pending answer or intake proposal is abandoned; nothing is committed */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5752,6 +5960,11 @@ export interface operations {
                      *           "example"
                      *         ]
                      *       },
+                     *       "evidence": [
+                     *         {
+                     *           "id": "example"
+                     *         }
+                     *       ],
                      *       "id": "HR-001",
                      *       "linked": {
                      *         "operations": [
@@ -6165,7 +6378,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Pending create-class split proposal, intake and semantic element diff; nothing is committed */
+            /** @description The exact create-class split proposal, intake and semantic element diff; nothing is persisted or committed */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6174,6 +6387,7 @@ export interface operations {
                     /**
                      * @example {
                      *       "action": "accept",
+                     *       "built_at": "example",
                      *       "diff": {
                      *         "added": [
                      *           "example"

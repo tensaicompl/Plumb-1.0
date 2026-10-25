@@ -8,6 +8,7 @@ import { GatesPage } from "../features/gates/GatesPage";
 import { GlossaryPage } from "../features/glossary/GlossaryPage";
 import { HomePage } from "../features/home/HomePage";
 import { ProcessesPage } from "../features/processes/ProcessesPage";
+import { ProposalsPage } from "../features/proposals/ProposalsPage";
 import { QuestionsPage } from "../features/questions/QuestionsPage";
 import { ScenariosPage } from "../features/scenarios/ScenariosPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
@@ -66,6 +67,13 @@ const questionsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/questions",
   component: QuestionsPage,
+});
+
+// H0.11: proposal discovery and governance (architecture §33.12).
+const proposalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/proposals",
+  component: ProposalsPage,
 });
 
 // U2.3: the project room, the real project-mode session panel (scope []).
@@ -136,6 +144,7 @@ export const routeTree = rootRoute.addChildren([
   glossaryRoute,
   sentencesRoute,
   questionsRoute,
+  proposalsRoute,
   sessionsRoute,
   processesRoute,
   scenariosRoute,

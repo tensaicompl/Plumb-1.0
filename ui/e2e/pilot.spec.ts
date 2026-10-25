@@ -13,6 +13,7 @@ const ROUTES = [
   "/model/rules",
   "/model/scenarios",
   "/questions",
+  "/proposals",
   "/gates",
   "/decisions",
 ];
@@ -36,6 +37,11 @@ test.describe("HR pilot", () => {
       await page.waitForLoadState("networkidle");
       await noSeriousA11yViolations(page);
     }
+    // H0.11: proposal discovery is reachable from the navigation and lists from the real API.
+    await page.goto("/");
+    await page.getByRole("navigation", { name: "Pilot navigation" }).getByRole("link", { name: "Proposals" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Proposals" })).toBeVisible();
+    await expect(page.getByText(/No proposal is pending\.|Pending proposals/).first()).toBeVisible();
     expect(errors).toEqual([]);
   });
 

@@ -44,6 +44,8 @@ export const PILOT_NAVIGATION: readonly NavEntry[] = [
     ],
   },
   { kind: "link", link: { id: "questions", label: "nav.questions", href: "/questions" } },
+  // H0.11 (architecture §33.12): proposal discovery and governance.
+  { kind: "link", link: { id: "proposals", label: "nav.proposals", href: "/proposals" } },
   { kind: "link", link: { id: "decisions", label: "nav.decisions", href: "/decisions" } },
   { kind: "gates", link: { id: "gates", label: "nav.gates", href: "/gates" }, gates: PILOT_GATES },
 ];

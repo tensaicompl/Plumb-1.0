@@ -662,7 +662,7 @@ mod services {
         }
     }
 
-    /// The application vocabulary of the six proposal actions.
+    /// The application vocabulary of the seven proposal actions.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum ProposalAction {
         Accept,
@@ -671,6 +671,8 @@ mod services {
         Merge,
         Supersede,
         Reject,
+        /// H0.11: the explicit discard of a pending answer or intake proposal (-> abandoned).
+        Discard,
     }
 
     impl ProposalAction {
@@ -683,6 +685,7 @@ mod services {
                 ProposalAction::Merge => "merge_proposal",
                 ProposalAction::Supersede => "supersede_proposal",
                 ProposalAction::Reject => "reject_proposal",
+                ProposalAction::Discard => "discard_proposal",
             }
         }
 
@@ -693,9 +696,15 @@ mod services {
                 ProposalAction::Link => Some(ProposalKind::Link),
                 ProposalAction::Merge => Some(ProposalKind::Merge),
                 ProposalAction::Supersede => Some(ProposalKind::Supersede),
-                ProposalAction::Reject => None,
+                ProposalAction::Reject | ProposalAction::Discard => None,
             }
         }
+    }
+
+    /// Whether a pending proposal of `origin` can be discarded (H0.11): the answer and intake
+    /// flows; session and stage proposals keep their own governance.
+    pub fn is_discardable(origin: WorkflowOrigin) -> bool {
+        matches!(origin, WorkflowOrigin::Question | WorkflowOrigin::Intake)
     }
 
     /// What one question materialisation produced (Hotfix 083): the exact S3.1 generation
@@ -1352,7 +1361,8 @@ mod services {
         /// One proposal action on `loaded`: accept, create, link, merge and supersede commit the
         /// stored proposal unchanged through the governed A0.3 path (with the X1.5 governed
         /// recorder for stage-linked proposals) when its class matches; reject moves it
-        /// pending -> rejected without changing the PSG.
+        /// pending -> rejected and discard (H0.11, answer and intake proposals only) pending ->
+        /// abandoned, both without changing the PSG.
         pub fn act_on_proposal(
             &self,
             loaded: &LoadedRevision,
@@ -1368,6 +1378,9 @@ mod services {
             let stored = load_reconciled(self, loaded, id)?;
             if stored.record.state != WorkflowProposalState::Pending {
                 return Err(not_pending(&stored.record));
+            }
+            if action == ProposalAction::Discard {
+                return self.discard_stored(loaded, &stored, created_at);
             }
             let Some(required) = action.kind() else {
                 return self.reject_stored(loaded, &stored, created_at);
@@ -1433,11 +1446,47 @@ mod services {
             stored: &StoredProposal,
             created_at: plumb_core::Timestamp,
         ) -> Result<WriteResult, ApiError> {
+            self.resolve_unchanged(loaded, stored, WorkflowProposalState::Rejected, created_at)
+        }
+
+        /// Discards exactly the pending occurrence `stored` (pending -> abandoned, H0.11,
+        /// architecture §33.12) without changing the PSG: only an answer (question origin) or
+        /// intake proposal; a session or stage proposal keeps its own governance (409
+        /// `E_PROPOSAL_NOT_DISCARDABLE`). The record is kept as history; a stale occurrence
+        /// can be discarded too. Unlike a rejection, it is no rejection memory.
+        fn discard_stored(
+            &self,
+            loaded: &LoadedRevision,
+            stored: &StoredProposal,
+            created_at: plumb_core::Timestamp,
+        ) -> Result<WriteResult, ApiError> {
+            if !is_discardable(stored.record.origin_kind) {
+                return Err(ApiError::conflict(
+                    "E_PROPOSAL_NOT_DISCARDABLE",
+                    "only a pending answer or intake proposal can be discarded",
+                )
+                .with_details(json!({
+                    "proposal": stored.proposal.id,
+                    "origin": stored.record.origin_kind.as_str(),
+                })));
+            }
+            self.resolve_unchanged(loaded, stored, WorkflowProposalState::Abandoned, created_at)
+        }
+
+        /// Moves exactly the pending occurrence `stored` to `to` on the loaded head without
+        /// changing the PSG: no revision and no event.
+        fn resolve_unchanged(
+            &self,
+            loaded: &LoadedRevision,
+            stored: &StoredProposal,
+            to: WorkflowProposalState,
+            created_at: plumb_core::Timestamp,
+        ) -> Result<WriteResult, ApiError> {
             self.with_workflow_store(|store| {
                 store.resolve_proposal(
                     &stored.proposal.id,
                     &stored.record.base_revision_id,
-                    WorkflowProposalState::Rejected,
+                    to,
                     &loaded.revision.id,
                     created_at,
                 )
@@ -2449,7 +2498,17 @@ mod services {
         /// recipe and stage job from its durable stage link; a missing link is corrupt state.
         pub fn pending_proposals(&self) -> Result<Vec<PendingProposalView>, ApiError> {
             self.runtime("workflow_store")?;
-            let head = self.load_head()?.revision.id;
+            let loaded = self.load_head()?;
+            self.pending_proposals_on(&loaded)
+        }
+
+        /// [`Self::pending_proposals`] judged against `loaded` (the read the caller reports).
+        pub fn pending_proposals_on(
+            &self,
+            loaded: &LoadedRevision,
+        ) -> Result<Vec<PendingProposalView>, ApiError> {
+            self.runtime("workflow_store")?;
+            let head = loaded.revision.id.clone();
             let records = self
                 .with_workflow_store(|store| store.pending_proposals())?
                 .map_err(workflow_error)?;
@@ -2674,6 +2733,6 @@ mod services {
 
 pub(crate) use services::{baseline_changed, not_pending, workflow_error};
 pub use services::{
-    export_artifact, require_importable, round_size, DirectoryElementView, FindingView,
-    MaterializedQuestions, PendingProposalView, ProposalAction,
+    export_artifact, is_discardable, require_importable, round_size, DirectoryElementView,
+    FindingView, MaterializedQuestions, PendingProposalView, ProposalAction,
 };

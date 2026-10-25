@@ -2,7 +2,8 @@
 // detail with separate text, EARS, evidence, lint and link sections; the four direct writes
 // through the generated client and the versioned mutation (If-Match); and the split
 // preview-confirm workflow (Hotfix 073/074: server preview first, create-class proposal, exact
-// server diff, explicit confirmation through /api/proposals/{id}/create with the same reason).
+// server diff; H0.11: the preview is never persisted, and the explicit confirmation submits the
+// reviewed preview through the direct split with the same request and its identity).
 // Every HTTP call is answered by MSW and recorded; nothing touches the network.
 //
 // The generated client captures `fetch` and `Request` when its module is first evaluated, so the
@@ -117,6 +118,10 @@ const DETAIL_A: RequirementDetail = {
   coverage: { operations: ["op:submit"], scenarios: [] },
   readiness: 0.42,
   spans: ["frag:requirements.docx#p12", "frag:requirements.docx#p13"],
+  evidence: [
+    { id: "frag:requirements.docx#p12", source_ref: "src:requirements", text: "Employees shall submit and cancel leave requests." },
+    { id: "frag:requirements.docx#p13", source_ref: null, text: null },
+  ],
   lint_findings: ["fnd:compound-a"],
   ears_suggestion: "When an employee submits a leave request, the system shall record it.",
   ears_proposal_ref: "prop:ears-a",
@@ -133,6 +138,7 @@ const DETAIL_B: RequirementDetail = {
   coverage: { operations: [], scenarios: [] },
   readiness: null,
   spans: [],
+  evidence: [],
   lint_findings: [],
   ears_suggestion: null,
   ears_proposal_ref: null,
@@ -147,6 +153,7 @@ const SPLIT_PREVIEW: Preview = {
   semantic_hash: CURRENT,
   events: [],
   proposal_id: "prop:split-a",
+  built_at: "2026-05-01T12:00:00.000000000Z",
   action: "create",
   intake: {
     covered_by: [],
@@ -179,7 +186,7 @@ interface Call {
 }
 
 /** MSW handlers for the shell and every requirement endpoint, recording each call in order. */
-function handlers(calls: Call[], overrides: { create?: () => Response; staleCursor?: boolean } = {}) {
+function handlers(calls: Call[], overrides: { split?: () => Response; staleCursor?: boolean } = {}) {
   const record = async (request: Request, method: string) => {
     const url = new URL(request.url);
     const text = method === "GET" ? "" : await request.text();
@@ -219,15 +226,15 @@ function handlers(calls: Call[], overrides: { create?: () => Response; staleCurs
     http.post("*/api/requirements/:id/accept-ears", write()),
     http.post("*/api/requirements/:id/waive-finding", write()),
     http.post("*/api/requirements/:id/mark-duplicate", write()),
-    http.post("*/api/requirements/:id/split", write()),
+    http.post("*/api/requirements/:id/split", async ({ request }) => {
+      await record(request, "POST");
+      return overrides.split === undefined ? etagJson(WRITE) : overrides.split();
+    }),
     http.post("*/api/requirements/:id/split/preview", async ({ request }) => {
       await record(request, "POST");
       return etagJson(SPLIT_PREVIEW);
     }),
-    http.post("*/api/proposals/:id/create", async ({ request }) => {
-      await record(request, "POST");
-      return overrides.create === undefined ? etagJson(WRITE) : overrides.create();
-    }),
+    http.post("*/api/proposals/:id/create", write()),
     http.post("*/api/proposals/:id/supersede", write()),
     http.post("*/api/proposals/:id/accept", write()),
     http.post("*/api/proposals/:id/reject", write()),
@@ -389,11 +396,15 @@ describe("RequirementDetail", () => {
 
     const evidence = screen.getByRole("region", { name: "Source evidence" });
     expect(within(evidence).getAllByRole("listitem").map((li) => li.textContent)).toEqual(DETAIL_A.spans);
-    // The drawer presents the server refs as evidence, without invented source text.
+    // The drawer presents the server refs as evidence with the exact source text the server
+    // returned (Fable #351), never invented text where the server has none.
     await user.click(within(evidence).getByRole("button", { name: "Show provenance" }));
     const drawer = await screen.findByRole("dialog");
     const items = Array.from(drawer.querySelectorAll("li[data-category]"));
-    expect(items.map((li) => [li.getAttribute("data-category"), li.textContent])).toEqual(DETAIL_A.spans.map((s) => ["evidence", s]));
+    expect(items.map((li) => [li.getAttribute("data-category"), li.textContent])).toEqual([
+      ["evidence", "frag:requirements.docx#p12src:requirements: Employees shall submit and cancel leave requests."],
+      ["evidence", "frag:requirements.docx#p13"],
+    ]);
     await user.click(within(drawer).getByRole("button", { name: "Close" }));
 
     const lint = screen.getByRole("region", { name: "Lint findings" });
@@ -426,6 +437,21 @@ describe("RequirementDetail", () => {
     expect(current.getAttribute("data-lint")).toBe("current");
     expect(within(current).queryByTestId("lint-unavailable")).toBeNull();
     expect(within(current).getAllByText("None")).toHaveLength(2);
+  });
+
+  it("does not offer split, waive or duplicate marking on a requirement that is not Accepted (Fable #356)", async () => {
+    server.use(...handlers([]));
+    renderAt("/requirements/req:b");
+    await screen.findByTestId("requirement-text");
+    // The backend refuses these for a Proposed requirement, so they are not offered.
+    expect(screen.queryByTestId("split-preview")).toBeNull();
+    expect(screen.queryByTestId("waive-finding")).toBeNull();
+    expect(screen.queryByTestId("duplicate-of")).toBeNull();
+    expect(screen.getByTestId("accepted-only").textContent).toBe(
+      "Split, waiver and duplicate marking apply to Accepted requirements only. Status: Proposed",
+    );
+    // Classification stays available for a Proposed requirement.
+    expect(screen.getByRole("form", { name: "Reclassify" })).toBeTruthy();
   });
 
   it("shows a null EARS suggestion and null readiness as not calculated, with no accept action", async () => {
@@ -537,7 +563,7 @@ describe("Requirement split", () => {
     return user;
   }
 
-  it("previews first, shows the exact server diff and commits only on confirmation through /create", async () => {
+  it("previews first, shows the exact server diff and commits only by submitting the reviewed preview", async () => {
     const calls: Call[] = [];
     server.use(...handlers(calls));
     renderAt("/requirements/req:a");
@@ -569,29 +595,39 @@ describe("Requirement split", () => {
     expect(within(panel).getByText("Proposed change (not committed)")).toBeTruthy();
 
     // Nothing is committed before the explicit confirmation.
-    expect(posts(calls, "/create")).toEqual([]);
+    expect(posts(calls, "/split")).toEqual([]);
     await user.click(within(panel).getByTestId("preview-confirm"));
     await waitFor(() => expect(screen.queryByTestId("semantic-preview")).toBeNull());
 
-    const created = posts(calls, "/create");
-    expect(created.map((c) => [decoded(c.path), c.ifMatch, c.body])).toEqual([
-      ["/api/proposals/prop:split-a/create", `"rev:7"`, { reason: "Two behaviours." }],
+    // H0.11: the confirmation submits exactly the reviewed preview (its request and identity)
+    // through the direct split, against the preview's baseline revision.
+    const submitted = posts(calls, "/split");
+    expect(submitted.map((c) => [decoded(c.path), c.ifMatch, c.body])).toEqual([
+      [
+        "/api/requirements/req:a/split",
+        `"rev:7"`,
+        {
+          parts: ["Employees shall submit leave requests.", "Employees shall cancel leave requests."],
+          reason: "Two behaviours.",
+          preview: { proposal_id: "prop:split-a", built_at: "2026-05-01T12:00:00.000000000Z" },
+        },
+      ],
     ]);
-    // Never the direct split nor the supersede action; no stale warning although the committed
+    // Never a proposal action (nothing was persisted); no stale warning although the committed
     // hash differs from the candidate hash.
-    expect(calls.filter((c) => c.method === "POST" && c.path.endsWith("/split"))).toEqual([]);
+    expect(posts(calls, "/create")).toEqual([]);
     expect(posts(calls, "/supersede")).toEqual([]);
     expect(screen.queryByTestId("preview-stale")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("discards a stale preview on E_PROPOSAL_BASELINE_CHANGED without retrying", async () => {
+  it("discards a preview that is no longer the submitted change (E_PREVIEW_MISMATCH) without retrying", async () => {
     const calls: Call[] = [];
     server.use(
       ...handlers(calls, {
-        create: () =>
+        split: () =>
           etagJson(
-            { code: "E_PROPOSAL_BASELINE_CHANGED", message: "baseline changed", details: {} },
+            { code: "E_PREVIEW_MISMATCH", message: "the submitted change is not the reviewed preview's proposal", details: {} },
             { status: 409 },
           ),
       }),
@@ -607,8 +643,21 @@ describe("Requirement split", () => {
     // A new preview must be requested explicitly: the preview control is offered again.
     expect(screen.getByTestId("split-preview")).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(posts(calls, "/create")).toHaveLength(1);
+    expect(posts(calls, "/split")).toHaveLength(1);
     expect(posts(calls, "/split/preview")).toHaveLength(1);
     expect(posts(calls, "/supersede")).toEqual([]);
+  });
+
+  it("discards a preview locally: nothing was persisted, so nothing is sent (H0.11)", async () => {
+    const calls: Call[] = [];
+    server.use(...handlers(calls));
+    renderAt("/requirements/req:a");
+    const user = await previewSplit(calls);
+    const before = calls.length;
+    await user.click(within(screen.getByTestId("semantic-preview")).getByRole("button", { name: "Discard preview" }));
+    expect(screen.queryByTestId("semantic-preview")).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.slice(before).filter((c) => c.method === "POST")).toEqual([]);
+    expect(screen.getByTestId("split-preview")).toBeTruthy();
   });
 });

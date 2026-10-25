@@ -162,7 +162,7 @@ function handlers(calls: Call[], write: () => Response = () => etagJson({ versio
     // Recorded so that any generic proposal call is visible (U2.4 must never make one).
     http.post("*/api/proposals/*", async ({ request }) => {
       await record(request, "POST");
-      return etagJson({ code: "E_UNEXPECTED", message: "not used by U2.4", details: {} }, { status: 500 });
+      return etagJson({ code: "E_INTERNAL", message: "not used by U2.4", details: {} }, { status: 500 });
     }),
   ];
 }

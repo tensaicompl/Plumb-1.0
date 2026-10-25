@@ -42,8 +42,9 @@ mod openapi {
     const OPENAPI_SRC: &str = include_str!("../src/openapi.rs");
 
     /// The frozen Hotfix 062 inventory (01-72) with the two U2.1 semantic change previews
-    /// appended by Hotfix 073 (73-74), written independently of the production table.
-    const INVENTORY: [(&str, &str, &str); 74] = [
+    /// appended by Hotfix 073 (73-74) and the H0.11 proposal list and discard (75-76), written
+    /// independently of the production table.
+    const INVENTORY: [(&str, &str, &str); 76] = [
         ("GET", "/api/me", "get_me"),
         ("GET", "/api/model/version", "get_model_version"),
         ("GET", "/api/gates", "get_gates"),
@@ -186,6 +187,8 @@ mod openapi {
             "/api/glossary/{id}/merge/preview",
             "preview_glossary_merge",
         ),
+        ("GET", "/api/proposals", "list_proposals"),
+        ("POST", "/api/proposals/{id}/discard", "discard_proposal"),
     ];
 
     const PAGEABLE: [&str; 14] = [
@@ -397,7 +400,7 @@ mod openapi {
     fn openapi_inventory_is_exact() {
         let doc = doc();
         let ops = operations(&doc);
-        assert_eq!(ops.len(), 74);
+        assert_eq!(ops.len(), 76);
         let found: BTreeSet<(String, String, String)> = ops
             .iter()
             .map(|(m, p, o)| {
@@ -414,7 +417,7 @@ mod openapi {
             .collect();
         assert_eq!(found, expected);
         let ids: BTreeSet<&str> = INVENTORY.iter().map(|i| i.2).collect();
-        assert_eq!(ids.len(), 74);
+        assert_eq!(ids.len(), 76);
         // The production table is the frozen order.
         let production: Vec<(&str, &str, &str)> = OPERATIONS
             .iter()
@@ -423,7 +426,7 @@ mod openapi {
         assert_eq!(production, INVENTORY.to_vec());
         assert_eq!(
             OPERATIONS.iter().map(|s| s.number).collect::<Vec<_>>(),
-            (1..=74).collect::<Vec<_>>()
+            (1..=76).collect::<Vec<_>>()
         );
         // Tags match the production table and every operation has exactly one.
         for spec in &OPERATIONS {
@@ -443,7 +446,7 @@ mod openapi {
             .map(|(p, _)| p)
             .collect();
         assert!(shared.is_empty(), "{shared:?}");
-        assert_eq!(doc["paths"].as_object().unwrap().len(), 74);
+        assert_eq!(doc["paths"].as_object().unwrap().len(), 76);
     }
 
     #[test]
@@ -602,7 +605,7 @@ mod openapi {
             }
             assert!(schema(&doc, name).get("allOf").is_none());
         }
-        assert_eq!(posts, 39);
+        assert_eq!(posts, 40);
         assert_eq!(
             properties(&doc, "PreconditionFailedResponse"),
             set(&["code", "message", "details", "revision", "semantic_hash"])
@@ -669,7 +672,7 @@ mod openapi {
         assert_eq!(extra("IntakeResponse"), set(&["intake"]));
         assert_eq!(
             extra("SemanticChangePreviewResponse"),
-            set(&["proposal_id", "action", "intake", "diff"])
+            set(&["proposal_id", "built_at", "action", "intake", "diff"])
         );
     }
 
@@ -709,7 +712,7 @@ mod openapi {
                 .flatten()
                 .all(|p| p["name"] != "If-Match"));
         }
-        assert_eq!(gets, 34);
+        assert_eq!(gets, 35);
     }
 
     #[test]
@@ -984,7 +987,7 @@ mod openapi {
                 "{name} must require lint_current"
             );
         }
-        assert_eq!(operations(&doc).len(), 74);
+        assert_eq!(operations(&doc).len(), 76);
         has(
             "Sentence",
             &["id", "text", "slots", "status", "evidence", "unknowns"],
@@ -1610,8 +1613,8 @@ mod openapi {
         ));
         for needle in [
             "Contract version 3",
-            "74 operations",
-            "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72 and U2.1 those of operations 73-74.",
+            "76 operations",
+            "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74 and H0.11 those of operations 75-76.",
             "ETag",
             "If-Match",
             "412 Precondition Failed",
@@ -1628,7 +1631,10 @@ mod openapi {
             "- A0.3: 40 operations (27 POST, 13 GET).",
             "- A0.4: 2 operations (1 POST, 1 GET).",
             "- U2.1: 2 operations (2 POST, 0 GET).",
+            "- H0.11: 2 operations (1 POST, 1 GET).",
             "- Hotfix 073 appends operations 73 and 74, the U2.1 semantic change previews",
+            "a preview never persists a pending proposal",
+            "- H0.11 appends operations 75 and 76",
             "`candidate_semantic_hash` is not a prediction of the committed `semantic_hash`",
             "- Hotfix 065 froze the deferred A0.3 compatibility semantics (contract version 3).",
             "- A0.4 owns `run_stage` and `get_job` and must not start before its separate stage-orchestration contract freeze.",
@@ -1646,7 +1652,7 @@ mod openapi {
             .lines()
             .filter(|l| l.starts_with("| ") && !l.starts_with("| #"))
             .collect();
-        assert_eq!(rows.len(), 74);
+        assert_eq!(rows.len(), 76);
         for ((row, (method, path, id)), spec) in rows.iter().zip(INVENTORY).zip(OPERATIONS.iter()) {
             assert!(
                 row.contains(&format!("| {method} | `{path}` | `{id}` |")),
@@ -1739,7 +1745,14 @@ mod openapi {
         );
         assert!(OPERATIONS
             .iter()
-            .all(|s| ["A0.2", "A0.3", "A0.4", "U2.1"].contains(&s.owner)));
+            .all(|s| ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11"].contains(&s.owner)));
+        // H0.11 (architecture §33.12) owns exactly the appended proposal list and discard.
+        let h011: Vec<(u32, &str)> = OPERATIONS
+            .iter()
+            .filter(|s| s.owner == "H0.11")
+            .map(|s| (s.number, s.operation_id))
+            .collect();
+        assert_eq!(h011, vec![(75, "list_proposals"), (76, "discard_proposal")]);
         assert_eq!(
             (
                 count("U2.1", None),
@@ -1815,9 +1828,9 @@ mod openapi {
             .into_iter()
             .collect()
         );
-        // Only Hotfix 073 added operations (73 and 74); none was removed.
+        // Only Hotfix 073 (73 and 74) and H0.11 (75 and 76) added operations; none was removed.
         let doc = doc();
-        assert_eq!(operations(&doc).len(), 74);
+        assert_eq!(operations(&doc).len(), 76);
     }
 
     #[test]
@@ -1995,7 +2008,7 @@ mod openapi {
                 ops.iter().filter(|o| o.0 == "POST").count(),
                 ops.iter().filter(|o| o.0 == "GET").count()
             ),
-            (74, 39, 35)
+            (76, 40, 36)
         );
         let (_, counts) = example_locations(&doc);
         assert_eq!(
@@ -2007,16 +2020,19 @@ mod openapi {
                 counts.websocket
             ),
             // Hotfix 073 adds two path IDs, two If-Match headers, two request bodies and two
-            // 200 plus two 412 responses.
-            (139, 34, 126, 34, 1)
+            // 200 plus two 412 responses; H0.11 adds the discard path ID, If-Match, request body,
+            // 200 and 412, and the proposal list 200 with its ETag.
+            (141, 35, 129, 35, 1)
         );
         let schemas = doc["components"]["schemas"].as_object().unwrap();
         // Hotfix 073 adds SemanticElementDiff and SemanticChangePreviewResponse; Hotfix 079 adds
         // ProcessNodeView, ProcessNodeViewKind and ProcessFlowView; Hotfix 080 adds
         // FindingRuleClass; Hotfix 082 adds GateRuleState, GateRuleApplicabilityState,
         // GateRuleApplicability, GateRuleError, GateRuleResult, GateWaiver and GateSummaryView;
-        // H0.11 adds GateEvaluationState, GateStateReason, ItemHealth and RequirementClass.
-        assert_eq!(schemas.len(), 132);
+        // H0.11 adds GateEvaluationState, GateStateReason, ItemHealth, RequirementClass,
+        // PreviewConfirmation, ProposalOrigin, PendingProposal, PendingProposalList and
+        // EvidenceExcerpt.
+        assert_eq!(schemas.len(), 137);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -2231,15 +2247,24 @@ mod openapi {
                 .contains("Accepted elements only")
         );
 
-        // Required reasons.
-        for (name, fields) in [
-            ("SplitRequest", &["parts", "reason"][..]),
-            ("MarkDuplicateRequest", &["of", "reason"][..]),
-            ("GlossaryMergeRequest", &["into", "reason"][..]),
-            ("RuleCellRequest", &["cell", "outcome", "reason"][..]),
+        // Required reasons; H0.11 adds the optional reviewed `preview` to split and merge.
+        for (name, fields, optional) in [
+            ("SplitRequest", &["parts", "reason"][..], &["preview"][..]),
+            ("MarkDuplicateRequest", &["of", "reason"][..], &[][..]),
+            (
+                "GlossaryMergeRequest",
+                &["into", "reason"][..],
+                &["preview"][..],
+            ),
+            (
+                "RuleCellRequest",
+                &["cell", "outcome", "reason"][..],
+                &[][..],
+            ),
         ] {
             assert_eq!(required(&doc, name), set(fields), "{name}");
-            assert_eq!(properties(&doc, name), set(fields), "{name}");
+            let all: Vec<&str> = fields.iter().chain(optional).copied().collect();
+            assert_eq!(properties(&doc, name), set(&all), "{name}");
             assert_eq!(schema(&doc, name)["properties"]["reason"]["type"], "string");
         }
         let resolve = operation(&doc, "POST", "/api/assumptions/{id}/resolve");
@@ -2579,7 +2604,7 @@ mod openapi {
         let doc = doc();
         assert_eq!(doc["x-plumb-contract-version"], json!(3));
         // Operations 73 and 74 are appended; 01-72 keep their frozen order.
-        let tail: Vec<_> = OPERATIONS[72..]
+        let tail: Vec<_> = OPERATIONS[72..74]
             .iter()
             .map(|s| {
                 (
@@ -2712,6 +2737,7 @@ mod openapi {
             "semantic_hash",
             "events",
             "proposal_id",
+            "built_at",
             "action",
             "intake",
             "diff",
@@ -2748,12 +2774,84 @@ mod openapi {
         }
     }
 
+    // ------------------------------------------------------------------ H0.11
+
+    /// H0.11 (architecture §33.12): proposal discovery and discard, and the reviewed preview
+    /// that a direct split or merge submits.
+    #[test]
+    fn openapi_h011_proposal_discovery_discard_and_preview_submission() {
+        let doc = doc();
+        let list = operation(&doc, "GET", "/api/proposals");
+        assert_eq!(list["tags"], json!(["proposals"]));
+        assert_eq!(
+            list["responses"]["200"]["content"]["application/json"]["schema"],
+            component_ref("PendingProposalList")
+        );
+        // Not paged: no cursor or limit.
+        assert!(list.get("parameters").is_none_or(|p| p
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["name"] != "cursor" && p["name"] != "limit")));
+        assert_eq!(required(&doc, "PendingProposalList"), set(&["items"]));
+        let fields = set(&[
+            "proposal_id",
+            "action",
+            "origin",
+            "origin_ref",
+            "recipe_job_id",
+            "stage_job_id",
+            "base_revision",
+            "requires_reason",
+            "stale",
+            "discardable",
+        ]);
+        assert_eq!(properties(&doc, "PendingProposal"), fields);
+        let pending = schema(&doc, "PendingProposal");
+        assert_eq!(pending["additionalProperties"], json!(false));
+        // Closed enums reference their schemas (Fable #321).
+        assert_eq!(
+            pending["properties"]["action"]["$ref"],
+            component_ref("ProposalKind")["$ref"]
+        );
+        assert_eq!(
+            pending["properties"]["origin"]["$ref"],
+            component_ref("ProposalOrigin")["$ref"]
+        );
+        assert_eq!(
+            schema(&doc, "ProposalOrigin")["enum"],
+            json!(["intake", "question", "session", "stage"])
+        );
+        let discard = operation(&doc, "POST", "/api/proposals/{id}/discard");
+        assert_eq!(
+            discard["requestBody"]["content"]["application/json"]["schema"],
+            component_ref("ProposalActionRequest")
+        );
+        assert_eq!(
+            discard["responses"]["200"]["content"]["application/json"]["schema"],
+            component_ref("WriteResult")
+        );
+        assert_eq!(
+            set(&["proposal_id", "built_at"]),
+            required(&doc, "PreviewConfirmation")
+        );
+        let codes: Vec<&str> = doc["info"]["x-plumb-error-codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["code"].as_str().unwrap())
+            .collect();
+        for code in ["E_PREVIEW_MISMATCH", "E_PROPOSAL_NOT_DISCARDABLE"] {
+            assert!(codes.contains(&code), "{code}");
+        }
+    }
+
     // ------------------------------------------------------------------ Hotfix 079
 
     #[test]
     fn openapi_hotfix_079_process_projection_and_lane_move() {
         let doc = doc();
-        assert_eq!(operations(&doc).len(), 74);
+        assert_eq!(operations(&doc).len(), 76);
         assert_eq!(doc["x-plumb-contract-version"], json!(3));
         // Process keeps its summary fields and gains the structured projection.
         let process_fields = set(&[

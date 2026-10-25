@@ -3,13 +3,14 @@
 //! report; link, merge, supersede, create and accept commit it unchanged (with the
 //! proposal-acceptance companion decision) only when its derived action class matches, its
 //! baseline revision is still the head and a fresh intake allows it. Nothing is rebased,
-//! rewritten or retried.
+//! rewritten or retried. H0.11 (architecture §33.12) adds the pending-proposal list and the
+//! explicit discard of an answer or intake proposal (pending -> abandoned).
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use plumb_core::{Id, Timestamp};
 use plumb_intake::IntakeReport;
@@ -19,10 +20,15 @@ use plumb_store::{
 };
 
 pub(super) use crate::application::workflow_error;
-use crate::application::{baseline_changed, not_pending, ProposalAction};
+use crate::application::{baseline_changed, is_discardable, not_pending, ProposalAction};
 use crate::error::ApiError;
-use crate::openapi::{IntakeRequest, IntakeResponse, ProposalActionRequest};
-use crate::state::{check_if_match, parse_body, require_clean_reason, run_intake, ApiState};
+use crate::openapi::{
+    IntakeRequest, IntakeResponse, PendingProposal, PendingProposalList, ProposalActionRequest,
+    ProposalKind, ProposalOrigin,
+};
+use crate::state::{
+    check_if_match, parse_body, parse_wire, read_json, require_clean_reason, run_intake, ApiState,
+};
 use crate::workflow::{
     classify, decode_proposal, intake_view, require_kind, store_kind, stored_json, StoredProposal,
 };
@@ -36,6 +42,8 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/proposals/{id}/create", post(create_proposal))
         .route("/api/proposals/{id}/accept", post(accept_proposal))
         .route("/api/proposals/{id}/reject", post(reject_proposal))
+        .route("/api/proposals", get(list_proposals))
+        .route("/api/proposals/{id}/discard", post(discard_proposal))
 }
 
 /// The store vocabulary of a workflow origin.
@@ -151,7 +159,7 @@ fn action_reason(body: &Bytes) -> Result<Option<String>, ApiError> {
     Ok(request.reason)
 }
 
-/// Shared transport of the six proposal actions: the reason is validated before the runtime
+/// Shared transport of the seven proposal actions: the reason is validated before the runtime
 /// and If-Match checks; the action itself is the shared application service.
 async fn act(
     state: ApiState,
@@ -216,6 +224,47 @@ async fn accept_proposal(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     act(state, id, headers, body, ProposalAction::Accept).await
+}
+
+/// `discard_proposal` (H0.11): a pending answer or intake proposal -> abandoned, without
+/// changing the PSG.
+async fn discard_proposal(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    act(state, id, headers, body, ProposalAction::Discard).await
+}
+
+/// `list_proposals` (H0.11 proposal discovery): every pending workflow proposal through the
+/// application service the CLI `proposals` command uses, judged against the read head.
+async fn list_proposals(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    state.runtime("workflow_store")?;
+    let loaded = state.load_head()?;
+    let mut items = Vec::new();
+    for view in state.pending_proposals_on(&loaded)? {
+        let corrupt = || ApiError::workflow_corrupt(&format!("proposal {}", view.proposal_id));
+        let action: ProposalKind = parse_wire(&view.action, "action").map_err(|_| corrupt())?;
+        let origin: ProposalOrigin = parse_wire(&view.origin, "origin").map_err(|_| corrupt())?;
+        let store_origin: WorkflowOrigin = view.origin.parse().map_err(|_| corrupt())?;
+        items.push(PendingProposal {
+            proposal_id: view.proposal_id,
+            action,
+            origin,
+            origin_ref: view.origin_ref,
+            recipe_job_id: view.recipe_job_id,
+            stage_job_id: view.stage_job_id,
+            base_revision: view.base_revision,
+            requires_reason: view.requires_reason,
+            stale: view.stale,
+            discardable: is_discardable(store_origin),
+        });
+    }
+    items.sort_by(|a, b| {
+        (&a.proposal_id, &a.base_revision).cmp(&(&b.proposal_id, &b.base_revision))
+    });
+    Ok(read_json(&loaded, PendingProposalList { items }))
 }
 
 /// `reject_proposal`: pending -> rejected without changing the PSG.

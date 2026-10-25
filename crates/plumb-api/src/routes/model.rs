@@ -38,23 +38,24 @@ use plumb_psg::{
     node_element_hash, ElementStatus, Graph, Node, NodePayload, NodeType, ProcessNodeKind,
     RelationKind,
 };
-use plumb_store::{LoadedRevision, RevisionId, WorkflowOrigin};
+use plumb_store::{LoadedRevision, RevisionId};
 use plumb_validation::waiver::WaiverRequest;
 use plumb_validation::{analyze_process, ParallelAnalysis, ProcessAnalysisMode};
 use plumb_validation::{GeneratedFinding, ValidationPolicy};
 use serde_json::{json, Value};
 
 use crate::application::export_artifact;
+use crate::error::echo;
 use crate::error::ApiError;
 use crate::openapi::{
     Assumption, AssumptionPage, AttributeClassRequest, AttributeTypeRequest, AttributeUnitRequest,
     Calculation, CalculationExample, CalculationPage, CalculationValue, CrudCell, CrudMatrix,
     Decision, DecisionPage, Entity, EntityAttribute, EntityPage, EntityRelationship,
     EntityTransition, ExportFormat, FindingPage, GlossaryEditRequest, GlossaryMergeRequest,
-    GlossaryPage, ModelDiff, Process, ProcessFlowView, ProcessFormat, ProcessImportRequest,
-    ProcessNodeView, ProcessNodeViewKind, ProcessPage, ProcessStepRequest, ProposalKind,
-    ReasonRequest, Rule, RuleCellRequest, RulePage, RuleRow, RuleViewKind, ScalarValue,
-    SemanticChangePreviewResponse, SemanticElementDiff, WriteResult,
+    GlossaryPage, ModelDiff, PreviewConfirmation, Process, ProcessFlowView, ProcessFormat,
+    ProcessImportRequest, ProcessNodeView, ProcessNodeViewKind, ProcessPage, ProcessStepRequest,
+    ProposalKind, ReasonRequest, Rule, RuleCellRequest, RulePage, RuleRow, RuleViewKind,
+    ScalarValue, SemanticChangePreviewResponse, SemanticElementDiff, WriteResult,
 };
 use crate::state::{
     check_if_match, health_marker, is_clean_text, paginate, paginate_projected, parse_body,
@@ -62,8 +63,6 @@ use crate::state::{
     ApiState, PageRequest, QueryParams,
 };
 use crate::workflow::{classify, finding_view, intake_view};
-
-use super::proposals::{persist_pending, Origin};
 
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
@@ -1013,12 +1012,13 @@ fn id_collision(id: &Id) -> ApiError {
 // ---------------------------------------------------------------------------- glossary
 
 /// A validated Term merge: the loaded head, the exact `propose_term_merge` Proposal, the
-/// clean reason and the one Clock read.
+/// clean reason, the one Clock read and the reviewed preview it submits, if any.
 struct TermMerge {
     loaded: LoadedRevision,
     proposal: Proposal,
     reason: String,
     created_at: Timestamp,
+    preview: Option<PreviewConfirmation>,
 }
 
 /// The shared validation and Proposal construction of `merge_glossary` and
@@ -1038,6 +1038,10 @@ fn term_merge(
     let loaded = state.load_head()?;
     check_if_match(headers, &loaded)?;
     let created_at = state.now();
+    // A Term merge carries no instant; a submitted preview's instant is still validated.
+    if let Some(preview) = &request.preview {
+        preview_instant(&loaded, preview, created_at)?;
+    }
     let source = typed_node(&loaded.graph, id, NodeType::Term, "term")?;
     let target = typed_node(&loaded.graph, into.as_str(), NodeType::Term, "term")?;
     let proposal =
@@ -1059,6 +1063,7 @@ fn term_merge(
         proposal,
         reason: request.reason,
         created_at,
+        preview: request.preview,
     })
 }
 
@@ -1071,6 +1076,9 @@ async fn merge_glossary(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let merge = term_merge(&state, &id, &headers, &body)?;
+    if let Some(preview) = &merge.preview {
+        require_previewed(&merge.proposal, preview)?;
+    }
     let write = state.write(
         &merge.loaded,
         &merge.proposal,
@@ -1082,9 +1090,8 @@ async fn merge_glossary(
     Ok(Json(write).into_response())
 }
 
-/// `preview_glossary_merge` (U2.1, Hotfix 073): the exact `merge_glossary` Proposal, persisted
-/// pending with its semantic element diff and committed only by `POST
-/// /api/proposals/{id}/merge`.
+/// `preview_glossary_merge` (U2.1, Hotfix 073; H0.11): the exact `merge_glossary` Proposal with
+/// its semantic element diff, never persisted; `merge_glossary` with `preview` submits it.
 async fn preview_glossary_merge(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -1101,19 +1108,56 @@ async fn preview_glossary_merge(
     )
 }
 
+/// The build instant of a submitted preview (H0.11): `built_at` must be a timestamp between the
+/// head revision's creation and `now` (a preview is built on the head it was reviewed on).
+pub(super) fn preview_instant(
+    loaded: &LoadedRevision,
+    preview: &PreviewConfirmation,
+    now: Timestamp,
+) -> Result<Timestamp, ApiError> {
+    let at: Timestamp = preview
+        .built_at
+        .parse()
+        .map_err(|_| ApiError::invalid("preview.built_at is not a timestamp"))?;
+    if at < loaded.revision.created_at || at > now {
+        return Err(ApiError::invalid(
+            "preview.built_at is outside the reviewed revision's lifetime",
+        ));
+    }
+    Ok(at)
+}
+
+/// 409 `E_PREVIEW_MISMATCH` unless the rebuilt `proposal` is exactly the reviewed preview's.
+pub(super) fn require_previewed(
+    proposal: &Proposal,
+    preview: &PreviewConfirmation,
+) -> Result<(), ApiError> {
+    if proposal.id.as_str() == preview.proposal_id {
+        return Ok(());
+    }
+    Err(ApiError::conflict(
+        "E_PREVIEW_MISMATCH",
+        "the submitted change is not the reviewed preview's proposal; preview it again",
+    )
+    .with_details(json!({
+        "previewed": echo(&preview.proposal_id),
+        "proposal": proposal.id,
+    })))
+}
+
 // ---------------------------------------------------------------------------- previews
 
-/// The shared semantic change preview (Hotfix 073) of an exact, already-built domain Proposal:
-/// its server action class must be `expected` (anything else is an internal error, never a
-/// preview); `apply_patch` dry-applies it once to the loaded graph for the semantic element
-/// diff; X1.3 intake runs; the Proposal and report are persisted pending (origin intake) bound
-/// to the loaded revision. Nothing is committed: no CAS, revision or DesignEvent.
+/// The shared semantic change preview (Hotfix 073) of an exact, already-built domain Proposal
+/// built at `built_at`: its server action class must be `expected` (anything else is an
+/// internal error, never a preview); `apply_patch` dry-applies it once to the loaded graph for
+/// the semantic element diff; X1.3 intake runs. Nothing is persisted (H0.11, architecture
+/// §33.12) or committed: no workflow record, CAS, revision or DesignEvent.
 pub(super) fn semantic_change_preview(
     state: &ApiState,
     loaded: &LoadedRevision,
     proposal: &Proposal,
     expected: ProposalKind,
-    created_at: Timestamp,
+    built_at: Timestamp,
 ) -> Result<Response, ApiError> {
     let action = classify(&loaded.graph, proposal)?;
     if action != expected {
@@ -1128,26 +1172,16 @@ pub(super) fn semantic_change_preview(
     })?;
     let diff = semantic_element_diff(&loaded.graph, &applied.graph, &applied.delta);
     let report = run_intake(loaded, proposal)?;
-    let stored = persist_pending(
-        state,
-        loaded,
-        proposal,
-        &report,
-        Origin {
-            kind: WorkflowOrigin::Intake,
-            reference: None,
-        },
-        created_at,
-    )?;
     let revision = loaded.revision.id.to_string();
     Ok(Json(SemanticChangePreviewResponse {
         version: revision.clone(),
         revision,
         semantic_hash: loaded.revision.semantic_hash.to_string(),
         events: Vec::new(),
-        proposal_id: stored.proposal.id.to_string(),
+        proposal_id: proposal.id.to_string(),
+        built_at: built_at.to_string(),
         action,
-        intake: intake_view(&stored.intake, state.profile())?,
+        intake: intake_view(&report, state.profile())?,
         diff,
     })
     .into_response())

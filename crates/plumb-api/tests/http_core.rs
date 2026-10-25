@@ -1005,7 +1005,7 @@ mod http_core {
     }
 
     #[tokio::test]
-    async fn http_core_routes_all_74_operations() {
+    async fn http_core_routes_all_76_operations() {
         let app = app();
         let mut routed: Vec<(&str, &str, &str)> = Vec::new();
         for spec in OPERATIONS.iter() {
@@ -1028,7 +1028,7 @@ mod http_core {
                     || (reply.status == StatusCode::METHOD_NOT_ALLOWED
                         && !allow.split(',').any(|m| m.trim() == spec.method)));
             assert!(
-                ["A0.2", "A0.3", "A0.4", "U2.1"].contains(&spec.owner),
+                ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11"].contains(&spec.owner),
                 "{}",
                 spec.operation_id
             );
@@ -1078,7 +1078,7 @@ mod http_core {
             ),
             (2, 1, 1)
         );
-        // U2.1 (Hotfix 073) routes exactly the two semantic change previews: all 74 operations.
+        // U2.1 (Hotfix 073) routes exactly the two semantic change previews.
         assert_eq!(
             (
                 count(&routed, "U2.1", None),
@@ -1087,7 +1087,16 @@ mod http_core {
             ),
             (2, 2, 0)
         );
-        assert_eq!(routed.len(), 74);
+        // H0.11 routes the proposal list and discard: all 76 operations.
+        assert_eq!(
+            (
+                count(&routed, "H0.11", None),
+                count(&routed, "H0.11", Some("POST")),
+                count(&routed, "H0.11", Some("GET"))
+            ),
+            (2, 1, 1)
+        );
+        assert_eq!(routed.len(), 76);
         // An unregistered path is the typed 404 (H0.11 replaces the former empty body).
         let r = get(&app, "/api/nowhere").await;
         assert_eq!(
@@ -1587,7 +1596,8 @@ mod http_core {
                 "id": "req:a", "text": "The system shall export PDF, CSV, etc.", "class": "functional",
                 "status": "Accepted", "smells": ["PLUMB.LINT.REQ.OPEN_LIST"],
                 "coverage": {"operations": ["op:submit"], "scenarios": ["scn:a"]},
-                "readiness": null, "spans": [], "lint_findings": lint, "ears_suggestion": null,
+                "readiness": null, "spans": [], "evidence": [], "lint_findings": lint,
+                "ears_suggestion": null,
                 "ears_proposal_ref": null,
                 "linked": {"operations": ["op:submit"], "processes": ["proc:leave"], "scenarios": ["scn:a"]},
                 "lint_current": true

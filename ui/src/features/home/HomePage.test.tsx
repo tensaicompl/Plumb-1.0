@@ -216,6 +216,7 @@ describe("HomePage shell", () => {
       "rules",
       "calculations",
       "questions",
+      "proposals",
       "decisions",
       "gates",
       "gate-list",
@@ -235,6 +236,7 @@ describe("HomePage shell", () => {
       rules: "/model/rules",
       calculations: "/model/calculations",
       questions: "/questions",
+      proposals: "/proposals",
       decisions: "/decisions",
       gates: "/gates",
     });
@@ -252,6 +254,7 @@ describe("HomePage shell", () => {
       "Rules",
       "Calculations",
       "Questions",
+      "Proposals",
       "Decisions",
       "Gates",
       "I0F1F2F3F4",
@@ -284,6 +287,7 @@ describe("HomePage shell", () => {
         "/model/rules",
         "/model/scenarios",
         "/model/sentences",
+        "/proposals",
         "/questions",
         "/requirements",
         "/requirements/$requirementId",
@@ -299,6 +303,7 @@ describe("HomePage shell", () => {
       "requirements",
       "model",
       "questions",
+      "proposals",
       "decisions",
       "gates",
     ]);
@@ -515,7 +520,7 @@ describe("HomePage versioned mutation", () => {
 describe("HomePage reads", () => {
   it("retries only network failures and 502/503/504, at most twice, and keeps the typed error", async () => {
     const { shouldRetryRead, ReadFailedError, readReviewed } = app.client;
-    const failure = (status: number) => new ReadFailedError(status, { code: "E_X", message: "m", details: {} });
+    const failure = (status: number) => new ReadFailedError(status, { code: "E_INTERNAL", message: "m", details: {} });
     expect(shouldRetryRead(0, new TypeError("Failed to fetch"))).toBe(true);
     for (const status of [502, 503, 504]) {
       expect(shouldRetryRead(0, failure(status))).toBe(true);

@@ -292,6 +292,11 @@ pub const ERROR_CATALOGUE: &[CatalogueEntry] = &[
         "The intake evidence does not match the proposal.",
     ),
     entry(
+        "E_PROPOSAL_NOT_DISCARDABLE",
+        409,
+        "Only a pending answer or intake proposal can be discarded.",
+    ),
+    entry(
         "E_PROPOSAL_NOT_PENDING",
         409,
         "The proposal is not pending.",
@@ -305,6 +310,11 @@ pub const ERROR_CATALOGUE: &[CatalogueEntry] = &[
         "E_PROPOSAL_SET_CONFLICT",
         409,
         "The proposals of the set are not compatible on their shared base.",
+    ),
+    entry(
+        "E_PREVIEW_MISMATCH",
+        409,
+        "The submitted change is not the reviewed preview's proposal.",
     ),
     entry(
         "E_QUESTION_GENERATION_INVALID",

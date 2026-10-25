@@ -1,7 +1,8 @@
 // U2.1 glossary tests: the server term list with cursor pagination, explicit source/target/reason
 // selection, the server merge preview (merge-class proposal, intake, exact semantic diff), explicit
-// confirmation through /api/proposals/{id}/merge with the same reason, and stale-preview handling
-// (E_PROPOSAL_BASELINE_CHANGED discards the preview and nothing is retried). Every HTTP call is
+// confirmation that submits the reviewed preview through the direct merge (H0.11: previews are
+// never persisted), and stale-preview handling (E_PREVIEW_MISMATCH discards the preview and
+// nothing is retried). Every HTTP call is
 // answered by MSW and recorded; nothing touches the network.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -80,6 +81,7 @@ const MERGE_PREVIEW: Preview = {
   semantic_hash: CURRENT,
   events: [],
   proposal_id: "prop:merge-vacation",
+  built_at: "2026-05-01T12:00:00.000000000Z",
   action: "merge",
   intake: {
     covered_by: [],
@@ -138,11 +140,11 @@ function handlers(calls: Call[], merge: () => Response = () => etagJson(WRITE)) 
     }),
     http.post("*/api/glossary/:id/merge", async ({ request }) => {
       await record(request, "POST");
-      return etagJson(WRITE);
+      return merge();
     }),
     http.post("*/api/proposals/:id/merge", async ({ request }) => {
       await record(request, "POST");
-      return merge();
+      return etagJson(WRITE);
     }),
     http.post("*/api/glossary/:id/confirm", async ({ request }) => {
       await record(request, "POST");
@@ -183,6 +185,26 @@ async function chooseAndPreview() {
   await screen.findByTestId("semantic-preview");
   return user;
 }
+
+// ------------------------------------------------------------------ lifecycle
+
+describe("Glossary merge lifecycle (Fable #356)", () => {
+  it("does not offer a non-Accepted term as a merge target, which the backend refuses", async () => {
+    server.use(...handlers([]));
+    renderGlossary();
+    const proposed = (await screen.findByText("vacation")).closest("tr");
+    const accepted = screen.getByText("leave request").closest("tr");
+    if (proposed === null || accepted === null) {
+      throw new Error("term rows expected");
+    }
+    const target = within(proposed).getByRole("button", { name: "Merge into this" }) as HTMLButtonElement;
+    expect(target.disabled).toBe(true);
+    expect(target.title).toBe("Only an Accepted term can be a merge target.");
+    expect((within(accepted).getByRole("button", { name: "Merge into this" }) as HTMLButtonElement).disabled).toBe(false);
+    // A Proposed term can still be merged into an Accepted one.
+    expect((within(proposed).getByRole("button", { name: "Merge this" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
 
 // ------------------------------------------------------------------ list
 
@@ -243,7 +265,7 @@ describe("Glossary confirmation and edit (H0.11)", () => {
 // ------------------------------------------------------------------ merge
 
 describe("Glossary merge", () => {
-  it("previews first, shows the server intake and exact diff, and commits only on confirmation through /merge", async () => {
+  it("previews first, shows the server intake and exact diff, and commits only by submitting the reviewed preview", async () => {
     const calls: Call[] = [];
     server.use(...handlers(calls));
     renderGlossary();
@@ -272,22 +294,30 @@ describe("Glossary merge", () => {
     expect(within(panel).getByTestId("preview-reason").textContent).toBe("Synonym.");
 
     // Nothing is committed before the explicit confirmation.
-    expect(posts(calls, "/api/proposals/prop:merge-vacation/merge")).toEqual([]);
+    expect(posts(calls, "/api/glossary/term:vacation/merge")).toEqual([]);
     await user.click(within(panel).getByTestId("preview-confirm"));
     await waitFor(() => expect(screen.queryByTestId("semantic-preview")).toBeNull());
-    expect(posts(calls, "/api/proposals/prop:merge-vacation/merge").map((c) => [c.ifMatch, c.body])).toEqual([
-      [`"rev:7"`, { reason: "Synonym." }],
+    // H0.11: the reviewed preview (request and identity) is submitted through the direct merge
+    // against the preview's baseline revision; no proposal action (nothing was persisted).
+    expect(posts(calls, "/api/glossary/term:vacation/merge").map((c) => [c.ifMatch, c.body])).toEqual([
+      [
+        `"rev:7"`,
+        {
+          into: "term:leave",
+          reason: "Synonym.",
+          preview: { proposal_id: "prop:merge-vacation", built_at: "2026-05-01T12:00:00.000000000Z" },
+        },
+      ],
     ]);
-    // The direct compatibility merge is never used by the UI.
-    expect(posts(calls, "/api/glossary/term:vacation/merge")).toEqual([]);
+    expect(posts(calls, "/api/proposals/prop:merge-vacation/merge")).toEqual([]);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("discards the preview on E_PROPOSAL_BASELINE_CHANGED and never retries or re-previews", async () => {
+  it("discards the preview on E_PREVIEW_MISMATCH and never retries or re-previews", async () => {
     const calls: Call[] = [];
     server.use(
       ...handlers(calls, () =>
-        etagJson({ code: "E_PROPOSAL_BASELINE_CHANGED", message: "baseline changed", details: {} }, { status: 409 }),
+        etagJson({ code: "E_PREVIEW_MISMATCH", message: "not the reviewed preview", details: {} }, { status: 409 }),
       ),
     );
     renderGlossary();
@@ -300,9 +330,9 @@ describe("Glossary merge", () => {
     expect(screen.queryByTestId("semantic-preview")).toBeNull();
     expect(screen.getByTestId("merge-preview")).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(posts(calls, "/api/proposals/prop:merge-vacation/merge")).toHaveLength(1);
+    expect(posts(calls, "/api/glossary/term:vacation/merge")).toHaveLength(1);
     expect(posts(calls, "/api/glossary/term:vacation/merge/preview")).toHaveLength(1);
-    expect(posts(calls, "/api/glossary/term:vacation/merge")).toEqual([]);
+    expect(posts(calls, "/api/proposals/prop:merge-vacation/merge")).toEqual([]);
 
     // A new preview is an explicit user action and yields a fresh confirmable preview.
     await user.click(screen.getByTestId("merge-preview"));

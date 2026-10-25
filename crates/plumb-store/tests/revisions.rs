@@ -304,10 +304,10 @@ mod revisions {
     // ------------------------------------------------------------------ schema
 
     #[test]
-    fn fresh_database_initializes_exact_v4_schema() {
+    fn fresh_database_initializes_exact_v5_schema() {
         let db = Db::new();
         let store = db.store();
-        assert_eq!(STORE_SCHEMA_VERSION, 4);
+        assert_eq!(STORE_SCHEMA_VERSION, 5);
         assert_eq!(PSG_SCHEMA_VERSION, 1);
         let expected: BTreeSet<String> = [
             "artifacts",
@@ -331,7 +331,7 @@ mod revisions {
         .map(str::to_owned)
         .collect();
         assert_eq!(tables(&db.path), expected);
-        assert_eq!(schema_meta_rows(&db.path), vec![4]);
+        assert_eq!(schema_meta_rows(&db.path), vec![STORE_SCHEMA_VERSION]);
         let conn = db.raw();
         assert_eq!(
             columns(&conn, "graph_revisions"),
@@ -484,7 +484,7 @@ mod revisions {
             .unwrap();
         assert_eq!(after, before);
         assert_eq!(db.count("SELECT COUNT(*) FROM artifacts"), 1);
-        assert_eq!(schema_meta_rows(&db.path), vec![4]);
+        assert_eq!(schema_meta_rows(&db.path), vec![STORE_SCHEMA_VERSION]);
         drop(store);
     }
 
@@ -492,7 +492,7 @@ mod revisions {
     fn unsupported_store_schema_version_is_rejected_without_change() {
         let db = Db::new();
         drop(db.store());
-        for unknown in [0, 5] {
+        for unknown in [0, STORE_SCHEMA_VERSION + 1] {
             db.exec(&format!("UPDATE schema_meta SET version = {unknown};"));
             let before = schema_sql(&db.path);
             assert!(matches!(
@@ -1667,7 +1667,7 @@ mod revisions {
 
         let store = db.store();
         assert_eq!(schema_sql(&db.path), schema);
-        assert_eq!(schema_meta_rows(&db.path), vec![4]);
+        assert_eq!(schema_meta_rows(&db.path), vec![STORE_SCHEMA_VERSION]);
         assert_eq!(db.count("SELECT COUNT(*) FROM branch_heads"), heads);
         assert_eq!(store.head(&branch("main")).unwrap(), Some(r2.id.clone()));
         assert_eq!(store.head(&other).unwrap(), Some(r3.id.clone()));
