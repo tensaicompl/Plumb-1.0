@@ -1,20 +1,21 @@
 import { createRootRoute, createRoute, createRouter, redirect, type RouterHistory } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
-import { CalculationsPage } from "../features/calculations/CalculationsPage";
 import { DecisionsPage } from "../features/decisions/DecisionsPage";
-import { EntitiesPage } from "../features/entities/EntitiesPage";
 import { FindingsPage } from "../features/findings/FindingsPage";
 import { GatesPage } from "../features/gates/GatesPage";
-import { GlossaryPage } from "../features/glossary/GlossaryPage";
 import { HomePage } from "../features/home/HomePage";
-import { ProcessesPage } from "../features/processes/ProcessesPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
-import { RulesPage } from "../features/rules/RulesPage";
 import { ScenariosPage } from "../features/scenarios/ScenariosPage";
+import { GlossaryView } from "../features/model/GlossaryView";
+import { ModelScreen } from "../features/model/ModelScreen";
+import { EntitiesView } from "../features/model/EntitiesView";
+import { RulesView } from "../features/model/RulesView";
+import { CalculationsView } from "../features/model/CalculationsView";
+import { ProcessesView } from "../features/model/ProcessesView";
 import { AppShell } from "./AppShell";
-import { InboxInterim, Legacy, ModelInterim, parseInboxFilter, QualityInterim, SourceInterim, SourcesInterim } from "./routes/interim";
+import { InboxInterim, Legacy, parseInboxFilter, QualityInterim, SourceInterim, SourcesInterim } from "./routes/interim";
 import { NotFoundPage, RouteErrorPage } from "./RouteStatus";
 
 // The explicit route tree: the spec §3 URL structure, every URL deep-linkable. Screen lanes
@@ -107,7 +108,7 @@ const requirementRoute = createRoute({
 const modelRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/model",
-  component: ModelInterim,
+  component: ModelScreen,
 });
 
 const modelIndexRoute = createRoute({
@@ -126,11 +127,11 @@ function segmentRoutes(segment: "glossary" | "entities" | "rules" | "calculation
   ] as const;
 }
 
-const glossaryRoutes = segmentRoutes("glossary", GlossaryPage);
-const entitiesRoutes = segmentRoutes("entities", EntitiesPage);
-const rulesRoutes = segmentRoutes("rules", RulesPage);
-const calculationsRoutes = segmentRoutes("calculations", CalculationsPage);
-const processesRoutes = segmentRoutes("processes", ProcessesPage);
+const glossaryRoutes = segmentRoutes("glossary", GlossaryView);
+const entitiesRoutes = segmentRoutes("entities", EntitiesView);
+const rulesRoutes = segmentRoutes("rules", RulesView);
+const calculationsRoutes = segmentRoutes("calculations", CalculationsView);
+const processesRoutes = segmentRoutes("processes", ProcessesView);
 
 // ------------------------------------------------------------------ Scenarios
 
