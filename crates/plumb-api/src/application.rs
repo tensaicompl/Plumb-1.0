@@ -577,6 +577,17 @@ mod services {
         pub stale: bool,
     }
 
+    /// One lint diagnostic of an Accepted Requirement (R0.7): observable, and blocking only
+    /// through F1 QUALITY_FINDINGS_CLEAR at error severity.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+    pub struct LintDiagnosticView {
+        pub requirement_ref: String,
+        pub source_identifier: Option<String>,
+        pub rule_id: String,
+        pub severity: String,
+        pub message: String,
+    }
+
     /// One current gate finding with its H0.6 disposition and governance state.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct FindingView {
@@ -1860,6 +1871,55 @@ mod services {
             .map_err(|_| ApiError::internal("proposal"))?;
             self.commit(loaded, &proposal, created_at, operation_id)
                 .map(Some)
+        }
+
+        /// Every lint diagnostic (errors and warnings) of the Accepted Requirements of `loaded`
+        /// under the configured F1 lint policy, in requirement-ID order (read-only, R0.7).
+        pub fn lint_diagnostics(
+            &self,
+            loaded: &LoadedRevision,
+        ) -> Result<Vec<LintDiagnosticView>, ApiError> {
+            let policy = match &self.stage_runtime("lint_diagnostics")?.gates.f1 {
+                Some(f1) => {
+                    f1.inputs_template()
+                        .map_err(|_| ApiError::internal("lint_policy"))?
+                        .lint_policy
+                }
+                None => Default::default(),
+            };
+            let mut views = Vec::new();
+            for id in loaded.graph.node_ids_by_type(NodeType::Requirement) {
+                let Some(node) = loaded.graph.node(id) else {
+                    continue;
+                };
+                let NodePayload::Requirement(requirement) = &node.payload else {
+                    continue;
+                };
+                if node.status != ElementStatus::Accepted || requirement.statement.trim().is_empty()
+                {
+                    continue;
+                }
+                let input = plumb_lint::LintInput {
+                    requirement_ref: node.id.clone(),
+                    statement: requirement.statement.clone(),
+                    evidence_refs: node.evidence.iter().map(|e| e.as_id().clone()).collect(),
+                    source_anchor: None,
+                    term_context: None,
+                };
+                let Ok(result) = plumb_lint::lint_requirement(&input, &policy) else {
+                    continue;
+                };
+                for d in result.diagnostics {
+                    views.push(LintDiagnosticView {
+                        requirement_ref: node.id.to_string(),
+                        source_identifier: requirement.source_identifier.clone(),
+                        rule_id: d.rule_id.to_string(),
+                        severity: d.effective_severity.to_string(),
+                        message: d.message,
+                    });
+                }
+            }
+            Ok(views)
         }
 
         /// The current gate findings (every evaluable NOW gate plus the per-candidate F2

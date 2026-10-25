@@ -14,6 +14,7 @@ plumb-inference = { path = "../plumb-inference" }
 plumb-compiler = { path = "../plumb-compiler" }
 plumb-import = { path = "../plumb-import" }
 plumb-functional = { path = "../plumb-functional" }
+plumb-lint = { path = "../plumb-lint" }
 plumb-sim = { path = "../plumb-sim" }
 plumb-intake = { path = "../plumb-intake" }
 plumb-session = { path = "../plumb-session" }

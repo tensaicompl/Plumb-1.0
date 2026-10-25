@@ -196,6 +196,10 @@ pub struct Sim {
     pub config_path: PathBuf,
     pub config: std::cell::RefCell<Value>,
     pub model: Model,
+    /// Committed replay mode: `Some((dir, regenerate))` reads (or, when regenerating, writes)
+    /// one recorded-executions file per stage invocation in `dir` instead of recording live.
+    pub replay: Option<(PathBuf, bool)>,
+    stage_count: std::cell::Cell<usize>,
     _tmp: Option<tempfile::TempDir>,
 }
 
@@ -221,6 +225,8 @@ impl Sim {
             config_path,
             config: std::cell::RefCell::new(config),
             model,
+            replay: None,
+            stage_count: std::cell::Cell::new(0),
             _tmp: tmp,
         }
     }
@@ -275,6 +281,28 @@ impl Sim {
     /// Runs `recipe`: records the scripted executions over a copy of the database, then
     /// replays them through the CLI over the real database.
     pub fn stage(&self, recipe: &str) -> (i32, String) {
+        let n = self.stage_count.get() + 1;
+        self.stage_count.set(n);
+        let committed = self
+            .replay
+            .as_ref()
+            .map(|(dir, regenerate)| (dir.join(format!("{n:02}-{recipe}.json")), *regenerate));
+        if let Some((file, false)) = &committed {
+            // Network-free replay of the committed executions; a stage without a file made
+            // no inference call when it was recorded.
+            if !file.exists() {
+                return self.cli(&[recipe], &[]);
+            }
+            return self.cli(
+                &[recipe],
+                &[
+                    "--provider",
+                    "replay",
+                    "--replay-fixtures",
+                    file.to_str().unwrap(),
+                ],
+            );
+        }
         let copy = self.dir.join("recording.sqlite");
         std::fs::copy(&self.db, &copy).unwrap();
         let scripted = Arc::new(Scripted {
@@ -313,6 +341,10 @@ impl Sim {
         }
         let fixtures = self.dir.join(format!("replay-{recipe}.json"));
         std::fs::write(&fixtures, serde_json::to_vec(&calls).unwrap()).unwrap();
+        if let Some((file, true)) = &committed {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, serde_json::to_vec_pretty(&calls).unwrap()).unwrap();
+        }
         self.cli(
             &[recipe],
             &[

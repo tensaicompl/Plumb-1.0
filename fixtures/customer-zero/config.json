@@ -1,0 +1,324 @@
+{
+  "version": 1,
+  "identity": {
+    "user": "dana",
+    "actor_ref": "agent:cli",
+    "roles": [
+      "analyst"
+    ],
+    "mode": "pilot"
+  },
+  "stage_actor_ref": "agent:compiler",
+  "assistant_actor_ref": "agent:assistant",
+  "provider_policy": {
+    "provider": "test",
+    "config": {}
+  },
+  "session_turn": {
+    "retrieval_top_k": 3,
+    "max_open_questions": 3,
+    "max_context_bytes": 65536
+  },
+  "validation_policy": {
+    "promoted_to_blocker_rule_ids": [],
+    "profile_allow_waiver_rule_ids": []
+  },
+  "calendars": [
+    {
+      "calendar_ref": "cal:desk",
+      "weekend": [
+        "saturday",
+        "sunday"
+      ],
+      "holidays": [
+        "2027-01-01",
+        "2027-05-03"
+      ]
+    }
+  ],
+  "direct_managers": [
+    {
+      "manager_ref": "actor:technician",
+      "employee_ref": "actor:student"
+    }
+  ],
+  "expression_scopes": [],
+  "calculation_scope_overrides": [],
+  "runtime_semantic_values": [],
+  "vocabulary_policy": {
+    "language": "en"
+  },
+  "duplicate_policy": {
+    "jaccard_threshold": "0.8"
+  },
+  "calculation_scope": null,
+  "operation_scope": null,
+  "process_scope": null,
+  "authorization_draft": null,
+  "scenario_derivation": {
+    "decision_tables": [
+      {
+        "decision_table_ref": "dt:borrower-eligibility",
+        "spec": {
+          "hit_policy": "UNIQUE",
+          "inputs": [
+            {
+              "name": "borrower_category",
+              "ty": {
+                "type": "enum",
+                "members": [
+                  "Student",
+                  "Visitor"
+                ]
+              },
+              "domain": null
+            }
+          ],
+          "outputs": [
+            {
+              "name": "eligible",
+              "ty": {
+                "type": "bool"
+              },
+              "domain": null
+            }
+          ],
+          "rows": [
+            {
+              "inputs": [
+                {
+                  "cell": "enum_set",
+                  "members": [
+                    "Student"
+                  ]
+                }
+              ],
+              "outputs": [
+                {
+                  "cell": "bool",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "inputs": [
+                {
+                  "cell": "enum_set",
+                  "members": [
+                    "Visitor"
+                  ]
+                }
+              ],
+              "outputs": [
+                {
+                  "cell": "bool",
+                  "value": false
+                }
+              ]
+            }
+          ],
+          "default_output": null
+        }
+      }
+    ],
+    "boundaries": []
+  },
+  "verification_applicability": {
+    "sources": []
+  },
+  "directory": {
+    "stakeholders": [
+      {
+        "id": "stakeholder:desk-manager",
+        "payload": {
+          "name": "Desk Manager",
+          "stakeholder_kind": "business",
+          "organization": null,
+          "responsibilities": null,
+          "contact_ref": null
+        }
+      },
+      {
+        "id": "stakeholder:lab-lead",
+        "payload": {
+          "name": "Lab Lead",
+          "stakeholder_kind": "business",
+          "organization": null,
+          "responsibilities": null,
+          "contact_ref": null
+        }
+      }
+    ],
+    "actors": [
+      {
+        "id": "actor:student",
+        "payload": {
+          "name": "Student",
+          "actor_kind": "human"
+        }
+      },
+      {
+        "id": "actor:technician",
+        "payload": {
+          "name": "Technician",
+          "actor_kind": "human"
+        }
+      },
+      {
+        "id": "actor:desk",
+        "payload": {
+          "name": "Loan Desk",
+          "actor_kind": "system"
+        }
+      }
+    ],
+    "business_roles": [
+      {
+        "id": "brole:borrower",
+        "payload": {
+          "name": "Borrower"
+        }
+      },
+      {
+        "id": "brole:desk-staff",
+        "payload": {
+          "name": "DeskStaff"
+        }
+      }
+    ],
+    "calendars": [
+      {
+        "id": "calendar:desk",
+        "calendar_ref": "cal:desk",
+        "time_zone": "Europe/Warsaw",
+        "region": "PL",
+        "holiday_source": null
+      }
+    ],
+    "rules": [
+      {
+        "id": "rule:borrower-eligibility",
+        "payload": {
+          "name": "BorrowerEligibility",
+          "rule_kind": "business",
+          "condition_expr": null,
+          "action_expr": null
+        }
+      }
+    ],
+    "decision_tables": [
+      {
+        "id": "dt:borrower-eligibility",
+        "name": "BorrowerEligibility",
+        "spec": {
+          "hit_policy": "UNIQUE",
+          "inputs": [
+            {
+              "name": "borrower_category",
+              "ty": {
+                "type": "enum",
+                "members": [
+                  "Student",
+                  "Visitor"
+                ]
+              },
+              "domain": null
+            }
+          ],
+          "outputs": [
+            {
+              "name": "eligible",
+              "ty": {
+                "type": "bool"
+              },
+              "domain": null
+            }
+          ],
+          "rows": [
+            {
+              "inputs": [
+                {
+                  "cell": "enum_set",
+                  "members": [
+                    "Student"
+                  ]
+                }
+              ],
+              "outputs": [
+                {
+                  "cell": "bool",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "inputs": [
+                {
+                  "cell": "enum_set",
+                  "members": [
+                    "Visitor"
+                  ]
+                }
+              ],
+              "outputs": [
+                {
+                  "cell": "bool",
+                  "value": false
+                }
+              ]
+            }
+          ],
+          "default_output": null
+        }
+      }
+    ]
+  },
+  "question_routing": {
+    "stakeholders": [
+      {
+        "id": "stakeholder:desk-manager",
+        "name": "Desk Manager",
+        "roles": [
+          "business",
+          "analyst"
+        ]
+      },
+      {
+        "id": "stakeholder:lab-lead",
+        "name": "Lab Lead",
+        "roles": [
+          "business"
+        ]
+      }
+    ],
+    "routing": {
+      "calendar": [
+        "stakeholder:desk-manager"
+      ],
+      "rounding": [
+        "stakeholder:desk-manager"
+      ],
+      "formula": [
+        "stakeholder:desk-manager"
+      ],
+      "authorization": [
+        "stakeholder:lab-lead"
+      ],
+      "default": [
+        "stakeholder:desk-manager"
+      ]
+    }
+  },
+  "gates": {
+    "f1": {
+      "lint_policy": {
+        "severity_overrides": {}
+      }
+    },
+    "f4": {
+      "in_scope_scenario_refs": [],
+      "required_scenario_kinds": [],
+      "visible_assumption_refs": []
+    }
+  }
+}

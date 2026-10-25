@@ -1,0 +1,49 @@
+# Frozen expected results of the customer-zero flow (R0.7). Every section is asserted by
+# crates/plumb-cli/tests/customer_zero.rs against the production output.
+requirements:
+- {id: CZ-01, kind: functional, statement: A student shall be able to reserve an equipment item.}
+- {id: CZ-02, kind: functional, statement: 'A reservation shall identify the student, the equipment item, the pickup date, and the return date.'}
+- {id: CZ-03, kind: functional, statement: The desk shall reject a reservation whose pickup date is after its return date.}
+- {id: CZ-04, kind: functional, statement: A visitor shall not be eligible to borrow an equipment item.}
+- {id: CZ-05, kind: functional, statement: The system shall calculate the loan length in working days from the pickup date to the return date.}
+- {id: CZ-06, kind: functional, statement: The system shall exclude public holidays from the loan length.}
+- {id: CZ-07, kind: functional, statement: The system shall support a half-day loan.}
+- {id: CZ-08, kind: functional, statement: Confirming a valid reservation shall change its status from Requested to Confirmed.}
+- {id: CZ-09, kind: functional, statement: A technician shall be allowed to hand out a Confirmed reservation.}
+- {id: CZ-10, kind: functional, statement: Handing out a reservation shall change its status to Loaned.}
+- {id: CZ-11, kind: functional, statement: A student shall be allowed to cancel a Requested reservation.}
+- {id: CZ-12, kind: functional, statement: Cancelling a reservation shall change its status to Cancelled.}
+- {id: CZ-13, kind: functional, statement: Returning an equipment item shall change the reservation status to Returned.}
+- {id: CZ-14, kind: quality, statement: The reservation screen should respond quickly.}
+# Lines that are not requirements never become Requirements.
+not_requirements:
+- the desk might also lend phone chargers
+- ask about late fees
+entities: [reservation, equipment item, student]
+attributes:
+  reservation: [pickup date, return date, half day]
+states: [Requested, Confirmed, Loaned, Cancelled, Returned]
+transitions:
+- [Requested, Confirmed]
+- [Confirmed, Loaned]
+- [Requested, Cancelled]
+- [Loaned, Returned]
+operations: [ReserveEquipment, ConfirmReservation, HandOutReservation, CancelReservation, ReturnEquipment]
+events: [ReservationConfirmed, ReservationLoaned, ReservationCancelled, EquipmentReturned]
+rules: [BorrowerEligibility]
+# Lint: CZ-14 'quickly' is an unmeasurable qualifier (error) -> a waivable F1 blocker.
+waivers:
+- {code: PLUMB.F1.REQ.QUALITY_FINDINGS_CLEAR, requirement: CZ-14}
+# The open calculation semantics raised as questions and the expert answers.
+questions: [f2.calculation.inclusive-end.v1, f2.calculation.holiday-policy.v1, f2.calculation.fraction.v1]
+answers:
+  inclusive_end: false
+  holiday_consumes_working_day: false
+  half_day_fraction: '0.5'
+calculation:
+  name: loan length
+  expression: working_days([pickup_date, return_date], calendar, false) * day_fraction
+# Decision-table scenarios: a Student is eligible; a Visitor is rejected (expected negative).
+scenarios:
+  passing_at_least: 2
+gates: {I0: pass, F1: pass, F2: pass, F3: pass, F4: pass}

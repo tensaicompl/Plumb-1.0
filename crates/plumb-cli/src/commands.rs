@@ -251,9 +251,19 @@ pub fn stage(state: &ApiState, recipe: Recipe, scope: Vec<String>) -> Result<Don
     let (job, _) = state.get_job(run.job_id.as_str())?;
     let gates = state.recipe_gate_details(&run.job_id)?;
     let dispositions = state.recipe_dispositions(&run.job_id)?;
+    // R0.7: lint lists every diagnostic with its severity (warnings stay non-blocking).
+    let diagnostics = if recipe == Recipe::Lint {
+        state.lint_diagnostics(&state.head()?)?
+    } else {
+        Vec::new()
+    };
     let mut value = serde_json::to_value(&job).map_err(|e| CliError::Io(e.to_string()))?;
     value["job_id"] = Value::String(run.job_id.to_string());
     value["dispositions"] = Value::Array(dispositions.clone());
+    if recipe == Recipe::Lint {
+        value["diagnostics"] =
+            serde_json::to_value(&diagnostics).map_err(|e| CliError::Io(e.to_string()))?;
+    }
     let status = serde_json::to_value(job.status)
         .ok()
         .and_then(|s| s.as_str().map(str::to_owned))
@@ -267,6 +277,15 @@ pub fn stage(state: &ApiState, recipe: Recipe, scope: Vec<String>) -> Result<Don
     for (gate, result, failed) in &gates {
         text.push_str(&format!("\n{gate}: {result}"));
         push_failed_rules(&mut text, failed);
+    }
+    for d in &diagnostics {
+        text.push_str(&format!(
+            "\n  lint {} {} {}: {}",
+            d.severity,
+            d.rule_id,
+            d.source_identifier.as_deref().unwrap_or(&d.requirement_ref),
+            d.message
+        ));
     }
     for d in &dispositions {
         text.push_str(&format!(

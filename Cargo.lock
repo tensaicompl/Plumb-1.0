@@ -1550,6 +1550,7 @@ dependencies = [
  "plumb-import",
  "plumb-inference",
  "plumb-intake",
+ "plumb-lint",
  "plumb-patch",
  "plumb-psg",
  "plumb-session",
