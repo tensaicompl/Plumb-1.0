@@ -556,10 +556,25 @@ enum ModalityReading {
     Modality(Modality),
     Unsupported(&'static str),
     Missing,
+    /// More than one distinct main-clause modal verb, in order of first appearance.
+    Multiple(Vec<String>),
 }
 
-/// The first whole ASCII word token among shall, should, may, must and can controls; a
-/// following `not` (separated only by ASCII whitespace) negates it.
+const MODAL_WORDS: [&str; 5] = ["shall", "should", "may", "must", "can"];
+
+/// Words that open a relative clause (who/which/that, Fable #143) or another subordinate
+/// clause ("before it can be approved"), whose own modal is not the requirement modality.
+const CLAUSE_OPENERS: [&str; 16] = [
+    "who", "whom", "whose", "which", "that", "before", "after", "until", "unless", "once",
+    "because", "when", "whenever", "while", "if", "where",
+];
+
+/// The modality of the main clause. Modal tokens are whole ASCII word tokens among shall,
+/// should, may, must and can. A clause opener claims the first modal after it when no
+/// `, ; : . ? !` separates them and another unclaimed modal remains for the main clause; the
+/// first remaining (main-clause) modal controls, and a following `not` (separated only by
+/// ASCII whitespace) negates it. More than one distinct main-clause modal word is never
+/// resolved silently.
 fn read_modality(statement: &str) -> ModalityReading {
     let bytes = statement.as_bytes();
     let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
@@ -577,18 +592,47 @@ fn read_modality(statement: &str) -> ModalityReading {
         }
     }
     let word = |(start, end): (usize, usize)| &statement[start..end];
-    for (index, &token) in tokens.iter().enumerate() {
-        let lower = word(token).to_ascii_lowercase();
-        if !matches!(lower.as_str(), "shall" | "should" | "may" | "must" | "can") {
+    let lower: Vec<String> = tokens
+        .iter()
+        .map(|&t| word(t).to_ascii_lowercase())
+        .collect();
+    let mut main: Vec<usize> = (0..tokens.len())
+        .filter(|&i| MODAL_WORDS.contains(&lower[i].as_str()))
+        .collect();
+    for opener in (0..tokens.len()).filter(|&i| CLAUSE_OPENERS.contains(&lower[i].as_str())) {
+        let Some(position) = main.iter().position(|&m| m > opener) else {
             continue;
+        };
+        let modal = main[position];
+        let separated = bytes[tokens[opener].1..tokens[modal].0]
+            .iter()
+            .any(|b| matches!(b, b',' | b';' | b':' | b'.' | b'?' | b'!'));
+        // Only the first modal after the opener can be its own, and never the last one left.
+        let first_after = !lower[opener + 1..modal]
+            .iter()
+            .any(|w| MODAL_WORDS.contains(&w.as_str()));
+        if !separated && first_after && main.len() > 1 {
+            main.remove(position);
         }
+    }
+    let mut distinct: Vec<String> = Vec::new();
+    for &m in &main {
+        if !distinct.contains(&lower[m]) {
+            distinct.push(lower[m].clone());
+        }
+    }
+    if distinct.len() > 1 {
+        return ModalityReading::Multiple(distinct);
+    }
+    if let Some(&index) = main.first() {
+        let token = tokens[index];
         let negated = tokens.get(index + 1).is_some_and(|&next| {
             word(next).eq_ignore_ascii_case("not")
                 && bytes[token.1..next.0]
                     .iter()
                     .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
         });
-        return match (lower.as_str(), negated) {
+        return match (lower[index].as_str(), negated) {
             ("shall", false) => ModalityReading::Modality(Modality::Shall),
             ("shall", true) => ModalityReading::Modality(Modality::ShallNot),
             ("should", false) => ModalityReading::Modality(Modality::Should),
@@ -711,12 +755,31 @@ fn proposed_node_id(proposal: &Proposal) -> Option<&Id> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "issue", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RequirementCompilationIssue {
-    ClassificationUnavailable { candidate_ref: Id },
-    RequirementKindUnknown { candidate_ref: Id },
-    RequirementLevelUnknown { candidate_ref: Id },
-    MissingModality { candidate_ref: Id },
-    UnsupportedModality { candidate_ref: Id, token: String },
-    EmptyStatement { candidate_ref: Id },
+    ClassificationUnavailable {
+        candidate_ref: Id,
+    },
+    RequirementKindUnknown {
+        candidate_ref: Id,
+    },
+    RequirementLevelUnknown {
+        candidate_ref: Id,
+    },
+    MissingModality {
+        candidate_ref: Id,
+    },
+    UnsupportedModality {
+        candidate_ref: Id,
+        token: String,
+    },
+    /// More than one distinct main-clause modal verb, in order of first appearance; the
+    /// modality is never chosen silently (Fable #143).
+    MultipleModalities {
+        candidate_ref: Id,
+        tokens: Vec<String>,
+    },
+    EmptyStatement {
+        candidate_ref: Id,
+    },
 }
 
 impl RequirementCompilationIssue {
@@ -728,6 +791,7 @@ impl RequirementCompilationIssue {
             | RequirementCompilationIssue::RequirementLevelUnknown { candidate_ref }
             | RequirementCompilationIssue::MissingModality { candidate_ref }
             | RequirementCompilationIssue::UnsupportedModality { candidate_ref, .. }
+            | RequirementCompilationIssue::MultipleModalities { candidate_ref, .. }
             | RequirementCompilationIssue::EmptyStatement { candidate_ref } => candidate_ref,
         }
     }
@@ -746,6 +810,7 @@ impl RequirementCompilationIssue {
             }
             RequirementCompilationIssue::MissingModality { .. } => "missing_modality",
             RequirementCompilationIssue::UnsupportedModality { .. } => "unsupported_modality",
+            RequirementCompilationIssue::MultipleModalities { .. } => "multiple_modalities",
             RequirementCompilationIssue::EmptyStatement { .. } => "empty_statement",
         }
     }
@@ -838,6 +903,13 @@ pub fn compile_requirement_candidates(
             ModalityReading::Missing => {
                 issues.push(RequirementCompilationIssue::MissingModality {
                     candidate_ref: candidate_ref.clone(),
+                });
+                None
+            }
+            ModalityReading::Multiple(tokens) => {
+                issues.push(RequirementCompilationIssue::MultipleModalities {
+                    candidate_ref: candidate_ref.clone(),
+                    tokens,
                 });
                 None
             }

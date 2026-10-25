@@ -915,7 +915,6 @@ mod requirements_contract {
             ("The user can log in.", "can"),
             ("The system should not log.", "should not"),
             ("The system May Not log.", "may not"),
-            ("Users must log in and shall be audited.", "must"),
         ] {
             let issues = modality_of(text).unwrap_err();
             assert_eq!(issues.len(), 1, "{text}");
@@ -936,6 +935,67 @@ mod requirements_contract {
                 ),
                 "{text}"
             );
+        }
+    }
+
+    #[test]
+    fn requirements_relative_clause_modals_are_ignored() {
+        // [Fable #143] A modal inside a who/which/that clause is not the requirement modality.
+        for (text, modality) in [
+            (
+                "The manager who can approve leave shall notify HR.",
+                Modality::Shall,
+            ),
+            (
+                "A report which may be exported shall list every request.",
+                Modality::Shall,
+            ),
+            (
+                "Employees who must work shifts may request a swap.",
+                Modality::May,
+            ),
+            (
+                "The system shall reject requests that must be escalated.",
+                Modality::Shall,
+            ),
+            // The only modal is the main-clause modal.
+            ("Requests that are approved shall be archived.", Modality::Shall),
+            (
+                "A manager shall be allowed to reject leave requests for employees who report directly to that manager and shall record a rejection reason.",
+                Modality::Shall,
+            ),
+        ] {
+            assert_eq!(modality_of(text), Ok(modality), "{text}");
+        }
+    }
+
+    #[test]
+    fn requirements_multiple_main_clause_modals_are_an_issue() {
+        // [Fable #143] More than one distinct main-clause modal is never silently resolved.
+        for (text, tokens) in [
+            (
+                "Users must log in and shall be audited.",
+                &["must", "shall"],
+            ),
+            (
+                "The employee may cancel and the manager shall approve.",
+                &["may", "shall"],
+            ),
+            (
+                "If the balance is low, the system should warn and can block.",
+                &["should", "can"],
+            ),
+        ] {
+            let issues = modality_of(text).unwrap_err();
+            assert_eq!(
+                issues,
+                [RequirementCompilationIssue::MultipleModalities {
+                    candidate_ref: issues[0].candidate_ref().clone(),
+                    tokens: tokens.iter().map(|t| (*t).to_owned()).collect(),
+                }],
+                "{text}"
+            );
+            assert_eq!(issues[0].as_str(), "multiple_modalities");
         }
     }
 
