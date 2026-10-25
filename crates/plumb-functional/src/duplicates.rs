@@ -200,12 +200,39 @@ impl DuplicateResolutionProposal {
     }
 }
 
-/// Matches sorted by pair, findings sorted unique by ID, proposals in canonical order.
+/// What the analysis did with one governed requirement-supersession decision (H0.10,
+/// architecture §33.11).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "disposition", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SupersessionDisposition {
+    /// A dry-validated Supersede proposal was produced.
+    Proposed { proposal_ref: Id },
+    /// The old requirement is already Superseded: the decision has been carried out.
+    AlreadyApplied,
+    /// The decision no longer applies to the current graph (a requirement is no longer
+    /// Accepted, or the canonical patch engine rejects the supersession); `reason` is
+    /// diagnostic only. The rest of the analysis is unaffected.
+    NotApplicable { reason: String },
+}
+
+/// The disposition of one governed supersession decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupersessionDecisionOutcome {
+    pub decision_ref: Id,
+    pub old_ref: Id,
+    pub new_ref: Id,
+    pub disposition: SupersessionDisposition,
+}
+
+/// Matches sorted by pair, findings sorted unique by ID, proposals in canonical order and one
+/// disposition per governed supersession decision, by decision ID.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DuplicateAnalysisResult {
     pub matches: Vec<DuplicateMatch>,
     pub findings: Vec<GeneratedFinding>,
     pub proposals: Vec<DuplicateResolutionProposal>,
+    pub decisions: Vec<SupersessionDecisionOutcome>,
 }
 
 // ============================================================================ normalization
@@ -415,10 +442,16 @@ fn is_clean_text(value: &str) -> bool {
     !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control)
 }
 
-/// Every Accepted decision whose answer kind is `requirement_supersession`, validated; other
-/// answers, non-Accepted decisions and decisions already carried out are ignored.
-fn supersession_decisions(graph: &Graph) -> Result<Vec<Supersession<'_>>, DuplicateError> {
+/// Every Accepted decision whose answer kind is `requirement_supersession`, validated, with the
+/// disposition of each governed decision that does not apply (already carried out, or a
+/// requirement that is no longer Accepted); other answers and non-Accepted decisions are
+/// ignored. A malformed or ungoverned decision, or several applicable decisions for one old
+/// requirement, is an error.
+fn supersession_decisions(
+    graph: &Graph,
+) -> Result<(Vec<Supersession<'_>>, Vec<SupersessionDecisionOutcome>), DuplicateError> {
     let mut decisions = Vec::new();
+    let mut outcomes = Vec::new();
     for id in graph.node_ids_by_type(NodeType::ResolutionDecision) {
         let Some(node) = graph.node(id) else {
             continue;
@@ -462,6 +495,21 @@ fn supersession_decisions(graph: &Graph) -> Result<Vec<Supersession<'_>>, Duplic
                 "no Accepted resolves edge to an Accepted Finding or Question",
             ));
         }
+        let outcome = |disposition| SupersessionDecisionOutcome {
+            decision_ref: id.clone(),
+            old_ref: marker.old_ref.clone(),
+            new_ref: marker.new_ref.clone(),
+            disposition,
+        };
+        // A decision whose old requirement is already Superseded has been carried out; it is
+        // no longer an eligible supersession action and produces no proposal.
+        if graph
+            .node(&marker.old_ref)
+            .is_some_and(|n| n.status == ElementStatus::Superseded)
+        {
+            outcomes.push(outcome(SupersessionDisposition::AlreadyApplied));
+            continue;
+        }
         let accepted_requirement = |reference: &Id, role: &str| {
             graph
                 .node(reference)
@@ -469,27 +517,21 @@ fn supersession_decisions(graph: &Graph) -> Result<Vec<Supersession<'_>>, Duplic
                     n.status == ElementStatus::Accepted
                         && matches!(n.payload, NodePayload::Requirement(_))
                 })
-                .ok_or_else(|| {
-                    invalid(&format!(
-                        "{role} {reference} is not an Accepted Requirement"
-                    ))
-                })
+                .ok_or_else(|| format!("{role} {reference} is not an Accepted Requirement"))
         };
-        // A decision whose old requirement is already Superseded has been carried out; it is
-        // no longer an eligible supersession action and produces nothing.
-        if graph
-            .node(&marker.old_ref)
-            .is_some_and(|n| n.status == ElementStatus::Superseded)
-        {
-            continue;
+        match (
+            accepted_requirement(&marker.old_ref, "old_ref"),
+            accepted_requirement(&marker.new_ref, "new_ref"),
+        ) {
+            (Ok(old), Ok(new)) => decisions.push(Supersession {
+                decision: node,
+                old,
+                new,
+            }),
+            (Err(reason), _) | (_, Err(reason)) => {
+                outcomes.push(outcome(SupersessionDisposition::NotApplicable { reason }));
+            }
         }
-        let old = accepted_requirement(&marker.old_ref, "old_ref")?;
-        let new = accepted_requirement(&marker.new_ref, "new_ref")?;
-        decisions.push(Supersession {
-            decision: node,
-            old,
-            new,
-        });
     }
     let mut by_old: BTreeMap<&Id, Vec<&Id>> = BTreeMap::new();
     for s in &decisions {
@@ -501,7 +543,7 @@ fn supersession_decisions(graph: &Graph) -> Result<Vec<Supersession<'_>>, Duplic
             decision_refs: decision_refs.into_iter().cloned().collect(),
         });
     }
-    Ok(decisions)
+    Ok((decisions, outcomes))
 }
 
 /// `rel:<first 16 hex of SHA-256(RFC 8785 {kind: supersedes, from: new, to: old})>`.
@@ -512,12 +554,13 @@ fn supersedes_edge_id(new_ref: &Id, old_ref: &Id) -> Result<Id, CoreError> {
     format!("rel:{}", &hex[..16]).parse()
 }
 
-/// The dry-validated Supersede proposal a governed decision directs.
+/// The dry-validated Supersede proposal a governed decision directs, or (inner `Err`) why the
+/// canonical patch engine rejects it, so that the decision no longer applies.
 fn supersede_proposal(
     graph: &Graph,
     base: &Hash,
     s: &Supersession<'_>,
-) -> Result<Proposal, DuplicateError> {
+) -> Result<Result<Proposal, String>, DuplicateError> {
     let NodePayload::ResolutionDecision(decision) = &s.decision.payload else {
         return Err(invalid_proposal("decision is not a ResolutionDecision"));
     };
@@ -550,9 +593,10 @@ fn supersede_proposal(
     };
     let proposal = material_proposal(patch_set, evidence)?;
     // In-memory dry validation by the canonical engine; the candidate graph is discarded.
-    apply_patch(graph, &proposal.patch_set)
-        .map_err(|e| invalid(format!("supersession cannot be applied: {e}")))?;
-    Ok(proposal)
+    Ok(match apply_patch(graph, &proposal.patch_set) {
+        Ok(_) => Ok(proposal),
+        Err(e) => Err(format!("supersession cannot be applied: {e}")),
+    })
 }
 
 // ============================================================================ analysis
@@ -576,9 +620,24 @@ pub fn analyze_requirement_duplicates(
     let mut proposals = Vec::new();
 
     let mut directed: BTreeMap<(&Id, &Id), (Id, Id)> = BTreeMap::new();
-    let decisions = supersession_decisions(graph)?;
+    let (decisions, mut outcomes) = supersession_decisions(graph)?;
     for s in &decisions {
-        let proposal = supersede_proposal(graph, &base, s)?;
+        let outcome = |disposition| SupersessionDecisionOutcome {
+            decision_ref: s.decision.id.clone(),
+            old_ref: s.old.id.clone(),
+            new_ref: s.new.id.clone(),
+            disposition,
+        };
+        let proposal = match supersede_proposal(graph, &base, s)? {
+            Ok(proposal) => proposal,
+            Err(reason) => {
+                outcomes.push(outcome(SupersessionDisposition::NotApplicable { reason }));
+                continue;
+            }
+        };
+        outcomes.push(outcome(SupersessionDisposition::Proposed {
+            proposal_ref: proposal.id.clone(),
+        }));
         let pair = if s.old.id < s.new.id {
             (&s.old.id, &s.new.id)
         } else {
@@ -650,10 +709,12 @@ pub fn analyze_requirement_duplicates(
     }
     matches.sort_by(|x, y| (&x.left_ref, &x.right_ref).cmp(&(&y.left_ref, &y.right_ref)));
     proposals.sort_by(|x, y| x.order_key().cmp(&y.order_key()));
+    outcomes.sort_by(|x, y| x.decision_ref.cmp(&y.decision_ref));
     Ok(DuplicateAnalysisResult {
         matches,
         findings: findings.into_values().collect(),
         proposals,
+        decisions: outcomes,
     })
 }
 

@@ -133,7 +133,7 @@ pub use domain::{
 pub use duplicates::{
     analyze_requirement_duplicates, propose_duplicate_supersession, DuplicateAnalysisResult,
     DuplicateError, DuplicateMarkError, DuplicateMatch, DuplicateMatchKind, DuplicatePolicy,
-    JaccardScore, MergeDisposition,
+    JaccardScore, MergeDisposition, SupersessionDecisionOutcome, SupersessionDisposition,
 };
 pub use ears::{
     build_ears_request, evaluate_ears_normalization, EarsAcceptedSemantic, EarsContext, EarsError,
