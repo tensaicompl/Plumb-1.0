@@ -1220,6 +1220,32 @@ mod calculation_contract {
         )
         .unwrap();
         assert_eq!(value, Value::Decimal(Decimal::from_str("0.17").unwrap()));
+        // H0.10: the declared Decimal(n) scale also binds a unit-bearing result: 0.5
+        // working_day exceeds Decimal(0) unless the declared rounding brings it to scale.
+        let c = one(
+            &g,
+            &hr_scope(),
+            candidate(
+                "Requested Working Days",
+                HALF_DAY,
+                "Decimal(0)",
+                Some("working_day"),
+                None,
+                Some(CAL),
+            ),
+        );
+        assert_eq!(
+            evaluate_calculation(
+                c.qualification.prepared.as_ref().unwrap(),
+                &half_day_values(),
+                &hr_calendars(),
+                &NoPredicates,
+            ),
+            Err(CalculationEvalError::ResultScaleExceeded {
+                scale: 1,
+                declared: 0
+            })
+        );
     }
 
     // ------------------------------------------------------------------ inference

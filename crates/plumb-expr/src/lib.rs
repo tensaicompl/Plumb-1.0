@@ -18,8 +18,9 @@ pub use ast::{
 };
 pub use calendar::{CalendarDefinition, CalendarError, CalendarProvider, StaticCalendarProvider};
 pub use eval::{
-    eval, round_decimal, EvalContext, EvalError, PredicateError, PredicateProvider, RefValue,
-    RoundingError, RoundingSpec, Value, ValueEnv, ValueEnvError,
+    check_result, eval, round_decimal, DeclaredResult, EvalContext, EvalError, PredicateError,
+    PredicateProvider, RefValue, ResultCheckError, RoundingError, RoundingSpec, Value, ValueEnv,
+    ValueEnvError,
 };
 pub use parser::{
     canonicalize, parse, ExprError, ParseError, EXPR_MAX_AST_NODES, EXPR_MAX_NESTING_DEPTH,
