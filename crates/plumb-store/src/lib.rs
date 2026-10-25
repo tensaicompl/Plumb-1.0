@@ -20,12 +20,15 @@ pub use branches::{BranchName, InvalidBranchName};
 pub use revisions::{
     CommitResult, GraphRevision, InvalidRevisionId, LoadedRevision, RevisionId, RevisionWriteMeta,
 };
-pub use schema::{PSG_SCHEMA_VERSION, STORE_SCHEMA_VERSION};
+pub use schema::{
+    Durability, StoreOpenMode, PSG_SCHEMA_VERSION, STORE_SCHEMA_VERSION, SYNCHRONOUS_FULL,
+};
 pub use sqlite::SqliteRevisionStore;
 pub use stages::{
     GateReportRecord, NewGateReport, NewStageRecipeJob, NewStageStep, SqliteStageStore,
     StageJobRecord, StageProposalLink, StageRecipeJobRecord, StageStatus, StageStepRecord,
 };
+pub use workflow::occurrence_id;
 pub use workflow::{
     NewWorkflowProposal, NewWorkflowSession, NewWorkflowTurn, SqliteWorkflowStore, WorkflowInsert,
     WorkflowOrigin, WorkflowProposal, WorkflowProposalKind, WorkflowProposalState, WorkflowSession,
@@ -50,6 +53,14 @@ pub enum StoreError {
     /// A value could not be serialized for persistence.
     #[error("serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// An existing-database open found no PLUMB project: a missing, zero-byte, non-SQLite or
+    /// foreign database, or one without the PLUMB tables (architecture §33.9).
+    #[error("the database is not an initialized PLUMB project")]
+    DatabaseNotInitialized,
+    /// A read-only open needs a write (a schema migration).
+    #[error("the database is opened read-only and needs a schema migration")]
+    DatabaseReadOnly,
 
     /// The store already holds a revision or branch; one database holds exactly one project.
     #[error("the revision store is already initialized")]
@@ -142,6 +153,14 @@ pub enum StoreError {
     /// A stage proposal ID is already stored under another origin or without a stage link.
     #[error("stage proposal {id} conflicts with a stored workflow proposal")]
     StageProposalConflict { id: String },
+    /// An accepted proposal must resolve to a revision on its branch lineage after its base
+    /// (Fable #1).
+    #[error("proposal {id} cannot be accepted by revision {revision}: {reason}")]
+    WorkflowResolutionNotDescendant {
+        id: String,
+        revision: String,
+        reason: &'static str,
+    },
     /// A stored workflow record fails an integrity check.
     #[error("corrupt workflow {kind} {id}: {reason}")]
     CorruptWorkflowRecord {
@@ -149,4 +168,70 @@ pub enum StoreError {
         id: String,
         reason: String,
     },
+}
+
+/// The typed class of a [`StoreError`] (architecture §33.9): what the layers above map to their
+/// stable error codes. Everything not listed keeps its operation-specific mapping (`Other`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreErrorClass {
+    /// The branch has no head.
+    BranchNotFound,
+    /// The database is not an initialized PLUMB project.
+    NotInitialized,
+    /// SQLite busy or locked.
+    Busy,
+    /// A write on a read-only database.
+    ReadOnly,
+    /// Detected store corruption (schema, revision, artifact or workflow integrity).
+    Corrupt,
+    /// The stored data was written under an unsupported store or PSG schema version.
+    UnsupportedVersion,
+    /// Any other failure.
+    Other,
+}
+
+/// The class of a raw SQLite failure.
+fn sqlite_class(error: &rusqlite::Error) -> StoreErrorClass {
+    use rusqlite::ErrorCode;
+    match error.sqlite_error_code() {
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => StoreErrorClass::Busy,
+        Some(ErrorCode::ReadOnly) => StoreErrorClass::ReadOnly,
+        Some(ErrorCode::DatabaseCorrupt) => StoreErrorClass::Corrupt,
+        Some(ErrorCode::NotADatabase) => StoreErrorClass::NotInitialized,
+        _ => StoreErrorClass::Other,
+    }
+}
+
+/// The class of an artifact-store failure.
+pub fn artifact_error_class(error: &ArtifactStoreError) -> StoreErrorClass {
+    match error {
+        ArtifactStoreError::Sqlite(e) => sqlite_class(e),
+        ArtifactStoreError::Corrupt { .. }
+        | ArtifactStoreError::IntegrityViolation(_)
+        | ArtifactStoreError::InvalidStoredRow { .. }
+        | ArtifactStoreError::UnknownArtifactKind(_) => StoreErrorClass::Corrupt,
+        ArtifactStoreError::NotInitialized => StoreErrorClass::NotInitialized,
+        _ => StoreErrorClass::Other,
+    }
+}
+
+impl StoreError {
+    /// The typed class of this error.
+    pub fn class(&self) -> StoreErrorClass {
+        match self {
+            StoreError::Sqlite(e) => sqlite_class(e),
+            StoreError::Artifact(e) => artifact_error_class(e),
+            StoreError::BranchNotFound(_) => StoreErrorClass::BranchNotFound,
+            StoreError::DatabaseNotInitialized => StoreErrorClass::NotInitialized,
+            StoreError::DatabaseReadOnly => StoreErrorClass::ReadOnly,
+            StoreError::UnsupportedStoreSchemaVersion { .. }
+            | StoreError::UnsupportedPsgSchemaVersion { .. } => StoreErrorClass::UnsupportedVersion,
+            StoreError::CorruptStoreSchema { .. }
+            | StoreError::UnversionedStore
+            | StoreError::CorruptRevision { .. }
+            | StoreError::InvalidPatchArtifactHashKind { .. }
+            | StoreError::CorruptWorkflowRecord { .. } => StoreErrorClass::Corrupt,
+            _ => StoreErrorClass::Other,
+        }
+    }
 }

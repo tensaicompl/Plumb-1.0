@@ -3238,7 +3238,7 @@ mod http_core {
         assert_eq!(
             plumb_store::SqliteWorkflowStore::open(&app.path)
                 .unwrap()
-                .proposal(&proposal.id)
+                .latest_proposal(&proposal.id)
                 .unwrap(),
             None
         );

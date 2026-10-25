@@ -45,6 +45,15 @@ impl ApiError {
         }))
     }
 
+    /// An error with an explicit status and frozen code (the typed store mapping).
+    pub(crate) fn with_status(
+        status: StatusCode,
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> ApiError {
+        ApiError::new(status, code, message)
+    }
+
     /// The error content.
     pub fn body(&self) -> &ApiErrorBody {
         &self.0

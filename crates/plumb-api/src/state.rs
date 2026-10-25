@@ -591,11 +591,16 @@ impl ApiState {
         self.with_revision_store(|store| {
             let head = store
                 .head(&self.inner.branch)
-                .map_err(|_| ApiError::internal("revision_store"))?
-                .ok_or_else(|| ApiError::internal("branch_head"))?;
+                .map_err(|e| ApiError::store(&e, "revision_store"))?
+                .ok_or_else(|| {
+                    ApiError::store(
+                        &StoreError::BranchNotFound(self.inner.branch.clone()),
+                        "branch_head",
+                    )
+                })?;
             store
                 .load_revision(&head)
-                .map_err(|_| ApiError::internal("revision_store"))
+                .map_err(|e| ApiError::store(&e, "revision_store"))
         })?
     }
 
@@ -606,7 +611,7 @@ impl ApiState {
             Err(StoreError::RevisionNotFound(_)) => {
                 Err(ApiError::not_found(format!("revision {id} not found")))
             }
-            Err(_) => Err(ApiError::internal("revision_store")),
+            Err(e) => Err(ApiError::store(&e, "revision_store")),
         })?
     }
 
@@ -884,7 +889,7 @@ impl ApiState {
                 )
                 .with_details(json!({ "patch_error": error.to_string() })))
             }
-            Err(_) => return Err(ApiError::internal("revision_store")),
+            Err(e) => return Err(ApiError::store(&e, "revision_store")),
         };
         let delta = &result.delta;
         let mut ids: Vec<String> = delta

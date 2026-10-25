@@ -11,12 +11,12 @@ use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use plumb_core::{to_canonical_json, Id, Timestamp};
+use plumb_core::{to_canonical_json, Hash, Id, Timestamp};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::revisions::{revision_exists, RevisionId};
-use crate::schema::open_connection;
+use crate::schema::{durability_of, open_database, Durability, StoreOpenMode};
 use crate::StoreError;
 
 /// Declares a closed workflow vocabulary stored as its exact lowercase string.
@@ -110,11 +110,14 @@ pub struct NewWorkflowProposal {
     pub created_at: Timestamp,
 }
 
-/// A persisted workflow proposal. The JSON fields are the exact stored canonical text.
+/// A persisted workflow proposal occurrence: the content-addressed proposal on one base
+/// revision (H0.10, architecture §33.11). The JSON fields are the exact stored canonical text.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowProposal {
     pub proposal_id: Id,
     pub base_revision_id: RevisionId,
+    /// `occ:<first 16 hex of SHA-256(RFC 8785 {proposal_id, base_revision_id})>`.
+    pub occurrence_id: Id,
     pub proposal_json: String,
     pub intake_json: String,
     pub proposal_kind: WorkflowProposalKind,
@@ -181,7 +184,7 @@ pub struct WorkflowTurn {
     pub failure: Option<String>,
 }
 
-/// Durable workflow records in the pilot SQLite database (store schema v2).
+/// Durable workflow records in the pilot SQLite database (store schema v2; occurrences v4).
 ///
 /// Owns its own connection to the same database as the revision store. Every write runs in one
 /// `BEGIN IMMEDIATE` transaction, so a failed operation leaves the database unchanged.
@@ -191,7 +194,25 @@ pub struct SqliteWorkflowStore {
 }
 
 const PROPOSAL_COLUMNS: &str = "proposal_id, base_revision_id, proposal_json, intake_json, \
-     proposal_kind, state, origin_kind, origin_ref, created_at, resolved_at, resolved_revision_id";
+     proposal_kind, state, origin_kind, origin_ref, created_at, resolved_at, resolved_revision_id, \
+     occurrence_id";
+
+/// The same columns qualified by the alias `p`.
+const P_PROPOSAL_COLUMNS: &str = "p.proposal_id, p.base_revision_id, p.proposal_json, \
+     p.intake_json, p.proposal_kind, p.state, p.origin_kind, p.origin_ref, p.created_at, \
+     p.resolved_at, p.resolved_revision_id, p.occurrence_id";
+
+/// The durable occurrence key of `proposal_id` on `base_revision_id`:
+/// `occ:<first 16 hex of SHA-256(RFC 8785 {proposal_id, base_revision_id})>`.
+pub fn occurrence_id(proposal_id: &Id, base_revision_id: &RevisionId) -> Result<Id, StoreError> {
+    let bytes = to_canonical_json(&json!({
+        "proposal_id": proposal_id.as_str(),
+        "base_revision_id": base_revision_id.as_str(),
+    }))?;
+    let digest = Hash::content_sha256(&bytes);
+    let hex = &digest.as_str()["sha256:".len()..];
+    Ok(format!("occ:{}", &hex[..16]).parse()?)
+}
 
 const TURN_COLUMNS: &str = "session_id, turn_index, state, base_revision_id, stage, \
      expected_node_refs_json, proposal_ids_json, requires_reason_count, committed_revision_id, \
@@ -201,16 +222,44 @@ impl SqliteWorkflowStore {
     /// Opens the workflow store at `path`, initializing or migrating the database to store
     /// schema v2 exactly as [`crate::SqliteRevisionStore::open`] does.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let mut conn = Connection::open(path)?;
-        open_connection(&mut conn)?;
+        Self::open_with(path, StoreOpenMode::CreateOrMigrate)
+    }
+
+    /// Opens the store of an existing PLUMB database at `path` read-write (architecture §33.9):
+    /// the file and the schema are never created; an older store is migrated in place.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with(path, StoreOpenMode::Existing)
+    }
+
+    /// Opens the store of an existing, current PLUMB database at `path` with SQLite read-only
+    /// access and no journal-mode change; every write fails.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with(path, StoreOpenMode::ReadOnly)
+    }
+
+    /// Opens the store at `path` in `mode`.
+    pub fn open_with(path: impl AsRef<Path>, mode: StoreOpenMode) -> Result<Self, StoreError> {
+        let conn = open_database(path.as_ref(), mode)?;
         Ok(Self { conn })
+    }
+
+    /// The durability pragmas of this store's connection (Fable #199).
+    pub fn durability(&self) -> Result<Durability, StoreError> {
+        durability_of(&self.conn)
+    }
+
+    /// Sets the SQLite busy timeout of this store's connection.
+    pub fn set_busy_timeout(&self, timeout: std::time::Duration) -> Result<(), StoreError> {
+        Ok(self.conn.busy_timeout(timeout)?)
     }
 
     // ------------------------------------------------------------------ proposals
 
-    /// Inserts `proposal` in `state` (only `prepared` or `pending` are initial states). An
-    /// existing row with the same ID is returned unchanged as [`WorkflowInsert::Existing`]; the
-    /// caller decides whether it is the identical record.
+    /// Inserts `proposal` in `state` (only `prepared` or `pending` are initial states) as the
+    /// occurrence `(proposal_id, base_revision_id)`. An existing row of the same occurrence is
+    /// returned unchanged as [`WorkflowInsert::Existing`]; the caller decides whether it is the
+    /// identical record. Occurrences of the same proposal on other baselines (in any state)
+    /// never block the insert (H0.10).
     pub fn insert_proposal(
         &mut self,
         proposal: &NewWorkflowProposal,
@@ -219,33 +268,64 @@ impl SqliteWorkflowStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = proposal_on(&tx, &proposal.proposal_id)? {
+        let (id, base) = (&proposal.proposal_id, &proposal.base_revision_id);
+        if let Some(existing) = proposal_on(&tx, id, base)? {
             return Ok(WorkflowInsert::Existing(existing));
         }
         insert_proposal_on(&tx, proposal, state)?;
-        let inserted = proposal_on(&tx, &proposal.proposal_id)?.ok_or_else(|| {
-            StoreError::WorkflowRecordNotFound {
-                kind: "proposal",
-                id: proposal.proposal_id.to_string(),
-            }
-        })?;
+        let inserted = proposal_on(&tx, id, base)?.ok_or_else(|| not_found_proposal(id))?;
         tx.commit()?;
         Ok(WorkflowInsert::Inserted(inserted))
     }
 
-    /// The proposal with `id`, if stored.
-    pub fn proposal(&self, id: &Id) -> Result<Option<WorkflowProposal>, StoreError> {
-        proposal_on(&self.conn, id)
+    /// The occurrence of proposal `id` on `base_revision_id`, if stored.
+    pub fn proposal(
+        &self,
+        id: &Id,
+        base_revision_id: &RevisionId,
+    ) -> Result<Option<WorkflowProposal>, StoreError> {
+        proposal_on(&self.conn, id, base_revision_id)
     }
 
-    /// Every and only `pending` proposal, as the complete stored record, sorted by proposal ID
-    /// ascending (R0.6). Rows are decoded exactly as [`Self::proposal`] decodes them, so a
-    /// malformed row is a typed corruption error and is never skipped. Read-only: no state
-    /// transition, reconciliation, rejection or rebase; no pagination and no origin filter.
+    /// Every stored occurrence of proposal `id`, oldest base revision first.
+    pub fn proposal_occurrences(&self, id: &Id) -> Result<Vec<WorkflowProposal>, StoreError> {
+        occurrences_on(&self.conn, id)
+    }
+
+    /// The occurrence of proposal `id` on the newest base revision, if any.
+    pub fn latest_proposal(&self, id: &Id) -> Result<Option<WorkflowProposal>, StoreError> {
+        Ok(occurrences_on(&self.conn, id)?.pop())
+    }
+
+    /// The occurrence a lookup or action by proposal ID on the loaded `head` addresses
+    /// (architecture §33.11): exactly the pending occurrence based on `head`; without one, the
+    /// occurrence on the newest base revision, which the caller reports as not pending or as
+    /// built on another baseline. `None` when the proposal is unknown.
+    pub fn current_proposal(
+        &self,
+        id: &Id,
+        head: &RevisionId,
+    ) -> Result<Option<WorkflowProposal>, StoreError> {
+        let mut occurrences = occurrences_on(&self.conn, id)?;
+        if let Some(position) = occurrences
+            .iter()
+            .position(|p| p.base_revision_id == *head && p.state == WorkflowProposalState::Pending)
+        {
+            return Ok(Some(occurrences.swap_remove(position)));
+        }
+        Ok(occurrences.pop())
+    }
+
+    /// Every and only `pending` proposal occurrence, as the complete stored record, sorted by
+    /// proposal ID ascending, then oldest base revision first (R0.6). Rows are decoded exactly
+    /// as [`Self::proposal`] decodes them, so a malformed row is a typed corruption error and is
+    /// never skipped. Read-only: no state transition, reconciliation, rejection or rebase; no
+    /// pagination and no origin filter.
     pub fn pending_proposals(&self) -> Result<Vec<WorkflowProposal>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {PROPOSAL_COLUMNS} FROM workflow_proposals WHERE state = ?1 \
-             ORDER BY proposal_id"
+            "SELECT {P_PROPOSAL_COLUMNS} FROM workflow_proposals p \
+             JOIN graph_revisions r ON r.id = p.base_revision_id \
+             WHERE p.state = ?1 ORDER BY p.proposal_id, r.version"
         ))?;
         let raws = stmt
             .query_map([WorkflowProposalState::Pending.as_str()], raw_proposal)?
@@ -254,20 +334,21 @@ impl SqliteWorkflowStore {
             .into_iter()
             .map(RawProposal::decode)
             .collect::<Result<Vec<_>, _>>()?;
-        // The contract is ID order of the typed IDs, independent of SQLite collation.
+        // The contract is ID order of the typed IDs, independent of SQLite collation (the sort
+        // is stable, so occurrences keep their base-version order).
         proposals.sort_by(|a, b| a.proposal_id.cmp(&b.proposal_id));
         Ok(proposals)
     }
 
-    /// Every `rejected` proposal of `origin`, as the complete stored record, sorted by proposal
-    /// ID ascending. Read-only.
+    /// Every `rejected` proposal occurrence of `origin`, as the complete stored record, sorted
+    /// by proposal ID ascending. Read-only.
     pub fn rejected_proposals(
         &self,
         origin: WorkflowOrigin,
     ) -> Result<Vec<WorkflowProposal>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {PROPOSAL_COLUMNS} FROM workflow_proposals \
-             WHERE state = ?1 AND origin_kind = ?2 ORDER BY proposal_id"
+             WHERE state = ?1 AND origin_kind = ?2 ORDER BY proposal_id, base_revision_id"
         ))?;
         let raws = stmt
             .query_map(
@@ -283,11 +364,15 @@ impl SqliteWorkflowStore {
         Ok(proposals)
     }
 
-    /// Moves a `pending` proposal to `accepted` or `rejected` with its resolution revision and
-    /// time. Any other current state is [`StoreError::WorkflowStateConflict`].
+    /// Moves the `pending` occurrence of proposal `id` on `base_revision_id` to `accepted` or
+    /// `rejected` with its resolution revision and time. Any other current state is
+    /// [`StoreError::WorkflowStateConflict`]. An acceptance must resolve to a revision that
+    /// descends from the base on its branch lineage, with a greater version (Fable #1):
+    /// otherwise [`StoreError::WorkflowResolutionNotDescendant`] and nothing changes.
     pub fn resolve_proposal(
         &mut self,
         id: &Id,
+        base_revision_id: &RevisionId,
         to: WorkflowProposalState,
         resolved_revision_id: &RevisionId,
         resolved_at: Timestamp,
@@ -305,10 +390,8 @@ impl SqliteWorkflowStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current = proposal_on(&tx, id)?.ok_or_else(|| StoreError::WorkflowRecordNotFound {
-            kind: "proposal",
-            id: id.to_string(),
-        })?;
+        let current =
+            proposal_on(&tx, id, base_revision_id)?.ok_or_else(|| not_found_proposal(id))?;
         expect_state(
             "proposal",
             id,
@@ -316,20 +399,23 @@ impl SqliteWorkflowStore {
             WorkflowProposalState::Pending.as_str(),
         )?;
         require_revision(&tx, resolved_revision_id)?;
+        if to == WorkflowProposalState::Accepted {
+            require_descendant(&tx, id, base_revision_id, resolved_revision_id)?;
+        }
         tx.execute(
             "UPDATE workflow_proposals SET state = ?1, resolved_at = ?2, \
-             resolved_revision_id = ?3 WHERE proposal_id = ?4 AND state = 'pending'",
+             resolved_revision_id = ?3 \
+             WHERE proposal_id = ?4 AND base_revision_id = ?5 AND state = 'pending'",
             params![
                 to.as_str(),
                 resolved_at.to_string(),
                 resolved_revision_id.as_str(),
-                id.as_str()
+                id.as_str(),
+                base_revision_id.as_str()
             ],
         )?;
-        let updated = proposal_on(&tx, id)?.ok_or_else(|| StoreError::WorkflowRecordNotFound {
-            kind: "proposal",
-            id: id.to_string(),
-        })?;
+        let updated =
+            proposal_on(&tx, id, base_revision_id)?.ok_or_else(|| not_found_proposal(id))?;
         tx.commit()?;
         Ok(updated)
     }
@@ -414,7 +500,17 @@ impl SqliteWorkflowStore {
             reason: "turn index overflow".to_owned(),
         })?;
         for proposal in proposals {
-            if proposal_on(&tx, &proposal.proposal_id)?.is_some() {
+            if proposal.base_revision_id != turn.base_revision_id {
+                return Err(StoreError::CorruptWorkflowRecord {
+                    kind: "turn",
+                    id: turn.session_id.to_string(),
+                    reason: format!(
+                        "proposal {} is not based on the turn's base revision",
+                        proposal.proposal_id
+                    ),
+                });
+            }
+            if proposal_on(&tx, &proposal.proposal_id, &proposal.base_revision_id)?.is_some() {
                 return Err(StoreError::WorkflowRecordExists {
                     kind: "proposal",
                     id: proposal.proposal_id.to_string(),
@@ -463,23 +559,39 @@ impl SqliteWorkflowStore {
         let turn = prepared_turn(&tx, session_id, turn_index)?;
         require_revision(&tx, committed_revision_id)?;
         for proposal_id in &turn.proposal_ids {
-            let proposal = proposal_on(&tx, proposal_id)?.ok_or_else(|| {
-                StoreError::CorruptWorkflowRecord {
-                    kind: "turn",
-                    id: session_id.to_string(),
-                    reason: format!("listed proposal {proposal_id} is missing"),
-                }
-            })?;
+            let proposal =
+                proposal_on(&tx, proposal_id, &turn.base_revision_id)?.ok_or_else(|| {
+                    StoreError::CorruptWorkflowRecord {
+                        kind: "turn",
+                        id: session_id.to_string(),
+                        reason: format!("listed proposal {proposal_id} is missing"),
+                    }
+                })?;
             expect_state(
                 "proposal",
                 proposal_id,
                 proposal.state.as_str(),
                 WorkflowProposalState::Prepared.as_str(),
             )?;
+            if *committed_revision_id != turn.base_revision_id
+                && proposal_on(&tx, proposal_id, committed_revision_id)?.is_some()
+            {
+                return Err(StoreError::WorkflowRecordExists {
+                    kind: "proposal",
+                    id: proposal_id.to_string(),
+                });
+            }
+            // The prepared row becomes the pending occurrence on the committed revision.
             tx.execute(
-                "UPDATE workflow_proposals SET state = 'pending', base_revision_id = ?1 \
-                 WHERE proposal_id = ?2 AND state = 'prepared'",
-                params![committed_revision_id.as_str(), proposal_id.as_str()],
+                "UPDATE workflow_proposals SET state = 'pending', base_revision_id = ?1, \
+                 occurrence_id = ?2 \
+                 WHERE proposal_id = ?3 AND base_revision_id = ?4 AND state = 'prepared'",
+                params![
+                    committed_revision_id.as_str(),
+                    occurrence_id(proposal_id, committed_revision_id)?.as_str(),
+                    proposal_id.as_str(),
+                    turn.base_revision_id.as_str()
+                ],
             )?;
         }
         tx.execute(
@@ -516,8 +628,8 @@ impl SqliteWorkflowStore {
         for proposal_id in &turn.proposal_ids {
             tx.execute(
                 "UPDATE workflow_proposals SET state = 'failed' \
-                 WHERE proposal_id = ?1 AND state = 'prepared'",
-                [proposal_id.as_str()],
+                 WHERE proposal_id = ?1 AND base_revision_id = ?2 AND state = 'prepared'",
+                params![proposal_id.as_str(), turn.base_revision_id.as_str()],
             )?;
         }
         tx.execute(
@@ -609,10 +721,11 @@ pub(crate) fn insert_proposal_on(
         });
     }
     require_revision(tx, &proposal.base_revision_id)?;
+    let occurrence = occurrence_id(&proposal.proposal_id, &proposal.base_revision_id)?;
     tx.execute(
         &format!(
             "INSERT INTO workflow_proposals ({PROPOSAL_COLUMNS}) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)"
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10)"
         ),
         params![
             proposal.proposal_id.as_str(),
@@ -623,10 +736,59 @@ pub(crate) fn insert_proposal_on(
             state.as_str(),
             proposal.origin_kind.as_str(),
             proposal.origin_ref.as_ref().map(Id::as_str),
-            proposal.created_at.to_string()
+            proposal.created_at.to_string(),
+            occurrence.as_str()
         ],
     )?;
     Ok(())
+}
+
+fn not_found_proposal(id: &Id) -> StoreError {
+    StoreError::WorkflowRecordNotFound {
+        kind: "proposal",
+        id: id.to_string(),
+    }
+}
+
+/// Requires `resolved` to descend from `base` with a greater version (Fable #1): walking the
+/// parents of `resolved` reaches `base`.
+fn require_descendant(
+    tx: &Transaction<'_>,
+    id: &Id,
+    base: &RevisionId,
+    resolved: &RevisionId,
+) -> Result<(), StoreError> {
+    let refuse = |reason| StoreError::WorkflowResolutionNotDescendant {
+        id: id.to_string(),
+        revision: resolved.to_string(),
+        reason,
+    };
+    let version_of = |rev: &str| -> Result<(i64, Option<String>), StoreError> {
+        Ok(tx.query_row(
+            "SELECT version, parent_id FROM graph_revisions WHERE id = ?1",
+            [rev],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    };
+    let (base_version, _) = version_of(base.as_str())?;
+    let (mut version, mut parent) = version_of(resolved.as_str())?;
+    if version <= base_version {
+        return Err(refuse(
+            "the resolution revision is not newer than the base revision",
+        ));
+    }
+    while version > base_version {
+        let Some(next) = parent else {
+            break;
+        };
+        if next == base.as_str() {
+            return Ok(());
+        }
+        (version, parent) = version_of(&next)?;
+    }
+    Err(refuse(
+        "the resolution revision does not descend from the base revision",
+    ))
 }
 
 pub(crate) fn corrupt(kind: &'static str, id: &str, reason: impl Into<String>) -> StoreError {
@@ -668,6 +830,7 @@ struct RawProposal {
     created_at: String,
     resolved_at: Option<String>,
     resolved_revision_id: Option<String>,
+    occurrence_id: String,
 }
 
 fn raw_proposal(row: &Row<'_>) -> rusqlite::Result<RawProposal> {
@@ -683,6 +846,7 @@ fn raw_proposal(row: &Row<'_>) -> rusqlite::Result<RawProposal> {
         created_at: row.get(8)?,
         resolved_at: row.get(9)?,
         resolved_revision_id: row.get(10)?,
+        occurrence_id: row.get(11)?,
     })
 }
 
@@ -690,9 +854,17 @@ impl RawProposal {
     fn decode(self) -> Result<WorkflowProposal, StoreError> {
         const K: &str = "proposal";
         let id = self.proposal_id.clone();
+        let proposal_id: Id = parse_field(K, &id, "proposal_id", &self.proposal_id)?;
+        let base_revision_id: RevisionId =
+            parse_field(K, &id, "base_revision_id", &self.base_revision_id)?;
+        let occurrence: Id = parse_field(K, &id, "occurrence_id", &self.occurrence_id)?;
+        if occurrence != occurrence_id(&proposal_id, &base_revision_id)? {
+            return Err(corrupt(K, &id, "occurrence_id does not match its key"));
+        }
         Ok(WorkflowProposal {
-            proposal_id: parse_field(K, &id, "proposal_id", &self.proposal_id)?,
-            base_revision_id: parse_field(K, &id, "base_revision_id", &self.base_revision_id)?,
+            proposal_id,
+            base_revision_id,
+            occurrence_id: occurrence,
             proposal_json: self.proposal_json,
             intake_json: self.intake_json,
             proposal_kind: parse_field(K, &id, "proposal_kind", &self.proposal_kind)?,
@@ -714,15 +886,32 @@ impl RawProposal {
 pub(crate) fn proposal_on(
     conn: &Connection,
     id: &Id,
+    base_revision_id: &RevisionId,
 ) -> Result<Option<WorkflowProposal>, StoreError> {
     let raw = conn
         .query_row(
-            &format!("SELECT {PROPOSAL_COLUMNS} FROM workflow_proposals WHERE proposal_id = ?1"),
-            [id.as_str()],
+            &format!(
+                "SELECT {PROPOSAL_COLUMNS} FROM workflow_proposals \
+                 WHERE proposal_id = ?1 AND base_revision_id = ?2"
+            ),
+            [id.as_str(), base_revision_id.as_str()],
             raw_proposal,
         )
         .optional()?;
     raw.map(RawProposal::decode).transpose()
+}
+
+/// Every occurrence of `id`, oldest base revision first.
+fn occurrences_on(conn: &Connection, id: &Id) -> Result<Vec<WorkflowProposal>, StoreError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {P_PROPOSAL_COLUMNS} FROM workflow_proposals p \
+         JOIN graph_revisions r ON r.id = p.base_revision_id \
+         WHERE p.proposal_id = ?1 ORDER BY r.version"
+    ))?;
+    let raws = stmt
+        .query_map([id.as_str()], raw_proposal)?
+        .collect::<Result<Vec<_>, _>>()?;
+    raws.into_iter().map(RawProposal::decode).collect()
 }
 
 fn session_on(conn: &Connection, id: &Id) -> Result<Option<WorkflowSession>, StoreError> {

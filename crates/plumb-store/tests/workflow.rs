@@ -1,5 +1,5 @@
 //! A0.3 (Hotfix 065) contract tests for the durable workflow records and their store schema
-//! (v2, migrated to v3 by A0.4, Hotfix 067).
+//! (v2, migrated to v3 by A0.4, Hotfix 067, and to the v4 proposal occurrences by H0.10).
 //!
 //! Every test lives in `workflow` so that `cargo test -p plumb-store workflow` selects all of
 //! them.
@@ -207,10 +207,25 @@ mod workflow {
         fn downgrade_to_v2(&self) {
             self.drop_stage_tables();
             self.exec(&format!(
-                "CREATE TABLE wp_v2 AS SELECT * FROM workflow_proposals; \
+                "CREATE TABLE wp_v2 AS SELECT {V3_COLUMNS} FROM workflow_proposals; \
                  DROP TABLE workflow_proposals; {V2_WORKFLOW_PROPOSALS} \
                  INSERT INTO workflow_proposals SELECT * FROM wp_v2; DROP TABLE wp_v2; \
                  UPDATE schema_meta SET version = 2;"
+            ));
+        }
+
+        /// Rebuilds the exact store schema v3 proposal table (one row per proposal ID, no
+        /// occurrence key); the stage links are rebuilt in their v3 form too.
+        fn downgrade_to_v3(&self) {
+            self.exec(&format!(
+                "CREATE TABLE sl_v3 AS SELECT proposal_id, recipe_job_id, stage_job_id, \
+                   compile_run_ref FROM stage_job_proposals; DROP TABLE stage_job_proposals; \
+                 CREATE TABLE wp_v3 AS SELECT {V3_COLUMNS} FROM workflow_proposals; \
+                 DROP TABLE workflow_proposals; {V3_WORKFLOW_PROPOSALS} \
+                 INSERT INTO workflow_proposals SELECT * FROM wp_v3; DROP TABLE wp_v3; \
+                 {V3_STAGE_JOB_PROPOSALS} \
+                 INSERT INTO stage_job_proposals SELECT * FROM sl_v3; DROP TABLE sl_v3; \
+                 UPDATE schema_meta SET version = 3;"
             ));
         }
 
@@ -279,6 +294,44 @@ mod workflow {
   FOREIGN KEY (resolved_revision_id) REFERENCES graph_revisions(id)
 );";
 
+    /// The columns of a store schema v2/v3 workflow proposal row.
+    const V3_COLUMNS: &str = "proposal_id, base_revision_id, proposal_json, intake_json, \
+        proposal_kind, state, origin_kind, origin_ref, created_at, resolved_at, \
+        resolved_revision_id";
+
+    /// The exact store schema v3 definition of `workflow_proposals` (Hotfix 067).
+    const V3_WORKFLOW_PROPOSALS: &str = "CREATE TABLE workflow_proposals (
+  proposal_id TEXT PRIMARY KEY,
+  base_revision_id TEXT NOT NULL,
+  proposal_json TEXT NOT NULL,
+  intake_json TEXT NOT NULL,
+  proposal_kind TEXT NOT NULL
+    CHECK (proposal_kind IN ('link', 'merge', 'supersede', 'create', 'accept')),
+  state TEXT NOT NULL
+    CHECK (state IN ('prepared', 'pending', 'accepted', 'rejected', 'failed')),
+  origin_kind TEXT NOT NULL CHECK (origin_kind IN ('intake', 'question', 'session', 'stage')),
+  origin_ref TEXT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT NULL,
+  resolved_revision_id TEXT NULL,
+
+  CHECK (origin_kind <> 'stage' OR origin_ref IS NULL),
+  FOREIGN KEY (base_revision_id) REFERENCES graph_revisions(id),
+  FOREIGN KEY (resolved_revision_id) REFERENCES graph_revisions(id)
+);";
+
+    /// The exact store schema v3 definition of `stage_job_proposals` (Hotfix 067).
+    const V3_STAGE_JOB_PROPOSALS: &str = "CREATE TABLE stage_job_proposals (
+  proposal_id TEXT PRIMARY KEY,
+  recipe_job_id TEXT NOT NULL,
+  stage_job_id TEXT NOT NULL,
+  compile_run_ref TEXT NOT NULL,
+  FOREIGN KEY (proposal_id) REFERENCES workflow_proposals(proposal_id),
+  FOREIGN KEY (recipe_job_id) REFERENCES stage_recipe_jobs(recipe_job_id),
+  FOREIGN KEY (stage_job_id) REFERENCES stage_jobs(stage_job_id),
+  FOREIGN KEY (compile_run_ref) REFERENCES artifacts(hash)
+);";
+
     const STAGE_TABLES: [&str; 5] = [
         "stage_recipe_jobs",
         "stage_jobs",
@@ -287,14 +340,14 @@ mod workflow {
         "gate_reports",
     ];
 
-    // ------------------------------------------------------------------ schema v3
+    // ------------------------------------------------------------------ schema v4
 
     #[test]
-    fn workflow_fresh_database_is_created_at_v3() {
+    fn workflow_fresh_database_is_created_at_v4() {
         let db = Db::new();
         drop(db.workflow());
         assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
-        assert_eq!(STORE_SCHEMA_VERSION, 3);
+        assert_eq!(STORE_SCHEMA_VERSION, 4);
         for t in [
             "workflow_proposals",
             "workflow_sessions",
@@ -305,16 +358,16 @@ mod workflow {
         {
             assert!(db.tables().contains(t), "{t}");
         }
-        // A v3 store is verified and reopened unchanged.
-        let before = db.tables();
+        // A v4 store is verified and reopened unchanged.
+        let before = db.schema();
         drop(db.workflow());
         drop(SqliteRevisionStore::open(&db.path).unwrap());
-        assert_eq!(db.tables(), before);
-        assert_eq!(db.version(), vec![3]);
+        assert_eq!(db.schema(), before);
+        assert_eq!(db.version(), vec![4]);
     }
 
     #[test]
-    fn workflow_valid_v2_store_migrates_to_v3_preserving_proposals() {
+    fn workflow_valid_v2_store_migrates_to_v4_preserving_proposals() {
         let db = Db::new();
         let (r1, r2) = db.with_revisions();
         {
@@ -336,13 +389,15 @@ mod workflow {
             }
             wf.resolve_proposal(
                 &id("prop:0000000000000001"),
+                &r1,
                 WorkflowProposalState::Accepted,
                 &r2,
                 ts(T1),
             )
             .unwrap();
         }
-        let proposals_before = db.rows("SELECT * FROM workflow_proposals ORDER BY proposal_id");
+        let v3_rows = format!("SELECT {V3_COLUMNS} FROM workflow_proposals ORDER BY proposal_id");
+        let proposals_before = db.rows(&v3_rows);
         db.downgrade_to_v2();
         assert_eq!(db.version(), vec![2]);
         for t in STAGE_TABLES {
@@ -355,12 +410,22 @@ mod workflow {
             .is_some());
         let rows = db.graph_rows();
         drop(SqliteRevisionStore::open(&db.path).unwrap());
-        assert_eq!(db.version(), vec![3]);
+        assert_eq!(db.version(), vec![4]);
         assert_eq!(db.graph_rows(), rows);
-        assert_eq!(
-            db.rows("SELECT * FROM workflow_proposals ORDER BY proposal_id"),
-            proposals_before
-        );
+        assert_eq!(db.rows(&v3_rows), proposals_before);
+        // Every migrated row is its own occurrence.
+        let wf = db.workflow();
+        for (proposal, base) in [
+            ("prop:0000000000000001", &r1),
+            ("prop:0000000000000002", &r1),
+        ] {
+            let stored = wf.proposal(&id(proposal), base).unwrap().unwrap();
+            assert_eq!(
+                stored.occurrence_id,
+                occurrence_id(&id(proposal), base).unwrap()
+            );
+        }
+        drop(wf);
         for t in STAGE_TABLES {
             assert!(db.tables().contains(t), "{t}");
         }
@@ -375,7 +440,7 @@ mod workflow {
         assert!(db
             .exec_err("INSERT INTO workflow_proposals SELECT 'prop:0000000000000009', base_revision_id, \
                  proposal_json, intake_json, proposal_kind, state, 'stage', 'job:x', created_at, NULL, \
-                 NULL FROM workflow_proposals LIMIT 1;")
+                 NULL, 'occ:0000000000000009' FROM workflow_proposals LIMIT 1;")
             .is_some());
         stage.origin_ref = None;
         assert!(matches!(
@@ -399,11 +464,71 @@ mod workflow {
         assert_eq!(db.graph_rows(), rows);
         db.exec("DROP TABLE gate_reports;");
         drop(db.workflow());
-        assert_eq!(db.version(), vec![3]);
+        assert_eq!(db.version(), vec![4]);
     }
 
     #[test]
-    fn workflow_valid_v1_store_migrates_to_v3_without_rewriting_rows() {
+    fn workflow_valid_v3_store_migrates_to_v4_keeping_every_row_as_its_occurrence() {
+        let db = Db::new();
+        let (r1, r2) = db.with_revisions();
+        {
+            let mut wf = db.workflow();
+            session(&mut wf);
+            for (proposal, base, state) in [
+                ("prop:0000000000000001", &r1, WorkflowProposalState::Pending),
+                ("prop:0000000000000002", &r2, WorkflowProposalState::Pending),
+                (
+                    "prop:0000000000000003",
+                    &r1,
+                    WorkflowProposalState::Prepared,
+                ),
+            ] {
+                wf.insert_proposal(
+                    &new_proposal(proposal, base, WorkflowOrigin::Session),
+                    state,
+                )
+                .unwrap();
+            }
+            wf.resolve_proposal(
+                &id("prop:0000000000000001"),
+                &r1,
+                WorkflowProposalState::Rejected,
+                &r1,
+                ts(T2),
+            )
+            .unwrap();
+        }
+        let v3_rows = format!("SELECT {V3_COLUMNS} FROM workflow_proposals ORDER BY proposal_id");
+        let before = db.rows(&v3_rows);
+        db.downgrade_to_v3();
+        assert_eq!(db.version(), vec![3]);
+        let graph = db.graph_rows();
+        let wf = db.workflow();
+        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.rows(&v3_rows), before);
+        assert_eq!(db.graph_rows(), graph);
+        for (proposal, base) in [
+            ("prop:0000000000000001", &r1),
+            ("prop:0000000000000002", &r2),
+            ("prop:0000000000000003", &r1),
+        ] {
+            let stored = wf.proposal(&id(proposal), base).unwrap().unwrap();
+            assert_eq!(
+                stored.occurrence_id,
+                occurrence_id(&id(proposal), base).unwrap()
+            );
+        }
+        // The migrated schema is exactly the fresh v4 schema (SQLite quotes renamed tables).
+        let fresh = Db::new();
+        drop(fresh.workflow());
+        let unquoted = |rows: Vec<String>| -> Vec<String> {
+            rows.into_iter().map(|r| r.replace('"', "")).collect()
+        };
+        assert_eq!(unquoted(db.schema()), unquoted(fresh.schema()));
+    }
+
+    #[test]
+    fn workflow_valid_v1_store_migrates_to_v4_without_rewriting_rows() {
         let db = Db::new();
         let (_, r2) = db.with_revisions();
         db.downgrade_to_v1();
@@ -411,7 +536,7 @@ mod workflow {
         let rows = db.graph_rows();
         // Opening through either store migrates transactionally.
         let store = SqliteRevisionStore::open(&db.path).unwrap();
-        assert_eq!(db.version(), vec![3]);
+        assert_eq!(db.version(), vec![4]);
         assert!(db.tables().contains("workflow_session_turns"));
         for t in STAGE_TABLES {
             assert!(db.tables().contains(t), "{t}");
@@ -486,6 +611,7 @@ mod workflow {
         // Resolve two of the "others": one accepted, one rejected.
         wf.resolve_proposal(
             &id("prop:00000000000000a0"),
+            &r1,
             WorkflowProposalState::Accepted,
             &r2,
             ts(T2),
@@ -493,6 +619,7 @@ mod workflow {
         .unwrap();
         wf.resolve_proposal(
             &id("prop:00000000000000e5"),
+            &r1,
             WorkflowProposalState::Rejected,
             &r2,
             ts(T2),
@@ -519,7 +646,12 @@ mod workflow {
         assert_eq!(listed, expected);
         for p in &listed {
             assert_eq!(p.state, WorkflowProposalState::Pending);
-            assert_eq!(&wf.proposal(&p.proposal_id).unwrap().unwrap(), p);
+            assert_eq!(
+                &wf.proposal(&p.proposal_id, &p.base_revision_id)
+                    .unwrap()
+                    .unwrap(),
+                p
+            );
         }
         let origins: BTreeSet<&str> = listed.iter().map(|p| p.origin_kind.as_str()).collect();
         assert_eq!(
@@ -560,19 +692,19 @@ mod workflow {
         // Removing the conflict lets the migration complete.
         db.exec("DROP TABLE workflow_session_turns;");
         drop(db.workflow());
-        assert_eq!(db.version(), vec![3]);
+        assert_eq!(db.version(), vec![4]);
     }
 
     #[test]
     fn workflow_unknown_versions_and_unversioned_tables_are_rejected() {
         let db = Db::new();
         drop(db.workflow());
-        db.exec("UPDATE schema_meta SET version = 4;");
+        db.exec("UPDATE schema_meta SET version = 5;");
         assert!(matches!(
             SqliteWorkflowStore::open(&db.path).unwrap_err(),
-            StoreError::UnsupportedStoreSchemaVersion { found: 4 }
+            StoreError::UnsupportedStoreSchemaVersion { found: 5 }
         ));
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![5]);
 
         let db = Db::new();
         db.exec("CREATE TABLE workflow_proposals (proposal_id TEXT PRIMARY KEY);");
@@ -582,7 +714,7 @@ mod workflow {
         ));
         assert!(!db.tables().contains("schema_meta"));
 
-        // A v3 store missing a workflow or stage table is corrupt and never healed.
+        // A v4 store missing a workflow or stage table is corrupt and never healed.
         let db = Db::new();
         drop(db.workflow());
         db.exec("DROP TABLE workflow_sessions;");
@@ -625,7 +757,13 @@ mod workflow {
         assert_eq!(stored.base_revision_id, r1);
         assert_eq!(stored.origin_ref, None);
         assert_eq!(stored.resolved_at, None);
-        // A second insert of the same ID returns the stored record unchanged.
+        assert_eq!(
+            stored.occurrence_id,
+            occurrence_id(&p.proposal_id, &r1).unwrap()
+        );
+        assert!(stored.occurrence_id.as_str().starts_with("occ:"));
+        assert_eq!(stored.occurrence_id.as_str().len(), "occ:".len() + 16);
+        // A second insert of the same occurrence returns the stored record unchanged.
         let mut other = p.clone();
         other.proposal_json = json!({"different": true});
         assert_eq!(
@@ -636,8 +774,12 @@ mod workflow {
         // Durable across reopening.
         drop(wf);
         let wf = db.workflow();
-        assert_eq!(wf.proposal(&p.proposal_id).unwrap(), Some(stored));
-        assert_eq!(wf.proposal(&id("prop:ffffffffffffffff")).unwrap(), None);
+        assert_eq!(wf.proposal(&p.proposal_id, &r1).unwrap(), Some(stored));
+        assert_eq!(wf.proposal(&p.proposal_id, &r2).unwrap(), None);
+        assert_eq!(
+            wf.proposal(&id("prop:ffffffffffffffff"), &r1).unwrap(),
+            None
+        );
         // Only prepared or pending are initial states, and the base revision must exist.
         let mut wf = db.workflow();
         assert!(matches!(
@@ -655,7 +797,10 @@ mod workflow {
             ),
             Err(StoreError::RevisionNotFound(_))
         ));
-        assert_eq!(wf.proposal(&id("prop:0000000000000002")).unwrap(), None);
+        assert!(wf
+            .proposal_occurrences(&id("prop:0000000000000002"))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -673,6 +818,7 @@ mod workflow {
         let accepted = wf
             .resolve_proposal(
                 &id("prop:0000000000000001"),
+                &r1,
                 WorkflowProposalState::Accepted,
                 &r2,
                 ts(T2),
@@ -685,6 +831,7 @@ mod workflow {
         let rejected = wf
             .resolve_proposal(
                 &id("prop:0000000000000002"),
+                &r1,
                 WorkflowProposalState::Rejected,
                 &r1,
                 ts(T2),
@@ -697,13 +844,14 @@ mod workflow {
             ("prop:0000000000000002", WorkflowProposalState::Accepted),
         ] {
             assert!(matches!(
-                wf.resolve_proposal(&id(target), to, &r2, ts(T2)),
+                wf.resolve_proposal(&id(target), &r1, to, &r2, ts(T2)),
                 Err(StoreError::WorkflowStateConflict { .. })
             ));
         }
         assert!(matches!(
             wf.resolve_proposal(
                 &id("prop:0000000000000001"),
+                &r1,
                 WorkflowProposalState::Pending,
                 &r2,
                 ts(T2)
@@ -713,6 +861,7 @@ mod workflow {
         assert!(matches!(
             wf.resolve_proposal(
                 &id("prop:ffffffffffffffff"),
+                &r1,
                 WorkflowProposalState::Accepted,
                 &r2,
                 ts(T2)
@@ -779,7 +928,7 @@ mod workflow {
         assert_eq!(turn.requires_reason_count, 1);
         assert_eq!(turn.stage, "S1");
         for p in [&p1, &p2] {
-            let stored = wf.proposal(&p.proposal_id).unwrap().unwrap();
+            let stored = wf.proposal(&p.proposal_id, &r1).unwrap().unwrap();
             assert_eq!(stored.state, WorkflowProposalState::Prepared);
             assert_eq!(stored.origin_kind, WorkflowOrigin::Session);
         }
@@ -787,6 +936,7 @@ mod workflow {
         assert!(matches!(
             wf.resolve_proposal(
                 &p1.proposal_id,
+                &r1,
                 WorkflowProposalState::Accepted,
                 &r2,
                 ts(T2)
@@ -797,9 +947,14 @@ mod workflow {
         assert_eq!(committed.state, WorkflowTurnState::Committed);
         assert_eq!(committed.committed_revision_id, Some(r2.clone()));
         for p in [&p1, &p2] {
-            let stored = wf.proposal(&p.proposal_id).unwrap().unwrap();
+            let stored = wf.proposal(&p.proposal_id, &r2).unwrap().unwrap();
             assert_eq!(stored.state, WorkflowProposalState::Pending);
             assert_eq!(stored.base_revision_id, r2);
+            assert_eq!(
+                stored.occurrence_id,
+                occurrence_id(&p.proposal_id, &r2).unwrap()
+            );
+            assert_eq!(wf.proposal(&p.proposal_id, &r1).unwrap(), None);
         }
         // A committed turn is never committed or failed again.
         assert!(matches!(
@@ -823,7 +978,7 @@ mod workflow {
         assert_eq!(failed.state, WorkflowTurnState::Failed);
         assert_eq!(failed.failure.as_deref(), Some("STALE_BASE"));
         assert_eq!(
-            wf.proposal(&p3.proposal_id).unwrap().unwrap().state,
+            wf.proposal(&p3.proposal_id, &r2).unwrap().unwrap().state,
             WorkflowProposalState::Failed
         );
         drop(wf);
@@ -865,7 +1020,7 @@ mod workflow {
             wf.prepare_turn(&new_turn(&r1, &[&p1, &p2]), &[p1.clone(), p2.clone()]),
             Err(StoreError::WorkflowRecordExists { .. })
         ));
-        assert_eq!(wf.proposal(&p1.proposal_id).unwrap(), None);
+        assert_eq!(wf.proposal(&p1.proposal_id, &r1).unwrap(), None);
         assert!(wf.turns(&id("ses:0123456789abcdef")).unwrap().is_empty());
         // The turn's proposal list must name exactly its proposals.
         assert!(matches!(
@@ -888,6 +1043,7 @@ mod workflow {
         .unwrap();
         wf.resolve_proposal(
             &id("prop:0000000000000001"),
+            &r1,
             WorkflowProposalState::Accepted,
             &r2,
             ts(T2),
@@ -914,8 +1070,188 @@ mod workflow {
         ));
         db.exec("UPDATE workflow_proposals SET created_at = 'yesterday';");
         assert!(matches!(
-            wf.proposal(&id("prop:0000000000000001")),
+            wf.proposal(&id("prop:0000000000000001"), &r1),
             Err(StoreError::CorruptWorkflowRecord { .. })
         ));
+        // An occurrence key that does not match its row is corruption too.
+        db.exec(&format!(
+            "UPDATE workflow_proposals SET created_at = '{T1}', \
+             occurrence_id = 'occ:0000000000000000';"
+        ));
+        assert!(matches!(
+            wf.proposal(&id("prop:0000000000000001"), &r1),
+            Err(StoreError::CorruptWorkflowRecord { .. })
+        ));
+    }
+
+    // ------------------------------------------------------------------ occurrences (H0.10)
+
+    /// Revisions 1..=3 on main, each adding one Proposed requirement.
+    fn three_revisions(db: &Db) -> (RevisionId, RevisionId, RevisionId) {
+        let (r1, r2) = db.with_revisions();
+        let mut store = SqliteRevisionStore::open(&db.path).unwrap();
+        let g2 = store.load_revision(&r2).unwrap().graph;
+        let r3 = store
+            .commit(
+                &BranchName::main(),
+                &r2,
+                &PatchSet {
+                    base_semantic_hash: g2.semantic_hash().unwrap(),
+                    patch: SemanticPatch::AddNode {
+                        node: requirement("req:c", "Proposed"),
+                    },
+                },
+                meta(T2),
+            )
+            .unwrap()
+            .revision
+            .id;
+        (r1, r2, r3)
+    }
+
+    #[test]
+    fn identical_proposal_on_later_baseline_is_a_new_occurrence() {
+        let db = Db::new();
+        let (r1, r2, r3) = three_revisions(&db);
+        let mut wf = db.workflow();
+        let on =
+            |base: &RevisionId| new_proposal("prop:00000000000000aa", base, WorkflowOrigin::Intake);
+        let pid = id("prop:00000000000000aa");
+
+        // Occurrence 1 on r1 is rejected on its own revision.
+        let WorkflowInsert::Inserted(first) = wf
+            .insert_proposal(&on(&r1), WorkflowProposalState::Pending)
+            .unwrap()
+        else {
+            panic!("fresh insert");
+        };
+        wf.resolve_proposal(&pid, &r1, WorkflowProposalState::Rejected, &r1, ts(T2))
+            .unwrap();
+
+        // The identical proposal on r2 is a new, pending occurrence: never Existing.
+        let second = match wf
+            .insert_proposal(&on(&r2), WorkflowProposalState::Pending)
+            .unwrap()
+        {
+            WorkflowInsert::Inserted(p) => p,
+            other => panic!("expected a new occurrence, got {other:?}"),
+        };
+        assert_eq!(second.proposal_id, first.proposal_id);
+        assert_eq!(second.base_revision_id, r2);
+        assert_eq!(second.state, WorkflowProposalState::Pending);
+        assert_ne!(second.occurrence_id, first.occurrence_id);
+        assert_eq!(second.occurrence_id, occurrence_id(&pid, &r2).unwrap());
+
+        // Historical occurrences are immutable.
+        let historical = wf.proposal(&pid, &r1).unwrap().unwrap();
+        assert_eq!(historical.state, WorkflowProposalState::Rejected);
+        assert_eq!(historical.resolved_revision_id, Some(r1.clone()));
+
+        // A lookup on the loaded head resolves exactly its pending occurrence.
+        assert_eq!(
+            wf.current_proposal(&pid, &r2).unwrap(),
+            Some(second.clone())
+        );
+        // On another head there is no pending occurrence: the newest one is reported, whose
+        // base is not the head (E_PROPOSAL_BASELINE_CHANGED above the store).
+        let other = wf.current_proposal(&pid, &r3).unwrap().unwrap();
+        assert_eq!(other.base_revision_id, r2);
+        assert_eq!(
+            wf.current_proposal(&id("prop:ffffffffffffffff"), &r3)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            wf.proposal_occurrences(&pid)
+                .unwrap()
+                .iter()
+                .map(|p| p.base_revision_id.clone())
+                .collect::<Vec<_>>(),
+            [r1.clone(), r2.clone()]
+        );
+        assert_eq!(wf.pending_proposals().unwrap(), vec![second.clone()]);
+
+        // The r2 occurrence goes stale and the identical proposal is governed again on r3.
+        let third = match wf
+            .insert_proposal(&on(&r3), WorkflowProposalState::Pending)
+            .unwrap()
+        {
+            WorkflowInsert::Inserted(p) => p,
+            other => panic!("expected a new occurrence, got {other:?}"),
+        };
+        assert_eq!(wf.current_proposal(&pid, &r3).unwrap(), Some(third.clone()));
+        assert_eq!(
+            wf.pending_proposals().unwrap(),
+            vec![second.clone(), third.clone()]
+        );
+        // Resolving one occurrence never touches another.
+        wf.resolve_proposal(&pid, &r2, WorkflowProposalState::Rejected, &r3, ts(T2))
+            .unwrap();
+        assert_eq!(
+            wf.proposal(&pid, &r3).unwrap().unwrap().state,
+            WorkflowProposalState::Pending
+        );
+        assert_eq!(wf.pending_proposals().unwrap(), vec![third]);
+    }
+
+    #[test]
+    fn accepted_resolution_must_descend_from_the_base() {
+        let db = Db::new();
+        let (r1, r2, r3) = three_revisions(&db);
+        // A branch from r1 whose head is not on main's lineage after r2.
+        let mut store = SqliteRevisionStore::open(&db.path).unwrap();
+        store
+            .create_branch("side".parse().unwrap(), r1.clone(), ts(T2))
+            .unwrap();
+        let g1 = store.load_revision(&r1).unwrap().graph;
+        let side = store
+            .commit(
+                &"side".parse().unwrap(),
+                &r1,
+                &PatchSet {
+                    base_semantic_hash: g1.semantic_hash().unwrap(),
+                    patch: SemanticPatch::AddNode {
+                        node: requirement("req:side", "Proposed"),
+                    },
+                },
+                meta(T2),
+            )
+            .unwrap()
+            .revision
+            .id;
+        let mut wf = db.workflow();
+        let pid = id("prop:00000000000000bb");
+        wf.insert_proposal(
+            &new_proposal("prop:00000000000000bb", &r2, WorkflowOrigin::Intake),
+            WorkflowProposalState::Pending,
+        )
+        .unwrap();
+        let before = db.rows("SELECT * FROM workflow_proposals ORDER BY proposal_id");
+        // The base itself, an older revision and a revision of another lineage are refused.
+        for resolved in [&r2, &r1, &side] {
+            assert!(
+                matches!(
+                    wf.resolve_proposal(
+                        &pid,
+                        &r2,
+                        WorkflowProposalState::Accepted,
+                        resolved,
+                        ts(T2)
+                    ),
+                    Err(StoreError::WorkflowResolutionNotDescendant { .. })
+                ),
+                "{resolved}"
+            );
+        }
+        assert_eq!(
+            db.rows("SELECT * FROM workflow_proposals ORDER BY proposal_id"),
+            before
+        );
+        // A rejection may be recorded on the base itself.
+        // A descendant with a greater version on the lineage is accepted.
+        let accepted = wf
+            .resolve_proposal(&pid, &r2, WorkflowProposalState::Accepted, &r3, ts(T2))
+            .unwrap();
+        assert_eq!(accepted.resolved_revision_id, Some(r3));
     }
 }

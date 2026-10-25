@@ -285,10 +285,10 @@ mod revisions {
     // ------------------------------------------------------------------ schema
 
     #[test]
-    fn fresh_database_initializes_exact_v3_schema() {
+    fn fresh_database_initializes_exact_v4_schema() {
         let db = Db::new();
         let store = db.store();
-        assert_eq!(STORE_SCHEMA_VERSION, 3);
+        assert_eq!(STORE_SCHEMA_VERSION, 4);
         assert_eq!(PSG_SCHEMA_VERSION, 1);
         let expected: BTreeSet<String> = [
             "artifacts",
@@ -312,7 +312,7 @@ mod revisions {
         .map(str::to_owned)
         .collect();
         assert_eq!(tables(&db.path), expected);
-        assert_eq!(schema_meta_rows(&db.path), vec![3]);
+        assert_eq!(schema_meta_rows(&db.path), vec![4]);
         let conn = db.raw();
         assert_eq!(
             columns(&conn, "graph_revisions"),
@@ -366,7 +366,8 @@ mod revisions {
                 "origin_ref",
                 "created_at",
                 "resolved_at",
-                "resolved_revision_id"
+                "resolved_revision_id",
+                "occurrence_id"
             ]
         );
         assert_eq!(
@@ -464,7 +465,7 @@ mod revisions {
             .unwrap();
         assert_eq!(after, before);
         assert_eq!(db.count("SELECT COUNT(*) FROM artifacts"), 1);
-        assert_eq!(schema_meta_rows(&db.path), vec![3]);
+        assert_eq!(schema_meta_rows(&db.path), vec![4]);
         drop(store);
     }
 
@@ -472,7 +473,7 @@ mod revisions {
     fn unsupported_store_schema_version_is_rejected_without_change() {
         let db = Db::new();
         drop(db.store());
-        for unknown in [0, 4] {
+        for unknown in [0, 5] {
             db.exec(&format!("UPDATE schema_meta SET version = {unknown};"));
             let before = schema_sql(&db.path);
             assert!(matches!(
@@ -522,6 +523,233 @@ mod revisions {
         ));
         assert_eq!(schema_sql(&db.path), before);
         assert!(!tables(&db.path).contains("schema_meta"));
+    }
+
+    // ------------------------------------------------------------------ open modes (H0.9)
+
+    fn sqlite_sidecars(path: &Path) -> Vec<PathBuf> {
+        ["-journal", "-wal", "-shm"]
+            .iter()
+            .map(|suffix| {
+                let mut name = path.as_os_str().to_owned();
+                name.push(suffix);
+                PathBuf::from(name)
+            })
+            .filter(|p| p.exists())
+            .collect()
+    }
+
+    /// Every existing-database open of every store over `path` fails with
+    /// `DatabaseNotInitialized`, read-write or read-only.
+    fn assert_not_initialized(path: &Path) {
+        let not_initialized = |result: Result<(), StoreError>, what: &str| match result {
+            Err(StoreError::DatabaseNotInitialized) => {}
+            other => panic!("{what}: expected DatabaseNotInitialized, got {other:?}"),
+        };
+        not_initialized(
+            SqliteRevisionStore::open_existing(path).map(drop),
+            "revision existing",
+        );
+        not_initialized(
+            SqliteRevisionStore::open_read_only(path).map(drop),
+            "revision read-only",
+        );
+        not_initialized(
+            SqliteWorkflowStore::open_existing(path).map(drop),
+            "workflow existing",
+        );
+        not_initialized(
+            SqliteWorkflowStore::open_read_only(path).map(drop),
+            "workflow read-only",
+        );
+        not_initialized(
+            SqliteStageStore::open_existing(path).map(drop),
+            "stage existing",
+        );
+        not_initialized(
+            SqliteStageStore::open_read_only(path).map(drop),
+            "stage read-only",
+        );
+    }
+
+    #[test]
+    fn open_existing_never_creates_schema() {
+        // A missing file is never created.
+        let db = Db::new();
+        assert_not_initialized(&db.path);
+        assert!(!db.path.exists());
+        assert!(SqliteArtifactStore::open_existing(&db.path).is_err());
+        assert!(!db.path.exists());
+
+        // A zero-byte file stays zero bytes.
+        std::fs::write(&db.path, b"").unwrap();
+        assert_not_initialized(&db.path);
+        assert!(SqliteArtifactStore::open_existing(&db.path).is_err());
+        assert_eq!(std::fs::metadata(&db.path).unwrap().len(), 0);
+        assert!(sqlite_sidecars(&db.path).is_empty());
+
+        // A foreign SQLite database keeps its schema and journal mode.
+        let db = Db::new();
+        db.exec("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT);");
+        let before = schema_sql(&db.path);
+        assert_not_initialized(&db.path);
+        assert!(SqliteArtifactStore::open_existing(&db.path).is_err());
+        assert_eq!(schema_sql(&db.path), before);
+        let journal: String = db
+            .raw()
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(journal, "delete");
+
+        // A database holding only the F0.2 artifacts table is not a PLUMB project.
+        let db = Db::new();
+        drop(SqliteArtifactStore::open(&db.path).unwrap());
+        let before = schema_sql(&db.path);
+        assert_not_initialized(&db.path);
+        assert_eq!(schema_sql(&db.path), before);
+
+        // A file that is not SQLite at all.
+        let db = Db::new();
+        std::fs::write(&db.path, b"this is not a database, just some text bytes").unwrap();
+        assert_not_initialized(&db.path);
+        assert_eq!(
+            std::fs::read(&db.path).unwrap(),
+            b"this is not a database, just some text bytes"
+        );
+
+        // An initialized project opens existing and read-only without any schema change.
+        let db = Db::new();
+        let (store, rev) = db.initialized();
+        drop(store);
+        let before = schema_sql(&db.path);
+        let existing = SqliteRevisionStore::open_existing(&db.path).unwrap();
+        assert_eq!(
+            existing.head(&branch("main")).unwrap(),
+            Some(rev.id.clone())
+        );
+        drop(existing);
+        drop(SqliteWorkflowStore::open_existing(&db.path).unwrap());
+        drop(SqliteStageStore::open_existing(&db.path).unwrap());
+        drop(SqliteArtifactStore::open_existing(&db.path).unwrap());
+        let read_only = SqliteRevisionStore::open_read_only(&db.path).unwrap();
+        assert_eq!(read_only.load_revision(&rev.id).unwrap().revision, rev);
+        assert_eq!(schema_sql(&db.path), before);
+    }
+
+    #[test]
+    fn read_only_open_never_writes_and_rejects_writes() {
+        let db = Db::new();
+        let (store, rev) = db.initialized();
+        drop(store);
+        // Back to the rollback journal: a read-only open never changes the journal mode.
+        db.exec("PRAGMA journal_mode = DELETE;");
+        let mut perms = std::fs::metadata(&db.path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&db.path, perms.clone()).unwrap();
+        let bytes = std::fs::read(&db.path).unwrap();
+        let mut read_only = SqliteRevisionStore::open_read_only(&db.path).unwrap();
+        let workflow = SqliteWorkflowStore::open_read_only(&db.path).unwrap();
+        let stages = SqliteStageStore::open_read_only(&db.path).unwrap();
+        let artifacts = SqliteArtifactStore::open_read_only(&db.path).unwrap();
+        assert_eq!(
+            read_only.head(&branch("main")).unwrap(),
+            Some(rev.id.clone())
+        );
+        assert!(workflow.pending_proposals().unwrap().is_empty());
+        assert!(stages.gate_reports().unwrap().is_empty());
+        assert!(!artifacts.exists(&generic("c")).unwrap());
+        let loaded = read_only.load_revision(&rev.id).unwrap();
+        let err = read_only
+            .commit(
+                &branch("main"),
+                &rev.id,
+                &add_accepted(&loaded.graph, "req:new"),
+                meta(T2),
+            )
+            .unwrap_err();
+        assert_eq!(err.class(), StoreErrorClass::ReadOnly, "{err:?}");
+        drop((read_only, workflow, stages, artifacts));
+        assert_eq!(std::fs::read(&db.path).unwrap(), bytes);
+        let journal: String = db
+            .raw()
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(journal, "delete");
+        perms.set_readonly(false);
+        std::fs::set_permissions(&db.path, perms).unwrap();
+    }
+
+    #[test]
+    fn store_errors_are_classified() {
+        assert_eq!(
+            StoreError::DatabaseNotInitialized.class(),
+            StoreErrorClass::NotInitialized
+        );
+        assert_eq!(
+            StoreError::BranchNotFound(branch("ghost")).class(),
+            StoreErrorClass::BranchNotFound
+        );
+        assert_eq!(
+            StoreError::CorruptRevision {
+                revision: "rev:1:x".into(),
+                reason: "r".into()
+            }
+            .class(),
+            StoreErrorClass::Corrupt
+        );
+        assert_eq!(
+            StoreError::UnsupportedPsgSchemaVersion {
+                revision: "rev:1:x".into(),
+                found: 2
+            }
+            .class(),
+            StoreErrorClass::UnsupportedVersion
+        );
+        // A second connection holding the write lock makes a writer BUSY (no busy wait here).
+        let db = Db::new();
+        let (store, rev) = db.initialized();
+        drop(store);
+        let blocker = db.raw();
+        blocker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let mut store = db.store();
+        store.set_busy_timeout(std::time::Duration::ZERO).unwrap();
+        let loaded = store.load_revision(&rev.id).unwrap();
+        let err = store
+            .commit(
+                &branch("main"),
+                &rev.id,
+                &add_accepted(&loaded.graph, "req:new"),
+                meta(T2),
+            )
+            .unwrap_err();
+        assert_eq!(err.class(), StoreErrorClass::Busy, "{err:?}");
+        blocker.execute_batch("ROLLBACK;").unwrap();
+    }
+
+    #[test]
+    fn store_durability_profile_is_full_synchronous_wal() {
+        let db = Db::new();
+        let (store, _) = db.initialized();
+        let expected = Durability {
+            journal_mode: "wal".to_owned(),
+            synchronous: SYNCHRONOUS_FULL,
+        };
+        assert_eq!(store.durability().unwrap(), expected);
+        assert_eq!(
+            SqliteWorkflowStore::open_existing(&db.path)
+                .unwrap()
+                .durability()
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            SqliteStageStore::open_existing(&db.path)
+                .unwrap()
+                .durability()
+                .unwrap(),
+            expected
+        );
+        assert_eq!(SYNCHRONOUS_FULL, 2);
     }
 
     // ------------------------------------------------------------------ identifiers
@@ -1362,7 +1590,7 @@ mod revisions {
 
         let store = db.store();
         assert_eq!(schema_sql(&db.path), schema);
-        assert_eq!(schema_meta_rows(&db.path), vec![3]);
+        assert_eq!(schema_meta_rows(&db.path), vec![4]);
         assert_eq!(db.count("SELECT COUNT(*) FROM branch_heads"), heads);
         assert_eq!(store.head(&branch("main")).unwrap(), Some(r2.id.clone()));
         assert_eq!(store.head(&other).unwrap(), Some(r3.id.clone()));

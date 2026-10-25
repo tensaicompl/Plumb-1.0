@@ -117,6 +117,9 @@ fn bounded(message: &str) -> String {
 
 /// 500 `E_INTERNAL` naming the failed stage-store operation by its stable error name.
 pub(crate) fn store_error(error: plumb_store::StoreError) -> ApiError {
+    if let Some(typed) = ApiError::store_class(error.class()) {
+        return typed.with_details(json!({ "subsystem": "stage_store" }));
+    }
     ApiError::internal(&format!(
         "stage_store: {}",
         scenario_execution::error_name(&error)
@@ -567,7 +570,7 @@ fn artifacts_of(state: &ApiState, run: &CompileRun) -> Result<ArtifactSet, ApiEr
             .iter()
             .map(|hash| {
                 let artifact = state
-                    .with_artifact_store(|store| store.get(hash))?
+                    .get_artifact(hash)?
                     .map_err(|_| ApiError::workflow_corrupt("stage run artifact"))?;
                 Ok(ArtifactInput {
                     hash: artifact.hash,
@@ -590,9 +593,7 @@ fn artifacts_of(state: &ApiState, run: &CompileRun) -> Result<ArtifactSet, ApiEr
 /// Loads a Projection intermediate by hash: kind, media type, canonical bytes, strict decode.
 fn load_segmentation(state: &ApiState, hash: &Hash) -> Result<SegmentationIntermediate, ApiError> {
     let corrupt = || ApiError::workflow_corrupt(&format!("segmentation intermediate {hash}"));
-    let artifact = state
-        .with_artifact_store(|store| store.get(hash))?
-        .map_err(|_| corrupt())?;
+    let artifact = state.get_artifact(hash)?.map_err(|_| corrupt())?;
     if artifact.kind != ArtifactKind::Projection
         || artifact.media_type != "application/json"
         || &Hash::content_sha256(&artifact.bytes) != hash
@@ -815,7 +816,7 @@ impl ApiState {
                 continue;
             };
             let artifact = self
-                .with_artifact_store(|store| store.get(hash))?
+                .get_artifact(hash)?
                 .map_err(|_| ApiError::workflow_corrupt(&format!("step intermediate {hash}")))?;
             let Ok(value) = serde_json::from_slice::<Value>(&artifact.bytes) else {
                 continue;

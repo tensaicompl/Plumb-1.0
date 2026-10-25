@@ -125,7 +125,7 @@ fn run_view(
                 "the link is not a generic sha256 hash string",
             )
         })?;
-    let artifact = match state.with_artifact_store(|store| store.get(&hash))? {
+    let artifact = match state.get_artifact(&hash)? {
         Ok(artifact) => artifact,
         Err(ArtifactStoreError::NotFound(_)) => {
             return Err(trace_conflict(

@@ -266,9 +266,14 @@ async fn get_session_metrics(
         .filter(|t| t.state == WorkflowTurnState::Committed)
     {
         metrics.turns += 1;
+        // A committed turn's proposals are the occurrences on its committed revision.
+        let base = turn
+            .committed_revision_id
+            .as_ref()
+            .unwrap_or(&turn.base_revision_id);
         for proposal_id in &turn.proposal_ids {
             let record = state
-                .with_workflow_store(|store| store.proposal(proposal_id))?
+                .with_workflow_store(|store| store.proposal(proposal_id, base))?
                 .map_err(workflow_error)?
                 .ok_or_else(|| ApiError::workflow_corrupt(&format!("proposal {proposal_id}")))?;
             let stored = decode_proposal(record)?;

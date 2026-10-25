@@ -481,7 +481,17 @@ mod services {
                 ApiError::conflict("E_PROPOSAL_NOT_PENDING", "the proposal is not pending")
                     .with_details(json!({ "proposal": id, "state": actual }))
             }
-            _ => ApiError::internal("workflow_store"),
+            // Fable #1: an acceptance must resolve to a descendant of the proposal's base.
+            StoreError::WorkflowResolutionNotDescendant {
+                id,
+                revision,
+                reason,
+            } => ApiError::conflict(
+                "E_PROPOSAL_RESOLUTION_INVALID",
+                "the resolution revision does not descend from the proposal's base",
+            )
+            .with_details(json!({ "proposal": id, "revision": revision, "reason": reason })),
+            other => ApiError::store(&other, "workflow_store"),
         }
     }
 
@@ -500,10 +510,12 @@ mod services {
         .with_details(json!({ "proposal_ref": proposal }))
     }
 
-    /// Loads and decodes the workflow proposal `id` (404 when unknown), then reconciles an
-    /// interrupted acceptance: a pending proposal whose acceptance decision is already in the
-    /// graph becomes accepted (with its stage child and parent, A0.4); several such decisions
-    /// are corrupt workflow state.
+    /// Loads and decodes the occurrence of workflow proposal `id` that a lookup on `loaded`
+    /// addresses (404 when unknown; H0.10): its pending occurrence on the loaded head, else its
+    /// newest occurrence (not pending, or built on another baseline). It then reconciles an
+    /// interrupted acceptance: a pending occurrence on an older base whose acceptance decision is
+    /// already in the graph becomes accepted (with its stage child and parent, A0.4); several
+    /// such decisions are corrupt workflow state.
     pub(crate) fn load_reconciled(
         state: &ApiState,
         loaded: &LoadedRevision,
@@ -512,13 +524,18 @@ mod services {
         let missing = || ApiError::not_found(format!("proposal {id} not found"));
         let proposal_id = parse_id(id).ok_or_else(missing)?;
         let record = state
-            .with_workflow_store(|store| store.proposal(&proposal_id))?
+            .with_workflow_store(|store| store.current_proposal(&proposal_id, &loaded.revision.id))?
             .map_err(workflow_error)?
             .ok_or_else(missing)?;
         let stored = decode_proposal(record)?;
-        if stored.record.state != WorkflowProposalState::Pending {
+        // An acceptance always moves the head, so a pending occurrence on the head itself has
+        // no committed acceptance to reconcile.
+        if stored.record.state != WorkflowProposalState::Pending
+            || stored.record.base_revision_id == loaded.revision.id
+        {
             return Ok(stored);
         }
+        let base = stored.record.base_revision_id.clone();
         let decisions = acceptance_decisions(&loaded.graph, &proposal_id);
         match decisions.as_slice() {
             [] => Ok(stored),
@@ -527,13 +544,14 @@ mod services {
                     .with_workflow_store(|store| {
                         store.resolve_proposal(
                             &proposal_id,
+                            &base,
                             WorkflowProposalState::Accepted,
                             &loaded.revision.id,
                             *decided_at,
                         )
                     })?
                     .map_err(workflow_error)?;
-                if let Some(link) = stage_acceptance::link_of(state, &proposal_id)? {
+                if let Some(link) = stage_acceptance::link_of(state, &proposal_id, &base)? {
                     stage_acceptance::reconcile(state, loaded, &link)?;
                 }
                 decode_proposal(repaired)
@@ -1081,22 +1099,7 @@ mod services {
                 return Err(not_pending(&stored.record));
             }
             let Some(required) = action.kind() else {
-                self.with_workflow_store(|store| {
-                    store.resolve_proposal(
-                        &stored.proposal.id,
-                        WorkflowProposalState::Rejected,
-                        &loaded.revision.id,
-                        created_at,
-                    )
-                })?
-                .map_err(workflow_error)?;
-                let revision = loaded.revision.id.to_string();
-                return Ok(WriteResult {
-                    version: revision.clone(),
-                    revision,
-                    semantic_hash: loaded.revision.semantic_hash.to_string(),
-                    events: Vec::new(),
-                });
+                return self.reject_stored(loaded, &stored, created_at);
             };
             if stored.record.base_revision_id != loaded.revision.id {
                 return Err(baseline_changed(&stored.proposal.id));
@@ -1105,7 +1108,11 @@ mod services {
             require_kind(&stored.proposal, kind, required)?;
             // A stage-produced proposal is first proven an exact, fresh output of its child
             // StageJob (A0.4, Hotfix 067); the governance below is the unchanged A0.3 path.
-            let mut stage = match stage_acceptance::link_of(self, &stored.proposal.id)? {
+            let mut stage = match stage_acceptance::link_of(
+                self,
+                &stored.proposal.id,
+                &stored.record.base_revision_id,
+            )? {
                 Some(link) => Some(stage_acceptance::prepare(
                     self,
                     loaded,
@@ -1134,6 +1141,7 @@ mod services {
             self.with_workflow_store(|store| {
                 store.resolve_proposal(
                     &stored.proposal.id,
+                    &stored.record.base_revision_id,
                     WorkflowProposalState::Accepted,
                     &revision,
                     created_at,
@@ -1144,6 +1152,33 @@ mod services {
                 stage_acceptance::finish_parent(self, &acceptance.link.recipe_job_id, &revision)?;
             }
             Ok(write)
+        }
+
+        /// Rejects exactly the pending occurrence `stored` (pending -> rejected) without
+        /// changing the PSG; the resolution is recorded on the loaded head.
+        fn reject_stored(
+            &self,
+            loaded: &LoadedRevision,
+            stored: &StoredProposal,
+            created_at: plumb_core::Timestamp,
+        ) -> Result<WriteResult, ApiError> {
+            self.with_workflow_store(|store| {
+                store.resolve_proposal(
+                    &stored.proposal.id,
+                    &stored.record.base_revision_id,
+                    WorkflowProposalState::Rejected,
+                    &loaded.revision.id,
+                    created_at,
+                )
+            })?
+            .map_err(workflow_error)?;
+            let revision = loaded.revision.id.to_string();
+            Ok(WriteResult {
+                version: revision.clone(),
+                revision,
+                semantic_hash: loaded.revision.semantic_hash.to_string(),
+                events: Vec::new(),
+            })
         }
 
         /// Accepts a set of pending proposals built on the loaded head atomically in one
@@ -1200,21 +1235,22 @@ mod services {
             for (id, required) in &requested {
                 let missing = || ApiError::not_found(format!("proposal {id} not found"));
                 let record = self
-                    .with_workflow_store(|store| store.proposal(id))?
+                    .with_workflow_store(|store| store.current_proposal(id, &loaded.revision.id))?
                     .map_err(workflow_error)?
                     .ok_or_else(missing)?;
                 let stored = decode_proposal(record)?;
                 if stored.record.state != WorkflowProposalState::Pending {
                     return Err(not_pending(&stored.record));
                 }
+                let base = stored.record.base_revision_id.clone();
                 let proposal = stored.proposal;
                 // A stage output is first proven an exact, fresh output of its Ready child,
                 // read-only: a rejected set never persists a child or parent transition.
-                let link = stage_acceptance::link_of(self, &proposal.id)?;
+                let link = stage_acceptance::link_of(self, &proposal.id, &base)?;
                 if let Some(link) = &link {
                     stage_acceptance::validate_set_member(self, loaded, link, &proposal)?;
                 }
-                if stored.record.base_revision_id != loaded.revision.id
+                if base != loaded.revision.id
                     || proposal.patch_set.base_semantic_hash != loaded.revision.semantic_hash
                 {
                     return Err(baseline_changed(&proposal.id));
@@ -1364,6 +1400,7 @@ mod services {
                 self.with_workflow_store(|store| {
                     store.resolve_proposal(
                         &member.proposal.id,
+                        &loaded.revision.id,
                         WorkflowProposalState::Accepted,
                         &revision,
                         created_at,
@@ -2098,13 +2135,17 @@ mod services {
                 let record = &stored.record;
                 let (recipe_job_id, stage_job_id) = match record.origin_kind {
                     WorkflowOrigin::Stage => {
-                        let link = stage_acceptance::link_of(self, &record.proposal_id)?
-                            .ok_or_else(|| {
-                                ApiError::workflow_corrupt(&format!(
-                                    "stage link of proposal {}",
-                                    record.proposal_id
-                                ))
-                            })?;
+                        let link = stage_acceptance::link_of(
+                            self,
+                            &record.proposal_id,
+                            &record.base_revision_id,
+                        )?
+                        .ok_or_else(|| {
+                            ApiError::workflow_corrupt(&format!(
+                                "stage link of proposal {}",
+                                record.proposal_id
+                            ))
+                        })?;
                         (
                             Some(link.recipe_job_id.to_string()),
                             Some(link.stage_job_id.to_string()),
@@ -2144,7 +2185,19 @@ mod services {
                 if !view.stale || view.origin != "question" {
                     continue;
                 }
-                let stored = load_reconciled(self, loaded, &view.proposal_id)?;
+                // Exactly this stale occurrence (H0.10): an identical occurrence on the head
+                // is a different record and is never rejected here.
+                let corrupt =
+                    || ApiError::workflow_corrupt(&format!("proposal {}", view.proposal_id));
+                let (id, base): (Id, plumb_store::RevisionId) = (
+                    view.proposal_id.parse().map_err(|_| corrupt())?,
+                    view.base_revision.parse().map_err(|_| corrupt())?,
+                );
+                let record = self
+                    .with_workflow_store(|store| store.proposal(&id, &base))?
+                    .map_err(workflow_error)?
+                    .ok_or_else(corrupt)?;
+                let stored = decode_proposal(record)?;
                 let decision = answer_decision(&stored.proposal.patch_set.patch);
                 let resubmitted = match decision {
                     None => Err("the proposal records no answer decision".to_owned()),
@@ -2186,12 +2239,9 @@ mod services {
                         }
                     }
                 };
-                self.act_on_proposal(
-                    loaded,
-                    &view.proposal_id,
-                    ProposalAction::Reject,
-                    Some("Re-submitted on the current revision.".to_owned()),
-                )?;
+                if stored.record.state == WorkflowProposalState::Pending {
+                    self.reject_stored(loaded, &stored, self.now())?;
+                }
                 outcomes.push((view.proposal_id, resubmitted));
             }
             Ok(outcomes)
@@ -2254,7 +2304,9 @@ mod services {
                 if &normalized != current || updated.statement == current.statement {
                     continue;
                 }
-                let Some(link) = stage_acceptance::link_of(self, &proposal.id)? else {
+                let Some(link) =
+                    stage_acceptance::link_of(self, &proposal.id, &loaded.revision.id)?
+                else {
                     return Err(ApiError::workflow_corrupt(&format!(
                         "stage link of proposal {}",
                         proposal.id

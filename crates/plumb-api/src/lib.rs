@@ -13,6 +13,7 @@ pub mod runtime;
 pub mod server;
 pub mod stage;
 pub mod state;
+mod store_error;
 mod workflow;
 
 pub use openapi::{

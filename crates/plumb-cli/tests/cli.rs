@@ -463,7 +463,7 @@ mod cli {
     fn proposal_state(db: &Path, proposal: &str) -> WorkflowProposalState {
         SqliteWorkflowStore::open(db)
             .unwrap()
-            .proposal(&id(proposal))
+            .latest_proposal(&id(proposal))
             .unwrap()
             .unwrap()
             .state
@@ -1445,7 +1445,7 @@ mod cli {
         assert_eq!(pending.len(), 2);
         let link = SqliteStageStore::open(&env.db)
             .unwrap()
-            .proposal_link(&id(&pending[0]))
+            .proposal_link(&id(&pending[0]), &head_graph(&env.db).revision.id)
             .unwrap()
             .unwrap();
         // Caller order reversed; both are create proposals of one classification child.
@@ -1464,7 +1464,7 @@ mod cli {
         assert_eq!(write["events"][0]["kind"], "accept_proposal_set");
         let store = SqliteWorkflowStore::open(&env.db).unwrap();
         for p in &pending {
-            let record = store.proposal(&id(p)).unwrap().unwrap();
+            let record = store.latest_proposal(&id(p)).unwrap().unwrap();
             assert_eq!(record.state, WorkflowProposalState::Accepted);
             assert_eq!(
                 record.resolved_revision_id.as_ref().map(|r| r.to_string()),
@@ -1833,7 +1833,7 @@ mod cli {
         let proposal = answered["proposal_id"].as_str().unwrap();
         let record = SqliteWorkflowStore::open(&env.db)
             .unwrap()
-            .proposal(&id(proposal))
+            .latest_proposal(&id(proposal))
             .unwrap()
             .unwrap();
         assert_eq!(record.state, WorkflowProposalState::Pending);
@@ -1919,7 +1919,10 @@ mod cli {
             // Stale: built on the earlier head, still pending and listed.
             assert_eq!(record.base_revision_id, first_base);
             origins.insert(record.origin_kind.as_str());
-            match stage.proposal_link(&record.proposal_id).unwrap() {
+            match stage
+                .proposal_link(&record.proposal_id, &record.base_revision_id)
+                .unwrap()
+            {
                 Some(link) => {
                     assert_eq!(view["origin"], "stage");
                     assert_eq!(view["recipe_job_id"], link.recipe_job_id.to_string());

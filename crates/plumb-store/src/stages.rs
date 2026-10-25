@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::branches::BranchName;
 use crate::revisions::RevisionId;
-use crate::schema::open_connection;
+use crate::schema::{durability_of, open_database, Durability, StoreOpenMode};
 use crate::workflow::{
     canonical_text, corrupt, insert_proposal_on, parse_field, parse_optional, proposal_on,
     require_revision, NewWorkflowProposal, WorkflowInsert, WorkflowOrigin, WorkflowProposal,
@@ -152,10 +152,12 @@ pub struct StageStepRecord {
     pub result_revision_id: Option<RevisionId>,
 }
 
-/// The durable link of a stage-produced workflow proposal to its jobs and run.
+/// The durable link of a stage-produced workflow proposal occurrence to its jobs and run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageProposalLink {
     pub proposal_id: Id,
+    /// The base revision of the linked occurrence.
+    pub base_revision_id: RevisionId,
     pub recipe_job_id: Hash,
     pub stage_job_id: Hash,
     pub compile_run_ref: Hash,
@@ -210,9 +212,35 @@ impl SqliteStageStore {
     /// Opens the stage store at `path`, initializing or migrating the database to store schema
     /// v3 exactly as [`crate::SqliteRevisionStore::open`] does.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let mut conn = Connection::open(path)?;
-        open_connection(&mut conn)?;
+        Self::open_with(path, StoreOpenMode::CreateOrMigrate)
+    }
+
+    /// Opens the store of an existing PLUMB database at `path` read-write (architecture §33.9):
+    /// the file and the schema are never created; an older store is migrated in place.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with(path, StoreOpenMode::Existing)
+    }
+
+    /// Opens the store of an existing, current PLUMB database at `path` with SQLite read-only
+    /// access and no journal-mode change; every write fails.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with(path, StoreOpenMode::ReadOnly)
+    }
+
+    /// Opens the store at `path` in `mode`.
+    pub fn open_with(path: impl AsRef<Path>, mode: StoreOpenMode) -> Result<Self, StoreError> {
+        let conn = open_database(path.as_ref(), mode)?;
         Ok(Self { conn })
+    }
+
+    /// The durability pragmas of this store's connection (Fable #199).
+    pub fn durability(&self) -> Result<Durability, StoreError> {
+        durability_of(&self.conn)
+    }
+
+    /// Sets the SQLite busy timeout of this store's connection.
+    pub fn set_busy_timeout(&self, timeout: std::time::Duration) -> Result<(), StoreError> {
+        Ok(self.conn.busy_timeout(timeout)?)
     }
 
     // ------------------------------------------------------------------ recipe jobs
@@ -537,9 +565,10 @@ impl SqliteStageStore {
     // ------------------------------------------------------------------ proposal links
 
     /// Persists every stage proposal of one compiler run as `pending` together with its link,
-    /// in one transaction. A proposal already linked keeps its first link and is returned as
-    /// stored; a proposal ID stored without a stage link is
-    /// [`StoreError::StageProposalConflict`] and nothing is written.
+    /// in one transaction. An occurrence (proposal ID and base revision) already linked keeps
+    /// its first link and is returned as stored; an occurrence stored without a stage link is
+    /// [`StoreError::StageProposalConflict`] and nothing is written. Occurrences of the same
+    /// proposal on other baselines never conflict (H0.10).
     pub fn insert_stage_proposals(
         &mut self,
         recipe_job_id: &Hash,
@@ -559,8 +588,11 @@ impl SqliteStageStore {
                     reason: "a stage proposal has origin_kind stage",
                 });
             }
-            if let Some(existing) = proposal_on(&tx, id)? {
-                if existing.origin_kind != WorkflowOrigin::Stage || link_on(&tx, id)?.is_none() {
+            let base = &proposal.base_revision_id;
+            if let Some(existing) = proposal_on(&tx, id, base)? {
+                if existing.origin_kind != WorkflowOrigin::Stage
+                    || link_on(&tx, id, base)?.is_none()
+                {
                     return Err(StoreError::StageProposalConflict { id: id.to_string() });
                 }
                 stored.push(existing);
@@ -568,16 +600,17 @@ impl SqliteStageStore {
             }
             insert_proposal_on(&tx, proposal, WorkflowProposalState::Pending)?;
             tx.execute(
-                "INSERT INTO stage_job_proposals (proposal_id, recipe_job_id, stage_job_id, \
-                 compile_run_ref) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO stage_job_proposals (proposal_id, base_revision_id, recipe_job_id, \
+                 stage_job_id, compile_run_ref) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     id.as_str(),
+                    base.as_str(),
                     recipe_job_id.as_str(),
                     stage_job_id.as_str(),
                     compile_run_ref.as_str()
                 ],
             )?;
-            stored.push(proposal_on(&tx, id)?.ok_or_else(|| {
+            stored.push(proposal_on(&tx, id, base)?.ok_or_else(|| {
                 StoreError::WorkflowRecordNotFound {
                     kind: "proposal",
                     id: id.to_string(),
@@ -588,17 +621,23 @@ impl SqliteStageStore {
         Ok(stored)
     }
 
-    /// The stage link of a workflow proposal, if it is stage-produced.
-    pub fn proposal_link(&self, proposal_id: &Id) -> Result<Option<StageProposalLink>, StoreError> {
-        link_on(&self.conn, proposal_id)
+    /// The stage link of a workflow proposal occurrence, if it is stage-produced.
+    pub fn proposal_link(
+        &self,
+        proposal_id: &Id,
+        base_revision_id: &RevisionId,
+    ) -> Result<Option<StageProposalLink>, StoreError> {
+        link_on(&self.conn, proposal_id, base_revision_id)
     }
 
-    /// The links of every still-pending stage proposal, ordered by proposal ID.
+    /// The links of every still-pending stage proposal occurrence, ordered by proposal ID and
+    /// base revision.
     pub fn pending_proposal_links(&self) -> Result<Vec<StageProposalLink>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT l.proposal_id, l.recipe_job_id, l.stage_job_id, l.compile_run_ref \
-             FROM stage_job_proposals l JOIN workflow_proposals p \
-             ON p.proposal_id = l.proposal_id WHERE p.state = 'pending' ORDER BY l.proposal_id",
+            "SELECT l.proposal_id, l.base_revision_id, l.recipe_job_id, l.stage_job_id, \
+             l.compile_run_ref FROM stage_job_proposals l JOIN workflow_proposals p \
+             ON p.proposal_id = l.proposal_id AND p.base_revision_id = l.base_revision_id \
+             WHERE p.state = 'pending' ORDER BY l.proposal_id, l.base_revision_id",
         )?;
         let rows = stmt
             .query_map([], raw_link)?
@@ -875,28 +914,41 @@ fn step_on(
     raw.map(RawStep::decode).transpose()
 }
 
-fn raw_link(row: &Row<'_>) -> rusqlite::Result<(String, String, String, String)> {
-    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+type RawLink = (String, String, String, String, String);
+
+fn raw_link(row: &Row<'_>) -> rusqlite::Result<RawLink> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
 }
 
-fn decode_link(raw: (String, String, String, String)) -> Result<StageProposalLink, StoreError> {
+fn decode_link(raw: RawLink) -> Result<StageProposalLink, StoreError> {
     const K: &str = "stage_job_proposal";
-    let (proposal_id, recipe_job_id, stage_job_id, compile_run_ref) = raw;
+    let (proposal_id, base_revision_id, recipe_job_id, stage_job_id, compile_run_ref) = raw;
     let id = proposal_id.clone();
     Ok(StageProposalLink {
         proposal_id: parse_field(K, &id, "proposal_id", &proposal_id)?,
+        base_revision_id: parse_field(K, &id, "base_revision_id", &base_revision_id)?,
         recipe_job_id: parse_field(K, &id, "recipe_job_id", &recipe_job_id)?,
         stage_job_id: parse_field(K, &id, "stage_job_id", &stage_job_id)?,
         compile_run_ref: parse_field(K, &id, "compile_run_ref", &compile_run_ref)?,
     })
 }
 
-fn link_on(conn: &Connection, proposal_id: &Id) -> Result<Option<StageProposalLink>, StoreError> {
+fn link_on(
+    conn: &Connection,
+    proposal_id: &Id,
+    base_revision_id: &RevisionId,
+) -> Result<Option<StageProposalLink>, StoreError> {
     let raw = conn
         .query_row(
-            "SELECT proposal_id, recipe_job_id, stage_job_id, compile_run_ref \
-             FROM stage_job_proposals WHERE proposal_id = ?1",
-            [proposal_id.as_str()],
+            "SELECT proposal_id, base_revision_id, recipe_job_id, stage_job_id, compile_run_ref \
+             FROM stage_job_proposals WHERE proposal_id = ?1 AND base_revision_id = ?2",
+            [proposal_id.as_str(), base_revision_id.as_str()],
             raw_link,
         )
         .optional()?;

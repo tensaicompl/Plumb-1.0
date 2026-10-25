@@ -545,3 +545,87 @@ fn ensure_artifact_schema_preserves_existing_artifacts() {
     ensure_artifact_schema(&db.raw()).unwrap();
     assert_eq!(raw_row(&db.path, &hash), before);
 }
+
+#[test]
+fn corrupted_artifact_is_typed_corruption() {
+    // H0.10 (architecture §33.11): stored bytes corrupted in place never come back as a valid
+    // artifact; every read recomputes the content hash.
+    let db = Db::new();
+    let store = {
+        let mut store = db.store();
+        let hash = store
+            .put(ArtifactKind::Patch, JSON, b"{\"genuine\":true}", ts(T1))
+            .unwrap();
+        assert_eq!(store.get(&hash).unwrap().bytes, b"{\"genuine\":true}");
+        (store, hash)
+    };
+    let (store, hash) = store;
+    db.raw()
+        .execute(
+            "UPDATE artifacts SET bytes = ?1 WHERE hash = ?2",
+            rusqlite::params![b"{\"genuine\":false}".to_vec(), hash.as_str()],
+        )
+        .unwrap();
+    for reader in [
+        db.store(),
+        SqliteArtifactStore::open_existing(&db.path).unwrap(),
+        SqliteArtifactStore::open_read_only(&db.path).unwrap(),
+    ] {
+        let result = reader.get(&hash);
+        assert!(
+            matches!(&result, Err(ArtifactStoreError::Corrupt { hash: h, .. }) if *h == hash),
+            "{result:?}"
+        );
+    }
+    // Truncated bytes are corruption too, also on the already open connection.
+    db.raw()
+        .execute(
+            "UPDATE artifacts SET bytes = ?1 WHERE hash = ?2",
+            rusqlite::params![Vec::<u8>::new(), hash.as_str()],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.get(&hash),
+        Err(ArtifactStoreError::Corrupt { .. })
+    ));
+}
+
+#[test]
+fn artifact_store_durability_is_full_synchronous() {
+    let db = Db::new();
+    assert_eq!(db.store().synchronous().unwrap(), 2);
+    assert_eq!(
+        SqliteArtifactStore::open_existing(&db.path)
+            .unwrap()
+            .synchronous()
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn existing_and_read_only_opens_never_create_the_store() {
+    let db = Db::new();
+    assert!(matches!(
+        SqliteArtifactStore::open_existing(&db.path),
+        Err(ArtifactStoreError::NotInitialized)
+    ));
+    assert!(!db.path.exists());
+    db.raw().execute_batch("CREATE TABLE other (x);").unwrap();
+    for result in [
+        SqliteArtifactStore::open_existing(&db.path),
+        SqliteArtifactStore::open_read_only(&db.path),
+    ] {
+        assert!(matches!(result, Err(ArtifactStoreError::NotInitialized)));
+    }
+    let tables: i64 = db
+        .raw()
+        .query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tables, 1);
+    let journal: String = db
+        .raw()
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(journal, "delete");
+}
