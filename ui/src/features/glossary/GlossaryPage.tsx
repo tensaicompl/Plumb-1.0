@@ -1,13 +1,17 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, revisionEtag, type Reviewed } from "../../api/client";
+import { isCursorBaselineChanged, useCursorPages, useCursorRecovery } from "../../api/useCursorPages";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { errorCode, isBaselineChanged, SemanticChangePreviewPanel, type SemanticChangePreview } from "../requirements/RequirementDetail";
+import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 type GlossaryPage = components["schemas"]["GlossaryPage"];
+type GlossaryTerm = components["schemas"]["GlossaryTerm"];
 type WriteResult = components["schemas"]["WriteResult"];
 
 /** The glossary page size requested from the server. */
@@ -18,16 +22,79 @@ export function glossaryQueryKey(cursor: string | null) {
   return ["glossary", cursor] as const;
 }
 
-async function fetchGlossary(cursor: string | null): Promise<GlossaryPage> {
+function fetchGlossary(cursor: string | null): Promise<Reviewed<GlossaryPage>> {
   const query: { cursor?: string; limit: number } = { limit: GLOSSARY_PAGE_SIZE };
   if (cursor !== null) {
     query.cursor = cursor;
   }
-  const { data, response } = await apiClient.GET("/api/glossary", { params: { query } });
-  if (data === undefined) {
-    throw new Error("GET /api/glossary failed with HTTP " + String(response.status));
-  }
-  return data;
+  return readReviewed(apiClient.GET("/api/glossary", { params: { query } }));
+}
+
+/** Parses comma-separated aliases: trimmed, blanks dropped. */
+function parseAliases(text: string): string[] {
+  return text
+    .split(",")
+    .map((alias) => alias.trim())
+    .filter((alias) => alias !== "");
+}
+
+/**
+ * The per-term writes (H0.11 glossary confirmation and edit): Confirm is offered only for a
+ * Proposed term (the backend rejects any other lifecycle state); Edit changes only the aliases,
+ * sending the unchanged term as its identity key.
+ */
+function TermActions({ term, etag }: { term: GlossaryTerm; etag: string | null }) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [aliases, setAliases] = useState(term.aliases.join(", "));
+  const onWritten = { onSuccess: () => void queryClient.invalidateQueries() };
+  const confirmTerm = useVersionedMutation<WriteResult>(
+    (_, ifMatch) => apiClient.POST("/api/glossary/{id}/confirm", { params: { path: { id: term.id }, header: { "If-Match": ifMatch } } }),
+    etag,
+  );
+  const edit = useVersionedMutation<WriteResult, string[]>(
+    (next, ifMatch) =>
+      apiClient.POST("/api/glossary/{id}/edit", {
+        params: { path: { id: term.id }, header: { "If-Match": ifMatch } },
+        body: { term: term.term, aliases: next },
+      }),
+    etag,
+  );
+  return (
+    <div className="space-y-1">
+      {term.status === "Proposed" && (
+        <button type="button" className="rounded border px-2 text-xs" disabled={confirmTerm.isPending} onClick={() => confirmTerm.mutate(undefined, onWritten)}>
+          {t("glossary.confirm")}
+        </button>
+      )}
+      {!editing ? (
+        <button type="button" className="ml-1 rounded border px-2 text-xs" onClick={() => setEditing(true)}>
+          {t("glossary.edit.open")}
+        </button>
+      ) : (
+        <form
+          className="space-x-1"
+          onSubmit={(event) => {
+            event.preventDefault();
+            edit.mutate(parseAliases(aliases), { onSuccess: () => { setEditing(false); void queryClient.invalidateQueries(); } });
+          }}
+        >
+          <label className="text-xs">
+            {t("glossary.edit.aliases")}
+            <input className="ml-1 rounded border p-1" value={aliases} onChange={(event) => setAliases(event.target.value)} />
+          </label>
+          <button type="submit" className="rounded border px-2 text-xs" disabled={edit.isPending}>
+            {t("glossary.edit.save")}
+          </button>
+          <button type="button" className="rounded border px-2 text-xs" onClick={() => setEditing(false)}>
+            {t("glossary.edit.cancel")}
+          </button>
+        </form>
+      )}
+      <Failure error={confirmTerm.error} />
+      <Failure error={edit.error} />
+    </div>
+  );
 }
 
 interface PendingMerge {
@@ -53,26 +120,32 @@ function Failure({ error }: { error: Error | null }) {
  */
 export function GlossaryPage() {
   const queryClient = useQueryClient();
-  const [cursors, setCursors] = useState<(string | null)[]>([null]);
-  const cursor = cursors[cursors.length - 1] ?? null;
+  const pages = useCursorPages();
+  const cursor = pages.cursor;
   const page = useQuery({ queryKey: glossaryQueryKey(cursor), queryFn: () => fetchGlossary(cursor) });
+  useCursorRecovery(pages, page.error);
   const [source, setSource] = useState("");
   const [target, setTarget] = useState("");
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState<PendingMerge | null>(null);
   const [stale, setStale] = useState(false);
 
-  const preview = useVersionedMutation<SemanticChangePreview, { source: string; into: string; reason: string }>((choice, ifMatch) =>
-    apiClient.POST("/api/glossary/{id}/merge/preview", {
-      params: { path: { id: choice.source }, header: { "If-Match": ifMatch } },
-      body: { into: choice.into, reason: choice.reason },
-    }),
+  const preview = useVersionedMutation<SemanticChangePreview, { source: string; into: string; reason: string }>(
+    (choice, ifMatch) =>
+      apiClient.POST("/api/glossary/{id}/merge/preview", {
+        params: { path: { id: choice.source }, header: { "If-Match": ifMatch } },
+        body: { into: choice.into, reason: choice.reason },
+      }),
+    page.data?.etag,
   );
-  const confirm = useVersionedMutation<WriteResult, PendingMerge>((merge, ifMatch) =>
-    apiClient.POST("/api/proposals/{id}/merge", {
-      params: { path: { id: merge.preview.proposal_id }, header: { "If-Match": ifMatch } },
-      body: { reason: merge.reason },
-    }),
+  // The confirmation is based on the reviewed preview, which states its baseline revision.
+  const confirm = useVersionedMutation<WriteResult, PendingMerge>(
+    (merge, ifMatch) =>
+      apiClient.POST("/api/proposals/{id}/merge", {
+        params: { path: { id: merge.preview.proposal_id }, header: { "If-Match": ifMatch } },
+        body: { reason: merge.reason },
+      }),
+    (merge) => revisionEtag(merge.preview.revision),
   );
 
   const locked = pending !== null;
@@ -109,7 +182,12 @@ export function GlossaryPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t("glossary.title")}</h1>
-      {page.isError && <p role="alert">{t("glossary.loadFailed")}</p>}
+      {pages.recovered && (
+        <p role="status" className="text-sm" data-testid="cursor-reset">
+          {t("pagination.reset")}
+        </p>
+      )}
+      {page.isError && !isCursorBaselineChanged(page.error) && <ReadFailure error={page.error} messageKey="glossary.loadFailed" />}
       {page.data === undefined && !page.isError && <p>{t("glossary.loading")}</p>}
       {page.data !== undefined && (
         <>
@@ -117,14 +195,16 @@ export function GlossaryPage() {
             <p>{t("glossary.empty")}</p>
           ) : (
             <table className="w-full text-left text-sm">
+            <caption className="sr-only">{t("glossary.caption")}</caption>
               <thead>
                 <tr>
-                  <th>{t("glossary.column.term")}</th>
-                  <th>{t("glossary.column.id")}</th>
-                  <th>{t("glossary.column.language")}</th>
-                  <th>{t("glossary.column.status")}</th>
-                  <th>{t("glossary.column.aliases")}</th>
-                  <th>{t("glossary.column.merge")}</th>
+                  <th scope="col">{t("glossary.column.term")}</th>
+                  <th scope="col">{t("glossary.column.id")}</th>
+                  <th scope="col">{t("glossary.column.language")}</th>
+                  <th scope="col">{t("glossary.column.status")}</th>
+                  <th scope="col">{t("glossary.column.aliases")}</th>
+                  <th scope="col">{t("glossary.column.merge")}</th>
+                  <th scope="col">{t("glossary.column.actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -143,18 +223,18 @@ export function GlossaryPage() {
                         {t("glossary.merge.asTarget")}
                       </button>
                     </td>
+                    <td>
+                      <RoleGate quiet>
+                        <TermActions term={term} etag={page.data.etag} />
+                      </RoleGate>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
           <div className="flex gap-2">
-            <button
-              type="button"
-              className="rounded border px-3 py-1"
-              disabled={cursors.length === 1}
-              onClick={() => setCursors((current) => current.slice(0, -1))}
-            >
+            <button type="button" className="rounded border px-3 py-1" disabled={pages.isFirst} onClick={pages.previous}>
               {t("pagination.previous")}
             </button>
             <button
@@ -164,7 +244,7 @@ export function GlossaryPage() {
               onClick={() => {
                 const next = page.data.next_cursor ?? null;
                 if (next !== null) {
-                  setCursors((current) => [...current, next]);
+                  pages.next(next);
                 }
               }}
             >
@@ -174,6 +254,7 @@ export function GlossaryPage() {
         </>
       )}
 
+      <RoleGate>
       <section aria-label={t("glossary.merge.title")} className="space-y-2 rounded border p-3">
         <h2 className="font-semibold">{t("glossary.merge.title")}</h2>
         <label className="block text-sm">
@@ -216,6 +297,7 @@ export function GlossaryPage() {
           />
         )}
       </section>
+      </RoleGate>
     </div>
   );
 }

@@ -2,9 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readData } from "../../api/client";
+import { isCursorBaselineChanged, useCursorPages, useCursorRecovery } from "../../api/useCursorPages";
 import type { components } from "../../api/schema";
 import { t } from "../../i18n";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type RequirementPage = components["schemas"]["RequirementPage"];
 
@@ -42,11 +44,7 @@ async function fetchRequirements(filters: RequirementFilters, cursor: string | n
   if (cursor !== null) {
     query.cursor = cursor;
   }
-  const { data, response } = await apiClient.GET("/api/requirements", { params: { query } });
-  if (data === undefined) {
-    throw new Error("GET /api/requirements failed with HTTP " + String(response.status));
-  }
-  return data;
+  return (await readData(apiClient.GET("/api/requirements", { params: { query } })));
 }
 
 /**
@@ -56,13 +54,13 @@ async function fetchRequirements(filters: RequirementFilters, cursor: string | n
 export function RequirementsPage() {
   const [draft, setDraft] = useState<RequirementFilters>(NO_FILTERS);
   const [filters, setFilters] = useState<RequirementFilters>(NO_FILTERS);
-  // Cursors of the pages before the current one; the last entry is the current page's cursor.
-  const [cursors, setCursors] = useState<(string | null)[]>([null]);
-  const cursor = cursors[cursors.length - 1] ?? null;
+  const pages = useCursorPages();
+  const cursor = pages.cursor;
   const page = useQuery({
     queryKey: requirementsQueryKey(filters, cursor),
     queryFn: () => fetchRequirements(filters, cursor),
   });
+  useCursorRecovery(pages, page.error);
 
   const fields: readonly { key: keyof RequirementFilters; label: "requirements.filter.status" | "requirements.filter.class" | "requirements.filter.q" }[] = [
     { key: "status", label: "requirements.filter.status" },
@@ -79,7 +77,7 @@ export function RequirementsPage() {
         onSubmit={(event) => {
           event.preventDefault();
           setFilters(draft);
-          setCursors([null]);
+          pages.first();
         }}
       >
         {fields.map(({ key, label }) => (
@@ -98,7 +96,12 @@ export function RequirementsPage() {
         </button>
       </form>
       <p className="text-sm text-slate-600">{t("readiness.advisory")}</p>
-      {page.isError && <p role="alert">{t("requirements.loadFailed")}</p>}
+      {pages.recovered && (
+        <p role="status" className="text-sm" data-testid="cursor-reset">
+          {t("pagination.reset")}
+        </p>
+      )}
+      {page.isError && !isCursorBaselineChanged(page.error) && <ReadFailure error={page.error} messageKey="requirements.loadFailed" />}
       {page.data === undefined && !page.isError && <p>{t("requirements.loading")}</p>}
       {page.data !== undefined && (
         <>
@@ -106,14 +109,15 @@ export function RequirementsPage() {
             <p>{t("requirements.empty")}</p>
           ) : (
             <table className="w-full text-left text-sm">
+            <caption className="sr-only">{t("requirements.caption")}</caption>
               <thead>
                 <tr>
-                  <th>{t("requirements.column.id")}</th>
-                  <th>{t("requirements.column.text")}</th>
-                  <th>{t("requirements.column.class")}</th>
-                  <th>{t("requirements.column.status")}</th>
-                  <th>{t("requirements.column.smells")}</th>
-                  <th>{t("requirements.column.readiness")}</th>
+                  <th scope="col">{t("requirements.column.id")}</th>
+                  <th scope="col">{t("requirements.column.text")}</th>
+                  <th scope="col">{t("requirements.column.class")}</th>
+                  <th scope="col">{t("requirements.column.status")}</th>
+                  <th scope="col">{t("requirements.column.smells")}</th>
+                  <th scope="col">{t("requirements.column.readiness")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -139,12 +143,7 @@ export function RequirementsPage() {
             </table>
           )}
           <div className="flex gap-2">
-            <button
-              type="button"
-              className="rounded border px-3 py-1"
-              disabled={cursors.length === 1}
-              onClick={() => setCursors((current) => current.slice(0, -1))}
-            >
+            <button type="button" className="rounded border px-3 py-1" disabled={pages.isFirst} onClick={pages.previous}>
               {t("pagination.previous")}
             </button>
             <button
@@ -154,7 +153,7 @@ export function RequirementsPage() {
               onClick={() => {
                 const next = page.data.next_cursor ?? null;
                 if (next !== null) {
-                  setCursors((current) => [...current, next]);
+                  pages.next(next);
                 }
               }}
             >

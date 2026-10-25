@@ -16,11 +16,15 @@ import { RulesPage } from "../features/rules/RulesPage";
 import { SentencesPage } from "../features/sentences/SentencesPage";
 import { SessionPanel } from "../features/sessions/SessionPanel";
 import { AppShell } from "./AppShell";
+import { NotFoundPage, RouteErrorPage } from "./RouteStatus";
 
 // The explicit route tree. Each page is registered by the task that implements it (Hotfix 071);
 // there is no route discovery and no placeholder route.
+// Unknown routes and render failures stay inside the shell with typed catalogue pages.
 const rootRoute = createRootRoute({
   component: AppShell,
+  notFoundComponent: NotFoundPage,
+  errorComponent: RouteErrorPage,
 });
 
 const indexRoute = createRoute({

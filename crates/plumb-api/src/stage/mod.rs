@@ -222,7 +222,7 @@ fn start_worker(state: &ApiState) -> Result<(), ApiError> {
                 let _ = state.execute_recipe_job(&id);
             }
         })
-        .map_err(|_| ApiError::internal("stage_worker"))?;
+        .map_err(|e| ApiError::internal_cause("stage_worker", &e))?;
     state.stage_runtime("stage_worker")?.set_queue(sender)
 }
 
@@ -355,7 +355,7 @@ impl Run<'_> {
             COMPILER_VERSION.to_owned(),
             CanonicalJson::new(config),
         )
-        .map_err(|e| ApiError::internal(&format!("compile_context: {e}")))?;
+        .map_err(|e| ApiError::internal_cause("compile_context", &e))?;
         let mut job = capture_stage_job(
             state.branch().clone(),
             &head.revision.id,
@@ -364,10 +364,11 @@ impl Run<'_> {
             stage.scope.clone(),
             &ctx,
         )
-        .map_err(|e| ApiError::internal(&format!("stage_job: {e}")))?;
+        .map_err(|e| ApiError::internal_cause("stage_job", &e))?;
         let ordinal = self.step(phase, &base.revision.id)?;
         let now = state.now();
-        let job_value = serde_json::to_value(&job).map_err(|_| ApiError::internal("stage_job"))?;
+        let job_value =
+            serde_json::to_value(&job).map_err(|e| ApiError::internal_cause("stage_job", &e))?;
         let inserted = state
             .with_stage_store(|store| {
                 store.insert_stage_job(job.id(), &job_value, StageStatus::Queued, now)
@@ -525,8 +526,7 @@ impl Run<'_> {
         job: &mut StageJob,
     ) -> Result<(PhaseOutput, Hash, CompileRun), StepEnd> {
         let state = self.state;
-        let invalid =
-            |e: plumb_compiler::StageJobError| ApiError::internal(&format!("stage_job: {e}"));
+        let invalid = |e: plumb_compiler::StageJobError| ApiError::internal_cause("stage_job", &e);
         self.set_status(StageStatus::Acquiring)?;
         job.start_acquiring().map_err(invalid)?;
         persist_child(state, job, StageStatus::Queued, state.now())?;
@@ -534,18 +534,18 @@ impl Run<'_> {
         let artifacts = acquire::acquire(state, &plan, self.recipe, stage.phase, state.now())?;
         artifacts
             .validate_for_plan(&plan)
-            .map_err(|e| ApiError::internal(&format!("artifact_set: {e}")))?;
+            .map_err(|e| ApiError::internal_cause("artifact_set", &e))?;
         job.start_evaluating().map_err(invalid)?;
         persist_child(state, job, StageStatus::Acquiring, state.now())?;
         self.set_status(StageStatus::Evaluating)?;
         let output = stage.evaluate_phase(&base.graph, &artifacts)?;
         let run = CompileRun::new(stage.phase.stage(), ctx, &artifacts, &output.evaluation)
-            .map_err(|e| ApiError::internal(&format!("compile_run: {e}")))?;
+            .map_err(|e| ApiError::internal_cause("compile_run", &e))?;
         let persisted = state
             .with_artifact_store(|store| {
                 persist_compile_run(store, &run, &output.evaluation, state.now())
             })?
-            .map_err(|e| ApiError::internal(&format!("compile_run: {e}")))?;
+            .map_err(|e| ApiError::internal_cause("compile_run", &e))?;
         let head = state.load_head()?;
         job.complete(&plan, &run, &head.revision.id)
             .map_err(invalid)?;
@@ -622,8 +622,8 @@ fn load_segmentation(state: &ApiState, hash: &Hash) -> Result<SegmentationInterm
 
 impl ApiState {
     /// Captures `recipe` over the branch head and inserts or reuses its recipe job (the
-    /// synchronous part of `run_stage`; execution is separate). `if_match`, when given, must be
-    /// the head's semantic hash (412 otherwise).
+    /// synchronous part of `run_stage`; execution is separate). `if_match`, when given, must
+    /// name the head revision exactly (412 otherwise, architecture §33.2).
     pub fn run_stage(
         &self,
         recipe: Recipe,
@@ -634,7 +634,7 @@ impl ApiState {
         let a04 = self.stage_runtime("stage_runtime")?;
         let loaded = self.load_head()?;
         if let Some(tag) = if_match {
-            if tag != loaded.revision.semantic_hash.as_str() {
+            if !crate::state::if_match_names(tag, &loaded.revision) {
                 return Err(crate::state::precondition_failed(&loaded.revision));
             }
         }
@@ -657,7 +657,7 @@ impl ApiState {
         let new = NewStageRecipeJob {
             recipe_job_id: job_id.clone(),
             recipe_job_json: serde_json::to_value(&capture)
-                .map_err(|_| ApiError::internal("stage_job"))?,
+                .map_err(|e| ApiError::internal_cause("stage_job", &e))?,
             config_json: config,
             recipe: recipe.as_str().to_owned(),
             branch: self.branch().clone(),
@@ -820,7 +820,9 @@ impl ApiState {
             .parse()
             .ok()
             .filter(|h: &Hash| h.kind() == HashKind::Generic && h.as_str() == id)
-            .ok_or_else(|| ApiError::invalid(format!("{id:?} is not a job ID")))?;
+            .ok_or_else(|| {
+                ApiError::invalid(format!("{} is not a job ID", crate::error::echo(id)))
+            })?;
         let mut record = self.recipe_record(&hash)?;
         let loaded = self.load_head()?;
         if record.status == StageStatus::Ready {
@@ -951,7 +953,9 @@ fn decode_capture(record: &StageRecipeJobRecord) -> Result<RecipeCapture, ApiErr
 fn compiler_scope(scope: Option<&[Id]>) -> Result<Scope, ApiError> {
     match scope {
         None => Ok(Scope::Project),
-        Some(ids) => Scope::elements(ids.to_vec()).map_err(|_| ApiError::internal("stage_scope")),
+        Some(ids) => {
+            Scope::elements(ids.to_vec()).map_err(|e| ApiError::internal_cause("stage_scope", &e))
+        }
     }
 }
 
@@ -967,6 +971,13 @@ fn execute(run: &mut Run<'_>) -> Result<(), StepEnd> {
     let scope = run.capture.scope.clone();
     let targets = effective_targets(recipe, &base.graph, scope.as_deref());
     if recipe.scope_kind() != ScopeKind::Whole && targets.is_empty() {
+        // Fable #181: nothing to compile, but a recipe that owns a gate or a projection still
+        // produces it on the base revision; success never skips the evaluation.
+        match recipe {
+            Recipe::Run => run.gate_step(Phase::F4, GateId::F4)?,
+            Recipe::Rules => run.rules_step(&targets)?,
+            _ => {}
+        }
         return Ok(());
     }
     let audit_actor = a04.stage_actor_ref.clone();

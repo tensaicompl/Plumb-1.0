@@ -10,11 +10,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { http } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { components } from "../../api/schema";
-import { server } from "../../test/msw";
+import { etagJson, server, TEST_ETAG } from "../../test/msw";
 
 type Finding = components["schemas"]["Finding"];
 type Assumption = components["schemas"]["Assumption"];
@@ -200,28 +200,30 @@ const EXAMPLE: CalculationExample = { expr: "end - start + 1", rendered_example:
 
 interface Backend {
   cellFailure: Response | null;
+  rulesPage?: unknown;
+  roles?: string[];
 }
 
 function handlers(backend: Backend) {
   return [
-    http.get("*/api/me", () => HttpResponse.json({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: backend.roles ?? ["analyst"] })),
     http.get("*/api/model/version", () =>
-      HttpResponse.json({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
+      etagJson({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
-    http.get("*/api/gates", () => HttpResponse.json({ items: [], next_cursor: null })),
-    http.get("*/api/findings", () => HttpResponse.json({ items: FINDINGS, next_cursor: null })),
-    http.get("*/api/assumptions", () => HttpResponse.json({ items: ASSUMPTIONS, next_cursor: null })),
-    http.get("*/api/model/entities", () => HttpResponse.json({ items: ENTITIES, next_cursor: null })),
-    http.get("*/api/model/crud", () => HttpResponse.json(CRUD)),
-    http.get("*/api/model/rules", () => HttpResponse.json({ items: RULES, next_cursor: null })),
-    http.get("*/api/model/calculations", () => HttpResponse.json({ items: CALCULATIONS, next_cursor: null })),
+    http.get("*/api/gates", () => etagJson({ items: [], next_cursor: null })),
+    http.get("*/api/findings", () => etagJson({ items: FINDINGS, next_cursor: null })),
+    http.get("*/api/assumptions", () => etagJson({ items: ASSUMPTIONS, next_cursor: null })),
+    http.get("*/api/model/entities", () => etagJson({ items: ENTITIES, next_cursor: null })),
+    http.get("*/api/model/crud", () => etagJson(CRUD)),
+    http.get("*/api/model/rules", () => etagJson((backend.rulesPage ?? { items: RULES, next_cursor: null }) as Record<string, unknown>)),
+    http.get("*/api/model/calculations", () => etagJson({ items: CALCULATIONS, next_cursor: null })),
     http.get("*/api/model/calculations/:id/example", ({ params }) =>
       params["id"] === "calc:days"
-        ? HttpResponse.json(EXAMPLE)
-        : HttpResponse.json({ code: "E_CALCULATION_INPUT_REQUIRED", message: "Root input taken is required." }, { status: 422 }),
+        ? etagJson(EXAMPLE)
+        : etagJson({ code: "E_CALCULATION_INPUT_REQUIRED", message: "Root input taken is required." }, { status: 422 }),
     ),
     http.post("*/api/model/rules/:id/cells", () =>
-      backend.cellFailure !== null ? backend.cellFailure : HttpResponse.json({ version: "rev:2", revision: "rev:2", semantic_hash: CURRENT, events: [] }),
+      backend.cellFailure !== null ? backend.cellFailure : etagJson({ version: "rev:2", revision: "rev:2", semantic_hash: CURRENT, events: [] }),
     ),
   ];
 }
@@ -318,7 +320,50 @@ describe("FindingsPage", () => {
 
 // ------------------------------------------------------------------ entities
 
+
+/** Fable #225: every data table has a caption and every header cell a scope. */
+function expectAccessibleTables() {
+  const tables = [...document.querySelectorAll("main table")];
+  expect(tables.length).toBeGreaterThan(0);
+  for (const table of tables) {
+    expect(table.querySelector("caption")?.textContent ?? "").not.toBe("");
+    for (const th of table.querySelectorAll("th")) {
+      expect(["col", "row"]).toContain(th.getAttribute("scope"));
+    }
+  }
+}
+
+describe("Role-gated write controls (Fable #218)", () => {
+  it("offers a non-analyst no analyst actions and explains why", async () => {
+    await renderAt("/model/rules", { cellFailure: null, roles: ["reviewer"] });
+    await screen.findByText("Leave approval");
+    expect(screen.queryByTestId("cell-fill")).toBeNull();
+    expect(screen.getAllByTestId("role-required").length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("role-required")[0]?.textContent).toBe("These changes need the role: analyst");
+    cleanup();
+    await renderAt("/model/entities", { cellFailure: null, roles: ["reviewer"] });
+    await screen.findByText("Leave request");
+    expect(screen.queryByTestId("attribute-type-save")).toBeNull();
+    // The value itself stays visible.
+    expect(screen.getAllByText("decimal").length).toBeGreaterThan(0);
+  });
+
+  it("offers an analyst the same controls", async () => {
+    await renderAt("/model/rules");
+    await screen.findByText("Leave approval");
+    expect(screen.getAllByTestId("cell-fill").length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("role-required")).toBeNull();
+  });
+});
+
 describe("EntitiesPage", () => {
+  it("gives the attribute, relationship and CRUD tables captions and scoped headers", async () => {
+    await renderAt("/model/entities");
+    await screen.findByText("Leave request");
+    await screen.findByTestId("crud-matrix");
+    expectAccessibleTables();
+  });
+
   it("renders attributes and relationships exactly from the entity list", async () => {
     const { router } = await renderAt("/model/entities");
     await screen.findByText("Leave request");
@@ -369,6 +414,22 @@ describe("EntitiesPage", () => {
 
 describe("RulesPage", () => {
   const state = (ruleId: string, analysis: string) => item("data-rule-id", ruleId).querySelector("[data-analysis='" + analysis + "']") as HTMLElement;
+
+  it("lists a rule the server could not project as a typed health marker next to the others (H0.11)", async () => {
+    await renderAt("/model/rules", {
+      cellFailure: null,
+      rulesPage: {
+        items: [SCALAR],
+        health: [{ id: "dt:broken", code: "E_DECISION_TABLE_ENCODING_INVALID", message: "the persisted decision table encoding is malformed" }],
+        next_cursor: null,
+      },
+    });
+    await screen.findByText("Long leave");
+    const markers = await screen.findByTestId("health-markers");
+    const broken = markers.querySelector("[data-health-id='dt:broken']") as HTMLElement;
+    expect(within(broken).getByTestId("health-code").textContent).toBe("E_DECISION_TABLE_ENCODING_INVALID");
+    expect(broken.textContent).toContain("the persisted decision table encoding is malformed");
+  });
 
   it("separates scalar rules, decision tables and null versus empty analysis", async () => {
     const { router } = await renderAt("/model/rules");
@@ -427,7 +488,7 @@ describe("RulesPage", () => {
     const [post] = writes();
     expect(post?.method).toBe("POST");
     expect(post?.path).toBe("/api/model/rules/dt:leave/cells");
-    expect(post?.ifMatch).toBe(CURRENT);
+    expect(post?.ifMatch).toBe(TEST_ETAG);
     // The exact entered text: no reparsing or recanonicalisation in the browser.
     expect(post?.body).toEqual({ cell: "row:1:output:0", outcome, reason: "   Managers review long leave." });
     expect(calls.filter((c) => c.path.startsWith("/api/proposals"))).toEqual([]);
@@ -438,7 +499,7 @@ describe("RulesPage", () => {
 
   it("shows a server write error once, without retry or generic proposal call", async () => {
     const { user } = await renderAt("/model/rules", {
-      cellFailure: HttpResponse.json({ code: "E_NO_CHANGE", message: "The cell already has this outcome." }, { status: 422 }),
+      cellFailure: etagJson({ code: "E_NO_CHANGE", message: "The cell already has this outcome." }, { status: 422 }),
     });
     await screen.findByText("Bonus");
     const bonus = item("data-rule-id", "dt:bonus");

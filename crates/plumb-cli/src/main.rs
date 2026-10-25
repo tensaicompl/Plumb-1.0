@@ -166,7 +166,8 @@ enum Command {
     Tags(Scope),
     /// Evaluate I0, F1, F2, F3 and F4 on the head.
     Ready,
-    /// Export one artifact of the pilot projection.
+    /// Export one artifact of the pilot projection: functional, report, decisions, glossary,
+    /// scenarios or gate_report (each artifact `report --out` writes).
     Export {
         #[arg(long)]
         format: String,
@@ -304,26 +305,27 @@ impl Command {
     }
 }
 
-/// Rejects provider option conflicts.
+/// Rejects provider option conflicts, naming the offending flag (Fable #187): a provider flag
+/// given with another provider is reported first, then a missing required flag.
 fn provider_choice(cli: &Cli) -> Result<ProviderChoice<'_>, CliError> {
     let usage = |m: &str| Err(CliError::Usage(m.to_owned()));
+    if cli.replay_fixtures.is_some() && cli.provider != ProviderArg::Replay {
+        return usage("--replay-fixtures is allowed only with --provider replay");
+    }
+    if cli.anthropic_api_key_file.is_some() && cli.provider != ProviderArg::Anthropic {
+        return usage("--anthropic-api-key-file is allowed only with --provider anthropic");
+    }
     match (
         cli.provider,
         &cli.replay_fixtures,
         &cli.anthropic_api_key_file,
     ) {
-        (ProviderArg::Null, None, None) => Ok(ProviderChoice::Null),
-        (ProviderArg::Replay, Some(fixtures), None) => Ok(ProviderChoice::Replay { fixtures }),
-        (ProviderArg::Anthropic, None, Some(key_file)) => {
-            Ok(ProviderChoice::Anthropic { key_file })
-        }
+        (ProviderArg::Null, _, _) => Ok(ProviderChoice::Null),
+        (ProviderArg::Replay, Some(fixtures), _) => Ok(ProviderChoice::Replay { fixtures }),
         (ProviderArg::Replay, None, _) => usage("--provider replay requires --replay-fixtures"),
+        (ProviderArg::Anthropic, _, Some(key_file)) => Ok(ProviderChoice::Anthropic { key_file }),
         (ProviderArg::Anthropic, _, None) => {
             usage("--provider anthropic requires --anthropic-api-key-file")
-        }
-        (_, Some(_), _) => usage("--replay-fixtures is allowed only with --provider replay"),
-        (_, _, Some(_)) => {
-            usage("--anthropic-api-key-file is allowed only with --provider anthropic")
         }
     }
 }

@@ -26,21 +26,24 @@ function reviewAction(kind: ProposalKind): ProposalReviewAction {
 
 /**
  * One session proposal card (Hotfix 077/078): the exact server proposal id, kind, raw payload and the
- * intake the session already ran (never a second intake call). The only callable actions are the
+ * intake the session already ran (never a second intake call), decided against the revision of the
+ * turn that returned it (`reviewedEtag`). The only callable actions are the
  * server-classified kind and reject, committed through the proposal endpoints with {reason} only;
  * the shared ProposalReviewBar owns the reason gating. A moved baseline marks the card stale and
  * nothing is retried; a decided card is resolved locally.
  */
-export function ProposalCard({ proposal }: { proposal: SessionProposalView }) {
+export function ProposalCard({ proposal, reviewedEtag }: { proposal: SessionProposalView; reviewedEtag: string }) {
   const queryClient = useQueryClient();
   const [state, setState] = useState<CardState>("pending");
-  const decide = useVersionedMutation<WriteResult, Decision>((decision, ifMatch) =>
-    decision.kind === "reject"
-      ? apiClient.POST("/api/proposals/{id}/reject", {
-          params: { path: { id: proposal.id }, header: { "If-Match": ifMatch } },
-          body: { reason: decision.reason },
-        })
-      : proposalActionRequest(decision.kind, proposal.id, decision.reason, ifMatch),
+  const decide = useVersionedMutation<WriteResult, Decision>(
+    (decision, ifMatch) =>
+      decision.kind === "reject"
+        ? apiClient.POST("/api/proposals/{id}/reject", {
+            params: { path: { id: proposal.id }, header: { "If-Match": ifMatch } },
+            body: { reason: decision.reason },
+          })
+        : proposalActionRequest(decision.kind, proposal.id, decision.reason, ifMatch),
+    reviewedEtag,
   );
 
   const onAction = (action: ProposalReviewAction, rationale: string) => {

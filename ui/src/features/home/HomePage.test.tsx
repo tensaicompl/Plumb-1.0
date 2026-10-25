@@ -7,7 +7,7 @@
 // relative `/api/...` URLs a browser resolves against its origin, so the test resolves them
 // against the jsdom location the same way.
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -58,6 +58,15 @@ class FakeWebSocket extends EventTarget {
     this.closed = true;
   }
 
+  open(): void {
+    this.dispatchEvent(new Event("open"));
+  }
+
+  /** The connection ends from the server or network side (e.g. 4001 events missed). */
+  drop(code: number): void {
+    this.dispatchEvent(new CloseEvent("close", { code }));
+  }
+
   deliver(data: unknown): void {
     this.dispatchEvent(new MessageEvent("message", { data }));
   }
@@ -104,7 +113,7 @@ afterEach(() => {
 
 // ------------------------------------------------------------------ fixtures
 
-const ME: Me = { user: "alice", mode: "pilot", roles: ["analyst", "reviewer"] };
+const ME: Me = { user: "alice", mode: "pilot", roles: ["analyst", "reviewer"], inference_available: true };
 
 const VERSION: ModelVersion = {
   version: "rev:7:aaaaaaaaaaaaaaaa",
@@ -115,9 +124,11 @@ const VERSION: ModelVersion = {
 };
 
 const GATES: GateStatus[] = [
-  { gate: "I0", passed: true, findings: [], rules: [], waivers: [], summary: { blocker_failed: 0, blocker_waived: 0, warnings: 0 } },
+  { gate: "I0", state: "current", reason: null, passed: true, findings: [], rules: [], waivers: [], summary: { blocker_failed: 0, blocker_waived: 0, warnings: 0 } },
   {
     gate: "F1",
+    state: "current",
+    reason: null,
     passed: false,
     findings: ["fnd:0123456789abcdef"],
     rules: [
@@ -344,13 +355,46 @@ describe("HomePage global search", () => {
     expect(methods.length).toBeGreaterThan(0);
     expect(methods.every((m) => m === "GET")).toBe(true);
   });
+
+  it("states that only Accepted elements are searchable, dismisses results and opens a hit's page (H0.11)", async () => {
+    const page: SearchPage = {
+      items: [{ id: "req:leave-1", kind: "requirement", path: "/api/requirements/req:leave-1", score: 0.75, snippet: "Employees shall submit leave requests." }],
+      next_cursor: null,
+    };
+    server.use(
+      ...shellHandlers(),
+      http.get("*/api/search", () => HttpResponse.json(page)),
+      http.get("*/api/requirements/:id", () => HttpResponse.json({ code: "E_NOT_FOUND", message: "x", details: {} }, { status: 404 })),
+      http.get("*/api/sessions/*", () => HttpResponse.json({}, { status: 404 })),
+    );
+    const { router } = renderApp();
+    await screen.findByTestId("home-revision");
+    const user = userEvent.setup();
+    const input = screen.getByRole("searchbox", { name: "Search the model" });
+    await user.type(input, "leave");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await screen.findByTestId("search-results");
+    expect(screen.getByTestId("search-scope-note").textContent).toBe("Only accepted elements are searchable.");
+    // Dismissal: the button, then Escape after a new search.
+    await user.click(screen.getByRole("button", { name: "Close search results" }));
+    expect(screen.queryByTestId("search-results")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await screen.findByTestId("search-results");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("search-results")).toBeNull();
+    // A hit with a page opens it in the app and closes the results.
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(await screen.findByRole("link", { name: "req:leave-1" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/requirements/req:leave-1"));
+    expect(screen.queryByTestId("search-results")).toBeNull();
+  });
 });
 
 // ------------------------------------------------------------------ versioned writes
 
 describe("HomePage versioned mutation", () => {
-  it("sends the fetched semantic_hash once and surfaces a 412 without retrying", async () => {
-    const counts = { version: 0 };
+  it("sends the ETag of the reviewed read once, never fetches a version inside the mutation, and surfaces a 412 without retrying", async () => {
+    const counts = { version: 0, reviewed: 0 };
     const ifMatch: (string | null)[] = [];
     const rejected: PreconditionFailed = {
       code: "E_PRECONDITION_FAILED",
@@ -361,6 +405,10 @@ describe("HomePage versioned mutation", () => {
     };
     server.use(
       ...shellHandlers(counts),
+      http.get("*/api/requirements/:id", () => {
+        counts.reviewed += 1;
+        return HttpResponse.json({ id: "req:1" }, { headers: { ETag: '"rev:6:reviewedreviewed"' } });
+      }),
       http.post("*/api/proposals/:id/reject", ({ request }) => {
         ifMatch.push(request.headers.get("If-Match"));
         return HttpResponse.json(rejected, { status: 412 });
@@ -368,15 +416,21 @@ describe("HomePage versioned mutation", () => {
     );
 
     function Harness() {
-      const mutation = app.mutation.useVersionedMutation((id: string, version: string) =>
-        app.client.apiClient.POST("/api/proposals/{id}/reject", {
-          params: { path: { id }, header: { "If-Match": version } },
-          body: {},
-        }),
+      const reviewed = useQuery({
+        queryKey: ["reviewed"],
+        queryFn: () => app.client.readReviewed(app.client.apiClient.GET("/api/requirements/{id}", { params: { path: { id: "req:1" } } })),
+      });
+      const mutation = app.mutation.useVersionedMutation(
+        (id: string, version: string) =>
+          app.client.apiClient.POST("/api/proposals/{id}/reject", {
+            params: { path: { id }, header: { "If-Match": version } },
+            body: {},
+          }),
+        reviewed.data?.etag,
       );
       return (
         <div>
-          <button type="button" onClick={() => mutation.mutate("prp:0123456789abcdef")}>
+          <button type="button" disabled={reviewed.data === undefined} onClick={() => mutation.mutate("prp:0123456789abcdef")}>
             write
           </button>
           <span data-testid="mutation-status">{mutation.status}</span>
@@ -391,19 +445,21 @@ describe("HomePage versioned mutation", () => {
       history: createMemoryHistory({ initialEntries: ["/"] }),
     });
     const queryClient = newQueryClient();
-    // A stale cached version must never become the precondition.
-    queryClient.setQueryData(app.mutation.modelVersionQueryKey, { ...VERSION, semantic_hash: "psg:sha256:stale" });
     const invalidate = vi.spyOn(queryClient, "invalidateQueries");
     renderRouter(router, queryClient);
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("button", { name: "write" }));
+    const write = await screen.findByRole("button", { name: "write" });
+    await waitFor(() => expect((write as HTMLButtonElement).disabled).toBe(false));
+    const versionsBefore = counts.version;
+    await user.click(write);
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("The model has changed")).toBeTruthy();
     expect(within(dialog).getByTestId("conflict-revision").textContent).toBe(rejected.revision);
     expect(within(dialog).getByTestId("conflict-semantic-hash").textContent).toBe(rejected.semantic_hash);
-    expect(ifMatch).toEqual([VERSION.semantic_hash]);
-    expect(counts.version).toBe(1);
+    // The precondition is exactly the reviewed read's ETag; no version is fetched to make it.
+    expect(ifMatch).toEqual(['"rev:6:reviewedreviewed"']);
+    expect(counts.version).toBe(versionsBefore);
     expect(invalidate).toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId("mutation-status").textContent).toBe("error"));
     expect(screen.getByTestId("mutation-error").textContent).toBe("PreconditionFailedError");
@@ -423,6 +479,57 @@ describe("HomePage versioned mutation", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(ifMatch).toHaveLength(2);
     expect(app.mutation.useConflictStore.getState().conflict).toBeNull();
+  });
+
+  it("shows a typed transport failure when the write never reaches the server", async () => {
+    server.use(
+      ...shellHandlers(),
+      http.post("*/api/proposals/:id/reject", () => HttpResponse.error()),
+    );
+    function Harness() {
+      const mutation = app.mutation.useVersionedMutation(
+        (id: string, version: string) =>
+          app.client.apiClient.POST("/api/proposals/{id}/reject", { params: { path: { id }, header: { "If-Match": version } }, body: {} }),
+        '"rev:7:aaaaaaaaaaaaaaaa"',
+      );
+      return (
+        <div>
+          <button type="button" onClick={() => mutation.mutate("prp:0123456789abcdef")}>
+            write
+          </button>
+          <span data-testid="mutation-error">{mutation.error === null ? "" : app.mutation.writeErrorMessage(mutation.error)}</span>
+          <span data-testid="mutation-code">{mutation.error instanceof app.mutation.WriteFailedError ? String((mutation.error.body as { code: string }).code) : ""}</span>
+        </div>
+      );
+    }
+    const root = createRootRoute({ component: app.shell.AppShell });
+    const index = createRoute({ getParentRoute: () => root, path: "/", component: Harness });
+    const router = createRouter({ routeTree: root.addChildren([index]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+    renderRouter(router, newQueryClient());
+    await userEvent.setup().click(await screen.findByRole("button", { name: "write" }));
+    await waitFor(() => expect(screen.getByTestId("mutation-code").textContent).toBe("E_TRANSPORT_FAILED"));
+    expect(screen.getByTestId("mutation-error").textContent).toBe("The server could not be reached; the change was not saved. Check the connection and try again.");
+  });
+});
+
+describe("HomePage reads", () => {
+  it("retries only network failures and 502/503/504, at most twice, and keeps the typed error", async () => {
+    const { shouldRetryRead, ReadFailedError, readReviewed } = app.client;
+    const failure = (status: number) => new ReadFailedError(status, { code: "E_X", message: "m", details: {} });
+    expect(shouldRetryRead(0, new TypeError("Failed to fetch"))).toBe(true);
+    for (const status of [502, 503, 504]) {
+      expect(shouldRetryRead(0, failure(status))).toBe(true);
+      expect(shouldRetryRead(1, failure(status))).toBe(true);
+      expect(shouldRetryRead(2, failure(status))).toBe(false);
+    }
+    for (const status of [400, 404, 409, 412, 422, 500]) {
+      expect(shouldRetryRead(0, failure(status))).toBe(false);
+    }
+    server.use(http.get("*/api/requirements/:id", () => HttpResponse.json({ code: "E_NOT_FOUND", message: "no requirement req:9", details: {} }, { status: 404 })));
+    const error = await readReviewed(app.client.apiClient.GET("/api/requirements/{id}", { params: { path: { id: "req:9" } } })).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReadFailedError);
+    expect((error as InstanceType<typeof ReadFailedError>).code).toBe("E_NOT_FOUND");
+    expect((error as InstanceType<typeof ReadFailedError>).serverMessage).toBe("no requirement req:9");
   });
 });
 
@@ -449,7 +556,7 @@ describe("HomePage design events", () => {
     });
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(setData).not.toHaveBeenCalled();
-    await waitFor(() => expect(queryClient.getQueryData(app.mutation.modelVersionQueryKey)).toEqual(VERSION));
+    await waitFor(() => expect(queryClient.getQueryData(app.mutation.modelVersionQueryKey)).toMatchObject(VERSION));
 
     for (const malformed of [
       "not json",
@@ -468,10 +575,158 @@ describe("HomePage design events", () => {
     }
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(setData).not.toHaveBeenCalled();
-    expect(queryClient.getQueryData(app.mutation.modelVersionQueryKey)).toEqual(VERSION);
+    expect(queryClient.getQueryData(app.mutation.modelVersionQueryKey)).toMatchObject(VERSION);
 
     view.unmount();
     expect(socket.closed).toBe(true);
+  });
+});
+
+describe("HomePage event stream lifecycle", () => {
+  it("backs off from 1 s doubling to a 30 s cap with jitter", () => {
+    const { reconnectDelay } = app.events;
+    expect([0, 1, 2, 3, 4, 5, 6, 10].map((n) => reconnectDelay(n, () => 1))).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+    expect(reconnectDelay(0, () => 0)).toBe(500);
+    expect(reconnectDelay(10, () => 0)).toBe(15000);
+  });
+
+  it("reconnects after a close or a lag close, invalidates once per reconnect and stops on unmount", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    server.use(...shellHandlers());
+    const { queryClient, view } = renderApp();
+    await screen.findByTestId("home-revision");
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const [first] = FakeWebSocket.instances;
+    if (first === undefined) {
+      throw new Error("the shell opened no event socket");
+    }
+    act(() => first.open());
+    expect(invalidate).not.toHaveBeenCalled();
+
+    // Network loss: no immediate reconnect, a new socket after the first backoff step.
+    act(() => first.drop(1006));
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 2000 });
+    const second = FakeWebSocket.instances[1] as FakeWebSocket;
+    expect(invalidate).not.toHaveBeenCalled();
+    act(() => second.open());
+    expect(invalidate).toHaveBeenCalledTimes(1);
+
+    // The server's events-missed close: one more reconnect and exactly one more invalidation.
+    act(() => second.drop(4001));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(3), { timeout: 2000 });
+    const third = FakeWebSocket.instances[2] as FakeWebSocket;
+    act(() => third.open());
+    expect(invalidate).toHaveBeenCalledTimes(2);
+
+    // Unmounting closes the socket and never reconnects.
+    view.unmount();
+    expect(third.closed).toBe(true);
+    act(() => third.drop(1006));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    vi.restoreAllMocks();
+  });
+});
+
+describe("HomePage locale selection", () => {
+  it("defaults to the browser language, switches to Polish, persists it per browser and renders routes in it", async () => {
+    const i18n = await import("../../i18n");
+    window.localStorage.removeItem(i18n.LOCALE_STORAGE_KEY);
+    expect(i18n.initialLocale()).toBe("en");
+    const language = vi.spyOn(window.navigator, "language", "get").mockReturnValue("pl-PL");
+    expect(i18n.initialLocale()).toBe("pl");
+    language.mockReturnValue("de-DE");
+    expect(i18n.initialLocale()).toBe("en");
+    language.mockRestore();
+
+    server.use(
+      ...shellHandlers(),
+      http.get("*/api/readiness", () =>
+        HttpResponse.json({ overall: null, contributing: [], sub: { clarity: null, completeness: null, confirmation: null, consistency: null, verifiability: null } }),
+      ),
+    );
+    const { router } = renderApp();
+    await screen.findByTestId("home-revision");
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Language" }), "pl");
+    expect(await screen.findByRole("heading", { level: 1, name: "Strona główna" })).toBeTruthy();
+    expect(window.localStorage.getItem(i18n.LOCALE_STORAGE_KEY)).toBe("pl");
+    expect(document.documentElement.lang).toBe("pl");
+    expect(i18n.initialLocale()).toBe("pl");
+    // Another route renders in Polish too.
+    act(() => {
+      void router.navigate({ to: "/gates" });
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: "Bramki" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Język" })).toBeTruthy();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Język" }), "en");
+    expect(await screen.findByRole("heading", { level: 1, name: "Gates" })).toBeTruthy();
+    window.localStorage.removeItem(i18n.LOCALE_STORAGE_KEY);
+  });
+});
+
+describe("HomePage routing and accessibility", () => {
+  const ROUTES = [
+    "/",
+    "/requirements",
+    "/requirements/req:a",
+    "/model/glossary",
+    "/model/sentences",
+    "/questions",
+    "/sessions",
+    "/model/processes",
+    "/model/scenarios",
+    "/model/entities",
+    "/model/findings",
+    "/model/rules",
+    "/model/calculations",
+    "/gates",
+    "/decisions",
+  ];
+
+  /** Every other read fails with a typed 503, so each page also shows its failure state. */
+  function failingReads() {
+    return [
+      http.get("*/api/me", () => HttpResponse.json(ME)),
+      http.get("*/api/*", () => HttpResponse.json({ code: "E_A03_RUNTIME_UNAVAILABLE", message: "not configured", details: {} }, { status: 503 })),
+    ];
+  }
+
+  it("gives every routed page exactly one h1, in loading and failure states alike (Fable #352)", async () => {
+    for (const path of ROUTES) {
+      server.use(...failingReads());
+      const queryClient = newQueryClient();
+      const router = app.router.createAppRouter(createMemoryHistory({ initialEntries: [path] }));
+      const view = renderRouter(router, queryClient);
+      await waitFor(() => expect(router.state.location.pathname).toBe(path));
+      expect(document.querySelectorAll("main h1"), path).toHaveLength(1);
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+      expect(document.querySelectorAll("main h1"), path + " after loading").toHaveLength(1);
+      view.unmount();
+      server.resetHandlers();
+    }
+  });
+
+  it("renders a typed not-found page inside the shell for an unknown route (Fable #352, #225)", async () => {
+    server.use(...shellHandlers());
+    const router = app.router.createAppRouter(createMemoryHistory({ initialEntries: ["/no/such/page"] }));
+    renderRouter(router, newQueryClient());
+    expect(await screen.findByRole("heading", { level: 1, name: "Page not found" })).toBeTruthy();
+    expect(screen.getByTestId("not-found-path").textContent).toBe("/no/such/page");
+    // The shell stays: navigation and identity are present.
+    expect(screen.getByRole("navigation", { name: "Pilot navigation" })).toBeTruthy();
+    expect(document.querySelectorAll("main h1")).toHaveLength(1);
+  });
+
+  it("marks the nav section of a nested route and gives tables captions and scoped headers (Fable #225)", async () => {
+    server.use(...failingReads());
+    const router = app.router.createAppRouter(createMemoryHistory({ initialEntries: ["/requirements/req:a"] }));
+    renderRouter(router, newQueryClient());
+    const nav = await screen.findByRole("navigation", { name: "Pilot navigation" });
+    const link = nav.querySelector("[data-nav-id='requirements']") as HTMLElement;
+    expect(link.getAttribute("aria-current")).toBe("location");
+    expect((nav.querySelector("[data-nav-id='home']") as HTMLElement).getAttribute("aria-current")).toBeNull();
   });
 });
 
@@ -479,7 +734,7 @@ describe("HomePage design events", () => {
 
 describe("HomePage role membership", () => {
   it("uses exactly the server-returned roles", () => {
-    const me: Me = { user: "alice", mode: "pilot", roles: ["analyst"] };
+    const me: Me = { user: "alice", mode: "pilot", roles: ["analyst"], inference_available: true };
     expect(app.auth.hasRole(me, "analyst")).toBe(true);
     expect(app.auth.hasRole(me, "architect")).toBe(false);
     expect(app.auth.hasRole(me, "Analyst")).toBe(false);

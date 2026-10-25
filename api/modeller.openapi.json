@@ -140,8 +140,14 @@
       },
       "AssumptionPage": {
         "additionalProperties": false,
-        "description": "A page of results; `next_cursor` is null on the last page.",
+        "description": "A page of results; `next_cursor` is null on the last page. An item of the page whose\nprojection failed is in `health` (with its typed error) instead of `items`; corruption\nis reported, never hidden, and the remaining items are still returned.",
         "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ItemHealth"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/Assumption"
@@ -156,7 +162,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "health"
         ],
         "type": "object"
       },
@@ -456,7 +463,7 @@
         "additionalProperties": false,
         "properties": {
           "class": {
-            "type": "string"
+            "$ref": "#/components/schemas/RequirementClass"
           }
         },
         "required": [
@@ -978,7 +985,9 @@
           "functional",
           "report",
           "decisions",
-          "glossary"
+          "glossary",
+          "scenarios",
+          "gate_report"
         ],
         "type": "string"
       },
@@ -1070,6 +1079,15 @@
           "plumb_core",
           "profile_policy",
           "organization_policy"
+        ],
+        "type": "string"
+      },
+      "GateEvaluationState": {
+        "description": "The evaluation state of a NOW gate on the branch head (H0.11, architecture §33.12):\n`current` has a report for the head; `stale` has only reports of earlier heads and cannot be\nevaluated now; `not_evaluated` has never been evaluated and cannot be evaluated now. A gate\nthat is not current carries no rule results.",
+        "enum": [
+          "not_evaluated",
+          "current",
+          "stale"
         ],
         "type": "string"
       },
@@ -1230,6 +1248,23 @@
         ],
         "type": "string"
       },
+      "GateStateReason": {
+        "additionalProperties": false,
+        "description": "The typed failure that keeps a gate from being evaluated on the branch head.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
       "GateStatus": {
         "additionalProperties": false,
         "properties": {
@@ -1244,7 +1279,19 @@
             "$ref": "#/components/schemas/GateName"
           },
           "passed": {
+            "description": "The current report's result; false when the gate is not current.",
             "type": "boolean"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GateStateReason",
+                "description": "Why the gate is not current: the typed failure that prevents its evaluation now; null\nexactly when `state` is `current`."
+              }
+            ]
           },
           "rules": {
             "description": "The report's rule results, in report order (Hotfix 082).",
@@ -1252,6 +1299,10 @@
               "$ref": "#/components/schemas/GateRuleResult"
             },
             "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/GateEvaluationState",
+            "description": "Whether this entry is the gate's report current for the branch head (H0.11)."
           },
           "summary": {
             "$ref": "#/components/schemas/GateSummaryView",
@@ -1267,6 +1318,8 @@
         },
         "required": [
           "gate",
+          "state",
+          "reason",
           "passed",
           "findings",
           "rules",
@@ -1563,6 +1616,27 @@
         ],
         "type": "object"
       },
+      "ItemHealth": {
+        "additionalProperties": false,
+        "description": "The typed health marker of a collection item whose projection failed (H0.11): the element\nID, the typed error code and message. The item's detail route fails with the same error.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
       "JobResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1631,6 +1705,10 @@
       "MeResponse": {
         "additionalProperties": false,
         "properties": {
+          "inference_available": {
+            "description": "Whether this server can run inference (sessions and inference-requiring recipes): false\nexactly when the configured provider mode is `null` (H0.11, Fable #355).",
+            "type": "boolean"
+          },
           "mode": {
             "type": "string"
           },
@@ -1647,7 +1725,8 @@
         "required": [
           "user",
           "roles",
-          "mode"
+          "mode",
+          "inference_available"
         ],
         "type": "object"
       },
@@ -1722,7 +1801,7 @@
       },
       "PreconditionFailedResponse": {
         "additionalProperties": false,
-        "description": "412: the request's If-Match was not the current semantic hash. `revision` and\n`semantic_hash` are the current branch-head values.",
+        "description": "412: the request's If-Match did not name the current branch-head revision. `revision` and\n`semantic_hash` are the current branch-head values.",
         "properties": {
           "code": {
             "type": "string"
@@ -2195,8 +2274,14 @@
       },
       "QuestionPage": {
         "additionalProperties": false,
-        "description": "A page of results; `next_cursor` is null on the last page.",
+        "description": "A page of results; `next_cursor` is null on the last page. An item of the page whose\nprojection failed is in `health` (with its typed error) instead of `items`; corruption\nis reported, never hidden, and the remaining items are still returned.",
         "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ItemHealth"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/Question"
@@ -2211,7 +2296,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "health"
         ],
         "type": "object"
       },
@@ -2320,6 +2406,21 @@
         ],
         "type": "object"
       },
+      "RequirementClass": {
+        "description": "The closed requirement class vocabulary (`Requirement.requirement_kind`, §7.5).",
+        "enum": [
+          "functional",
+          "quality",
+          "interface",
+          "data",
+          "security",
+          "operational",
+          "compliance",
+          "transition",
+          "constraint"
+        ],
+        "type": "string"
+      },
       "RequirementCoverage": {
         "additionalProperties": false,
         "properties": {
@@ -2346,7 +2447,7 @@
         "additionalProperties": false,
         "properties": {
           "class": {
-            "type": "string"
+            "$ref": "#/components/schemas/RequirementClass"
           },
           "coverage": {
             "$ref": "#/components/schemas/RequirementCoverage"
@@ -2477,7 +2578,7 @@
         "additionalProperties": false,
         "properties": {
           "class": {
-            "type": "string"
+            "$ref": "#/components/schemas/RequirementClass"
           },
           "coverage": {
             "$ref": "#/components/schemas/RequirementCoverage"
@@ -2627,8 +2728,14 @@
       },
       "RulePage": {
         "additionalProperties": false,
-        "description": "A page of results; `next_cursor` is null on the last page.",
+        "description": "A page of results; `next_cursor` is null on the last page. An item of the page whose\nprojection failed is in `health` (with its typed error) instead of `items`; corruption\nis reported, never hidden, and the remaining items are still returned.",
         "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ItemHealth"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/Rule"
@@ -2643,7 +2750,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "health"
         ],
         "type": "object"
       },
@@ -2774,8 +2882,14 @@
       },
       "ScenarioPage": {
         "additionalProperties": false,
-        "description": "A page of results; `next_cursor` is null on the last page.",
+        "description": "A page of results; `next_cursor` is null on the last page. An item of the page whose\nprojection failed is in `health` (with its typed error) instead of `items`; corruption\nis reported, never hidden, and the remaining items are still returned.",
         "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ItemHealth"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/Scenario"
@@ -2790,7 +2904,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "health"
         ],
         "type": "object"
       },
@@ -3577,7 +3692,504 @@
   "info": {
     "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72) and U2.1 (the two semantic change previews, operations 73-74).",
     "title": "Plumb Modeller API",
-    "version": "0.1.0"
+    "version": "0.1.0",
+    "x-plumb-error-codes": [
+      {
+        "code": "E_A03_RUNTIME_UNAVAILABLE",
+        "meaning": "The operation needs runtime material that is not configured.",
+        "status": 503
+      },
+      {
+        "code": "E_ASSUMPTION_NOT_ACTIVE",
+        "meaning": "The assumption is not in an active lifecycle state.",
+        "status": 409
+      },
+      {
+        "code": "E_ATTRIBUTE_ALREADY_CLASSIFIED",
+        "meaning": "The attribute already has the requested classification.",
+        "status": 409
+      },
+      {
+        "code": "E_AUTO_PROPOSAL_REQUIRES_REASON",
+        "meaning": "An automatically accepted stage proposal would need a human reason.",
+        "status": 409
+      },
+      {
+        "code": "E_BRANCH_NOT_FOUND",
+        "meaning": "The configured branch has no head revision.",
+        "status": 404
+      },
+      {
+        "code": "E_CALCULATION_EVALUATION",
+        "meaning": "The calculation cannot be evaluated for the given inputs.",
+        "status": 422
+      },
+      {
+        "code": "E_CALCULATION_SCOPE_UNAVAILABLE",
+        "meaning": "The calculation's input scope is not available on the current head.",
+        "status": 409
+      },
+      {
+        "code": "E_CALCULATION_VALUE_UNREPRESENTABLE",
+        "meaning": "The calculation result cannot be represented on the wire.",
+        "status": 422
+      },
+      {
+        "code": "E_CURSOR_BASELINE_CHANGED",
+        "meaning": "The cursor was issued at another branch-head revision or semantic hash.",
+        "status": 409
+      },
+      {
+        "code": "E_CURSOR_INVALID",
+        "meaning": "The cursor is malformed or not canonical.",
+        "status": 400
+      },
+      {
+        "code": "E_CURSOR_REQUEST_MISMATCH",
+        "meaning": "The cursor belongs to another request.",
+        "status": 400
+      },
+      {
+        "code": "E_DATABASE_BUSY",
+        "meaning": "The database is locked by another writer; retry later.",
+        "status": 503
+      },
+      {
+        "code": "E_DATABASE_NOT_INITIALIZED",
+        "meaning": "The database does not exist or is not an initialized PLUMB store.",
+        "status": 409
+      },
+      {
+        "code": "E_DATABASE_READ_ONLY",
+        "meaning": "The database was opened read-only and cannot be written.",
+        "status": 409
+      },
+      {
+        "code": "E_DECISION_TABLE_ENCODING_INVALID",
+        "meaning": "A stored decision table encoding is invalid.",
+        "status": 409
+      },
+      {
+        "code": "E_DECISION_TABLE_INVALID",
+        "meaning": "The decision table is not valid for this operation.",
+        "status": 409
+      },
+      {
+        "code": "E_DIFF_NO_PARENT",
+        "meaning": "The revision has no parent to diff against.",
+        "status": 422
+      },
+      {
+        "code": "E_EXPRESSION_LIMIT",
+        "meaning": "An expression exceeds a resource limit.",
+        "status": 422
+      },
+      {
+        "code": "E_EXTERNAL_VALIDATOR_UNAVAILABLE",
+        "meaning": "A required external validator is not available.",
+        "status": 409
+      },
+      {
+        "code": "E_FINDING_MATERIAL_MISMATCH",
+        "meaning": "The finding's material no longer matches the current report.",
+        "status": 409
+      },
+      {
+        "code": "E_FINDING_NOT_CURRENT",
+        "meaning": "The finding is not in the current gate report.",
+        "status": 409
+      },
+      {
+        "code": "E_FINDING_NOT_FOR_REQUIREMENT",
+        "meaning": "The finding does not affect this requirement.",
+        "status": 409
+      },
+      {
+        "code": "E_FORBIDDEN_HOST",
+        "meaning": "The request Host is missing or is not a loopback address.",
+        "status": 403
+      },
+      {
+        "code": "E_FORBIDDEN_ORIGIN",
+        "meaning": "The request Origin is not a loopback origin.",
+        "status": 403
+      },
+      {
+        "code": "E_GATE_INPUTS_MISSING",
+        "meaning": "Configured gate inputs are missing.",
+        "status": 409
+      },
+      {
+        "code": "E_GATE_INPUTS_STALE",
+        "meaning": "Gate inputs are stale for the current head.",
+        "status": 409
+      },
+      {
+        "code": "E_GATE_REPORT_INCOHERENT",
+        "meaning": "A persisted gate report contradicts the current head.",
+        "status": 409
+      },
+      {
+        "code": "E_GATE_REPORT_UNAVAILABLE",
+        "meaning": "No current gate report exists and none can be evaluated.",
+        "status": 409
+      },
+      {
+        "code": "E_ID_COLLISION",
+        "meaning": "A derived stable ID already names another element.",
+        "status": 409
+      },
+      {
+        "code": "E_INFERENCE_FAILED",
+        "meaning": "The inference provider or its output inspection failed.",
+        "status": 502
+      },
+      {
+        "code": "E_INFERENCE_REQUIRED",
+        "meaning": "The operation requires inference and the null provider is configured.",
+        "status": 409
+      },
+      {
+        "code": "E_INFERENCE_UNAVAILABLE",
+        "meaning": "A session needs an inference provider and the null provider is configured.",
+        "status": 409
+      },
+      {
+        "code": "E_INTAKE_REASON_REQUIRED",
+        "meaning": "Intake requires a non-blank reason for this change.",
+        "status": 409
+      },
+      {
+        "code": "E_INTERNAL",
+        "meaning": "Unexpected internal failure; details name the failing subsystem only.",
+        "status": 500
+      },
+      {
+        "code": "E_INVALID_REQUEST",
+        "meaning": "Malformed path, query, header, body or multipart input.",
+        "status": 400
+      },
+      {
+        "code": "E_JOB_INTERRUPTED",
+        "meaning": "A recipe job was interrupted by a process restart.",
+        "status": 409
+      },
+      {
+        "code": "E_MERMAID_INVALID",
+        "meaning": "The Mermaid process text is malformed.",
+        "status": 400
+      },
+      {
+        "code": "E_MERMAID_UNREPRESENTABLE",
+        "meaning": "The process cannot be represented as linear Mermaid.",
+        "status": 409
+      },
+      {
+        "code": "E_METHOD_NOT_ALLOWED",
+        "meaning": "The route exists but does not accept this HTTP method.",
+        "status": 405
+      },
+      {
+        "code": "E_NOT_FOUND",
+        "meaning": "The addressed element does not exist.",
+        "status": 404
+      },
+      {
+        "code": "E_NO_CHANGE",
+        "meaning": "The requested change would not change the model.",
+        "status": 422
+      },
+      {
+        "code": "E_NO_CONFIRMABLE_DERIVED_SCENARIOS",
+        "meaning": "The decision table has no confirmable derived scenarios.",
+        "status": 409
+      },
+      {
+        "code": "E_NO_QUESTIONS_FOR_ROUND",
+        "meaning": "No open questions are available for the round.",
+        "status": 409
+      },
+      {
+        "code": "E_NO_RUNNABLE_SCENARIOS",
+        "meaning": "No scenario in the scope can be run.",
+        "status": 409
+      },
+      {
+        "code": "E_PATCH_REJECTED",
+        "meaning": "The proposed change cannot be applied to the current graph.",
+        "status": 422
+      },
+      {
+        "code": "E_PAYLOAD_TOO_LARGE",
+        "meaning": "The request body exceeds the route's size limit.",
+        "status": 413
+      },
+      {
+        "code": "E_PRECONDITION_FAILED",
+        "meaning": "If-Match does not name the current branch-head revision.",
+        "status": 412
+      },
+      {
+        "code": "E_PROCESS_IMPORT_CONFLICT",
+        "meaning": "The imported process conflicts with existing elements.",
+        "status": 409
+      },
+      {
+        "code": "E_PROCESS_MUTATION_INVALID",
+        "meaning": "The process step change is invalid.",
+        "status": 422
+      },
+      {
+        "code": "E_PROCESS_NOT_LINEAR",
+        "meaning": "The process is not linear.",
+        "status": 409
+      },
+      {
+        "code": "E_PROCESS_STEP_HAS_RELATIONS",
+        "meaning": "The process step still has relations.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_ACTION_AMBIGUOUS",
+        "meaning": "The proposal's action cannot be classified unambiguously.",
+        "status": 422
+      },
+      {
+        "code": "E_PROPOSAL_ACTION_MISMATCH",
+        "meaning": "The requested action is not the proposal's classified action.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_BASELINE_CHANGED",
+        "meaning": "The proposal's baseline revision is no longer the head.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_EVIDENCE_MISMATCH",
+        "meaning": "The intake evidence does not match the proposal.",
+        "status": 400
+      },
+      {
+        "code": "E_PROPOSAL_NOT_PENDING",
+        "meaning": "The proposal is not pending.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_RESOLUTION_INVALID",
+        "meaning": "The resolution revision does not descend from the proposal's base.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_SET_CONFLICT",
+        "meaning": "The proposals of the set are not compatible on their shared base.",
+        "status": 409
+      },
+      {
+        "code": "E_QUESTION_GENERATION_INVALID",
+        "meaning": "Question generation produced invalid output.",
+        "status": 422
+      },
+      {
+        "code": "E_QUESTION_GENERATION_ISSUES",
+        "meaning": "Question generation reported issues.",
+        "status": 409
+      },
+      {
+        "code": "E_QUESTION_PROJECTION_INVALID",
+        "meaning": "A persisted question cannot be projected.",
+        "status": 409
+      },
+      {
+        "code": "E_ROUND_COMPOSITION_FAILED",
+        "meaning": "The question round cannot be composed.",
+        "status": 409
+      },
+      {
+        "code": "E_ROUND_INCONSISTENT",
+        "meaning": "A persisted round contradicts its questions.",
+        "status": 409
+      },
+      {
+        "code": "E_ROUND_STAKEHOLDER_INVALID",
+        "meaning": "The round stakeholder is not valid.",
+        "status": 409
+      },
+      {
+        "code": "E_ROUTE_NOT_FOUND",
+        "meaning": "No API route has this path.",
+        "status": 404
+      },
+      {
+        "code": "E_RULE_NOT_DECISION_TABLE",
+        "meaning": "The rule is not a decision table.",
+        "status": 409
+      },
+      {
+        "code": "E_RUNTIME_CONFIG_INVALID",
+        "meaning": "The runtime configuration is invalid; reported before any store opens.",
+        "status": 500
+      },
+      {
+        "code": "E_SCENARIO_NOT_CONFIRMABLE",
+        "meaning": "The scenario cannot be confirmed in its lifecycle state.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_NOT_RUNNABLE",
+        "meaning": "The scenario cannot be run in its lifecycle state.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_PROJECTION_INVALID",
+        "meaning": "A persisted scenario cannot be projected.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_RUN_COLLISION",
+        "meaning": "The stable scenario run ID holds another element.",
+        "status": 422
+      },
+      {
+        "code": "E_SCENARIO_RUN_TRACE_ARTIFACT_INVALID",
+        "meaning": "A scenario run trace artifact is invalid.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_RUN_TRACE_ARTIFACT_MISSING",
+        "meaning": "A scenario run trace artifact is missing.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_RUN_TRACE_LINK_INVALID",
+        "meaning": "A scenario run trace link is invalid.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_RUN_TRACE_MISMATCH",
+        "meaning": "A scenario run trace does not match its run.",
+        "status": 409
+      },
+      {
+        "code": "E_SCENARIO_STATE_INVALID",
+        "meaning": "The scenario's lifecycle state does not allow the operation.",
+        "status": 409
+      },
+      {
+        "code": "E_SEMANTIC_INVARIANT",
+        "meaning": "A domain service rejected the change or the target is in the wrong lifecycle state.",
+        "status": 422
+      },
+      {
+        "code": "E_SESSION_NOT_OWNED",
+        "meaning": "The session belongs to another user.",
+        "status": 403
+      },
+      {
+        "code": "E_SESSION_TURN_IN_FLIGHT",
+        "meaning": "A turn of the session is still in flight; nothing was written.",
+        "status": 409
+      },
+      {
+        "code": "E_SOURCE_CONFLICT",
+        "meaning": "A different source with this identity already exists.",
+        "status": 409
+      },
+      {
+        "code": "E_SOURCE_EMPTY",
+        "meaning": "The uploaded file yields no evidence fragments; nothing was written.",
+        "status": 400
+      },
+      {
+        "code": "E_SOURCE_EXISTS",
+        "meaning": "This exact source already exists.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_CHILD_FAILED",
+        "meaning": "A child stage of the recipe failed.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_COMMIT_FAILED",
+        "meaning": "The stage output could not be committed.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_CONFIG_MISSING",
+        "meaning": "The recipe needs configuration that is absent.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_EVALUATION_FAILED",
+        "meaning": "A phase or gate cannot be evaluated; details.error names the typed error.",
+        "status": 422
+      },
+      {
+        "code": "E_STAGE_MIXED_OUTPUT",
+        "meaning": "A stage produced incompatible output kinds.",
+        "status": 422
+      },
+      {
+        "code": "E_STAGE_PLAN_FAILED",
+        "meaning": "A phase cannot be planned; details.error names the typed error.",
+        "status": 422
+      },
+      {
+        "code": "E_STAGE_PROPOSAL_CONFLICT",
+        "meaning": "Stage proposals conflict with each other.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_RETRY_BASE_MOVED",
+        "meaning": "The failed job cannot be retried because the branch head moved.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_RETRY_NOT_FAILED",
+        "meaning": "Only a failed job can be retried.",
+        "status": 409
+      },
+      {
+        "code": "E_STAGE_SCOPE_INVALID",
+        "meaning": "The recipe scope is invalid.",
+        "status": 422
+      },
+      {
+        "code": "E_STORE_CORRUPT",
+        "meaning": "Persisted store or artifact content failed an integrity check.",
+        "status": 500
+      },
+      {
+        "code": "E_STORE_VERSION_UNSUPPORTED",
+        "meaning": "A stored revision uses an unsupported PSG schema version.",
+        "status": 409
+      },
+      {
+        "code": "E_TERM_IDENTITY_CHANGE",
+        "meaning": "The edit would change the term's identity.",
+        "status": 422
+      },
+      {
+        "code": "E_TERM_MERGE_CONFLICT",
+        "meaning": "The terms cannot be merged.",
+        "status": 409
+      },
+      {
+        "code": "E_UNREPRESENTABLE_ASSUMPTION_DEFAULT",
+        "meaning": "The assumption default cannot be represented on the wire.",
+        "status": 422
+      },
+      {
+        "code": "E_UNSUPPORTED_MEDIA_TYPE",
+        "meaning": "The request or source media type is not supported.",
+        "status": 415
+      },
+      {
+        "code": "E_WORKFLOW_CORRUPT",
+        "meaning": "Persisted workflow state is impossible or corrupt.",
+        "status": 500
+      }
+    ]
   },
   "openapi": "3.1.0",
   "paths": {
@@ -3612,6 +4224,13 @@
             "content": {
               "application/json": {
                 "example": {
+                  "health": [
+                    {
+                      "code": "example",
+                      "id": "example",
+                      "message": "example"
+                    }
+                  ],
                   "items": [
                     {
                       "id": "example",
@@ -3629,7 +4248,7 @@
             "description": "Assumptions",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -3673,7 +4292,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -3736,7 +4355,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -3821,7 +4440,7 @@
             "description": "Decisions",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -3970,7 +4589,7 @@
             "description": "Findings",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -4014,7 +4633,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -4077,7 +4696,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -4099,6 +4718,10 @@
                     ],
                     "gate": "F1",
                     "passed": true,
+                    "reason": {
+                      "code": "example",
+                      "message": "example"
+                    },
                     "rules": [
                       {
                         "applicability": {
@@ -4130,6 +4753,7 @@
                         "waiver_ref": "example"
                       }
                     ],
+                    "state": "current",
                     "summary": {
                       "blocker_failed": 0,
                       "blocker_waived": 0,
@@ -4156,7 +4780,7 @@
             "description": "NOW gates in the order I0, F1, F2, F3, F4",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -4228,7 +4852,7 @@
             "description": "Glossary terms",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -4272,7 +4896,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -4322,7 +4946,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -4345,7 +4969,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -4408,7 +5032,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -4431,7 +5055,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -4495,7 +5119,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -4518,7 +5142,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -4643,7 +5267,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -4683,7 +5307,7 @@
             "description": "Job status, base revision and result",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -4705,6 +5329,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "inference_available": true,
                   "mode": "example",
                   "roles": [
                     "example"
@@ -4719,7 +5344,7 @@
             "description": "Current user",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -4748,7 +5373,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -4811,7 +5436,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -4834,7 +5459,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -4897,7 +5522,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -4920,7 +5545,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -4983,7 +5608,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -5038,7 +5663,7 @@
             "description": "Calculations",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5082,7 +5707,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -5132,7 +5757,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -5186,7 +5811,7 @@
             "description": "Read-only rendered example",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5233,7 +5858,7 @@
             "description": "CRUD matrix",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5297,7 +5922,7 @@
             "description": "Structured diff",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5384,7 +6009,7 @@
             "description": "Entities",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5471,7 +6096,7 @@
             "description": "Entity",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5513,7 +6138,7 @@
             "description": "Exported file",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5558,6 +6183,13 @@
             "content": {
               "application/json": {
                 "example": {
+                  "health": [
+                    {
+                      "code": "example",
+                      "id": "example",
+                      "message": "example"
+                    }
+                  ],
                   "items": [
                     {
                       "conditions": [
@@ -5593,7 +6225,7 @@
             "description": "Rules",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5673,7 +6305,7 @@
             "description": "Rule",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5702,7 +6334,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -5767,7 +6399,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -5856,7 +6488,7 @@
             "description": "Sentences",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -5900,7 +6532,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -5950,7 +6582,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -5973,7 +6605,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -6036,7 +6668,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -6059,7 +6691,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -6109,7 +6741,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -6139,7 +6771,7 @@
             "description": "Model identity; version == revision and hash == semantic_hash",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -6237,7 +6869,7 @@
             "description": "Processes",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -6271,7 +6903,7 @@
         "operationId": "import_process",
         "parameters": [
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -6335,7 +6967,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -6412,7 +7044,7 @@
             "description": "Process",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -6464,7 +7096,7 @@
             "description": "Mermaid text",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -6493,7 +7125,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -6558,7 +7190,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -6571,7 +7203,7 @@
         "operationId": "intake_proposal",
         "parameters": [
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -6684,7 +7316,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -6707,7 +7339,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -6768,7 +7400,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -6791,7 +7423,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -6852,7 +7484,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -6875,7 +7507,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -6936,7 +7568,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -6959,7 +7591,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -7020,7 +7652,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -7043,7 +7675,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -7104,7 +7736,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -7127,7 +7759,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -7188,7 +7820,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -7257,6 +7889,13 @@
             "content": {
               "application/json": {
                 "example": {
+                  "health": [
+                    {
+                      "code": "example",
+                      "id": "example",
+                      "message": "example"
+                    }
+                  ],
                   "items": [
                     {
                       "answer_schema": {},
@@ -7281,7 +7920,7 @@
             "description": "Questions",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -7325,7 +7964,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -7437,7 +8076,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -7484,7 +8123,7 @@
             "description": "Advisory readiness; the composite is uncalibrated",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -7588,7 +8227,7 @@
             "description": "Requirements",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -7679,7 +8318,7 @@
             "description": "Requirement",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -7708,7 +8347,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -7771,7 +8410,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -7794,7 +8433,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -7808,7 +8447,7 @@
           "content": {
             "application/json": {
               "example": {
-                "class": "example"
+                "class": "compliance"
               },
               "schema": {
                 "$ref": "#/components/schemas/ClassifyRequest"
@@ -7857,7 +8496,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -7880,7 +8519,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -7944,7 +8583,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -7991,7 +8630,7 @@
             "description": "Advisory readiness; the composite is uncalibrated",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -8020,7 +8659,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -8086,7 +8725,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -8109,7 +8748,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -8236,7 +8875,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -8259,7 +8898,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -8323,7 +8962,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -8336,7 +8975,7 @@
         "operationId": "create_round",
         "parameters": [
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -8407,7 +9046,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -8449,7 +9088,7 @@
             "description": "Round",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -8524,6 +9163,13 @@
             "content": {
               "application/json": {
                 "example": {
+                  "health": [
+                    {
+                      "code": "example",
+                      "id": "example",
+                      "message": "example"
+                    }
+                  ],
                   "items": [
                     {
                       "confirmation_status": "Confirmed",
@@ -8556,7 +9202,7 @@
             "description": "Scenarios",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -8590,7 +9236,7 @@
         "operationId": "confirm_derived_scenarios",
         "parameters": [
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -8653,7 +9299,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -8666,7 +9312,7 @@
         "operationId": "run_scenarios",
         "parameters": [
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -8731,7 +9377,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -8754,7 +9400,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -8804,7 +9450,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -8827,7 +9473,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -8892,7 +9538,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -8933,7 +9579,7 @@
             "description": "Scenario run",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -8952,11 +9598,11 @@
         "operationId": "search_model",
         "parameters": [
           {
-            "description": "Search text",
+            "description": "Search text; required and not blank (400 otherwise)",
             "example": "example",
             "in": "query",
             "name": "q",
-            "required": false,
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -9013,10 +9659,10 @@
                 }
               }
             },
-            "description": "Search hits",
+            "description": "Search hits over Accepted elements only: Proposed, Rejected and other non-Accepted elements are never searchable",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -9050,7 +9696,7 @@
         "operationId": "create_session",
         "parameters": [
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -9116,7 +9762,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -9158,7 +9804,7 @@
             "description": "Session",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -9204,7 +9850,7 @@
             "description": "Session counts",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -9233,7 +9879,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -9351,7 +9997,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -9364,7 +10010,7 @@
         "operationId": "create_source",
         "parameters": [
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -9430,7 +10076,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -9471,7 +10117,7 @@
             "description": "Source",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -9543,7 +10189,7 @@
             "description": "Spans",
             "headers": {
               "ETag": {
-                "description": "The current semantic_hash.",
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                 "example": "example",
                 "schema": {
                   "type": "string"
@@ -9587,7 +10233,7 @@
             }
           },
           {
-            "description": "The current semantic_hash of the branch head.",
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
             "example": "example",
             "in": "header",
             "name": "If-Match",
@@ -9649,7 +10295,7 @@
                 }
               }
             },
-            "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values."
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [

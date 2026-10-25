@@ -7,6 +7,7 @@
 
 pub mod application;
 pub mod error;
+pub mod error_catalogue;
 pub mod openapi;
 pub mod routes;
 pub mod runtime;

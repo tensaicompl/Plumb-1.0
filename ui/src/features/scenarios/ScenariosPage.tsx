@@ -1,12 +1,15 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, ReviewedEtag, useReviewedEtag, type ReviewedItems } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t } from "../../i18n";
 import { writeErrorCode } from "../questions/QuestionsPage";
 import { ScenarioTrace } from "./ScenarioTrace";
+import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
+import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 type Scenario = components["schemas"]["Scenario"];
 type ScenarioStatus = components["schemas"]["ScenarioStatus"];
@@ -26,7 +29,7 @@ export interface ScenarioFilters {
 
 const NO_FILTERS: ScenarioFilters = { requirement: "", status: "", derived: "" };
 
-async function fetchScenarios(filters: ScenarioFilters): Promise<Scenario[]> {
+function fetchScenarios(filters: ScenarioFilters): Promise<ReviewedItems<Scenario> & { readonly health?: ItemHealth[] }> {
   const query: { requirement?: string; status?: ScenarioStatus; derived?: boolean } = {};
   if (filters.requirement !== "") {
     query.requirement = filters.requirement;
@@ -37,20 +40,12 @@ async function fetchScenarios(filters: ScenarioFilters): Promise<Scenario[]> {
   if (filters.derived !== "") {
     query.derived = filters.derived === "true";
   }
-  const { data, response } = await apiClient.GET("/api/scenarios", { params: { query } });
-  if (data === undefined) {
-    throw new Error("GET /api/scenarios failed with HTTP " + String(response.status));
-  }
-  return data.items;
+  return readReviewed(apiClient.GET("/api/scenarios", { params: { query } }));
 }
 
 /** The server-confirmable scenarios: exactly the Proposed + Derived ones the API returns. */
-async function fetchConfirmable(): Promise<Scenario[]> {
-  const { data, response } = await apiClient.GET("/api/scenarios", { params: { query: { status: "Proposed", derived: true } } });
-  if (data === undefined) {
-    throw new Error("GET /api/scenarios failed with HTTP " + String(response.status));
-  }
-  return data.items;
+function fetchConfirmable(): Promise<ReviewedItems<Scenario>> {
+  return readReviewed(apiClient.GET("/api/scenarios", { params: { query: { status: "Proposed", derived: true } } }));
 }
 
 function parse(text: string): unknown {
@@ -136,8 +131,9 @@ function SemanticValue({ text }: { text: string }) {
 function CorrectionEditor({ scenario, onDone }: { scenario: Scenario; onDone: () => void }) {
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<string[]>(scenario.then);
-  const correct = useVersionedMutation<WriteResult, string[]>((then, ifMatch) =>
-    apiClient.POST("/api/scenarios/{id}/correct", { params: { path: { id: scenario.id }, header: { "If-Match": ifMatch } }, body: { then } }),
+  const correct = useVersionedMutation<WriteResult, string[]>(
+    (then, ifMatch) => apiClient.POST("/api/scenarios/{id}/correct", { params: { path: { id: scenario.id }, header: { "If-Match": ifMatch } }, body: { then } }),
+    useReviewedEtag(),
   );
   return (
     <form
@@ -191,8 +187,9 @@ function ScenarioCard({
 }) {
   const queryClient = useQueryClient();
   const [correcting, setCorrecting] = useState(false);
-  const confirm = useVersionedMutation<WriteResult>((_, ifMatch) =>
-    apiClient.POST("/api/scenarios/{id}/confirm", { params: { path: { id: scenario.id }, header: { "If-Match": ifMatch } } }),
+  const confirm = useVersionedMutation<WriteResult>(
+    (_, ifMatch) => apiClient.POST("/api/scenarios/{id}/confirm", { params: { path: { id: scenario.id }, header: { "If-Match": ifMatch } } }),
+    useReviewedEtag(),
   );
   const when = parse(scenario.when);
   const anchor = isRecord(when) && Object.keys(when).length === 1 ? Object.entries(when)[0] : undefined;
@@ -224,8 +221,8 @@ function ScenarioCard({
           <p>{t("scenarios.none")}</p>
         ) : (
           <ul className="space-y-1" data-testid="given">
-            {scenario.given.map((text) => (
-              <li key={text}>
+            {scenario.given.map((text, index) => (
+              <li key={index}>
                 <SemanticValue text={text} />
               </li>
             ))}
@@ -247,14 +244,15 @@ function ScenarioCard({
       <section aria-label={t("scenarios.then")}>
         <h4 className="font-semibold">{t("scenarios.then")}</h4>
         <ul className="space-y-1" data-testid="then">
-          {scenario.then.map((text) => (
-            <li key={text}>
+          {scenario.then.map((text, index) => (
+            <li key={index}>
               <SemanticValue text={text} />
             </li>
           ))}
         </ul>
       </section>
       <div className="flex flex-wrap items-center gap-2">
+        <RoleGate quiet>
         {confirmable && (
           <button
             type="button"
@@ -271,6 +269,7 @@ function ScenarioCard({
             {t("scenarios.correct.title")}
           </button>
         )}
+        </RoleGate>
         {runnable(scenario) && (
           <label className="text-sm">
             <input type="checkbox" checked={selected} data-testid="run-select" onChange={(event) => onSelect(scenario.id, event.target.checked)} />{" "}
@@ -279,18 +278,20 @@ function ScenarioCard({
         )}
       </div>
       <WriteError error={confirm.error} />
-      {correcting && <CorrectionEditor scenario={scenario} onDone={() => setCorrecting(false)} />}
+      {/* Seeded from the server Then rows; a server change resets the editor (Fable #221). */}
+      {correcting && <CorrectionEditor key={JSON.stringify(scenario.then)} scenario={scenario} onDone={() => setCorrecting(false)} />}
       {scenario.run !== null && <ScenarioTrace run={scenario.run} />}
     </li>
   );
 }
 
 /** Bulk confirmation of one DecisionTable's derived scenarios, behind an explicit three-sample prompt. */
-function BulkConfirm({ groups }: { groups: Map<string, string[]> }) {
+function BulkConfirm({ groups, etag }: { groups: Map<string, string[]>; etag: string | null | undefined }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState<string | null>(null);
-  const bulk = useVersionedMutation<WriteResult, string>((tableId, ifMatch) =>
-    apiClient.POST("/api/scenarios/confirm-derived", { params: { header: { "If-Match": ifMatch } }, body: { table_id: tableId } }),
+  const bulk = useVersionedMutation<WriteResult, string>(
+    (tableId, ifMatch) => apiClient.POST("/api/scenarios/confirm-derived", { params: { header: { "If-Match": ifMatch } }, body: { table_id: tableId } }),
+    etag,
   );
   if (groups.size === 0) {
     return null;
@@ -316,8 +317,8 @@ function BulkConfirm({ groups }: { groups: Map<string, string[]> }) {
           </p>
           <p>{t("scenarios.bulk.allWarning")}</p>
           <ul className="font-mono" data-testid="bulk-samples">
-            {samples.slice(0, 3).map((id) => (
-              <li key={id}>{id}</li>
+            {samples.slice(0, 3).map((id, index) => (
+              <li key={index}>{id}</li>
             ))}
           </ul>
           {samples.length > 3 && <p data-testid="bulk-sample-note">{t("scenarios.bulk.sampleOnly")}</p>}
@@ -357,13 +358,14 @@ export function ScenariosPage() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const scenarios = useQuery({ queryKey: [...scenariosQueryKey, "list", filters], queryFn: () => fetchScenarios(filters) });
   const confirmable = useQuery({ queryKey: [...scenariosQueryKey, "confirmable"], queryFn: fetchConfirmable });
-  const run = useVersionedMutation<WriteResult, string[]>((scope, ifMatch) =>
-    apiClient.POST("/api/scenarios/run", { params: { header: { "If-Match": ifMatch } }, body: { scope } }),
+  const run = useVersionedMutation<WriteResult, string[]>(
+    (scope, ifMatch) => apiClient.POST("/api/scenarios/run", { params: { header: { "If-Match": ifMatch } }, body: { scope } }),
+    scenarios.data?.etag,
   );
 
-  const confirmableIds = new Set((confirmable.data ?? []).map((s) => s.id));
-  const groups = decisionTableGroups(confirmable.data ?? []);
-  const runnableIds = new Set((scenarios.data ?? []).filter(runnable).map((s) => s.id));
+  const confirmableIds = new Set((confirmable.data?.items ?? []).map((s) => s.id));
+  const groups = decisionTableGroups(confirmable.data?.items ?? []);
+  const runnableIds = new Set((scenarios.data?.items ?? []).filter(runnable).map((s) => s.id));
   const scope = [...selected].filter((id) => runnableIds.has(id)).sort();
 
   const onSelect = (id: string, on: boolean) =>
@@ -416,8 +418,11 @@ export function ScenariosPage() {
         </button>
       </form>
 
-      <BulkConfirm groups={groups} />
+      <RoleGate>
+        <BulkConfirm groups={groups} etag={confirmable.data?.etag} />
+      </RoleGate>
 
+      <RoleGate>
       <section aria-label={t("scenarios.run.title")} className="flex flex-wrap items-center gap-2 text-sm">
         <span>
           {t("scenarios.run.selected")} <span data-testid="run-count">{scope.length}</span>
@@ -443,13 +448,16 @@ export function ScenariosPage() {
         </button>
         <WriteError error={run.error} />
       </section>
+      </RoleGate>
 
-      {scenarios.isError && <p role="alert">{t("scenarios.loadFailed")}</p>}
+      {scenarios.isError && <ReadFailure error={scenarios.error} messageKey="scenarios.loadFailed" />}
       {scenarios.data === undefined && !scenarios.isError && <p>{t("scenarios.loading")}</p>}
-      {scenarios.data !== undefined && scenarios.data.length === 0 && <p>{t("scenarios.empty")}</p>}
-      {scenarios.data !== undefined && scenarios.data.length > 0 && (
+      <HealthMarkers health={scenarios.data?.health} />
+      {scenarios.data !== undefined && scenarios.data.items.length === 0 && <p>{t("scenarios.empty")}</p>}
+      {scenarios.data !== undefined && scenarios.data.items.length > 0 && (
+        <ReviewedEtag.Provider value={scenarios.data.etag}>
         <ul className="space-y-3">
-          {scenarios.data.map((scenario) => (
+          {scenarios.data.items.map((scenario) => (
             <ScenarioCard
               key={scenario.id}
               scenario={scenario}
@@ -459,6 +467,7 @@ export function ScenariosPage() {
             />
           ))}
         </ul>
+        </ReviewedEtag.Provider>
       )}
     </div>
   );

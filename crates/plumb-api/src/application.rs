@@ -541,7 +541,7 @@ mod services {
     use serde::Serialize;
     use serde_json::{json, Value};
 
-    use crate::error::ApiError;
+    use crate::error::{echo, ApiError};
     use crate::openapi::{
         AnswerResponse, CreateRoundResponse, ExportFormat, GlossaryTerm, ProposalKind, Question,
         QuestionKind, QuestionStatus, Round, SourceUploadResponse, WriteResult,
@@ -600,6 +600,8 @@ mod services {
             ExportFormat::Report => outputs.model_report_md,
             ExportFormat::Decisions => outputs.decisions_jsonl,
             ExportFormat::Glossary => outputs.glossary_md,
+            ExportFormat::Scenarios => outputs.scenarios_yaml,
+            ExportFormat::GateReport => outputs.gate_report_json,
         }
     }
 
@@ -937,7 +939,7 @@ mod services {
             }
         };
         let kind: QuestionKind = parse_wire(&wire(&q.question_kind)?, "question kind")
-            .map_err(|_| ApiError::internal("question_kind"))?;
+            .map_err(|e| ApiError::internal_cause("question_kind", &e))?;
         Ok(Question {
             id: node.id.to_string(),
             kind,
@@ -994,8 +996,20 @@ mod services {
                 ApiError::invalid("the uploaded file cannot be imported as its declared media type")
                     .with_details(json!({ "import_error": e.to_string() }))
             })?;
+            // Fable #321: a source without any EvidenceFragment carries no evidence; refused
+            // before any artifact or revision is written.
+            if imported.fragments.is_empty() {
+                return Err(ApiError::bad_request(
+                    "E_SOURCE_EMPTY",
+                    "the uploaded file yields no evidence fragments",
+                ));
+            }
             if let Some(existing) = loaded.graph.node(&imported.source.id) {
-                let code = if existing == &imported.source {
+                // Fable #314: identity is the payload and extensions; audit metadata (who and
+                // when) differs between uploads of the same source.
+                let same = existing.payload == imported.source.payload
+                    && existing.extensions == imported.source.extensions;
+                let code = if same {
                     "E_SOURCE_EXISTS"
                 } else {
                     "E_SOURCE_CONFLICT"
@@ -1026,7 +1040,7 @@ mod services {
                 AcceptancePolicy::AutoNonSemantic,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             // Fable #368: the original and extracted artifacts are stored in the
             // revision-commit transaction, never left unreferenced by a lost CAS.
             let write = self.commit_with_artifacts(
@@ -1073,6 +1087,17 @@ mod services {
                 });
             }
             Ok(items)
+        }
+
+        /// Every persisted Accepted Question of `loaded` by node ID with its own projection, so a
+        /// malformed Question degrades a list to a health marker instead of failing it (H0.11).
+        pub fn question_items(
+            &self,
+            loaded: &LoadedRevision,
+        ) -> Vec<(String, Result<Question, ApiError>)> {
+            accepted_questions(&loaded.graph)
+                .map(|(node, q)| (node.id.to_string(), question_view(node, q)))
+                .collect()
         }
 
         /// The complete Question projection of `loaded`: every persisted Accepted Question, by
@@ -1126,7 +1151,7 @@ mod services {
             members.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
             let ordered: Vec<Id> = members.into_iter().map(|(_, _, id)| id).collect();
             let expected = round_id(loaded.graph.project_id(), stakeholder, &ordered)
-                .map_err(|_| ApiError::internal("round_id"))?;
+                .map_err(|e| ApiError::internal_cause("round_id", &e))?;
             if expected != round_ref {
                 return Err(inconsistent(
                     "the round ID does not match its ordered members",
@@ -1189,7 +1214,7 @@ mod services {
                     )
                     .with_details(json!({
                         "dispositions": serde_json::to_value(&result.dispositions)
-                            .map_err(|_| ApiError::internal("dispositions"))?
+                            .map_err(|e| ApiError::internal_cause("dispositions", &e))?
                     })));
                 }
                 return Err(ApiError::conflict(
@@ -1250,7 +1275,7 @@ mod services {
                 )
                 .with_details(json!({
                     "issues": serde_json::to_value(&generation.issues)
-                        .map_err(|_| ApiError::internal("question_issues"))?
+                        .map_err(|e| ApiError::internal_cause("question_issues", &e))?
                 })));
             }
             let write = match &generation.proposal {
@@ -1400,8 +1425,9 @@ mod services {
             }
             let mut requested: Vec<(Id, ProposalKind)> = Vec::with_capacity(members.len());
             for (text, action) in members {
-                let id = parse_id(text)
-                    .ok_or_else(|| ApiError::not_found(format!("proposal {text} not found")))?;
+                let id = parse_id(text).ok_or_else(|| {
+                    ApiError::not_found(format!("proposal {} not found", echo(text)))
+                })?;
                 let kind = action.kind().ok_or_else(|| {
                     ApiError::invalid("reject is not a proposal-set acceptance action")
                 })?;
@@ -1473,7 +1499,7 @@ mod services {
                     | Err(plumb_intake::IntakeAcceptanceError::MissingRationale(_)) => {
                         return Err(reason_required(&proposal, &report))
                     }
-                    Err(_) => return Err(ApiError::internal("intake_rationale")),
+                    Err(e) => return Err(ApiError::internal_cause("intake_rationale", &e)),
                 }
                 // The member's own effect on the untouched base.
                 let delta = plumb_patch::apply_patch(&loaded.graph, &proposal.patch_set)
@@ -1692,7 +1718,7 @@ mod services {
                 action,
                 intake: intake_view(&persisted.intake, self.profile())?,
                 patch_preview: serde_json::to_value(&persisted.proposal.patch_set.patch)
-                    .map_err(|_| ApiError::internal("patch_preview"))?,
+                    .map_err(|e| ApiError::internal_cause("patch_preview", &e))?,
             })
         }
 
@@ -1800,7 +1826,7 @@ mod services {
             let mut ids = std::collections::BTreeSet::new();
             for text in element_ids {
                 let id = parse_id(text)
-                    .ok_or_else(|| ApiError::invalid(format!("{text} is not an ID")))?;
+                    .ok_or_else(|| ApiError::invalid(format!("{} is not an ID", echo(text))))?;
                 if !ids.insert(id.clone()) {
                     return Err(ApiError::invalid("an element is listed twice")
                         .with_details(json!({ "element": id })));
@@ -1909,7 +1935,7 @@ mod services {
                     target: ElementPrecondition {
                         id: node.id.clone(),
                         expected_hash: node_element_hash(node)
-                            .map_err(|_| ApiError::internal("element_hash"))?,
+                            .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                     },
                     from: ElementStatus::Proposed,
                     to: ElementStatus::Accepted,
@@ -1920,7 +1946,7 @@ mod services {
                     target: ElementPrecondition {
                         id: edge.id.clone(),
                         expected_hash: edge_element_hash(edge)
-                            .map_err(|_| ApiError::internal("element_hash"))?,
+                            .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                     },
                     from: ElementStatus::Proposed,
                     to: ElementStatus::Accepted,
@@ -1943,7 +1969,7 @@ mod services {
                 AcceptancePolicy::HumanConfirm,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             self.write(
                 loaded,
                 &proposal,
@@ -2008,7 +2034,7 @@ mod services {
                         target: ElementPrecondition {
                             id: node.id.clone(),
                             expected_hash: node_element_hash(node)
-                                .map_err(|_| ApiError::internal("element_hash"))?,
+                                .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                         },
                         payload: NodePayload::Attribute(payload),
                     },
@@ -2019,7 +2045,7 @@ mod services {
                 AcceptancePolicy::HumanConfirm,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             self.commit(loaded, &proposal, self.now(), "set_attribute_type")
         }
 
@@ -2034,7 +2060,7 @@ mod services {
             element: &str,
         ) -> Result<Option<WriteResult>, ApiError> {
             let id = parse_id(element)
-                .ok_or_else(|| ApiError::invalid(format!("{element} is not an ID")))?;
+                .ok_or_else(|| ApiError::invalid(format!("{} is not an ID", echo(element))))?;
             let Some(node) = loaded.graph.node(&id) else {
                 return Ok(None);
             };
@@ -2073,7 +2099,7 @@ mod services {
                         target: ElementPrecondition {
                             id: node.id.clone(),
                             expected_hash: node_element_hash(node)
-                                .map_err(|_| ApiError::internal("element_hash"))?,
+                                .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                         },
                         from: ElementStatus::Proposed,
                         to: ElementStatus::Accepted,
@@ -2085,7 +2111,7 @@ mod services {
                 AcceptancePolicy::HumanConfirm,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             self.commit(loaded, &proposal, created_at, operation_id)
                 .map(Some)
         }
@@ -2226,7 +2252,7 @@ mod services {
             let a04 = self.stage_runtime("materialize_gate_findings")?;
             let created_at = self.now();
             let audit = AuditMeta::new(a04.stage_actor_ref.clone(), created_at, None, None)
-                .map_err(|_| ApiError::internal("audit"))?;
+                .map_err(|e| ApiError::internal_cause("audit", &e))?;
             let policy = a04.validation_policy.clone();
             let reports = self.current_or_evaluated_reports(loaded);
             let mut current: std::collections::BTreeSet<Id> = reports
@@ -2281,7 +2307,7 @@ mod services {
                     target: ElementPrecondition {
                         id: node.id.clone(),
                         expected_hash: node_element_hash(node)
-                            .map_err(|_| ApiError::internal("element_hash"))?,
+                            .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
                     },
                     payload: NodePayload::Finding(closed),
                 });
@@ -2306,7 +2332,7 @@ mod services {
                 AcceptancePolicy::AutoNonSemantic,
                 None,
             )
-            .map_err(|_| ApiError::internal("proposal"))?;
+            .map_err(|e| ApiError::internal_cause("proposal", &e))?;
             self.write(
                 loaded,
                 &proposal,
@@ -2507,8 +2533,8 @@ mod services {
             let NodePayload::Requirement(current) = &node.payload else {
                 return Ok(None);
             };
-            let current_hash =
-                node_element_hash(node).map_err(|_| ApiError::internal("element_hash"))?;
+            let current_hash = node_element_hash(node)
+                .map_err(|e| ApiError::internal_cause("element_hash", &e))?;
             let records = self
                 .with_workflow_store(|store| store.pending_proposals())?
                 .map_err(workflow_error)?;

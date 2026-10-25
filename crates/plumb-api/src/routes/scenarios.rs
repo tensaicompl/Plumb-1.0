@@ -29,8 +29,8 @@ use crate::stage::scenario_execution::{
     current_run, execute_scenarios, link_key, run_collision, runnable, ScenarioExecution,
 };
 use crate::state::{
-    check_if_match, paginate, parse_body, parse_id, parse_wire, read_json, wire, ApiState,
-    PageRequest, QueryParams,
+    check_if_match, paginate_projected, parse_body, parse_id, parse_wire, project, read_json, wire,
+    ApiState, PageRequest, QueryParams,
 };
 
 use super::questions::error_name;
@@ -50,8 +50,9 @@ pub(crate) fn routes() -> Router<ApiState> {
 
 /// RFC 8785 text of a JSON value.
 fn canonical_text<T: serde::Serialize>(value: &T) -> Result<String, ApiError> {
-    let bytes = to_canonical_json(value).map_err(|_| ApiError::internal("canonical_json"))?;
-    String::from_utf8(bytes).map_err(|_| ApiError::internal("canonical_json"))
+    let bytes =
+        to_canonical_json(value).map_err(|e| ApiError::internal_cause("canonical_json", &e))?;
+    String::from_utf8(bytes).map_err(|e| ApiError::internal_cause("canonical_json", &e))
 }
 
 fn trace_conflict(code: &'static str, scenario: &Id, reason: &str) -> ApiError {
@@ -102,7 +103,7 @@ fn run_view(
     // result: the scenario shows as not run until it is executed again (as F4 judges it).
     if let Some(NodePayload::Scenario(spec)) = graph.node(scenario).map(|n| &n.payload) {
         let current_hash = plumb_validation::scenario_specification_hash(scenario, spec)
-            .map_err(|_| ApiError::internal("scenario_specification_hash"))?;
+            .map_err(|e| ApiError::internal_cause("scenario_specification_hash", &e))?;
         if payload.specification_hash != current_hash {
             return Ok(None);
         }
@@ -134,7 +135,7 @@ fn run_view(
                 "the linked artifact does not exist",
             ))
         }
-        Err(_) => return Err(ApiError::internal("artifact_store")),
+        Err(e) => return Err(ApiError::internal_cause("artifact_store", &e)),
     };
     if artifact.kind != ArtifactKind::ScenarioTrace || artifact.media_type != "application/json" {
         return Err(trace_conflict(
@@ -157,7 +158,7 @@ fn run_view(
         return Err(mismatch("the artifact disagrees with the scenario run"));
     }
     let result: ScenarioRunResult = parse_wire(&wire(&payload.result)?, "result")
-        .map_err(|_| ApiError::internal("scenario_run_result"))?;
+        .map_err(|e| ApiError::internal_cause("scenario_run_result", &e))?;
     let trace = payload
         .trace
         .iter()
@@ -209,7 +210,7 @@ fn scenario_view(
         }
     };
     let status: ScenarioStatus = parse_wire(&wire(&node.status)?, "status")
-        .map_err(|_| ApiError::internal("scenario_status"))?;
+        .map_err(|e| ApiError::internal_cause("scenario_status", &e))?;
     Ok(Scenario {
         id: node.id.to_string(),
         given: scenario
@@ -274,21 +275,36 @@ async fn list_scenarios(
         {
             continue;
         }
-        let view = scenario_view(&state, &loaded.graph, node, scenario)?;
-        if status.is_some_and(|s| s != view.status)
-            || derived.is_some_and(|d| d != view.confirmation_status)
-        {
-            continue;
+        // Cheap filters on the stored material first; a value outside the projection never
+        // matches a filter and is reported by the projection below.
+        if let Some(wanted) = status {
+            if wire(&node.status)? != wire(&wanted)? {
+                continue;
+            }
         }
-        items.push((node.id.to_string(), view));
+        if let Some(wanted) = derived {
+            if scenario.confirmation_status.as_deref() != Some(wire(&wanted)?.as_str()) {
+                continue;
+            }
+        }
+        let id = node.id.to_string();
+        let view = project(&id, scenario_view(&state, &loaded.graph, node, scenario))?;
+        items.push((id, view));
     }
     let request = PageRequest {
         operation_id: "list_scenarios",
         path: Default::default(),
         query: &query,
     };
-    let (items, next_cursor) = paginate(items, &request, &loaded)?;
-    Ok(read_json(&loaded, ScenarioPage { items, next_cursor }))
+    let (items, health, next_cursor) = paginate_projected(items, &request, &loaded)?;
+    Ok(read_json(
+        &loaded,
+        ScenarioPage {
+            items,
+            health,
+            next_cursor,
+        },
+    ))
 }
 
 /// The Scenario node `id`, or 404.

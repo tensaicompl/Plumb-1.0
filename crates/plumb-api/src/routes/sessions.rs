@@ -77,11 +77,21 @@ async fn create_session(
     let mut scope = request
         .scope
         .iter()
-        .map(|s| parse_id(s).ok_or_else(|| ApiError::invalid(format!("scope {s:?} is not an ID"))))
+        .map(|s| {
+            parse_id(s).ok_or_else(|| {
+                ApiError::invalid(format!("scope {} is not an ID", crate::error::echo(s)))
+            })
+        })
         .collect::<Result<Vec<Id>, _>>()?;
     let runtime = state.runtime("workflow_store")?;
     let loaded = state.load_head()?;
     check_if_match(&headers, &loaded)?;
+    if !state.inference_available() {
+        return Err(ApiError::conflict(
+            "E_INFERENCE_UNAVAILABLE",
+            "sessions need an inference provider, and the null provider is configured",
+        ));
+    }
     let created_at = state.now();
     for id in &scope {
         let node = loaded
@@ -226,12 +236,24 @@ fn reconciled_turns(
     session: &Id,
 ) -> Result<Vec<WorkflowTurn>, ApiError> {
     let runtime = state.runtime("workflow_store")?;
+    if runtime.turn_in_flight(session)? {
+        return state
+            .with_workflow_store(|store| store.turns(session))?
+            .map_err(workflow_error);
+    }
+    reconcile_turns(state, loaded, session)
+}
+
+/// Settles the Prepared turns of `session` against `loaded` (the caller holds no other live
+/// turn of it): committed when every expected node is present, failed when none is.
+fn reconcile_turns(
+    state: &ApiState,
+    loaded: &LoadedRevision,
+    session: &Id,
+) -> Result<Vec<WorkflowTurn>, ApiError> {
     let turns = state
         .with_workflow_store(|store| store.turns(session))?
         .map_err(workflow_error)?;
-    if runtime.turn_in_flight(session)? {
-        return Ok(turns);
-    }
     let mut out = Vec::with_capacity(turns.len());
     for turn in turns {
         if turn.state != WorkflowTurnState::Prepared {
@@ -337,8 +359,9 @@ async fn create_session_turn(
     check_if_match(&headers, &loaded)?;
     let created_at = state.now();
     let (_, session) = owned_session(&state, &id)?;
-    reconciled_turns(&state, &loaded, &session.id)?;
+    // Claimed before any workflow write or provider call; a concurrent turn is 409.
     let _in_flight = runtime.begin_turn(&session.id)?;
+    reconcile_turns(&state, &loaded, &session.id)?;
     let turn = SessionUserTurn {
         text: request.text,
         user_actor_ref: state.actor_ref().clone(),
@@ -366,7 +389,7 @@ async fn create_session_turn(
         provider.execute(&inference_request, &inference_material)
     })
     .await
-    .map_err(|_| ApiError::internal("inference_task"))?
+    .map_err(|e| ApiError::internal_cause("inference_task", &e))?
     .map_err(|e| inference_failed(&e))?;
     let persisted = state
         .with_artifact_store(|store| {
@@ -434,7 +457,7 @@ async fn create_session_turn(
             id: card.proposal.id.to_string(),
             kind,
             payload: serde_json::to_value(&card.proposal.patch_set.patch)
-                .map_err(|_| ApiError::internal("proposal_payload"))?,
+                .map_err(|e| ApiError::internal_cause("proposal_payload", &e))?,
             intake: intake_view(&card.intake, state.profile())?,
         });
     }
@@ -455,7 +478,7 @@ async fn create_session_turn(
                 .filter(|c| c.intake.requires_reason)
                 .count(),
         )
-        .map_err(|_| ApiError::internal("session_turn"))?,
+        .map_err(|e| ApiError::internal_cause("session_turn", &e))?,
         created_at,
     };
     let turn_record = state
@@ -507,7 +530,7 @@ async fn create_session_turn(
                 let bound = write
                     .revision
                     .parse()
-                    .map_err(|_| ApiError::internal("revision_id"))?;
+                    .map_err(|e| ApiError::internal_cause("revision_id", &e))?;
                 (write, bound)
             }
             Err(error) => {

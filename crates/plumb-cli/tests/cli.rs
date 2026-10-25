@@ -1163,25 +1163,73 @@ mod cli {
         let key = env.write("key", b"k\n");
         let f = fixtures.to_str().unwrap();
         let k = key.to_str().unwrap();
-        for args in [
-            &["--provider", "replay", "vocab"][..],
-            &["--replay-fixtures", f, "vocab"],
-            &[
-                "--provider",
-                "replay",
-                "--replay-fixtures",
-                f,
-                "--anthropic-api-key-file",
-                k,
-                "vocab",
-            ],
-            &["--provider", "anthropic", "vocab"],
-            &["--anthropic-api-key-file", k, "vocab"],
-            &["--provider", "null", "--replay-fixtures", f, "vocab"],
-        ] {
+        // Fable #187: each conflicting combination names the actually offending flag.
+        let replay_only = "--replay-fixtures is allowed only with --provider replay";
+        let key_only = "--anthropic-api-key-file is allowed only with --provider anthropic";
+        let cases: [(&[&str], &str); 9] = [
+            (
+                &["--provider", "replay", "vocab"],
+                "--provider replay requires --replay-fixtures",
+            ),
+            (&["--replay-fixtures", f, "vocab"], replay_only),
+            (
+                &["--provider", "null", "--replay-fixtures", f, "vocab"],
+                replay_only,
+            ),
+            (
+                &[
+                    "--provider",
+                    "anthropic",
+                    "--replay-fixtures",
+                    f,
+                    "--anthropic-api-key-file",
+                    k,
+                    "vocab",
+                ],
+                replay_only,
+            ),
+            (
+                &["--provider", "anthropic", "--replay-fixtures", f, "vocab"],
+                replay_only,
+            ),
+            (
+                &["--provider", "anthropic", "vocab"],
+                "--provider anthropic requires --anthropic-api-key-file",
+            ),
+            (&["--anthropic-api-key-file", k, "vocab"], key_only),
+            (
+                &[
+                    "--provider",
+                    "replay",
+                    "--anthropic-api-key-file",
+                    k,
+                    "vocab",
+                ],
+                key_only,
+            ),
+            (
+                &[
+                    "--provider",
+                    "replay",
+                    "--replay-fixtures",
+                    f,
+                    "--anthropic-api-key-file",
+                    k,
+                    "vocab",
+                ],
+                key_only,
+            ),
+        ];
+        for (args, message) in cases {
             let (code, _, err) = env.run(args);
             assert_eq!(code, 1, "{args:?}: {err}");
-            assert!(err.contains("--"), "{args:?}: {err}");
+            assert!(err.contains(message), "{args:?}: {err}");
+            let other = if message == replay_only {
+                key_only
+            } else {
+                replay_only
+            };
+            assert!(!err.contains(other), "{args:?}: {err}");
         }
         // Replay fixtures are strict: duplicates and unknown fields are rejected.
         let bad = env.write("bad.json", br#"[{"unknown": 1}]"#);
@@ -1265,7 +1313,7 @@ mod cli {
         let env = env();
         let source = env.import();
         assert!(source.starts_with("src:"), "{source}");
-        // The same file again is the shared service's conflict (its audit differs).
+        // The same file again exists: identity ignores the audit metadata (Fable #314).
         let file = env.path("requirements.md");
         let (code, _, err) = env.run(&[
             "import",
@@ -1276,7 +1324,7 @@ mod cli {
             "requirements.md",
         ]);
         assert_eq!(code, 1);
-        assert!(err.contains("E_SOURCE_CONFLICT"), "{err}");
+        assert!(err.contains("E_SOURCE_EXISTS"), "{err}");
         let (code, _, err) = env.run(&[
             "import",
             file.to_str().unwrap(),
@@ -2148,6 +2196,9 @@ mod cli {
             ("report", "model-report.md"),
             ("decisions", "decisions.jsonl"),
             ("glossary", "glossary.md"),
+            // Fable #307: every report --out artifact is exportable.
+            ("scenarios", "scenarios.yaml"),
+            ("gate_report", "gate-report.json"),
         ] {
             let exported = env
                 .cmd()

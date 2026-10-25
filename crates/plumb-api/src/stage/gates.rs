@@ -46,7 +46,7 @@ use crate::error::ApiError;
 use crate::stage::acceptance::load_run;
 use crate::stage::acquire::derivation_ref;
 use crate::stage::recipe::{effective_targets, Phase, Recipe};
-use crate::stage::scenario_execution::{current_run, error_name, link_key};
+use crate::stage::scenario_execution::{current_run, error_name, link_key, NamedFailure};
 use crate::state::{A03Runtime, A04Runtime, ApiState};
 
 /// 409 `E_GATE_INPUTS_MISSING`: a gate needs configured supplemental inputs that are absent.
@@ -123,7 +123,7 @@ pub(crate) fn decode_report(record: &GateReportRecord) -> Result<GateReport, Api
 /// The evaluator registry with every NOW gate's evaluators.
 fn registry(state: &ApiState) -> Result<EvaluatorRegistry, ApiError> {
     let metadata = ValidationRegistry::new(state.profile().clone())
-        .map_err(|_| ApiError::internal("validation_registry"))?;
+        .map_err(|e| ApiError::internal_cause("validation_registry", &e))?;
     let mut registry = EvaluatorRegistry::new(metadata);
     for register in [
         rules::register_i0_evaluators,
@@ -132,14 +132,15 @@ fn registry(state: &ApiState) -> Result<EvaluatorRegistry, ApiError> {
         rules::register_f3_evaluators,
         rules::register_f4_evaluators,
     ] {
-        register(&mut registry).map_err(|_| ApiError::internal("validation_registry"))?;
+        register(&mut registry).map_err(|e| ApiError::internal_cause("validation_registry", &e))?;
     }
     Ok(registry)
 }
 
 /// The content hash of supplemental inputs.
 fn input_hash<T: Serialize>(value: &T) -> Result<Hash, ApiError> {
-    let bytes = to_canonical_json(value).map_err(|_| ApiError::internal("gate_inputs"))?;
+    let bytes =
+        to_canonical_json(value).map_err(|e| ApiError::internal_cause("gate_inputs", &e))?;
     Ok(Hash::content_sha256(&bytes))
 }
 
@@ -163,7 +164,7 @@ fn i0_evidence(
     }
     let key = SOURCE_ARTIFACTS_EXTENSION
         .parse()
-        .map_err(|_| ApiError::internal("source_artifacts_extension"))?;
+        .map_err(|e| ApiError::internal_cause("source_artifacts_extension", &e))?;
     let mut refs = Vec::new();
     for id in graph.node_ids_by_type(NodeType::SourceArtifact) {
         let Some(node) = graph.node(id) else { continue };
@@ -992,7 +993,13 @@ fn f4_inputs(
                 .and_then(Value::as_str)
                 .and_then(|t| t.parse::<Hash>().ok())
                 .ok_or_else(|| {
-                    evaluation_failed(GateId::F4, "a scenario run trace link is invalid")
+                    evaluation_failed(
+                        GateId::F4,
+                        NamedFailure::new(
+                            "ScenarioRunTraceLinkInvalid",
+                            "a scenario run trace link is invalid",
+                        ),
+                    )
                 })?;
             let artifact = state
                 .get_artifact(&link)?
@@ -1092,7 +1099,12 @@ pub(crate) fn evaluate_gate(
                 Some(hash),
             )
         }
-        other => return Err(evaluation_failed(other, "not a NOW gate")),
+        other => {
+            return Err(evaluation_failed(
+                other,
+                NamedFailure::new("GateNotNow", "not a NOW gate"),
+            ))
+        }
     };
     let report = registry
         .evaluate_gate(gate, graph, &ctx)
@@ -1167,7 +1179,8 @@ pub(crate) fn persist_report(
         revision_id: loaded.revision.id.clone(),
         gate: report.gate.to_string(),
         report_hash,
-        report_json: serde_json::to_value(report).map_err(|_| ApiError::internal("gate_report"))?,
+        report_json: serde_json::to_value(report)
+            .map_err(|e| ApiError::internal_cause("gate_report", &e))?,
         supplemental_input_hash: evaluated.supplemental_input_hash.clone(),
         evaluation_at: evaluated.evaluation_at,
         recipe_job_id: recipe_job_id.cloned(),

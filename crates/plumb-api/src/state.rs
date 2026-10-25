@@ -44,8 +44,8 @@ use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::sync::broadcast;
 
-use crate::error::ApiError;
-use crate::openapi::{DesignEvent, WriteResult};
+use crate::error::{echo, ApiError};
+use crate::openapi::{DesignEvent, ItemHealth, WriteResult};
 use crate::runtime::{
     A04RuntimeConfig, CalendarConfig, DirectManagerFact, GateInputsConfig, ProviderMode,
 };
@@ -186,7 +186,7 @@ impl A04Runtime {
         *self
             .queue
             .lock()
-            .map_err(|_| ApiError::internal("stage_queue"))? = Some(sender);
+            .map_err(|e| ApiError::internal_cause("stage_queue", &e))? = Some(sender);
         Ok(())
     }
 
@@ -195,7 +195,7 @@ impl A04Runtime {
         let queue = self
             .queue
             .lock()
-            .map_err(|_| ApiError::internal("stage_queue"))?;
+            .map_err(|e| ApiError::internal_cause("stage_queue", &e))?;
         Ok(match queue.as_ref() {
             Some(sender) => sender.send(id.clone()).is_ok(),
             None => false,
@@ -242,12 +242,19 @@ impl Drop for InFlightTurn<'_> {
 impl A03Runtime {
     /// Marks `session` as having a turn in flight in this instance.
     pub(crate) fn begin_turn(&self, session: &Id) -> Result<InFlightTurn<'_>, ApiError> {
-        *self
+        let mut in_flight = self
             .in_flight_sessions
             .lock()
-            .map_err(|_| ApiError::internal("session_turns"))?
-            .entry(session.clone())
-            .or_default() += 1;
+            .map_err(|e| ApiError::internal_cause("session_turns", &e))?;
+        // Fable #207: one turn per session at a time, refused before any write or provider call.
+        if in_flight.contains_key(session) {
+            return Err(ApiError::conflict(
+                "E_SESSION_TURN_IN_FLIGHT",
+                "a turn of this session is still in flight",
+            )
+            .with_details(json!({ "session": session })));
+        }
+        *in_flight.entry(session.clone()).or_default() += 1;
         Ok(InFlightTurn {
             runtime: self,
             session: session.clone(),
@@ -259,7 +266,7 @@ impl A03Runtime {
         Ok(self
             .in_flight_sessions
             .lock()
-            .map_err(|_| ApiError::internal("session_turns"))?
+            .map_err(|e| ApiError::internal_cause("session_turns", &e))?
             .contains_key(session))
     }
     fn new(config: A03RuntimeConfig) -> Result<A03Runtime, ApiStateError> {
@@ -568,6 +575,15 @@ impl ApiState {
             .ok_or_else(|| ApiError::runtime_unavailable(capability))
     }
 
+    /// Whether inference can run: false exactly when the stage runtime configures the `null`
+    /// provider mode (H0.11, Fable #355).
+    pub(crate) fn inference_available(&self) -> bool {
+        !matches!(
+            self.inner.stage.as_ref().map(|a04| &a04.provider_mode),
+            Some(ProviderMode::Null)
+        )
+    }
+
     /// The A0.4 stage runtime, or 503 naming the missing `capability`.
     pub(crate) fn stage_runtime(&self, capability: &str) -> Result<&A04Runtime, ApiError> {
         self.inner
@@ -585,7 +601,7 @@ impl ApiState {
         let mut store = runtime
             .stage_store
             .lock()
-            .map_err(|_| ApiError::internal("stage_store"))?;
+            .map_err(|e| ApiError::internal_cause("stage_store", &e))?;
         Ok(f(&mut store))
     }
 
@@ -608,7 +624,7 @@ impl ApiState {
         let mut store = runtime
             .workflow_store
             .lock()
-            .map_err(|_| ApiError::internal("workflow_store"))?;
+            .map_err(|e| ApiError::internal_cause("workflow_store", &e))?;
         Ok(f(&mut store))
     }
 
@@ -620,7 +636,7 @@ impl ApiState {
             .inner
             .artifact_store
             .lock()
-            .map_err(|_| ApiError::internal("artifact_store"))?;
+            .map_err(|e| ApiError::internal_cause("artifact_store", &e))?;
         Ok(f(&mut store))
     }
 
@@ -632,7 +648,7 @@ impl ApiState {
             .inner
             .revision_store
             .lock()
-            .map_err(|_| ApiError::internal("revision_store"))?;
+            .map_err(|e| ApiError::internal_cause("revision_store", &e))?;
         Ok(f(&mut store))
     }
 
@@ -792,6 +808,20 @@ impl ApiState {
         Ok(current)
     }
 
+    /// Whether any report of `gate` exists, durable or startup-injected, for any revision.
+    pub(crate) fn has_any_gate_report(&self, gate: GateId) -> Result<bool, ApiError> {
+        if self.inner.gate_reports.iter().any(|r| r.gate == gate) {
+            return Ok(true);
+        }
+        if self.inner.stage.is_none() {
+            return Ok(false);
+        }
+        let records = self
+            .with_stage_store(|store| store.gate_reports())?
+            .map_err(|_| ApiError::workflow_corrupt("gate reports"))?;
+        Ok(records.iter().any(|r| r.gate == gate.as_str()))
+    }
+
     /// The current report of `gate`, owned, or 409 `E_GATE_REPORT_UNAVAILABLE`.
     pub(crate) fn current_gate_report(
         &self,
@@ -839,7 +869,7 @@ impl ApiState {
             Err(IntakeAcceptanceError::ReasonRequired(_)) => {
                 return Err(reason_required(proposal, &report))
             }
-            Err(_) => return Err(ApiError::internal("intake_rationale")),
+            Err(e) => return Err(ApiError::internal_cause("intake_rationale", &e)),
         }
         self.commit_patch_set_with_artifacts(
             loaded,
@@ -947,7 +977,7 @@ impl ApiState {
             | Err(IntakeAcceptanceError::MissingRationale(_)) => {
                 return Err(reason_required(proposal, report))
             }
-            Err(_) => return Err(ApiError::internal("intake_rationale")),
+            Err(e) => return Err(ApiError::internal_cause("intake_rationale", &e)),
         }
         // The original effect is persisted before the CAS; an orphan after a lost CAS is kept.
         let stored = self.with_artifact_store(|store| {
@@ -1100,7 +1130,7 @@ pub(crate) fn run_intake(
             "the proposal contains an expression exceeding a safety limit",
         )
         .with_details(json!({ "limit": limit, "actual": actual, "max": max }))),
-        Err(_) => Err(ApiError::internal("intake")),
+        Err(e) => Err(ApiError::internal_cause("intake", &e)),
     }
 }
 
@@ -1156,27 +1186,38 @@ pub(crate) fn precondition_failed(revision: &GraphRevision) -> ApiError {
     ApiError::precondition_failed(revision.id.to_string(), revision.semantic_hash.to_string())
 }
 
-/// Compares `If-Match` literally with the loaded head's semantic hash.
+/// Whether `value` names exactly `revision` (architecture §33.2): the strong entity-tag (the
+/// quoted revision ID) or the bare revision ID. Weak validators, `*`, lists and the semantic
+/// hash never match.
+pub(crate) fn if_match_names(value: &str, revision: &GraphRevision) -> bool {
+    let tag = value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(value);
+    tag == revision.id.as_str()
+}
+
+/// Requires `If-Match` to name the loaded head revision exactly (400 when absent, 412 otherwise).
 pub(crate) fn check_if_match(headers: &HeaderMap, loaded: &LoadedRevision) -> Result<(), ApiError> {
     let value = headers
         .get("if-match")
         .ok_or_else(|| ApiError::invalid("the If-Match header is required"))?
         .to_str()
         .map_err(|_| ApiError::invalid("the If-Match header is not valid text"))?;
-    if value != loaded.revision.semantic_hash.as_str() {
+    if !if_match_names(value, &loaded.revision) {
         return Err(precondition_failed(&loaded.revision));
     }
     Ok(())
 }
 
-/// A JSON read response carrying `ETag` = the loaded revision's semantic hash.
+/// A JSON read response carrying `ETag` = the loaded revision's strong entity-tag.
 pub(crate) fn read_json<T: Serialize>(loaded: &LoadedRevision, body: T) -> Response {
     with_etag(loaded, Json(body).into_response())
 }
 
-/// Adds `ETag` = the loaded revision's semantic hash.
+/// Adds `ETag` = the strong entity-tag of the loaded revision ID (`"rev:<version>:<hex>"`).
 pub(crate) fn with_etag(loaded: &LoadedRevision, mut response: Response) -> Response {
-    if let Ok(value) = HeaderValue::from_str(loaded.revision.semantic_hash.as_str()) {
+    if let Ok(value) = HeaderValue::from_str(&format!("\"{}\"", loaded.revision.id)) {
         response.headers_mut().insert("etag", value);
     }
     response
@@ -1198,7 +1239,7 @@ pub(crate) fn parse_wire<T: serde::de::DeserializeOwned>(
     what: &str,
 ) -> Result<T, ApiError> {
     serde_json::from_value(Value::String(text.to_owned()))
-        .map_err(|_| ApiError::invalid(format!("{what} {text:?} is not a valid value")))
+        .map_err(|_| ApiError::invalid(format!("{what} {} is not a valid value", echo(text))))
 }
 
 /// Non-empty text without surrounding whitespace or control characters.
@@ -1226,7 +1267,7 @@ pub(crate) fn parse_id(text: &str) -> Option<Id> {
 /// Parses a JSON request body, mapping any failure to 400.
 pub(crate) fn parse_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
     serde_json::from_slice(body)
-        .map_err(|e| ApiError::invalid(format!("invalid request body: {e}")))
+        .map_err(|e| ApiError::invalid(format!("invalid request body: {}", echo(&e.to_string()))))
 }
 
 // ============================================================================ query and cursor
@@ -1262,12 +1303,14 @@ impl QueryParams {
                 || (pageable && (key == "cursor" || key == "limit"));
             if !known {
                 return Err(ApiError::invalid(format!(
-                    "unknown query parameter {key:?}"
+                    "unknown query parameter {}",
+                    echo(&key)
                 )));
             }
             if values.insert(key.clone(), value).is_some() {
                 return Err(ApiError::invalid(format!(
-                    "repeated query parameter {key:?}"
+                    "repeated query parameter {}",
+                    echo(&key)
                 )));
             }
         }
@@ -1309,12 +1352,12 @@ fn request_hash(
         "path": path,
         "query": query,
     }))
-    .map_err(|_| ApiError::internal("request_hash"))?;
+    .map_err(|e| ApiError::internal_cause("request_hash", &e))?;
     Ok(Hash::content_sha256(&bytes))
 }
 
 fn encode_cursor(cursor: &Cursor) -> Result<String, ApiError> {
-    let bytes = to_canonical_json(cursor).map_err(|_| ApiError::internal("cursor"))?;
+    let bytes = to_canonical_json(cursor).map_err(|e| ApiError::internal_cause("cursor", &e))?;
     Ok(hex::encode(bytes))
 }
 
@@ -1358,6 +1401,50 @@ pub(crate) fn paginate<T>(
 ) -> Result<(Vec<T>, Option<String>), ApiError> {
     items.sort_by(|a, b| a.0.cmp(&b.0));
     paginate_ordered(items, request, loaded)
+}
+
+/// One item of a robust collection (H0.11): its projection, or the health marker of its failure.
+pub(crate) type Projected<T> = Result<T, ItemHealth>;
+
+/// The health marker of the item `id` whose own projection failed with `error`. A failure of a
+/// subsystem rather than of the item's persisted material fails the whole read.
+pub(crate) fn health_marker(id: &str, error: ApiError) -> Result<ItemHealth, ApiError> {
+    let body = error.body();
+    if matches!(body.code, "E_INTERNAL" | "E_A03_RUNTIME_UNAVAILABLE") {
+        return Err(error);
+    }
+    Ok(ItemHealth {
+        id: id.to_owned(),
+        code: body.code.to_owned(),
+        message: body.message.clone(),
+    })
+}
+
+/// The projection of item `id`, or its health marker.
+pub(crate) fn project<T>(id: &str, view: Result<T, ApiError>) -> Result<Projected<T>, ApiError> {
+    match view {
+        Ok(view) => Ok(Ok(view)),
+        Err(error) => health_marker(id, error).map(Err),
+    }
+}
+
+/// [`paginate`] over projected items: the page's healthy items and its health markers.
+#[allow(clippy::type_complexity)]
+pub(crate) fn paginate_projected<T>(
+    items: Vec<(String, Projected<T>)>,
+    request: &PageRequest<'_>,
+    loaded: &LoadedRevision,
+) -> Result<(Vec<T>, Vec<ItemHealth>, Option<String>), ApiError> {
+    let (page, next_cursor) = paginate(items, request, loaded)?;
+    let mut healthy = Vec::new();
+    let mut health = Vec::new();
+    for item in page {
+        match item {
+            Ok(view) => healthy.push(view),
+            Err(marker) => health.push(marker),
+        }
+    }
+    Ok((healthy, health, next_cursor))
 }
 
 /// A page of `items` in their given (ranked) order: continued exclusively after the cursor's

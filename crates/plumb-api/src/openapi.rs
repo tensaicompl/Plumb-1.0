@@ -761,7 +761,7 @@ pub struct WriteResult {
     pub events: Vec<DesignEvent>,
 }
 
-/// 412: the request's If-Match was not the current semantic hash. `revision` and
+/// 412: the request's If-Match did not name the current branch-head revision. `revision` and
 /// `semantic_hash` are the current branch-head values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -818,6 +818,31 @@ macro_rules! page {
     };
 }
 
+/// The typed health marker of a collection item whose projection failed (H0.11): the element
+/// ID, the typed error code and message. The item's detail route fails with the same error.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ItemHealth {
+    pub id: String,
+    pub code: String,
+    pub message: String,
+}
+
+macro_rules! health_page {
+    ($name:ident, $item:ty) => {
+        /// A page of results; `next_cursor` is null on the last page. An item of the page whose
+        /// projection failed is in `health` (with its typed error) instead of `items`; corruption
+        /// is reported, never hidden, and the remaining items are still returned.
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+        #[serde(deny_unknown_fields)]
+        pub struct $name {
+            pub items: Vec<$item>,
+            pub health: Vec<ItemHealth>,
+            pub next_cursor: Option<String>,
+        }
+    };
+}
+
 // ============================================================================ meta
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -826,6 +851,9 @@ pub struct MeResponse {
     pub user: String,
     pub roles: Vec<String>,
     pub mode: String,
+    /// Whether this server can run inference (sessions and inference-requiring recipes): false
+    /// exactly when the configured provider mode is `null` (H0.11, Fable #355).
+    pub inference_available: bool,
 }
 
 /// Model identity. `version` == `revision` and `hash` == `semantic_hash` (compatibility
@@ -856,6 +884,13 @@ pub enum GateName {
 #[serde(deny_unknown_fields)]
 pub struct GateStatus {
     pub gate: GateName,
+    /// Whether this entry is the gate's report current for the branch head (H0.11).
+    pub state: GateEvaluationState,
+    /// Why the gate is not current: the typed failure that prevents its evaluation now; null
+    /// exactly when `state` is `current`.
+    #[schema(required = true)]
+    pub reason: Option<GateStateReason>,
+    /// The current report's result; false when the gate is not current.
     pub passed: bool,
     /// Finding IDs.
     pub findings: Vec<String>,
@@ -865,6 +900,28 @@ pub struct GateStatus {
     pub waivers: Vec<GateWaiver>,
     /// The report's own summary counts (Hotfix 082).
     pub summary: GateSummaryView,
+}
+
+/// The evaluation state of a NOW gate on the branch head (H0.11, architecture §33.12):
+/// `current` has a report for the head; `stale` has only reports of earlier heads and cannot be
+/// evaluated now; `not_evaluated` has never been evaluated and cannot be evaluated now. A gate
+/// that is not current carries no rule results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum GateEvaluationState {
+    #[serde(rename = "not_evaluated")]
+    NotEvaluated,
+    #[serde(rename = "current")]
+    Current,
+    #[serde(rename = "stale")]
+    Stale,
+}
+
+/// The typed failure that keeps a gate from being evaluated on the branch head.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GateStateReason {
+    pub code: String,
+    pub message: String,
 }
 
 /// The exact result state of one rule in a gate report (Hotfix 082).
@@ -1098,6 +1155,7 @@ pub struct RequirementCoverage {
 pub struct RequirementSummary {
     pub id: String,
     pub text: String,
+    #[schema(value_type = RequirementClass)]
     pub class: String,
     pub status: String,
     /// Error-severity lint rule IDs recorded for this requirement by the current F1 gate report
@@ -1126,6 +1184,7 @@ pub struct RequirementLinks {
 pub struct RequirementDetail {
     pub id: String,
     pub text: String,
+    #[schema(value_type = RequirementClass)]
     pub class: String,
     pub status: String,
     pub smells: Vec<String>,
@@ -1147,9 +1206,25 @@ pub struct RequirementDetail {
     pub lint_current: bool,
 }
 
+/// The closed requirement class vocabulary (`Requirement.requirement_kind`, §7.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementClass {
+    Functional,
+    Quality,
+    Interface,
+    Data,
+    Security,
+    Operational,
+    Compliance,
+    Transition,
+    Constraint,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClassifyRequest {
+    #[schema(value_type = RequirementClass)]
     pub class: String,
 }
 
@@ -1404,7 +1479,7 @@ pub struct Rule {
     #[schema(required = true)]
     pub overlaps: Option<Vec<String>>,
 }
-page!(RulePage, Rule);
+health_page!(RulePage, Rule);
 
 /// Whether a Rule view projects a scalar PSG Rule or a PSG DecisionTable (Hotfix 065).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1572,7 +1647,7 @@ pub struct Scenario {
     #[schema(required = true)]
     pub run: Option<ScenarioRun>,
 }
-page!(ScenarioPage, Scenario);
+health_page!(ScenarioPage, Scenario);
 
 /// The ElementStatus of a Scenario node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1661,7 +1736,7 @@ pub struct Assumption {
     pub expires_at: Option<String>,
     pub risk_ref: Option<String>,
 }
-page!(AssumptionPage, Assumption);
+health_page!(AssumptionPage, Assumption);
 
 // ============================================================================ questions and proposals
 
@@ -1720,7 +1795,7 @@ pub struct Question {
     pub round_ref: Option<String>,
     pub context_refs: Vec<String>,
 }
-page!(QuestionPage, Question);
+health_page!(QuestionPage, Question);
 
 /// An answer to a Question (Hotfix 065): `answer` is validated against the persisted
 /// `Question.answer_schema` (every pilot answer schema is a closed JSON object).
@@ -2039,6 +2114,11 @@ pub enum ExportFormat {
     Report,
     Decisions,
     Glossary,
+    /// `scenarios.yaml` (Fable #307: every `report --out` artifact is exportable).
+    Scenarios,
+    /// `gate-report.json`.
+    #[serde(rename = "gate_report")]
+    GateReport,
 }
 
 /// Stable element IDs changed between two revisions.
@@ -2075,9 +2155,9 @@ mod stubs {
     pub fn get_gates() {}
 
     #[utoipa::path(get, path = "/api/search", operation_id = "search_model", tag = "meta",
-        params(("q" = Option<String>, Query, description = "Search text"),
+        params(("q" = String, Query, description = "Search text; required and not blank (400 otherwise)"),
                ("scope" = Option<SearchScope>, Query, description = "Search scope")),
-        responses((status = 200, description = "Search hits", body = SearchPage)))]
+        responses((status = 200, description = "Search hits over Accepted elements only: Proposed, Rejected and other non-Accepted elements are never searchable", body = SearchPage)))]
     pub fn search_model() {}
 
     #[utoipa::path(get, path = "/api/events", operation_id = "events_websocket", tag = "meta",
@@ -3038,13 +3118,13 @@ fn apply_http_contract(doc: &mut Value) -> Result<(), OpenApiContractError> {
                 "name": "If-Match",
                 "in": "header",
                 "required": true,
-                "description": "The current semantic_hash of the branch head.",
+                "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
                 "schema": {"type": "string"}
             }));
             responses_mut(operation)?.insert(
                 "412".to_owned(),
                 json!({
-                    "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values.",
+                    "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values.",
                     "content": {"application/json": {"schema": component_ref("PreconditionFailedResponse")}}
                 }),
             );
@@ -3062,7 +3142,7 @@ fn apply_http_contract(doc: &mut Value) -> Result<(), OpenApiContractError> {
                         .insert(
                             "ETag".to_owned(),
                             json!({
-                                "description": "The current semantic_hash.",
+                                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                                 "schema": {"type": "string"}
                             }),
                         );
@@ -3161,6 +3241,15 @@ fn apply_extensions(doc: &mut Value, generator_doc: &Value) -> Result<(), OpenAp
         "x-plumb-contract-version".to_owned(),
         json!(CONTRACT_VERSION),
     );
+    // H0.11: the authoritative error-code catalogue of every typed error body.
+    let codes: Vec<Value> = crate::error_catalogue::ERROR_CATALOGUE
+        .iter()
+        .map(|e| json!({"code": e.code, "status": e.status, "meaning": e.meaning}))
+        .collect();
+    root.get_mut("info")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| invariant("document has no info object"))?
+        .insert("x-plumb-error-codes".to_owned(), json!(codes));
     Ok(())
 }
 
@@ -3299,9 +3388,9 @@ An operation listed here is not operational until its handler task is done.\n\n"
     );
     out.push_str("## Conventions\n\n");
     for line in [
-        "The API is a task-oriented compatibility projection over the PSG. Requests and responses are JSON unless stated otherwise; errors carry `code`, `message` and `details`.",
-        "Every ordinary `GET` success response carries an `ETag` header equal to the current `semantic_hash`.",
-        "Every `POST` (including dry-run intake, stage runs and session creation and turns) requires an `If-Match` header with the current `semantic_hash`. A mismatch returns `412 Precondition Failed` with `code`, `message`, `details` and the current branch-head `revision` and `semantic_hash`.",
+        "The API is a task-oriented compatibility projection over the PSG. Requests and responses are JSON unless stated otherwise; errors carry `code`, `message` and `details`. Every error `code` (including framework failures: unknown route, method, malformed input, body limit and media type) is one of the catalogued codes in `info.x-plumb-error-codes` with its HTTP status and meaning.",
+        "Every ordinary `GET` success response carries an `ETag` header: the RFC 9110 strong entity-tag of the loaded branch-head revision ID (the quoted `rev:...`).",
+        "Every `POST` (including dry-run intake, stage runs and session creation and turns) requires an `If-Match` header naming the current branch-head revision ID, quoted as in `ETag` or bare; weak validators and `*` never match, and `semantic_hash` is not a concurrency token. A mismatch returns `412 Precondition Failed` with `code`, `message`, `details` and the current branch-head `revision` and `semantic_hash`.",
         "Every successful write returns `version`, `revision`, `semantic_hash` and `events` (DesignEvent `{kind, ids, version}`); `version` is the compatibility alias of `revision`. Endpoint-specific results add fields to these four.",
         "`GET /api/model/version` returns `version`, `hash`, `revision`, `semantic_hash` and `evidence_hash`, where `version` == `revision` and `hash` == `semantic_hash`.",
         "Paged lists return `{items, next_cursor}` and accept `cursor` and `limit` (minimum 1). Items are filtered, sorted by stable public ID ascending, continued exclusively after the cursor's `after_id` and then limited; without `limit` all remaining items are returned and `next_cursor` is null.",

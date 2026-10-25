@@ -1,29 +1,31 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, revisionEtag, type Reviewed } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { DiffViewer, type ModelDiff } from "../../components/DiffViewer";
 import { ProvenanceDrawer, type ProvenanceItem } from "../../components/ProvenanceDrawer";
 import { t } from "../../i18n";
+import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 export type RequirementDetailView = components["schemas"]["RequirementDetail"];
 export type SemanticChangePreview = components["schemas"]["SemanticChangePreviewResponse"];
 export type SemanticElementDiff = components["schemas"]["SemanticElementDiff"];
 type WriteResult = components["schemas"]["WriteResult"];
+type RequirementClass = components["schemas"]["RequirementClass"];
+
+/** The closed requirement class vocabulary (RequirementClass), in metamodel order. */
+const REQUIREMENT_KINDS: readonly RequirementClass[] = ["functional", "quality", "interface", "data", "security", "operational", "compliance", "transition", "constraint"];
 
 /** The query key of one requirement (GET /api/requirements/{id}). */
 export function requirementQueryKey(id: string) {
   return ["requirements", "detail", id] as const;
 }
 
-async function fetchRequirement(id: string): Promise<RequirementDetailView> {
-  const { data, response } = await apiClient.GET("/api/requirements/{id}", { params: { path: { id } } });
-  if (data === undefined) {
-    throw new Error("GET /api/requirements/{id} failed with HTTP " + String(response.status));
-  }
-  return data;
+function fetchRequirement(id: string): Promise<Reviewed<RequirementDetailView>> {
+  return readReviewed(apiClient.GET("/api/requirements/{id}", { params: { path: { id } } }));
 }
 
 /**
@@ -183,24 +185,29 @@ interface PendingPreview {
  * explicit confirmation through POST /api/proposals/{id}/create with the same reason. A moved
  * baseline discards the preview and requires a new one; nothing is retried.
  */
-function SplitAction({ requirementId }: { requirementId: string }) {
+function SplitAction({ requirementId, etag }: { requirementId: string; etag: string | null }) {
   const queryClient = useQueryClient();
   const [parts, setParts] = useState<string[]>(["", ""]);
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState<PendingPreview | null>(null);
   const [stale, setStale] = useState(false);
 
-  const preview = useVersionedMutation<SemanticChangePreview, { parts: string[]; reason: string }>((body, ifMatch) =>
-    apiClient.POST("/api/requirements/{id}/split/preview", {
-      params: { path: { id: requirementId }, header: { "If-Match": ifMatch } },
-      body,
-    }),
+  const preview = useVersionedMutation<SemanticChangePreview, { parts: string[]; reason: string }>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/requirements/{id}/split/preview", {
+        params: { path: { id: requirementId }, header: { "If-Match": ifMatch } },
+        body,
+      }),
+    etag,
   );
-  const confirm = useVersionedMutation<WriteResult, PendingPreview>((target, ifMatch) =>
-    apiClient.POST("/api/proposals/{id}/create", {
-      params: { path: { id: target.preview.proposal_id }, header: { "If-Match": ifMatch } },
-      body: { reason: target.reason },
-    }),
+  // The confirmation is based on the reviewed preview, which states its baseline revision.
+  const confirm = useVersionedMutation<WriteResult, PendingPreview>(
+    (target, ifMatch) =>
+      apiClient.POST("/api/proposals/{id}/create", {
+        params: { path: { id: target.preview.proposal_id }, header: { "If-Match": ifMatch } },
+        body: { reason: target.reason },
+      }),
+    (target) => revisionEtag(target.preview.revision),
   );
 
   const requestPreview = () => {
@@ -303,7 +310,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
     queryFn: () => fetchRequirement(requirementId),
   });
   const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const [classValue, setClassValue] = useState("");
+  const [classValue, setClassValue] = useState<RequirementClass | "">("");
   const [waiveFinding, setWaiveFinding] = useState("");
   const [waiveReason, setWaiveReason] = useState("");
   const [duplicateOf, setDuplicateOf] = useState("");
@@ -312,29 +319,58 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
 
   const onWritten = { onSuccess: () => void queryClient.invalidateQueries() };
   const path = { id: requirementId };
-  const classify = useVersionedMutation<WriteResult, string>((value, ifMatch) =>
-    apiClient.POST("/api/requirements/{id}/classify", { params: { path, header: { "If-Match": ifMatch } }, body: { class: value } }),
+  const reviewed = requirement.data?.etag;
+  const classify = useVersionedMutation<WriteResult, RequirementClass>(
+    (value, ifMatch) => apiClient.POST("/api/requirements/{id}/classify", { params: { path, header: { "If-Match": ifMatch } }, body: { class: value } }),
+    reviewed,
   );
   // R0.6: a surfaced S1.2 EARS suggestion is the pending WorkflowProposal `ears_proposal_ref`,
   // accepted through the governed proposal acceptance (never as an analyst text edit).
-  const acceptEars = useVersionedMutation<WriteResult, { proposal: string; reason: string | null }>((body, ifMatch) =>
-    apiClient.POST("/api/proposals/{id}/accept", {
-      params: { path: { id: body.proposal }, header: { "If-Match": ifMatch } },
-      body: { reason: body.reason },
-    }),
+  const acceptEars = useVersionedMutation<WriteResult, { proposal: string; reason: string | null }>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/proposals/{id}/accept", {
+        params: { path: { id: body.proposal }, header: { "If-Match": ifMatch } },
+        body: { reason: body.reason },
+      }),
+    reviewed,
   );
-  const waive = useVersionedMutation<WriteResult, { finding_id: string; reason: string }>((body, ifMatch) =>
-    apiClient.POST("/api/requirements/{id}/waive-finding", { params: { path, header: { "If-Match": ifMatch } }, body }),
+  const rejectEars = useVersionedMutation<WriteResult, { proposal: string; reason: string | null }>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/proposals/{id}/reject", {
+        params: { path: { id: body.proposal }, header: { "If-Match": ifMatch } },
+        body: { reason: body.reason },
+      }),
+    reviewed,
   );
-  const duplicate = useVersionedMutation<WriteResult, { of: string; reason: string }>((body, ifMatch) =>
-    apiClient.POST("/api/requirements/{id}/mark-duplicate", { params: { path, header: { "If-Match": ifMatch } }, body }),
+  const waive = useVersionedMutation<WriteResult, { finding_id: string; reason: string }>(
+    (body, ifMatch) => apiClient.POST("/api/requirements/{id}/waive-finding", { params: { path, header: { "If-Match": ifMatch } }, body }),
+    reviewed,
+  );
+  const duplicate = useVersionedMutation<WriteResult, { of: string; reason: string }>(
+    (body, ifMatch) => apiClient.POST("/api/requirements/{id}/mark-duplicate", { params: { path, header: { "If-Match": ifMatch } }, body }),
+    reviewed,
   );
 
+  const title = (
+    <h1 className="text-xl font-semibold">
+      {t("requirement.title")} <span className="font-mono" data-testid="requirement-id">{requirementId}</span>
+    </h1>
+  );
   if (requirement.isError) {
-    return <p role="alert">{t("requirement.loadFailed")}</p>;
+    return (
+      <div className="space-y-4">
+        {title}
+        <ReadFailure error={requirement.error} messageKey="requirement.loadFailed" />
+      </div>
+    );
   }
   if (requirement.data === undefined) {
-    return <p>{t("requirement.loading")}</p>;
+    return (
+      <div className="space-y-4">
+        {title}
+        <p>{t("requirement.loading")}</p>
+      </div>
+    );
   }
   const detail = requirement.data;
   // Absent and null both mean not calculated by the server; nothing is derived locally.
@@ -350,9 +386,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">
-        {t("requirement.title")} <span className="font-mono" data-testid="requirement-id">{detail.id}</span>
-      </h1>
+      {title}
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 text-sm">
         <dt>{t("requirements.column.class")}</dt>
         <dd className="font-mono" data-testid="requirement-class">
@@ -378,6 +412,7 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
             <p data-testid="ears-suggestion" data-proposal={earsProposal}>
               {ears}
             </p>
+            <RoleGate>
             <label className="mt-2 block text-sm">
               {t("requirement.reason")}
               <input className="ml-2 rounded border p-1" value={earsReason} data-testid="ears-reason" onChange={(event) => setEarsReason(event.target.value)} />
@@ -393,7 +428,20 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
             >
               {t("requirement.ears.accept")}
             </button>
+            <button
+              type="button"
+              className="mt-2 ml-2 rounded border px-3 py-1"
+              data-testid="ears-reject"
+              disabled={rejectEars.isPending || acceptEars.isPending}
+              onClick={() => {
+                rejectEars.mutate({ proposal: earsProposal, reason: earsReason === "" ? null : earsReason }, onWritten);
+              }}
+            >
+              {t("requirement.ears.reject")}
+            </button>
+            </RoleGate>
             <WriteError error={acceptEars.error} />
+            <WriteError error={rejectEars.error} />
           </>
         )}
       </section>
@@ -405,8 +453,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
         ) : (
           <>
             <ul className="font-mono text-sm" data-testid="evidence-refs">
-              {detail.spans.map((ref) => (
-                <li key={ref}>{ref}</li>
+              {detail.spans.map((ref, index) => (
+                <li key={index}>{ref}</li>
               ))}
             </ul>
             <button type="button" className="mt-2 rounded border px-3 py-1" onClick={() => setEvidenceOpen(true)}>
@@ -436,8 +484,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
               <p className="text-sm">{t("requirement.lint.none")}</p>
             ) : (
               <ul className="font-mono text-sm" data-testid="lint-findings">
-                {detail.lint_findings.map((finding) => (
-                  <li key={finding}>{finding}</li>
+                {detail.lint_findings.map((finding, index) => (
+                  <li key={index}>{finding}</li>
                 ))}
               </ul>
             )}
@@ -446,8 +494,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
               <p className="text-sm">{t("requirement.lint.none")}</p>
             ) : (
               <ul className="font-mono text-sm" data-testid="lint-smells">
-                {detail.smells.map((smell) => (
-                  <li key={smell}>{smell}</li>
+                {detail.smells.map((smell, index) => (
+                  <li key={index}>{smell}</li>
                 ))}
               </ul>
             )}
@@ -464,8 +512,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
               <p>{t("requirement.linked.none")}</p>
             ) : (
               <ul className="font-mono" data-linked={key}>
-                {detail.linked[key].map((ref) => (
-                  <li key={ref}>{ref}</li>
+                {detail.linked[key].map((ref, index) => (
+                  <li key={index}>{ref}</li>
                 ))}
               </ul>
             )}
@@ -475,18 +523,29 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
 
       <section aria-label={t("requirement.section.actions")} data-section="actions" className="space-y-3">
         <h2 className="font-semibold">{t("requirement.section.actions")}</h2>
+        <RoleGate>
 
         <form
           aria-label={t("requirement.classify.title")}
           className="space-y-2 rounded border p-3"
           onSubmit={(event) => {
             event.preventDefault();
-            classify.mutate(classValue, onWritten);
+            if (classValue !== "") {
+              classify.mutate(classValue, onWritten);
+            }
           }}
         >
           <label className="block text-sm">
             {t("requirement.classify.class")}
-            <input className="ml-2 rounded border p-1" value={classValue} data-testid="classify-class" onChange={(event) => setClassValue(event.target.value)} />
+            {/* The closed class vocabulary (Fable #321); the current class is not offered. */}
+            <select className="ml-2 rounded border" value={classValue} data-testid="classify-class" onChange={(event) => setClassValue(event.target.value as RequirementClass | "")}>
+              <option value="">{t("requirement.classify.choose")}</option>
+              {REQUIREMENT_KINDS.filter((kind) => kind !== detail.class).map((kind) => (
+                <option key={kind} value={kind}>
+                  {kind}
+                </option>
+              ))}
+            </select>
           </label>
           <button type="submit" className="rounded border px-3 py-1" disabled={classify.isPending || classValue === ""}>
             {t("requirement.classify.submit")}
@@ -545,7 +604,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
           <WriteError error={duplicate.error} />
         </form>
 
-        <SplitAction requirementId={detail.id} />
+        <SplitAction requirementId={detail.id} etag={detail.etag} />
+        </RoleGate>
       </section>
     </div>
   );

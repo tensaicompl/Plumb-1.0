@@ -147,7 +147,7 @@ async fn get_source_spans(
         }
         let locator_kind = match serde_json::to_value(&fragment.locator) {
             Ok(value) => value["kind"].as_str().unwrap_or_default().to_owned(),
-            Err(_) => return Err(ApiError::internal("locator")),
+            Err(e) => return Err(ApiError::internal_cause("locator", &e)),
         };
         let (start, end) = match &fragment.locator {
             EvidenceLocator::TextRange { start, end } => (Some(*start), Some(*end)),

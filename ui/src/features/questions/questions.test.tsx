@@ -9,11 +9,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { http } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { components } from "../../api/schema";
-import { server } from "../../test/msw";
+import { etagJson, server, TEST_ETAG } from "../../test/msw";
 
 type Question = components["schemas"]["Question"];
 type AnswerResponse = components["schemas"]["AnswerResponse"];
@@ -175,28 +175,28 @@ function handlers(
   };
   const action = options.action ?? "create";
   return [
-    http.get("*/api/me", () => HttpResponse.json({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"] })),
     http.get("*/api/model/version", () =>
-      HttpResponse.json({ version: "rev:7", revision: "rev:7", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
+      etagJson({ version: "rev:7", revision: "rev:7", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
     http.get("*/api/questions", async ({ request }) => {
       await record(request, "GET");
-      return HttpResponse.json({ items: options.items ?? [Q_PERFORMER, Q_DAYS, Q_ANSWERED, Q_UNASSIGNED], next_cursor: null });
+      return etagJson({ items: options.items ?? [Q_PERFORMER, Q_DAYS, Q_ANSWERED, Q_UNASSIGNED], next_cursor: null });
     }),
     http.post("*/api/questions/:id/answer", async ({ request }) => {
       await record(request, "POST");
-      return HttpResponse.json(answerResponse(action));
+      return etagJson(answerResponse(action));
     }),
     ...(["accept", "create", "link", "merge", "supersede", "reject"] as const).map((verb) =>
       http.post("*/api/proposals/:id/" + verb, async ({ request }) => {
         await record(request, "POST");
-        return verb !== "reject" && options.confirm !== undefined ? options.confirm() : HttpResponse.json(WRITE);
+        return verb !== "reject" && options.confirm !== undefined ? options.confirm() : etagJson(WRITE);
       }),
     ),
     http.post("*/api/rounds", async ({ request }) => {
       await record(request, "POST");
       const body = (calls.at(-1)?.body ?? {}) as { stakeholder: string; max: number };
-      return HttpResponse.json({
+      return etagJson({
         ...WRITE,
         round: { id: "round:server-1", stakeholder: body.stakeholder, questions: ["q:days", "q:performer"] },
       });
@@ -296,7 +296,7 @@ describe("Question answer proposal", () => {
     const preview = await answerPerformer(user);
 
     expect(posts(calls, "/api/questions/q:performer/answer").map((c) => [c.ifMatch, c.body])).toEqual([
-      [CURRENT, { answer: { performer_ref: "actor:clerk" }, rationale: "Clerks approve.", supersedes: null }],
+      [TEST_ETAG, { answer: { performer_ref: "actor:clerk" }, rationale: "Clerks approve.", supersedes: null }],
     ]);
     // The answer committed nothing: no proposal action was sent and the preview is pending.
     expect(calls.filter((c) => c.path.startsWith("/api/proposals/"))).toEqual([]);
@@ -321,7 +321,7 @@ describe("Question answer proposal", () => {
     await user.click(preview.querySelector("button[data-action=create]") as HTMLButtonElement);
     await waitFor(() => expect(posts(calls, "/api/proposals/prop:answer-1/create")).toHaveLength(1));
     expect(posts(calls, "/api/proposals/prop:answer-1/create").map((c) => [c.ifMatch, c.body])).toEqual([
-      [CURRENT, { reason: "HR confirmed." }],
+      [`"rev:7"`, { reason: "HR confirmed." }],
     ]);
     expect(posts(calls, "/api/proposals/prop:answer-1/accept")).toEqual([]);
     expect(await within(card("q:performer")).findByTestId("answer-done")).toBeTruthy();
@@ -370,7 +370,7 @@ describe("Question answer proposal", () => {
     server.use(
       ...handlers(calls, {
         action: "create",
-        confirm: () => HttpResponse.json({ code: "E_PROPOSAL_BASELINE_CHANGED", message: "moved", details: {} }, { status: 409 }),
+        confirm: () => etagJson({ code: "E_PROPOSAL_BASELINE_CHANGED", message: "moved", details: {} }, { status: 409 }),
       }),
     );
     renderQuestions();
@@ -429,7 +429,7 @@ describe("Question round manager", () => {
     await user.type(screen.getByTestId("round-max"), value);
     await user.click(screen.getByTestId("round-submit"));
     await waitFor(() => expect(posts(calls, "/api/rounds")).toHaveLength(1));
-    expect(posts(calls, "/api/rounds").map((c) => [c.ifMatch, c.body])).toEqual([[CURRENT, { stakeholder: "stakeholder:hr", max: Number(value) }]]);
+    expect(posts(calls, "/api/rounds").map((c) => [c.ifMatch, c.body])).toEqual([[TEST_ETAG, { stakeholder: "stakeholder:hr", max: Number(value) }]]);
     // The server round is shown exactly, in server order; the UI composes nothing.
     const result = await screen.findByTestId("round-result");
     expect(within(result).getByTestId("round-id").textContent).toBe("round:server-1");

@@ -10,11 +10,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { http } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { components } from "../../api/schema";
-import { server } from "../../test/msw";
+import { etagJson, server, TEST_ETAG } from "../../test/msw";
 
 type Process = components["schemas"]["Process"];
 type NodeView = components["schemas"]["ProcessNodeView"];
@@ -131,7 +131,7 @@ interface Call {
   readonly body: unknown;
 }
 
-function handlers(calls: Call[], write: () => Response = () => HttpResponse.json({ version: "rev:2", revision: "rev:2", semantic_hash: CURRENT, events: [] })) {
+function handlers(calls: Call[], write: () => Response = () => etagJson({ version: "rev:2", revision: "rev:2", semantic_hash: CURRENT, events: [] })) {
   const record = async (request: Request, method: string) => {
     const url = new URL(request.url);
     const text = method === "GET" ? "" : await request.text();
@@ -143,17 +143,17 @@ function handlers(calls: Call[], write: () => Response = () => HttpResponse.json
     });
   };
   return [
-    http.get("*/api/me", () => HttpResponse.json({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"] })),
     http.get("*/api/model/version", () =>
-      HttpResponse.json({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
+      etagJson({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
     http.get("*/api/processes", async ({ request }) => {
       await record(request, "GET");
-      return HttpResponse.json({ items: [LEAVE, SIMPLE], next_cursor: null });
+      return etagJson({ items: [LEAVE, SIMPLE], next_cursor: null });
     }),
     http.get("*/api/processes/:id", async ({ request, params }) => {
       await record(request, "GET");
-      return HttpResponse.json(params["id"] === "proc:simple" ? SIMPLE : LEAVE);
+      return etagJson(params["id"] === "proc:simple" ? SIMPLE : LEAVE);
     }),
     http.post("*/api/processes/:id/steps", async ({ request }) => {
       await record(request, "POST");
@@ -162,7 +162,7 @@ function handlers(calls: Call[], write: () => Response = () => HttpResponse.json
     // Recorded so that any generic proposal call is visible (U2.4 must never make one).
     http.post("*/api/proposals/*", async ({ request }) => {
       await record(request, "POST");
-      return HttpResponse.json({ code: "E_UNEXPECTED", message: "not used by U2.4", details: {} }, { status: 500 });
+      return etagJson({ code: "E_UNEXPECTED", message: "not used by U2.4", details: {} }, { status: 500 });
     }),
   ];
 }
@@ -331,7 +331,7 @@ describe("Semantic process edits", () => {
     await user.click(screen.getByTestId("add-submit"));
     await waitFor(() => expect(detailReads(calls)).toBeGreaterThan(reads));
     expect(posts(calls).map((c) => [c.path, c.ifMatch, c.body])).toEqual([
-      ["/api/processes/proc:leave/steps", CURRENT, { op: "add", operation_ref: "op:notify", position: 2, reason: null }],
+      ["/api/processes/proc:leave/steps", TEST_ETAG, { op: "add", operation_ref: "op:notify", position: 2, reason: null }],
     ]);
   });
 
@@ -345,7 +345,7 @@ describe("Semantic process edits", () => {
     await user.click(screen.getByTestId("move-submit"));
     await waitFor(() => expect(posts(calls)).toHaveLength(1));
     expect(posts(calls).map((c) => [c.path, c.ifMatch, c.body])).toEqual([
-      ["/api/processes/proc:leave/steps", CURRENT, { op: "move", node_ref: "pn:b-file", position: 0, reason: "File first." }],
+      ["/api/processes/proc:leave/steps", TEST_ETAG, { op: "move", node_ref: "pn:b-file", position: 0, reason: "File first." }],
     ]);
     expect(calls.some((c) => c.path.startsWith("/api/proposals"))).toBe(false);
   });
@@ -364,7 +364,7 @@ describe("Semantic process edits", () => {
     await user.click(screen.getByTestId("lane-submit"));
     await waitFor(() => expect(detailReads(calls)).toBeGreaterThan(reads));
     expect(posts(calls).map((c) => [c.path, c.ifMatch, c.body])).toEqual([
-      ["/api/processes/proc:leave/steps", CURRENT, { op: "move_lane", node_ref: "pn:b-file", performer_ref: "brole:hr", reason: null }],
+      ["/api/processes/proc:leave/steps", TEST_ETAG, { op: "move_lane", node_ref: "pn:b-file", performer_ref: "brole:hr", reason: null }],
     ]);
     expect(calls.some((c) => c.path.startsWith("/api/proposals"))).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -374,7 +374,7 @@ describe("Semantic process edits", () => {
     const calls: Call[] = [];
     server.use(
       ...handlers(calls, () =>
-        HttpResponse.json({ code: "E_NO_CHANGE", message: "no change", details: {} }, { status: 422 }),
+        etagJson({ code: "E_NO_CHANGE", message: "no change", details: {} }, { status: 422 }),
       ),
     );
     const { user } = await renderProcess(calls);

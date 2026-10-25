@@ -12,6 +12,23 @@ use serde_json::{json, Value};
 
 use crate::openapi::PreconditionFailedResponse;
 
+/// The longest client-supplied text an error message or detail echoes (Fable #205).
+pub const ECHO_MAX_CHARS: usize = 64;
+
+/// Client-supplied `text` as an error message or detail may echo it: quoted, and truncated to
+/// [`ECHO_MAX_CHARS`] characters followed by an ellipsis when longer. Every echo of request
+/// text goes through this helper.
+pub fn echo(text: &str) -> String {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(ECHO_MAX_CHARS).collect();
+    let quoted = format!("{head:?}");
+    if chars.next().is_some() {
+        format!("{quoted}…")
+    } else {
+        quoted
+    }
+}
+
 /// A typed API error with its HTTP status and stable code.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApiError(Box<ApiErrorBody>);
@@ -103,6 +120,24 @@ impl ApiError {
         ApiError::new(StatusCode::NOT_FOUND, "E_NOT_FOUND", what)
     }
 
+    /// 404 `E_ROUTE_NOT_FOUND`: no API route has the request path.
+    pub fn route_not_found() -> ApiError {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            "E_ROUTE_NOT_FOUND",
+            "no API route has this path",
+        )
+    }
+
+    /// 405 `E_METHOD_NOT_ALLOWED`: the path is served, but not for the request method.
+    pub fn method_not_allowed() -> ApiError {
+        ApiError::new(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "E_METHOD_NOT_ALLOWED",
+            "this route does not accept the request method",
+        )
+    }
+
     /// 409 with a frozen conflict code.
     pub fn conflict(code: &'static str, message: impl Into<String>) -> ApiError {
         ApiError::new(StatusCode::CONFLICT, code, message)
@@ -113,7 +148,7 @@ impl ApiError {
         let mut error = ApiError::new(
             StatusCode::PRECONDITION_FAILED,
             "E_PRECONDITION_FAILED",
-            "If-Match is not the current semantic_hash",
+            "If-Match does not name the current branch-head revision",
         );
         error.0.head = Some((revision, semantic_hash));
         error
@@ -138,6 +173,15 @@ impl ApiError {
             "unsupported source media type",
         )
         .with_details(json!({ "media_type": media_type }))
+    }
+
+    /// 415 `E_UNSUPPORTED_MEDIA_TYPE` for a request body media type the route does not accept.
+    pub fn unsupported_request_media_type() -> ApiError {
+        ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "E_UNSUPPORTED_MEDIA_TYPE",
+            "unsupported request media type",
+        )
     }
 
     /// 422 with a frozen semantic code.
@@ -231,6 +275,13 @@ impl ApiError {
             "persisted workflow state is corrupt",
         )
         .with_details(json!({ "record": what }))
+    }
+
+    /// [`ApiError::internal`] that first logs the underlying `cause` (Fable #202); the cause is
+    /// never part of the response.
+    pub fn internal_cause<E: std::fmt::Debug + ?Sized>(subsystem: &str, cause: &E) -> ApiError {
+        tracing::error!(target: "plumb_api::internal", subsystem, cause = ?cause, "internal failure");
+        ApiError::internal(subsystem)
     }
 
     /// 500 `E_INTERNAL`; `subsystem` names the failing component, never its raw message.

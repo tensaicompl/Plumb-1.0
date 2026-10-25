@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readData } from "../../api/client";
 import type { components } from "../../api/schema";
 import { t } from "../../i18n";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type Calculation = components["schemas"]["Calculation"];
 type CalculationExample = components["schemas"]["CalculationExample"];
@@ -24,11 +25,7 @@ class ExampleUnavailable extends Error {
 }
 
 async function fetchCalculations(): Promise<Calculation[]> {
-  const { data, response } = await apiClient.GET("/api/model/calculations");
-  if (data === undefined) {
-    throw new Error("GET /api/model/calculations failed with HTTP " + String(response.status));
-  }
-  return data.items;
+  return (await readData(apiClient.GET("/api/model/calculations"))).items;
 }
 
 function field(body: unknown, name: string): string | null {
@@ -121,7 +118,7 @@ export function CalculationsPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t("calculations.title")}</h1>
-      {calculations.isError && <p role="alert">{t("calculations.loadFailed")}</p>}
+      {calculations.isError && <ReadFailure error={calculations.error} messageKey="calculations.loadFailed" />}
       {calculations.data === undefined && !calculations.isError && <p>{t("calculations.loading")}</p>}
       {calculations.data !== undefined && calculations.data.length === 0 && <p>{t("calculations.empty")}</p>}
       {calculations.data !== undefined && calculations.data.length > 0 && (

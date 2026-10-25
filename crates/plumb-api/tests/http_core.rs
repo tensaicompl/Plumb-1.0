@@ -608,14 +608,7 @@ mod http_core {
     /// stay current.
     async fn app_with_source(file: &str, body: &[u8]) -> (App, String) {
         let app = app();
-        let r = upload(
-            &app,
-            Some(&semantic(&app)),
-            Some(file),
-            "text/markdown",
-            body,
-        )
-        .await;
+        let r = upload(&app, Some(&etag(&app)), Some(file), "text/markdown", body).await;
         assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
         let source = r.json()["id"].as_str().unwrap().to_owned();
         let App { _dir, path, .. } = app;
@@ -755,6 +748,11 @@ mod http_core {
 
     fn semantic(app: &App) -> String {
         head(app).revision.semantic_hash.to_string()
+    }
+
+    /// The current If-Match value: the strong entity-tag of the head revision ID (§33.2).
+    fn etag(app: &App) -> String {
+        format!("\"{}\"", head(app).revision.id)
     }
 
     fn revision_count(app: &App) -> u64 {
@@ -1090,11 +1088,11 @@ mod http_core {
             (2, 2, 0)
         );
         assert_eq!(routed.len(), 74);
-        // An unregistered path is a plain 404.
+        // An unregistered path is the typed 404 (H0.11 replaces the former empty body).
         let r = get(&app, "/api/nowhere").await;
         assert_eq!(
-            (r.status, r.bytes.is_empty()),
-            (StatusCode::NOT_FOUND, true)
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "E_ROUTE_NOT_FOUND")
         );
     }
 
@@ -1131,7 +1129,7 @@ mod http_core {
             b"# Policy\n\nLeave needs approval.\n\nHalf days count.\n",
         )
         .await;
-        let expected = semantic(&app);
+        let expected = etag(&app);
         for uri in ORDINARY_GETS {
             let uri = uri.replace("SOURCE", &source);
             let r = get(&app, &uri).await;
@@ -1200,6 +1198,8 @@ mod http_core {
             .collect();
         json!({
             "gate": report.gate.as_str(),
+            "state": "current",
+            "reason": null,
             "passed": report.result == plumb_validation::GateResult::Pass,
             "findings": findings,
             "rules": rules,
@@ -1210,6 +1210,20 @@ mod http_core {
                 "warnings": report.summary.warnings
             },
         })
+    }
+
+    /// The entries of a GET /api/gates body whose gate is current (H0.11: every NOW gate is
+    /// listed; the others are `not_evaluated` or `stale`).
+    fn current_gates(gates: &Value) -> Value {
+        let all = gates.as_array().unwrap();
+        let names: Vec<&str> = all.iter().map(|g| g["gate"].as_str().unwrap()).collect();
+        assert_eq!(names, ["I0", "F1", "F2", "F3", "F4"]);
+        Value::Array(
+            all.iter()
+                .filter(|g| g["state"] == "current")
+                .cloned()
+                .collect(),
+        )
     }
 
     /// `graph` plus the Accepted Finding nodes of `report` (findings do not change the semantic
@@ -1280,7 +1294,7 @@ mod http_core {
         );
 
         let app = app_with(waived_graph, &[GateId::F1], fixed());
-        let gates = get(&app, "/api/gates").await.json();
+        let gates = current_gates(&get(&app, "/api/gates").await.json());
         assert_eq!(gates.as_array().unwrap().len(), 1);
         let f1 = &gates[0];
         assert_eq!(*f1, gate_json(&report));
@@ -1325,7 +1339,7 @@ mod http_core {
         let me = get(&app, "/api/me").await.json();
         assert_eq!(
             me,
-            json!({"user": "alice", "roles": ["analyst", "reviewer"], "mode": "pilot"})
+            json!({"user": "alice", "roles": ["analyst", "reviewer"], "mode": "pilot", "inference_available": true})
         );
         let version = get(&app, "/api/model/version").await.json();
         let h = head(&app).revision;
@@ -1335,7 +1349,7 @@ mod http_core {
         assert_eq!(version["semantic_hash"], h.semantic_hash.to_string());
         assert_eq!(version["evidence_hash"], h.evidence_hash.to_string());
         // Current reports in gate order; the current I0 FAIL is still current.
-        let gates = get(&app, "/api/gates").await.json();
+        let gates = current_gates(&get(&app, "/api/gates").await.json());
         let names: Vec<&str> = gates
             .as_array()
             .unwrap()
@@ -1429,7 +1443,10 @@ mod http_core {
     async fn http_core_gate_report_freshness() {
         // No current reports: no gates, and the gate-report-dependent export conflicts.
         let bare = app_with(fixture_graph(), &[], fixed());
-        assert_eq!(get(&bare, "/api/gates").await.json(), json!([]));
+        assert_eq!(
+            current_gates(&get(&bare, "/api/gates").await.json()),
+            json!([])
+        );
         let r = get(&bare, "/api/model/export?format=report").await;
         assert_eq!(
             (r.status, r.code().as_str()),
@@ -1512,7 +1529,7 @@ mod http_core {
                 Request::get("/api/gates").body(Body::empty()).unwrap(),
             )
             .await;
-            assert_eq!(r.json(), json!([]), "{label}");
+            assert_eq!(current_gates(&r.json()), json!([]), "{label}");
         }
         // Registration order does not matter.
         let dir = tempfile::tempdir().unwrap();
@@ -1542,8 +1559,7 @@ mod http_core {
             Request::get("/api/gates").body(Body::empty()).unwrap(),
         )
         .await;
-        let names: Vec<String> = r
-            .json()
+        let names: Vec<String> = current_gates(&r.json())
             .as_array()
             .unwrap()
             .iter()
@@ -1964,15 +1980,14 @@ mod http_core {
         let (mut nodes, edges) = fixture_parts();
         nodes.push(assumption("assumption:z", json!({"days": 1})));
         let app = app_with(graph_of(nodes, edges), &[], fixed());
+        // H0.11: reported as the item's typed health marker; the other items are returned.
         let r = get(&app, "/api/assumptions").await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.json()["health"][0]["id"], "assumption:z");
         assert_eq!(
-            (r.status, r.code().as_str()),
-            (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "E_UNREPRESENTABLE_ASSUMPTION_DEFAULT"
-            )
+            r.json()["health"][0]["code"],
+            "E_UNREPRESENTABLE_ASSUMPTION_DEFAULT"
         );
-        assert_eq!(r.json()["details"]["assumption"], "assumption:z");
     }
 
     #[tokio::test]
@@ -1986,6 +2001,9 @@ mod http_core {
             ("report", &outputs.model_report_md.bytes),
             ("decisions", &outputs.decisions_jsonl.bytes),
             ("glossary", &outputs.glossary_md.bytes),
+            // Fable #307: every artifact `report --out` writes is exportable.
+            ("scenarios", &outputs.scenarios_yaml.bytes),
+            ("gate_report", &outputs.gate_report_json.bytes),
         ] {
             let r = get(&app, &format!("/api/model/export?format={format}")).await;
             assert_eq!(r.status, StatusCode::OK);
@@ -2017,7 +2035,7 @@ mod http_core {
         let w = post(
             &app,
             "/api/model/attributes/attr:days/unit",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"unit": "day"})),
         )
         .await;
@@ -2069,7 +2087,7 @@ mod http_core {
         ] {
             let before = head(&app).revision;
             let expected = imported(media, name, bytes);
-            let r = upload(&app, Some(&semantic(&app)), Some(name), media, bytes).await;
+            let r = upload(&app, Some(&etag(&app)), Some(name), media, bytes).await;
             assert_eq!(r.status, StatusCode::OK, "{name}: {:?}", r.json());
             let body = r.json();
             let after = head(&app).revision;
@@ -2132,7 +2150,7 @@ mod http_core {
         // The same content again: the source exists.
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("leave.md"),
             "text/markdown",
             md,
@@ -2145,7 +2163,7 @@ mod http_core {
         // Unsupported media, missing or blank filename.
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("x.pdf"),
             "application/pdf",
             b"%PDF",
@@ -2160,26 +2178,19 @@ mod http_core {
         );
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("x.md"),
             "text/x-markdown",
             b"# x",
         )
         .await;
         assert_eq!(r.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
-        let r = upload(&app, Some(&semantic(&app)), None, "text/markdown", b"# x").await;
+        let r = upload(&app, Some(&etag(&app)), None, "text/markdown", b"# x").await;
         assert_eq!(
             (r.status, r.code().as_str()),
             (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
         );
-        let r = upload(
-            &app,
-            Some(&semantic(&app)),
-            Some(" "),
-            "text/markdown",
-            b"# x",
-        )
-        .await;
+        let r = upload(&app, Some(&etag(&app)), Some(" "), "text/markdown", b"# x").await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST);
         // A failed precondition writes no artifact.
         let fresh: &[u8] = b"# Fresh\n\nNever stored.\n";
@@ -2209,7 +2220,7 @@ mod http_core {
         let bytes: &[u8] = b"# Raced\n\nThis upload loses its race.\n";
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("raced.md"),
             "text/markdown",
             bytes,
@@ -2292,7 +2303,7 @@ mod http_core {
             let r = post(
                 &app,
                 uri,
-                Some(before.revision.semantic_hash.as_str()),
+                Some(&format!("\"{}\"", before.revision.id)),
                 body,
             )
             .await;
@@ -2358,7 +2369,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/model/calculations/calc:p/confirm",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             None,
         )
         .await;
@@ -2367,7 +2378,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/glossary/term:leave/edit",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"term": "leave request"})),
         )
         .await;
@@ -2386,10 +2397,17 @@ mod http_core {
         all.push(("create_source", "/api/sources", None));
         assert_eq!(all.len(), 9, "the nine A0.2 POST operations");
         for (operation, uri, body) in &all {
+            // The semantic hash is no longer a concurrency token (§33.2), and weak or wildcard
+            // validators never match.
             for if_match in [
                 None,
                 Some("psg:sha256:0000"),
+                Some(current.semantic_hash.as_str()),
                 Some(&format!("\"{}\"", current.semantic_hash)[..]),
+                Some(&format!("W/\"{}\"", current.id)[..]),
+                Some("*"),
+                Some(&format!("\"{}\", \"{}\"", current.id, current.id)[..]),
+                Some(&format!("{} ", current.id)[..]),
             ] {
                 let r = if *operation == "create_source" {
                     upload(&app, if_match, Some("x.md"), "text/markdown", b"# x\n").await
@@ -2423,6 +2441,43 @@ mod http_core {
         assert_eq!(posts, 9);
     }
 
+    /// Architecture §33.2: the ETag is the strong entity-tag of the loaded revision ID; If-Match
+    /// accepts exactly that quoted form or the bare revision ID.
+    #[tokio::test]
+    async fn http_core_if_match_is_the_quoted_or_bare_revision_id() {
+        let app = app();
+        let reviewed = get(&app, "/api/requirements").await.etag().unwrap();
+        let current = head(&app).revision;
+        assert_eq!(reviewed, format!("\"{}\"", current.id));
+        let r = post(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(&reviewed),
+            Some(json!({"class": "operational"})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        let bare = head(&app).revision.id.to_string();
+        let r = post(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(&bare),
+            Some(json!({"class": "functional"})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        // The first tag now names an older revision.
+        let r = post(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(&reviewed),
+            Some(json!({"class": "operational"})),
+        )
+        .await;
+        assert_eq!(r.code(), "E_PRECONDITION_FAILED");
+        assert_eq!(r.json()["revision"], head(&app).revision.id.to_string());
+    }
+
     #[tokio::test]
     async fn http_core_cas_race_is_412_without_retry() {
         let (app, clock) = racing_app();
@@ -2431,7 +2486,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/requirements/req:p/classify",
-            Some(loaded.semantic_hash.as_str()),
+            Some(loaded.id.as_str()),
             Some(json!({"class": "operational"})),
         )
         .await;
@@ -2460,7 +2515,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/requirements/req:c/classify",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"class": "functional"})),
         )
         .await;
@@ -2481,7 +2536,7 @@ mod http_core {
     #[tokio::test]
     async fn http_core_write_validation_errors() {
         let app = app();
-        let h = semantic(&app);
+        let h = etag(&app);
         let cases: Vec<(&str, Option<Value>, StatusCode, &str)> = vec![
             (
                 "/api/requirements/req:a/classify",
@@ -2846,7 +2901,7 @@ mod http_core {
         // A path parameter is part of the request identity.
         let a = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("a.md"),
             "text/markdown",
             b"# A\n\nOne.\n\nTwo.\n",
@@ -2858,7 +2913,7 @@ mod http_core {
             .to_owned();
         let b = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("b.md"),
             "text/markdown",
             b"# B\n\nThree.\n\nFour.\n",
@@ -2961,6 +3016,53 @@ mod http_core {
         Ok((head[0] & 0x0f, payload))
     }
 
+    /// A masked client frame (RFC 6455) with `opcode` and a payload under 126 bytes.
+    fn client_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mask = [0x11u8, 0x22, 0x33, 0x44];
+        let mut frame = vec![0x80 | opcode, 0x80 | payload.len() as u8];
+        frame.extend_from_slice(&mask);
+        frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        frame
+    }
+
+    /// Fable #237: the /api/events forwarder reads the socket while it waits for events, so a Ping
+    /// is answered and a client Close is detected promptly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn events_socket_answers_ping_and_close_promptly() {
+        use std::io::Write;
+        let app = app();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let server = app.router.clone();
+        tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .write_all(
+                b"GET /api/events HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+                  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            )
+            .unwrap();
+        let response = read_until(&mut stream, b"\r\n\r\n").await;
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 101"));
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(&client_frame(0x9, b"hi")).unwrap();
+        let (opcode, payload) = read_frame(&mut stream).expect("a pong without any event");
+        assert_eq!((opcode, payload.as_slice()), (0xA, &b"hi"[..]));
+        stream
+            .write_all(&client_frame(0x8, &1000u16.to_be_bytes()))
+            .unwrap();
+        // The subscription ends promptly: a close frame or the end of the connection, never a
+        // read timeout.
+        match read_frame(&mut stream) {
+            Ok((opcode, _)) => assert_eq!(opcode, 0x8),
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof, "{e}"),
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn http_core_events_websocket_is_forward_only() {
         use std::io::Write;
@@ -2975,7 +3077,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/model/calculations/calc:p/confirm",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             None,
         )
         .await;
@@ -3005,7 +3107,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/model/attributes/attr:days/unit",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"unit": "day"})),
         )
         .await;
@@ -3253,7 +3355,7 @@ mod http_core {
         let text = vec![b'a'; 5 * 1024 * 1024];
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("big.md"),
             "text/markdown",
             &text,
@@ -3375,7 +3477,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/proposals/intake",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"kind": "create", "payload": proposal, "evidence": []})),
         )
         .await;
@@ -3430,7 +3532,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/proposals/intake",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"kind": "create", "payload": proposal, "evidence": []})),
         )
         .await;
@@ -3563,7 +3665,7 @@ mod http_core {
     async fn typed_store_errors() {
         // A branch without a head is 404 E_BRANCH_NOT_FOUND, never E_INTERNAL.
         let app = app();
-        let tag = semantic(&app);
+        let tag = etag(&app);
         let ghost = router_over(
             "feature",
             open_store(&app.path),
@@ -3693,5 +3795,423 @@ mod http_core {
                 .code,
             "E_DATABASE_NOT_INITIALIZED"
         );
+    }
+
+    // ------------------------------------------------------------------ H0.11 error envelope
+
+    /// Asserts the typed `{code, message, details}` envelope with a catalogued `code` of `status`
+    /// and no framework, Rust debug or SQLite text.
+    fn assert_typed(r: &Reply, status: StatusCode, code: &str, what: &str) {
+        assert_eq!(
+            r.status,
+            status,
+            "{what}: {:?}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        assert_eq!(
+            r.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json",
+            "{what}"
+        );
+        let body = r.json();
+        let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["code", "details", "message"], "{what}");
+        assert_eq!(body["code"], code, "{what}");
+        let entry = plumb_api::error_catalogue::lookup(code)
+            .unwrap_or_else(|| panic!("{what}: {code} is not catalogued"));
+        assert_eq!(entry.status, status.as_u16(), "{what}");
+        let message = body["message"].as_str().unwrap();
+        for raw in [
+            "Failed to",
+            "axum",
+            "serde",
+            "sqlite",
+            "SQLite",
+            "{",
+            "Error(",
+        ] {
+            assert!(!message.contains(raw), "{what}: raw text in {message:?}");
+        }
+    }
+
+    /// H0.11 (architecture §33.12): every framework or extractor failure on the API boundary uses
+    /// the typed envelope.
+    #[tokio::test]
+    async fn framework_errors_use_typed_envelope() {
+        let app = app();
+        let tag = etag(&app);
+        // 404 unknown route, for any method and outside /api as well.
+        for (method, uri) in [
+            (Method::GET, "/api/nowhere"),
+            (Method::POST, "/api/nowhere"),
+            (Method::GET, "/nowhere"),
+            (Method::GET, "/api/requirements/req:a/nothing"),
+        ] {
+            let r = send(
+                &app.router,
+                Request::builder()
+                    .method(method.clone())
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_typed(&r, StatusCode::NOT_FOUND, "E_ROUTE_NOT_FOUND", uri);
+        }
+        // 405 a known route with another method.
+        for (method, uri) in [
+            (Method::DELETE, "/api/requirements"),
+            (Method::PUT, "/api/requirements/req:a/classify"),
+            (Method::POST, "/api/model/version"),
+        ] {
+            let r = send(
+                &app.router,
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_typed(
+                &r,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "E_METHOD_NOT_ALLOWED",
+                uri,
+            );
+        }
+        // 400 malformed JSON, query and path.
+        let r = post_raw(
+            &app,
+            "/api/requirements/req:p/classify",
+            "application/json",
+            b"{".to_vec(),
+        )
+        .await;
+        assert_typed(
+            &r,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+            "malformed JSON",
+        );
+        let r = get(&app, "/api/requirements?limit=x").await;
+        assert_typed(
+            &r,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+            "malformed query",
+        );
+        let r = get(&app, "/api/requirements/%FF").await;
+        assert_typed(
+            &r,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+            "malformed path",
+        );
+        // A plain GET of the WebSocket endpoint without an upgrade.
+        let r = get(&app, "/api/events").await;
+        assert_eq!(
+            r.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json",
+            "events without upgrade"
+        );
+        assert!(plumb_api::error_catalogue::lookup(&r.code()).is_some());
+        // 413 body limit.
+        let r = post_raw(
+            &app,
+            "/api/requirements/req:p/classify",
+            "application/json",
+            vec![b' '; MAX_JSON + 1],
+        )
+        .await;
+        assert_typed(
+            &r,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "E_PAYLOAD_TOO_LARGE",
+            "413",
+        );
+        // 415 an upload that is not multipart, and an unsupported source media type.
+        let r = send(
+            &app.router,
+            Request::post("/api/sources")
+                .header(header::CONTENT_TYPE, "text/plain")
+                .header("if-match", &tag)
+                .body(Body::from("x"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            r.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert!(
+            plumb_api::error_catalogue::lookup(&r.code()).is_some(),
+            "{}",
+            r.code()
+        );
+        let r = upload(
+            &app,
+            Some(&tag),
+            Some("x.exe"),
+            "application/x-msdownload",
+            b"MZ",
+        )
+        .await;
+        assert_typed(
+            &r,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "E_UNSUPPORTED_MEDIA_TYPE",
+            "415",
+        );
+    }
+
+    /// Every `"E_..."` code literal in the plumb-api source is catalogued, and the catalogue is
+    /// exactly the codes documented in OpenAPI (`x-plumb-error-codes`) with their statuses.
+    #[test]
+    fn every_error_code_is_catalogued() {
+        fn scan(dir: &Path, codes: &mut std::collections::BTreeSet<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    scan(&path, codes);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && !path.ends_with("error_catalogue.rs")
+                {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let bytes = text.as_bytes();
+                    let mut i = 0;
+                    while let Some(at) = text[i..].find("\"E_") {
+                        let start = i + at + 1;
+                        let end = start
+                            + text[start..]
+                                .find(|c: char| {
+                                    !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                                })
+                                .unwrap();
+                        if bytes[end] == b'"' && end > start + 2 {
+                            codes.insert(text[start..end].to_owned());
+                        }
+                        i = end;
+                    }
+                }
+            }
+        }
+        let mut used = std::collections::BTreeSet::new();
+        scan(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut used,
+        );
+        assert!(used.len() > 40, "{used:?}");
+        let catalogue = plumb_api::error_catalogue::ERROR_CATALOGUE;
+        let catalogued: std::collections::BTreeSet<String> =
+            catalogue.iter().map(|e| e.code.to_owned()).collect();
+        assert_eq!(
+            catalogued.len(),
+            catalogue.len(),
+            "duplicate catalogue entries"
+        );
+        let missing: Vec<&String> = used.difference(&catalogued).collect();
+        assert!(missing.is_empty(), "uncatalogued codes: {missing:?}");
+        let unused: Vec<&String> = catalogued.difference(&used).collect();
+        assert!(
+            unused.is_empty(),
+            "catalogued codes no source uses: {unused:?}"
+        );
+        for entry in catalogue {
+            assert!(StatusCode::from_u16(entry.status).is_ok(), "{}", entry.code);
+            assert!(!entry.meaning.is_empty(), "{}", entry.code);
+        }
+        let doc: Value = plumb_api::openapi_document().unwrap();
+        let documented: Vec<Value> = doc["info"]["x-plumb-error-codes"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let expected: Vec<Value> = catalogue
+            .iter()
+            .map(|e| json!({"code": e.code, "status": e.status, "meaning": e.meaning}))
+            .collect();
+        assert_eq!(documented, expected);
+    }
+
+    /// Fable #205: an error echoing client text truncates it to 64 characters plus an ellipsis.
+    #[tokio::test]
+    async fn echoed_client_text_is_truncated() {
+        assert_eq!(plumb_api::error::echo("short"), "\"short\"");
+        let long = "k".repeat(200);
+        let expected = format!("{:?}…", "k".repeat(64));
+        assert_eq!(plumb_api::error::echo(&long), expected);
+        assert_eq!(
+            plumb_api::error::echo(&"é".repeat(64)),
+            format!("{:?}", "é".repeat(64))
+        );
+        let app = app();
+        let r = get(&app, &format!("/api/requirements?{long}=1")).await;
+        assert_eq!(r.code(), "E_INVALID_REQUEST");
+        let message = r.json()["message"].as_str().unwrap().to_owned();
+        assert!(message.contains(&expected), "{message}");
+        assert!(!message.contains(&"k".repeat(65)), "{message}");
+        let r = post(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(&etag(&app)),
+            Some(json!({"class": "x".repeat(500)})),
+        )
+        .await;
+        assert_eq!(r.code(), "E_INVALID_REQUEST");
+        let message = r.json()["message"].as_str().unwrap().to_owned();
+        assert!(!message.contains(&"x".repeat(65)), "{message}");
+    }
+
+    /// A writer collecting formatted tracing output.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Fable #202: one tracing record per request (method, matched route, status, latency) and the
+    /// underlying cause of an internal failure, which never reaches the response.
+    #[tokio::test]
+    async fn requests_and_internal_causes_are_traced() {
+        // A process-wide subscriber: a scoped one can miss callsites first hit by other tests.
+        static CAPTURED: std::sync::OnceLock<Captured> = std::sync::OnceLock::new();
+        let captured = CAPTURED
+            .get_or_init(|| {
+                let captured = Captured::default();
+                let writer = captured.clone();
+                tracing::subscriber::set_global_default(
+                    tracing_subscriber::fmt()
+                        .with_writer(move || writer.clone())
+                        .with_ansi(false)
+                        .finish(),
+                )
+                .unwrap();
+                captured
+            })
+            .clone();
+        tracing::callsite::rebuild_interest_cache();
+        let app = app();
+        let r = get(&app, "/api/requirements/req:a").await;
+        assert_eq!(r.status, StatusCode::OK);
+        let r = get(&app, "/api/nowhere/secret-text").await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND);
+        let error = plumb_api::error::ApiError::internal_cause("revision_store", &"disk I/O error");
+        assert_eq!(error.body().details, json!({"subsystem": "revision_store"}));
+        let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("method=GET"), "{text}");
+        assert!(text.contains("route=/api/requirements/{id}"), "{text}");
+        assert!(text.contains("status=200"), "{text}");
+        assert!(text.contains("latency_ms="), "{text}");
+        assert!(
+            text.contains("route=unmatched") && text.contains("status=404"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("secret-text"),
+            "raw paths are never logged: {text}"
+        );
+        assert!(
+            text.contains("subsystem=\"revision_store\"")
+                || text.contains("subsystem=revision_store"),
+            "{text}"
+        );
+        assert!(text.contains("disk I/O error"), "{text}");
+    }
+
+    /// Fable #314: re-uploading the same source at another clock instant is E_SOURCE_EXISTS
+    /// (audit metadata is ignored); only a different payload under the same identity conflicts.
+    #[tokio::test]
+    async fn source_reupload_exists_under_another_clock_instant() {
+        let app = app();
+        let md = b"# Leave\n\nEmployees request leave.\n";
+        let r = upload(
+            &app,
+            Some(&etag(&app)),
+            Some("leave.md"),
+            "text/markdown",
+            md,
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        let id = r.json()["id"].as_str().unwrap().to_owned();
+        // The same database served by a state whose clock reads another instant.
+        let later = state_with(
+            open_store(&app.path),
+            SqliteArtifactStore::open(&app.path).unwrap(),
+            Arc::new(FixedClock::new(ts(T1))),
+            Vec::new(),
+        );
+        let later = App {
+            _dir: tempfile::tempdir().unwrap(),
+            path: app.path.clone(),
+            router: router(later.clone()),
+            state: later,
+        };
+        let before = revision_count(&later);
+        let r = upload(
+            &later,
+            Some(&etag(&later)),
+            Some("leave.md"),
+            "text/markdown",
+            md,
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_SOURCE_EXISTS"),
+            "{:?}",
+            r.json()
+        );
+        assert_eq!(r.json()["details"]["id"], id);
+        // Fable #235: the same content under another display name is the same identity with
+        // another persisted payload: E_SOURCE_CONFLICT.
+        let r = upload(
+            &later,
+            Some(&etag(&later)),
+            Some("other.md"),
+            "text/markdown",
+            md,
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_SOURCE_CONFLICT"),
+            "{:?}",
+            r.json()
+        );
+        assert_eq!(revision_count(&later), before);
+    }
+
+    /// Fable #321: a source yielding zero EvidenceFragments is a typed 400 before any artifact or
+    /// revision is written.
+    #[tokio::test]
+    async fn empty_source_is_rejected_before_any_write() {
+        let app = app();
+        let before = revision_count(&app);
+        for (name, media, bytes) in [
+            ("empty.md", "text/markdown", &b""[..]),
+            ("blank.md", "text/markdown", &b"\n\n   \n"[..]),
+            ("blank.txt", "text/plain", &b"   "[..]),
+        ] {
+            let r = upload(&app, Some(&etag(&app)), Some(name), media, bytes).await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (StatusCode::BAD_REQUEST, "E_SOURCE_EMPTY"),
+                "{name}: {:?}",
+                r.json()
+            );
+            assert!(
+                !artifact_exists(&app, &Hash::content_sha256(bytes)),
+                "{name}"
+            );
+        }
+        assert_eq!(revision_count(&app), before);
     }
 }

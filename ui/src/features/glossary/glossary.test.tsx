@@ -8,11 +8,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { http } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { components } from "../../api/schema";
-import { server } from "../../test/msw";
+import { etagJson, server, TEST_ETAG } from "../../test/msw";
 
 type GlossaryPage = components["schemas"]["GlossaryPage"];
 type Preview = components["schemas"]["SemanticChangePreviewResponse"];
@@ -111,7 +111,7 @@ interface Call {
   readonly body: unknown;
 }
 
-function handlers(calls: Call[], merge: () => Response = () => HttpResponse.json(WRITE)) {
+function handlers(calls: Call[], merge: () => Response = () => etagJson(WRITE)) {
   const record = async (request: Request, method: string) => {
     const url = new URL(request.url);
     const text = method === "GET" ? "" : await request.text();
@@ -124,25 +124,33 @@ function handlers(calls: Call[], merge: () => Response = () => HttpResponse.json
     });
   };
   return [
-    http.get("*/api/me", () => HttpResponse.json({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"] })),
     http.get("*/api/model/version", () =>
-      HttpResponse.json({ version: "rev:7", revision: "rev:7", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
+      etagJson({ version: "rev:7", revision: "rev:7", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
     http.get("*/api/glossary", async ({ request }) => {
       await record(request, "GET");
-      return HttpResponse.json(new URL(request.url).searchParams.get("cursor") === "cursor-page-2" ? PAGE_2 : PAGE_1);
+      return etagJson(new URL(request.url).searchParams.get("cursor") === "cursor-page-2" ? PAGE_2 : PAGE_1);
     }),
     http.post("*/api/glossary/:id/merge/preview", async ({ request }) => {
       await record(request, "POST");
-      return HttpResponse.json(MERGE_PREVIEW);
+      return etagJson(MERGE_PREVIEW);
     }),
     http.post("*/api/glossary/:id/merge", async ({ request }) => {
       await record(request, "POST");
-      return HttpResponse.json(WRITE);
+      return etagJson(WRITE);
     }),
     http.post("*/api/proposals/:id/merge", async ({ request }) => {
       await record(request, "POST");
       return merge();
+    }),
+    http.post("*/api/glossary/:id/confirm", async ({ request }) => {
+      await record(request, "POST");
+      return etagJson(WRITE);
+    }),
+    http.post("*/api/glossary/:id/edit", async ({ request }) => {
+      await record(request, "POST");
+      return etagJson(WRITE);
     }),
   ];
 }
@@ -203,6 +211,35 @@ describe("GlossaryPage", () => {
   });
 });
 
+// ------------------------------------------------------------------ confirm and edit
+
+describe("Glossary confirmation and edit (H0.11)", () => {
+  it("confirms only a Proposed term and edits aliases with the unchanged term, with the reviewed ETag", async () => {
+    const calls: Call[] = [];
+    server.use(...handlers(calls));
+    renderGlossary();
+    const user = userEvent.setup();
+    const proposed = (await screen.findByText("vacation")).closest("tr") as HTMLElement;
+    const accepted = screen.getByText("leave request").closest("tr") as HTMLElement;
+    // Confirmation is offered only where the backend accepts it.
+    expect(within(accepted).queryByRole("button", { name: "Confirm" })).toBeNull();
+    await user.click(within(proposed).getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(posts(calls, "/api/glossary/term:vacation/confirm")).toHaveLength(1));
+    expect(posts(calls, "/api/glossary/term:vacation/confirm")[0]?.ifMatch).toBe(TEST_ETAG);
+
+    await user.click(within(accepted).getByRole("button", { name: "Edit aliases" }));
+    const input = within(accepted).getByRole("textbox", { name: "Aliases (comma-separated)" }) as HTMLInputElement;
+    expect(input.value).toBe("absence");
+    await user.clear(input);
+    await user.type(input, "absence, time off");
+    await user.click(within(accepted).getByRole("button", { name: "Save aliases" }));
+    await waitFor(() => expect(posts(calls, "/api/glossary/term:leave/edit")).toHaveLength(1));
+    expect(posts(calls, "/api/glossary/term:leave/edit").map((c) => [c.ifMatch, c.body])).toEqual([
+      [TEST_ETAG, { term: "leave request", aliases: ["absence", "time off"] }],
+    ]);
+  });
+});
+
 // ------------------------------------------------------------------ merge
 
 describe("Glossary merge", () => {
@@ -213,7 +250,7 @@ describe("Glossary merge", () => {
     const user = await chooseAndPreview();
 
     expect(posts(calls, "/api/glossary/term:vacation/merge/preview").map((c) => [c.ifMatch, c.body])).toEqual([
-      [CURRENT, { into: "term:leave", reason: "Synonym." }],
+      [TEST_ETAG, { into: "term:leave", reason: "Synonym." }],
     ]);
     const panel = screen.getByTestId("semantic-preview");
     expect(within(panel).getByTestId("preview-action").textContent).toBe("merge");
@@ -239,7 +276,7 @@ describe("Glossary merge", () => {
     await user.click(within(panel).getByTestId("preview-confirm"));
     await waitFor(() => expect(screen.queryByTestId("semantic-preview")).toBeNull());
     expect(posts(calls, "/api/proposals/prop:merge-vacation/merge").map((c) => [c.ifMatch, c.body])).toEqual([
-      [CURRENT, { reason: "Synonym." }],
+      [`"rev:7"`, { reason: "Synonym." }],
     ]);
     // The direct compatibility merge is never used by the UI.
     expect(posts(calls, "/api/glossary/term:vacation/merge")).toEqual([]);
@@ -250,7 +287,7 @@ describe("Glossary merge", () => {
     const calls: Call[] = [];
     server.use(
       ...handlers(calls, () =>
-        HttpResponse.json({ code: "E_PROPOSAL_BASELINE_CHANGED", message: "baseline changed", details: {} }, { status: 409 }),
+        etagJson({ code: "E_PROPOSAL_BASELINE_CHANGED", message: "baseline changed", details: {} }, { status: 409 }),
       ),
     );
     renderGlossary();

@@ -1236,8 +1236,13 @@ export interface components {
             statement: string;
             status: string;
         };
-        /** @description A page of results; `next_cursor` is null on the last page. */
+        /**
+         * @description A page of results; `next_cursor` is null on the last page. An item of the page whose
+         *     projection failed is in `health` (with its typed error) instead of `items`; corruption
+         *     is reported, never hidden, and the remaining items are still returned.
+         */
         AssumptionPage: {
+            health: components["schemas"]["ItemHealth"][];
             items: components["schemas"]["Assumption"][];
             next_cursor?: string | null;
         };
@@ -1316,7 +1321,7 @@ export interface components {
             type: "enum";
         };
         ClassifyRequest: {
-            class: string;
+            class: components["schemas"]["RequirementClass"];
         };
         ConfirmDerivedRequest: {
             table_id: string;
@@ -1444,7 +1449,7 @@ export interface components {
             to: string;
         };
         /** @enum {string} */
-        ExportFormat: "functional" | "report" | "decisions" | "glossary";
+        ExportFormat: "functional" | "report" | "decisions" | "glossary" | "scenarios" | "gate_report";
         Finding: {
             affected_refs: string[];
             code: string;
@@ -1468,6 +1473,14 @@ export interface components {
          * @enum {string}
          */
         FindingRuleClass: "external_standard" | "external_interop" | "plumb_core" | "profile_policy" | "organization_policy";
+        /**
+         * @description The evaluation state of a NOW gate on the branch head (H0.11, architecture §33.12):
+         *     `current` has a report for the head; `stale` has only reports of earlier heads and cannot be
+         *     evaluated now; `not_evaluated` has never been evaluated and cannot be evaluated now. A gate
+         *     that is not current carries no rule results.
+         * @enum {string}
+         */
+        GateEvaluationState: "not_evaluated" | "current" | "stale";
         /**
          * @description A NOW-scope gate.
          * @enum {string}
@@ -1512,13 +1525,22 @@ export interface components {
          * @enum {string}
          */
         GateRuleState: "PASS" | "FAIL" | "WARN" | "NOT_APPLICABLE" | "WAIVED" | "ERROR";
+        /** @description The typed failure that keeps a gate from being evaluated on the branch head. */
+        GateStateReason: {
+            code: string;
+            message: string;
+        };
         GateStatus: {
             /** @description Finding IDs. */
             findings: string[];
             gate: components["schemas"]["GateName"];
+            /** @description The current report's result; false when the gate is not current. */
             passed: boolean;
+            reason: null | components["schemas"]["GateStateReason"];
             /** @description The report's rule results, in report order (Hotfix 082). */
             rules: components["schemas"]["GateRuleResult"][];
+            /** @description Whether this entry is the gate's report current for the branch head (H0.11). */
+            state: components["schemas"]["GateEvaluationState"];
             /** @description The report's own summary counts (Hotfix 082). */
             summary: components["schemas"]["GateSummaryView"];
             /** @description The report's applied governed waivers, in report order (Hotfix 082). */
@@ -1598,6 +1620,15 @@ export interface components {
             semantic_hash: string;
             version: string;
         };
+        /**
+         * @description The typed health marker of a collection item whose projection failed (H0.11): the element
+         *     ID, the typed error code and message. The item's detail route fails with the same error.
+         */
+        ItemHealth: {
+            code: string;
+            id: string;
+            message: string;
+        };
         JobResponse: {
             /** @description The branch revision the job captured. */
             base_revision: string;
@@ -1617,6 +1648,11 @@ export interface components {
             reason: string;
         };
         MeResponse: {
+            /**
+             * @description Whether this server can run inference (sessions and inference-requiring recipes): false
+             *     exactly when the configured provider mode is `null` (H0.11, Fable #355).
+             */
+            inference_available: boolean;
             mode: string;
             roles: string[];
             user: string;
@@ -1643,7 +1679,7 @@ export interface components {
             version: string;
         };
         /**
-         * @description 412: the request's If-Match was not the current semantic hash. `revision` and
+         * @description 412: the request's If-Match did not name the current branch-head revision. `revision` and
          *     `semantic_hash` are the current branch-head values.
          */
         PreconditionFailedResponse: {
@@ -1784,8 +1820,13 @@ export interface components {
          * @enum {string}
          */
         QuestionKind: "YesNo" | "PickOne" | "PickMany" | "Number" | "Text" | "Cardinality" | "Unit" | "Precision" | "Rounding" | "FormulaConfirm" | "RuleCell" | "Calendar" | "RoleAssignment" | "Permission" | "QualityThreshold" | "ArchitectureChoice" | "TechnologyChoice" | "InterfaceChoice" | "VerificationMethod";
-        /** @description A page of results; `next_cursor` is null on the last page. */
+        /**
+         * @description A page of results; `next_cursor` is null on the last page. An item of the page whose
+         *     projection failed is in `health` (with its typed error) instead of `items`; corruption
+         *     is reported, never hidden, and the remaining items are still returned.
+         */
         QuestionPage: {
+            health: components["schemas"]["ItemHealth"][];
             items: components["schemas"]["Question"][];
             next_cursor?: string | null;
         };
@@ -1822,12 +1863,17 @@ export interface components {
         ReasonRequest: {
             reason: string;
         };
+        /**
+         * @description The closed requirement class vocabulary (`Requirement.requirement_kind`, §7.5).
+         * @enum {string}
+         */
+        RequirementClass: "functional" | "quality" | "interface" | "data" | "security" | "operational" | "compliance" | "transition" | "constraint";
         RequirementCoverage: {
             operations: string[];
             scenarios: string[];
         };
         RequirementDetail: {
-            class: string;
+            class: components["schemas"]["RequirementClass"];
             coverage: components["schemas"]["RequirementCoverage"];
             /**
              * @description The ID of that pending S1.2 EARS WorkflowProposal, accepted through the governed
@@ -1869,7 +1915,7 @@ export interface components {
             next_cursor?: string | null;
         };
         RequirementSummary: {
-            class: string;
+            class: components["schemas"]["RequirementClass"];
             coverage: components["schemas"]["RequirementCoverage"];
             id: string;
             /**
@@ -1913,8 +1959,13 @@ export interface components {
             outcome: string;
             reason: string;
         };
-        /** @description A page of results; `next_cursor` is null on the last page. */
+        /**
+         * @description A page of results; `next_cursor` is null on the last page. An item of the page whose
+         *     projection failed is in `health` (with its typed error) instead of `items`; corruption
+         *     is reported, never hidden, and the remaining items are still returned.
+         */
         RulePage: {
+            health: components["schemas"]["ItemHealth"][];
             items: components["schemas"]["Rule"][];
             next_cursor?: string | null;
         };
@@ -1952,8 +2003,13 @@ export interface components {
         ScenarioCorrectRequest: {
             then: string[];
         };
-        /** @description A page of results; `next_cursor` is null on the last page. */
+        /**
+         * @description A page of results; `next_cursor` is null on the last page. An item of the page whose
+         *     projection failed is in `health` (with its typed error) instead of `items`; corruption
+         *     is reported, never hidden, and the remaining items are still returned.
+         */
         ScenarioPage: {
+            health: components["schemas"]["ItemHealth"][];
             items: components["schemas"]["Scenario"][];
             next_cursor?: string | null;
         };
@@ -2205,7 +2261,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -2214,6 +2270,13 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "health": [
+                     *         {
+                     *           "code": "example",
+                     *           "id": "example",
+                     *           "message": "example"
+                     *         }
+                     *       ],
                      *       "items": [
                      *         {
                      *           "id": "example",
@@ -2250,7 +2313,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -2300,7 +2363,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -2359,7 +2422,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -2460,7 +2523,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -2511,7 +2574,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -2561,7 +2624,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -2594,7 +2657,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -2609,6 +2672,10 @@ export interface operations {
                      *         ],
                      *         "gate": "F1",
                      *         "passed": true,
+                     *         "reason": {
+                     *           "code": "example",
+                     *           "message": "example"
+                     *         },
                      *         "rules": [
                      *           {
                      *             "applicability": {
@@ -2640,6 +2707,7 @@ export interface operations {
                      *             "waiver_ref": "example"
                      *           }
                      *         ],
+                     *         "state": "current",
                      *         "summary": {
                      *           "blocker_failed": 0,
                      *           "blocker_waived": 0,
@@ -2685,7 +2753,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -2733,7 +2801,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -2774,7 +2842,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -2799,7 +2867,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -2849,7 +2917,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -2874,7 +2942,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -2925,7 +2993,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -2950,7 +3018,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -3062,7 +3130,7 @@ export interface operations {
                     "application/json": components["schemas"]["SemanticChangePreviewResponse"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -3101,7 +3169,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3133,7 +3201,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3142,6 +3210,7 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "inference_available": true,
                      *       "mode": "example",
                      *       "roles": [
                      *         "example"
@@ -3159,7 +3228,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -3209,7 +3278,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -3234,7 +3303,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -3284,7 +3353,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -3309,7 +3378,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -3359,7 +3428,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -3403,7 +3472,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3447,7 +3516,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -3488,7 +3557,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -3533,7 +3602,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3569,7 +3638,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3625,7 +3694,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3676,7 +3745,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3760,7 +3829,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3824,7 +3893,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3861,7 +3930,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3870,6 +3939,13 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "health": [
+                     *         {
+                     *           "code": "example",
+                     *           "id": "example",
+                     *           "message": "example"
+                     *         }
+                     *       ],
                      *       "items": [
                      *         {
                      *           "conditions": [
@@ -3938,7 +4014,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -3981,7 +4057,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -4033,7 +4109,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -4087,7 +4163,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -4145,7 +4221,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -4186,7 +4262,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -4211,7 +4287,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -4261,7 +4337,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -4286,7 +4362,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -4327,7 +4403,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -4360,7 +4436,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -4405,7 +4481,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -4486,7 +4562,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -4531,7 +4607,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -4570,7 +4646,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -4651,7 +4727,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -4669,7 +4745,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -4721,7 +4797,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -4746,7 +4822,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -4840,7 +4916,7 @@ export interface operations {
                     "application/json": components["schemas"]["IntakeResponse"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -4865,7 +4941,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -4911,7 +4987,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -4936,7 +5012,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -4982,7 +5058,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -5007,7 +5083,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -5053,7 +5129,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -5078,7 +5154,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -5124,7 +5200,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -5149,7 +5225,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -5195,7 +5271,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -5220,7 +5296,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -5266,7 +5342,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -5325,7 +5401,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -5334,6 +5410,13 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "health": [
+                     *         {
+                     *           "code": "example",
+                     *           "id": "example",
+                     *           "message": "example"
+                     *         }
+                     *       ],
                      *       "items": [
                      *         {
                      *           "answer_schema": {},
@@ -5377,7 +5460,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -5476,7 +5559,7 @@ export interface operations {
                     "application/json": components["schemas"]["AnswerResponse"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -5515,7 +5598,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -5580,7 +5663,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -5651,7 +5734,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -5705,7 +5788,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -5755,7 +5838,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -5780,7 +5863,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -5798,7 +5881,7 @@ export interface operations {
             content: {
                 /**
                  * @example {
-                 *       "class": "example"
+                 *       "class": "compliance"
                  *     }
                  */
                 "application/json": components["schemas"]["ClassifyRequest"];
@@ -5830,7 +5913,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -5855,7 +5938,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -5906,7 +5989,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -5945,7 +6028,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -5976,7 +6059,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -6029,7 +6112,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -6054,7 +6137,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -6168,7 +6251,7 @@ export interface operations {
                     "application/json": components["schemas"]["SemanticChangePreviewResponse"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -6193,7 +6276,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -6244,7 +6327,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -6269,7 +6352,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -6321,7 +6404,7 @@ export interface operations {
                     "application/json": components["schemas"]["CreateRoundResponse"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -6360,7 +6443,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -6420,7 +6503,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -6429,6 +6512,13 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "health": [
+                     *         {
+                     *           "code": "example",
+                     *           "id": "example",
+                     *           "message": "example"
+                     *         }
+                     *       ],
                      *       "items": [
                      *         {
                      *           "confirmation_status": "Confirmed",
@@ -6480,7 +6570,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -6524,7 +6614,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -6549,7 +6639,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -6595,7 +6685,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -6620,7 +6710,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -6661,7 +6751,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -6686,7 +6776,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -6738,7 +6828,7 @@ export interface operations {
                     "application/json": components["schemas"]["WriteResult"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -6777,7 +6867,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -6799,12 +6889,12 @@ export interface operations {
     };
     search_model: {
         parameters: {
-            query?: {
+            query: {
                 /**
-                 * @description Search text
+                 * @description Search text; required and not blank (400 otherwise)
                  * @example example
                  */
-                q?: string;
+                q: string;
                 /**
                  * @description Search scope
                  * @example calculation
@@ -6827,11 +6917,11 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Search hits */
+            /** @description Search hits over Accepted elements only: Proposed, Rejected and other non-Accepted elements are never searchable */
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -6877,7 +6967,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -6924,7 +7014,7 @@ export interface operations {
                     "application/json": components["schemas"]["CreateSessionResponse"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -6963,7 +7053,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -7003,7 +7093,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -7027,7 +7117,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -7132,7 +7222,7 @@ export interface operations {
                     "application/json": components["schemas"]["SessionTurnResponse"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -7157,7 +7247,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -7204,7 +7294,7 @@ export interface operations {
                     "application/json": components["schemas"]["SourceUploadResponse"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -7243,7 +7333,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -7293,7 +7383,7 @@ export interface operations {
             200: {
                 headers: {
                     /**
-                     * @description The current semantic_hash.
+                     * @description The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).
                      * @example example
                      */
                     ETag?: string;
@@ -7338,7 +7428,7 @@ export interface operations {
             query?: never;
             header: {
                 /**
-                 * @description The current semantic_hash of the branch head.
+                 * @description The current branch-head revision ID, as the strong entity-tag from ETag ("rev:...") or bare (rev:...). A weak validator, * or a semantic hash is 412.
                  * @example example
                  */
                 "If-Match": string;
@@ -7385,7 +7475,7 @@ export interface operations {
                     "application/json": components["schemas"]["StageRunResponse"];
                 };
             };
-            /** @description Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values. */
+            /** @description Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values. */
             412: {
                 headers: {
                     [name: string]: unknown;

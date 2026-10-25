@@ -165,18 +165,18 @@ pub(crate) fn session_id(
         "assistant_actor_ref": assistant_actor_ref,
         "created_at": created_at,
     }))
-    .map_err(|_| ApiError::internal("session_id"))?;
+    .map_err(|e| ApiError::internal_cause("session_id", &e))?;
     let digest = Hash::content_sha256(&bytes);
     format!("ses:{}", &digest.as_str()["sha256:".len()..][..16])
         .parse()
-        .map_err(|_| ApiError::internal("session_id"))
+        .map_err(|e| ApiError::internal_cause("session_id", &e))
 }
 
 // ============================================================================ stored records
 
 /// The canonical JSON value of `value` for the workflow store.
 pub(crate) fn stored_json<T: Serialize>(value: &T) -> Result<Value, ApiError> {
-    serde_json::to_value(value).map_err(|_| ApiError::internal("workflow_json"))
+    serde_json::to_value(value).map_err(|e| ApiError::internal_cause("workflow_json", &e))
 }
 
 /// Deserializes stored canonical text and requires it to be exactly the RFC 8785 encoding of
@@ -310,7 +310,7 @@ pub(crate) fn intake_view(
         .iter()
         .map(|c| parse_wire::<IntakeReasonCode>(c.as_str(), "reason code"))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ApiError::internal("intake_projection"))?;
+        .map_err(|e| ApiError::internal_cause("intake_projection", &e))?;
     Ok(IntakeReportView {
         covered_by: report
             .covered_by

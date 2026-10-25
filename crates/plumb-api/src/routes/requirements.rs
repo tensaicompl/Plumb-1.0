@@ -285,7 +285,8 @@ fn replace_requirement(
     node: &Node,
     payload: Requirement,
 ) -> Result<Proposal, ApiError> {
-    let expected_hash = node_element_hash(node).map_err(|_| ApiError::internal("element_hash"))?;
+    let expected_hash =
+        node_element_hash(node).map_err(|e| ApiError::internal_cause("element_hash", &e))?;
     Proposal::new(
         StageId::S1,
         PatchSet {
@@ -304,7 +305,7 @@ fn replace_requirement(
         AcceptancePolicy::HumanConfirm,
         None,
     )
-    .map_err(|_| ApiError::internal("proposal"))
+    .map_err(|e| ApiError::internal_cause("proposal", &e))
 }
 
 /// `classify_requirement`: changes only `requirement_kind`.

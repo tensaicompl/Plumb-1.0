@@ -1,11 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, ReviewedEtag, useReviewedEtag, type ReviewedItems } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t, type MessageKey } from "../../i18n";
 import { writeErrorCode } from "../questions/QuestionsPage";
+import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
+import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 type Rule = components["schemas"]["Rule"];
 type RuleCellRequest = components["schemas"]["RuleCellRequest"];
@@ -14,12 +17,8 @@ type WriteResult = components["schemas"]["WriteResult"];
 /** Every rule query shares this root and is refetched after a cell write. */
 export const rulesQueryKey = ["rules"] as const;
 
-async function fetchRules(): Promise<Rule[]> {
-  const { data, response } = await apiClient.GET("/api/model/rules");
-  if (data === undefined) {
-    throw new Error("GET /api/model/rules failed with HTTP " + String(response.status));
-  }
-  return data.items;
+function fetchRules(): Promise<ReviewedItems<Rule> & { readonly health?: ItemHealth[] }> {
+  return readReviewed(apiClient.GET("/api/model/rules"));
 }
 
 /**
@@ -35,8 +34,8 @@ function Analysis({ name, titleKey, noneKey, items }: { name: string; titleKey: 
       {items !== undefined && items !== null && items.length === 0 && <p>{t(noneKey)}</p>}
       {items !== undefined && items !== null && items.length > 0 && (
         <ul className="font-mono">
-          {items.map((item) => (
-            <li key={item}>{item}</li>
+          {items.map((item, index) => (
+            <li key={index}>{item}</li>
           ))}
         </ul>
       )}
@@ -58,11 +57,12 @@ function Rows({ rows }: { rows: Rule["rows"] }) {
   }
   return (
     <table className="text-sm" data-testid="rule-rows">
+            <caption className="sr-only">{t("rules.caption")}</caption>
       <thead>
         <tr>
-          <th className="pr-2 text-left">{t("rules.row")}</th>
-          <th className="pr-2 text-left">{t("rules.when")}</th>
-          <th className="pr-2 text-left">{t("rules.then")}</th>
+          <th scope="col" className="pr-2 text-left">{t("rules.row")}</th>
+          <th scope="col" className="pr-2 text-left">{t("rules.when")}</th>
+          <th scope="col" className="pr-2 text-left">{t("rules.then")}</th>
         </tr>
       </thead>
       <tbody>
@@ -89,11 +89,13 @@ function Rows({ rows }: { rows: Rule["rows"] }) {
  */
 function CellFill({ rule }: { rule: Rule }) {
   const queryClient = useQueryClient();
-  const fill = useVersionedMutation<WriteResult, RuleCellRequest>((body, ifMatch) =>
-    apiClient.POST("/api/model/rules/{id}/cells", {
-      params: { path: { id: rule.id }, header: { "If-Match": ifMatch } },
-      body,
-    }),
+  const fill = useVersionedMutation<WriteResult, RuleCellRequest>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/model/rules/{id}/cells", {
+        params: { path: { id: rule.id }, header: { "If-Match": ifMatch } },
+        body,
+      }),
+    useReviewedEtag(),
   );
   const [cell, setCell] = useState("");
   const [outcome, setOutcome] = useState("");
@@ -149,8 +151,8 @@ function RuleItem({ rule }: { rule: Rule }) {
           <p>{t("rules.none")}</p>
         ) : (
           <ul className="font-mono">
-            {rule.conditions.map((condition) => (
-              <li key={condition}>{condition}</li>
+            {rule.conditions.map((condition, index) => (
+              <li key={index}>{condition}</li>
             ))}
           </ul>
         )}
@@ -158,7 +160,11 @@ function RuleItem({ rule }: { rule: Rule }) {
       <Rows rows={rule.rows} />
       <Analysis name="uncovered" titleKey="rules.uncovered" noneKey="rules.noUncovered" items={rule.uncovered_cells} />
       <Analysis name="overlaps" titleKey="rules.overlaps" noneKey="rules.noOverlaps" items={rule.overlaps} />
-      {rule.kind === "decision_table" && <CellFill rule={rule} />}
+      {rule.kind === "decision_table" && (
+        <RoleGate>
+          <CellFill rule={rule} />
+        </RoleGate>
+      )}
     </li>
   );
 }
@@ -170,15 +176,18 @@ export function RulesPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t("rules.title")}</h1>
-      {rules.isError && <p role="alert">{t("rules.loadFailed")}</p>}
+      {rules.isError && <ReadFailure error={rules.error} messageKey="rules.loadFailed" />}
       {rules.data === undefined && !rules.isError && <p>{t("rules.loading")}</p>}
-      {rules.data !== undefined && rules.data.length === 0 && <p>{t("rules.empty")}</p>}
-      {rules.data !== undefined && rules.data.length > 0 && (
-        <ul className="space-y-2">
-          {rules.data.map((rule) => (
-            <RuleItem key={rule.id} rule={rule} />
-          ))}
-        </ul>
+      <HealthMarkers health={rules.data?.health} />
+      {rules.data !== undefined && rules.data.items.length === 0 && <p>{t("rules.empty")}</p>}
+      {rules.data !== undefined && rules.data.items.length > 0 && (
+        <ReviewedEtag.Provider value={rules.data.etag}>
+          <ul className="space-y-2">
+            {rules.data.items.map((rule) => (
+              <RuleItem key={rule.id} rule={rule} />
+            ))}
+          </ul>
+        </ReviewedEtag.Provider>
       )}
     </div>
   );

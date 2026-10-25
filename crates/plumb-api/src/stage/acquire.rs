@@ -99,7 +99,7 @@ pub(crate) fn acquire(
             .map(|r| r.request.id.clone())
             .collect();
         return ArtifactSet::with_declared_absence(deterministic, Vec::new(), Vec::new(), absent)
-            .map_err(|e| ApiError::internal(&format!("artifact_set: {}", error_name(&e))));
+            .map_err(|e| ApiError::internal_cause("artifact_set", &e));
     }
     let provider = state
         .runtime("inference_provider")?
@@ -117,7 +117,7 @@ pub(crate) fn acquire(
             })?
             .map_err(|e| inference_failed(&e))?;
         let bytes = to_canonical_json(&execution.artifact)
-            .map_err(|_| ApiError::internal("inference_artifact"))?;
+            .map_err(|e| ApiError::internal_cause("inference_artifact", &e))?;
         inference.push(ArtifactInput {
             hash: refs.validated_inference_ref,
             kind: ArtifactKind::ValidatedInference,
@@ -126,7 +126,7 @@ pub(crate) fn acquire(
         });
     }
     ArtifactSet::new(deterministic, inference, Vec::new())
-        .map_err(|e| ApiError::internal(&format!("artifact_set: {}", error_name(&e))))
+        .map_err(|e| ApiError::internal_cause("artifact_set", &e))
 }
 
 /// The validated-inference artifact of `request` among `artifacts` with its input hash.

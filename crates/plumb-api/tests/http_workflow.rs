@@ -476,6 +476,9 @@ mod http_workflow {
         probe: Mutex<Option<(Router, Vec<String>)>>,
         /// The probe statuses, or `None` when a probe did not finish in time (a held lock).
         probed: Mutex<Option<Option<Vec<StatusCode>>>>,
+        /// When set, the provider call signals the first channel and blocks until the second
+        /// receives (a turn held in flight).
+        hold: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     }
 
     /// GETs `uris` through `router` from a fresh thread and runtime, giving up after 20 s.
@@ -547,6 +550,13 @@ mod http_workflow {
             }
             if let Some(path) = self.race.lock().unwrap().take() {
                 concurrent_commit(&path);
+            }
+            let hold = self.hold.lock().unwrap().take();
+            if let Some((entered, release)) = hold {
+                entered.send(()).unwrap();
+                release
+                    .recv_timeout(std::time::Duration::from_secs(20))
+                    .unwrap();
             }
             let mode = *self.mode.lock().unwrap();
             let proposals = match mode {
@@ -750,6 +760,7 @@ mod http_workflow {
             received: Mutex::new(Vec::new()),
             probe: Mutex::new(None),
             probed: Mutex::new(None),
+            hold: Mutex::new(None),
         });
         let state = state_at_profile(
             &path,
@@ -867,9 +878,17 @@ mod http_workflow {
             .to_owned()
     }
 
+    /// The current If-Match value: the ETag of a read (the quoted head revision ID, §33.2).
+    async fn etag(app: &App) -> String {
+        get(app, "/api/model/version").await.headers["etag"]
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
     /// A POST with the current If-Match.
     async fn write(app: &App, uri: &str, body: Option<Value>) -> Reply {
-        let tag = semantic(app).await;
+        let tag = etag(app).await;
         post(app, uri, Some(&tag), body).await
     }
 
@@ -938,6 +957,32 @@ mod http_workflow {
             "semantic_hash": semantic(app).await,
         });
         hex::encode(to_canonical_json(&cursor).unwrap())
+    }
+
+    /// Fable #350: only Accepted elements are searchable; a Proposed requirement is never a hit
+    /// (the contract and the UI say so).
+    #[tokio::test]
+    async fn search_hits_only_accepted_elements() {
+        let app = app();
+        concurrent_commit(&app.path);
+        let r = get(&app, "/api/search?q=writer").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert!(
+            r.json()["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["id"] != "req:racer"),
+            "{}",
+            r.text()
+        );
+        for blank in ["/api/search", "/api/search?q=", "/api/search?q=%20"] {
+            assert_error(
+                &get(&app, blank).await,
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            );
+        }
     }
 
     #[tokio::test]
@@ -1698,6 +1743,50 @@ mod http_workflow {
 
     // ------------------------------------------------------------------ sentences and CRUD
 
+    /// H0.2 (architecture §33.2): the concurrency token is the exact head revision ID, so a
+    /// change of Proposed state alone (equal semantic hash, new revision) makes a reviewed view
+    /// stale, and the old semantic-hash token never matches.
+    #[tokio::test]
+    async fn stale_proposed_view_is_precondition_failed() {
+        let app = app();
+        let reviewed = get(&app, "/api/model/sentences").await;
+        let reviewed_tag = reviewed.headers["etag"].to_str().unwrap().to_owned();
+        let before = head(&app).revision;
+        assert_eq!(reviewed_tag, format!("\"{}\"", before.id));
+        let uri = "/api/model/sentences/req:p/accept";
+        let old_token = post(&app, uri, Some(before.semantic_hash.as_str()), None).await;
+        assert_error(
+            &old_token,
+            StatusCode::PRECONDITION_FAILED,
+            "E_PRECONDITION_FAILED",
+        );
+
+        concurrent_commit(&app.path);
+        let after = head(&app).revision;
+        assert_eq!(after.semantic_hash, before.semantic_hash);
+        assert_ne!(after.id, before.id);
+        let stale = post(&app, uri, Some(&reviewed_tag), None).await;
+        assert_error(
+            &stale,
+            StatusCode::PRECONDITION_FAILED,
+            "E_PRECONDITION_FAILED",
+        );
+        assert_eq!(stale.json()["revision"], after.id.to_string());
+        assert_eq!(
+            stale.json()["semantic_hash"],
+            after.semantic_hash.to_string()
+        );
+        assert_eq!(head(&app).revision.id, after.id);
+
+        let current = get(&app, "/api/model/sentences").await.headers["etag"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let r = post(&app, uri, Some(&current), None).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_eq!(head(&app).revision.parent, Some(after.id));
+    }
+
     #[tokio::test]
     async fn http_workflow_sentences_project_and_write_requirements() {
         let app = app();
@@ -2270,11 +2359,13 @@ mod http_workflow {
     #[tokio::test]
     async fn http_workflow_rules_project_and_edit_one_cell() {
         let app = app();
-        // A malformed persisted table is a typed conflict, never skipped.
-        assert_error(
-            &get(&app, "/api/model/rules").await,
-            StatusCode::CONFLICT,
-            "E_DECISION_TABLE_ENCODING_INVALID",
+        // A malformed persisted table is reported, never skipped: a health marker in the list
+        // (H0.11) and a typed conflict on its detail route.
+        let list = get(&app, "/api/model/rules").await;
+        assert_eq!(list.status, StatusCode::OK, "{}", list.text());
+        assert_eq!(
+            list.json()["health"][0]["code"],
+            "E_DECISION_TABLE_ENCODING_INVALID"
         );
         assert_error(
             &get(&app, "/api/model/rules/dt:broken").await,
@@ -2930,7 +3021,7 @@ mod http_workflow {
             "E_SEMANTIC_INVARIANT",
         );
         let before = revision(&app).await;
-        let tag = semantic(&app).await;
+        let tag = etag(&app).await;
         let r = answer(&app, &question, json!({"performer_ref": "actor:clerk"})).await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.text());
         let body = r.json();
@@ -2961,7 +3052,11 @@ mod http_workflow {
             body["patch_preview"],
             serde_json::to_value(&persisted.patch_set.patch).unwrap()
         );
-        assert_eq!(persisted.patch_set.base_semantic_hash.to_string(), tag);
+        assert_eq!(tag, format!("\"{before}\""));
+        assert_eq!(
+            persisted.patch_set.base_semantic_hash,
+            head(&app).revision.semantic_hash
+        );
         // The proposal adds a performer relation, so it is a create action.
         assert_error(
             &write(
@@ -3179,6 +3274,7 @@ mod http_workflow {
             received: Mutex::new(Vec::new()),
             probe: Mutex::new(None),
             probed: Mutex::new(None),
+            hold: Mutex::new(None),
         });
         let runtime = plumb_api::application::ApplicationRuntime {
             inference_provider: inference
@@ -4093,7 +4189,7 @@ mod http_workflow {
             },
         )
         .unwrap();
-        let tag = semantic(&app).await;
+        let tag = etag(&app).await;
         let r = post(
             &app,
             &format!("/api/questions/{question}/answer"),
@@ -4834,6 +4930,28 @@ mod http_workflow {
             StatusCode::NOT_FOUND,
             "E_NOT_FOUND",
         );
+        // Fable #235: a persisted member without a canonical priority no longer reproduces the
+        // round: E_ROUND_INCONSISTENT from persisted data.
+        let node = head(&app).graph.node(&id(member)).unwrap().clone();
+        let NodePayload::Question(mut payload) = node.payload.clone() else {
+            panic!("a question");
+        };
+        payload.priority = None;
+        direct_commit(
+            &app,
+            SemanticPatch::ReplacePayload {
+                target: plumb_patch::ElementPrecondition {
+                    id: node.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(&node).unwrap(),
+                },
+                payload: NodePayload::Question(payload),
+            },
+        );
+        assert_error(
+            &get(&app, &format!("/api/rounds/{round_id}")).await,
+            StatusCode::CONFLICT,
+            "E_ROUND_INCONSISTENT",
+        );
     }
 
     // ------------------------------------------------------------------ sessions
@@ -4849,6 +4967,84 @@ mod http_workflow {
             Some(json!({"text": text, "stage": "S1"})),
         )
         .await
+    }
+
+    /// Fable #355: under the null provider mode GET /api/me says inference is unavailable and
+    /// session creation is refused with a typed error before anything is written.
+    #[tokio::test]
+    async fn null_provider_refuses_sessions_and_says_so() {
+        let null = application_app(fixture_graph());
+        let me = get(&null, "/api/me").await.json();
+        assert_eq!(me["inference_available"], false, "{me}");
+        let before = revision(&null).await;
+        assert_error(
+            &create_session(&null, json!([])).await,
+            StatusCode::CONFLICT,
+            "E_INFERENCE_UNAVAILABLE",
+        );
+        assert_eq!(revision(&null).await, before);
+        // A configured provider is available.
+        let live = app();
+        assert_eq!(
+            get(&live, "/api/me").await.json()["inference_available"],
+            true
+        );
+    }
+
+    /// Fable #207 / #235: a turn request for a session whose turn is in flight is 409
+    /// E_SESSION_TURN_IN_FLIGHT before any workflow write or provider call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_turn_on_one_session_is_rejected_while_in_flight() {
+        let app = app();
+        let r = create_session(&app, json!([])).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let session = r.json()["id"].as_str().unwrap().to_owned();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *app.provider.hold.lock().unwrap() = Some((entered_tx, release_rx));
+        let tag = etag(&app).await;
+        let router = app.router.clone();
+        let first_session = session.clone();
+        let first_tag = tag.clone();
+        let first = tokio::spawn(async move {
+            let request = Request::post(format!("/api/sessions/{first_session}/turns"))
+                .header("if-match", first_tag)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"text": "Employees request leave.", "stage": "S1"}))
+                        .unwrap(),
+                ))
+                .unwrap();
+            send(&router, request).await
+        });
+        tokio::task::spawn_blocking(move || {
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        let turns_before = workflow(&app).turns(&id(&session)).unwrap();
+        let second = post(
+            &app,
+            &format!("/api/sessions/{session}/turns"),
+            Some(&tag),
+            Some(json!({"text": "Managers approve.", "stage": "S1"})),
+        )
+        .await;
+        assert_error(&second, StatusCode::CONFLICT, "E_SESSION_TURN_IN_FLIGHT");
+        assert_eq!(
+            app.provider.received.lock().unwrap().len(),
+            1,
+            "no second provider call"
+        );
+        assert_eq!(workflow(&app).turns(&id(&session)).unwrap(), turns_before);
+        release_tx.send(()).unwrap();
+        let first = first.await.unwrap();
+        assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+        // After the turn completes the session accepts the next one.
+        let r = turn(&app, &session, "Managers approve.").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
     }
 
     #[tokio::test]
@@ -5306,6 +5502,186 @@ mod http_workflow {
         plumb_sim::scenario_run_id(&id(PROJECT), &id(scenario)).unwrap()
     }
 
+    /// H0.11 (architecture §33.12): an item whose projection fails degrades its list to a typed
+    /// health marker (code and element ID) while the other items are returned; its detail route
+    /// fails strictly with the same typed error.
+    #[tokio::test]
+    async fn corrupt_item_degrades_list_not_detail() {
+        // DecisionTables: the fixture's dt:broken has a malformed persisted encoding.
+        let app = app();
+        let r = get(&app, "/api/model/rules").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let page = r.json();
+        let ids: Vec<&str> = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"dt:eligibility") && !ids.contains(&"dt:broken"),
+            "{ids:?}"
+        );
+        assert_eq!(page["health"].as_array().unwrap().len(), 1, "{page}");
+        let marker = &page["health"][0];
+        assert_eq!(marker["id"], "dt:broken");
+        assert_eq!(marker["code"], "E_DECISION_TABLE_ENCODING_INVALID");
+        assert!(!marker["message"].as_str().unwrap().is_empty());
+        assert_error(
+            &get(&app, "/api/model/rules/dt:broken").await,
+            StatusCode::CONFLICT,
+            "E_DECISION_TABLE_ENCODING_INVALID",
+        );
+        // A marker takes its place in the paged sequence: every ID appears exactly once.
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let uri = match &cursor {
+                None => "/api/model/rules?limit=1".to_owned(),
+                Some(c) => format!("/api/model/rules?limit=1&cursor={c}"),
+            };
+            let page = get(&app, &uri).await.json();
+            for part in ["items", "health"] {
+                for item in page[part].as_array().unwrap() {
+                    seen.push(item["id"].as_str().unwrap().to_owned());
+                }
+            }
+            match page["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_owned()),
+                None => break,
+            }
+        }
+        let mut sorted = seen.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(seen, sorted);
+        assert!(seen.contains(&"dt:broken".to_owned()));
+
+        // Assumptions: a non-scalar default is reported as the item's health, not hidden.
+        direct_commit(
+            &app,
+            SemanticPatch::AddNode {
+                node: node(
+                    "assumption:bad",
+                    "Accepted",
+                    "Assumption",
+                    json!({
+                        "statement": "Leave is counted in days.", "owner_ref": "stakeholder:hr",
+                        "status": "Open", "finding_ref": null, "default_value": {"days": 1},
+                        "expires_at": null, "risk_ref": null
+                    }),
+                ),
+            },
+        );
+        let page = get(&app, "/api/assumptions").await.json();
+        assert_eq!(
+            page["health"],
+            json!([{
+                "id": "assumption:bad",
+                "code": "E_UNREPRESENTABLE_ASSUMPTION_DEFAULT",
+                "message": "an assumption default is not a JSON string, number or boolean"
+            }])
+        );
+        assert!(page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["id"] != "assumption:bad"));
+
+        // Scenarios: a run whose trace link is corrupt.
+        let app = run_app();
+        assert_eq!(
+            write(&app, "/api/scenarios/run", Some(json!({"scope": []})))
+                .await
+                .status,
+            StatusCode::OK
+        );
+        let node = head(&app).graph.node(&run_ref("scn:pass")).unwrap().clone();
+        direct_commit(
+            &app,
+            SemanticPatch::SetNodeExtension {
+                target: plumb_patch::ElementPrecondition {
+                    id: node.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(&node).unwrap(),
+                },
+                key: TRACE_LINK.parse().unwrap(),
+                value: json!(7),
+            },
+        );
+        let r = get(&app, "/api/scenarios").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let page = r.json();
+        assert_eq!(page["health"][0]["id"], "scn:pass");
+        assert_eq!(
+            page["health"][0]["code"],
+            "E_SCENARIO_RUN_TRACE_LINK_INVALID"
+        );
+        assert!(page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == "scn:fail"));
+        // A cheap filter that excludes the corrupt item never reports it.
+        let page = get(&app, "/api/scenarios?status=Rejected").await.json();
+        assert_eq!(page["health"], json!([]));
+        assert_error(
+            &get(&app, "/api/scenarios/scn:pass/run").await,
+            StatusCode::CONFLICT,
+            "E_SCENARIO_RUN_TRACE_LINK_INVALID",
+        );
+        // Fable #235: a persisted scenario outside the projection (no Derived/Confirmed status).
+        direct_commit(
+            &app,
+            SemanticPatch::AddNode {
+                node: scenario(
+                    "scn:odd",
+                    "Accepted",
+                    "Pending",
+                    "state:submitted",
+                    "trans:submit",
+                ),
+            },
+        );
+        let page = get(&app, "/api/scenarios").await.json();
+        let odd: Vec<&Value> = page["health"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|h| h["id"] == "scn:odd")
+            .collect();
+        assert_eq!(odd.len(), 1, "{page}");
+        assert_eq!(odd[0]["code"], "E_SCENARIO_PROJECTION_INVALID");
+
+        // Questions: a persisted Question whose status is outside the projection.
+        let app = waiver_app();
+        let question = question_about(&head(&app).graph, "op:approve");
+        let node = head(&app).graph.node(&question).unwrap().clone();
+        let NodePayload::Question(mut payload) = node.payload.clone() else {
+            panic!("a question");
+        };
+        payload.status = "Unheard".into();
+        direct_commit(
+            &app,
+            SemanticPatch::ReplacePayload {
+                target: plumb_patch::ElementPrecondition {
+                    id: node.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(&node).unwrap(),
+                },
+                payload: NodePayload::Question(payload),
+            },
+        );
+        let r = get(&app, "/api/questions").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let page = r.json();
+        assert_eq!(page["health"][0]["id"], question.to_string());
+        assert_eq!(page["health"][0]["code"], "E_QUESTION_PROJECTION_INVALID");
+        assert!(page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|q| q["id"] != question.to_string()));
+    }
+
     /// Commits `patch` directly to the store (another writer).
     fn direct_commit(app: &App, patch: SemanticPatch) {
         let mut store = SqliteRevisionStore::open(&app.path).unwrap();
@@ -5676,12 +6052,11 @@ mod http_workflow {
             StatusCode::CONFLICT,
             "E_SCENARIO_RUN_TRACE_MISMATCH",
         );
-        // The list fails the same way; nothing is fabricated.
-        assert_error(
-            &get(&app, "/api/scenarios").await,
-            StatusCode::CONFLICT,
-            "E_SCENARIO_RUN_TRACE_MISMATCH",
-        );
+        // The list reports the same typed error as the item's health marker (H0.11); nothing is
+        // fabricated.
+        let list = get(&app, "/api/scenarios").await.json();
+        assert_eq!(list["health"][0]["id"], "scn:pass");
+        assert_eq!(list["health"][0]["code"], "E_SCENARIO_RUN_TRACE_MISMATCH");
         // A re-run repairs the link through a normal governed update.
         let r = write(
             &app,

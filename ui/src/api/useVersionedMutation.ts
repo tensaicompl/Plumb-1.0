@@ -1,7 +1,8 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
 
-import { apiClient } from "./client";
+import { t } from "../i18n";
+import { apiClient, readReviewed, type ApiResponse, type Reviewed } from "./client";
 import type { components } from "./schema";
 
 export type ModelVersion = components["schemas"]["ModelVersionResponse"];
@@ -11,22 +12,13 @@ export type PreconditionFailed = components["schemas"]["PreconditionFailedRespon
 export const modelVersionQueryKey = ["model", "version"] as const;
 
 /** Reads GET /api/model/version. */
-export async function fetchModelVersion(): Promise<ModelVersion> {
-  const { data, response } = await apiClient.GET("/api/model/version");
-  if (data === undefined) {
-    throw new Error(`GET /api/model/version failed with HTTP ${response.status}`);
-  }
-  return data;
+export function fetchModelVersion(): Promise<Reviewed<ModelVersion>> {
+  return readReviewed(apiClient.GET("/api/model/version"));
 }
 
-/** The current model version, owned by TanStack Query. */
+/** The current model version, owned by TanStack Query (display only, never a write precondition). */
 export function useModelVersion() {
   return useQuery({ queryKey: modelVersionQueryKey, queryFn: fetchModelVersion });
-}
-
-/** Fetches the model version from the server now (never a stale cache entry). */
-export function fetchLatestModelVersion(queryClient: QueryClient): Promise<ModelVersion> {
-  return queryClient.fetchQuery({ queryKey: modelVersionQueryKey, queryFn: fetchModelVersion, staleTime: 0 });
 }
 
 /** A rejected write precondition, as the server reported it (null fields when not reported). */
@@ -80,42 +72,66 @@ export class WriteFailedError extends Error {
   }
 }
 
-/** The human-readable explanation of a failed write: the server `message`, or a plain
- * explanation when the AI inference provider is unavailable. */
+/** Client-side typed code of a write that never received an HTTP response. */
+export const TRANSPORT_FAILED = "E_TRANSPORT_FAILED";
+
+/** Client-side typed code of a write attempted before its reviewed data was loaded. */
+export const VIEW_NOT_LOADED = "E_VIEW_NOT_LOADED";
+
+/** A write that failed without an HTTP response (network loss, aborted or non-HTTP failure). */
+export class TransportFailedError extends WriteFailedError {
+  constructor() {
+    super(0, { code: TRANSPORT_FAILED, message: t("write.transportFailed"), details: {} });
+    this.name = "TransportFailedError";
+  }
+}
+
+/** The human-readable explanation of a failed write: the server `message`, the typed transport
+ * failure, or a plain explanation when the AI inference provider is unavailable. */
 export function writeErrorMessage(error: unknown): string | null {
   if (!(error instanceof WriteFailedError) || typeof error.body !== "object" || error.body === null) {
     return null;
   }
   const body = error.body as Record<string, unknown>;
   if (body["code"] === "E_INFERENCE_FAILED" || body["code"] === "E_INFERENCE_REQUIRED") {
-    return "The AI model is not available: no inference provider is configured for this server.";
+    return t("write.inferenceUnavailable");
   }
   return typeof body["message"] === "string" ? body["message"] : null;
 }
 
 /** The result shape of a generated openapi-fetch call. */
-export interface WriteResponse<TData> {
-  readonly data?: TData;
-  readonly error?: unknown;
-  readonly response: Response;
-}
+export type WriteResponse<TData> = ApiResponse<TData>;
+
+/** The reviewed version of a write: the ETag the user's data was loaded with (or null when not loaded yet). */
+export type ReviewedEtag<TVariables> = string | null | undefined | ((variables: TVariables) => string | null | undefined);
 
 /**
- * A typed write executed against the latest model version: the server's current `semantic_hash`
- * is fetched at execution time and passed to `write` as its If-Match value; the write runs
- * exactly once. A 412 invalidates every server query, opens the global ConflictDialog and fails
- * the mutation; nothing is retried, rebased or replayed.
+ * A typed write against the version of the data the user reviewed (architecture §33.2): `reviewed`
+ * is the `ETag` of that data's read (or, for data a write returned, the strong entity-tag of that
+ * result's revision) and is passed to `write` as its If-Match value; nothing is fetched first and
+ * the write runs exactly once. A 412 invalidates every server query, opens the global
+ * ConflictDialog and fails the mutation; nothing is retried, rebased or replayed. A write without
+ * an HTTP response fails with the typed TransportFailedError.
  */
 export function useVersionedMutation<TData, TVariables = void>(
   write: (variables: TVariables, ifMatch: string) => Promise<WriteResponse<TData>>,
+  reviewed: ReviewedEtag<TVariables>,
 ) {
   const queryClient = useQueryClient();
   const setConflict = useConflictStore((state) => state.setConflict);
   return useMutation<TData, Error, TVariables>({
     retry: false,
     mutationFn: async (variables) => {
-      const version = await fetchLatestModelVersion(queryClient);
-      const result = await write(variables, version.semantic_hash);
+      const etag = typeof reviewed === "function" ? reviewed(variables) : reviewed;
+      if (etag === null || etag === undefined) {
+        throw new WriteFailedError(0, { code: VIEW_NOT_LOADED, message: t("write.notLoaded"), details: {} });
+      }
+      let result: WriteResponse<TData>;
+      try {
+        result = await write(variables, etag);
+      } catch {
+        throw new TransportFailedError();
+      }
       if (result.response.status === 412) {
         const body = isPreconditionFailed(result.error) ? result.error : null;
         const conflict: Conflict = {

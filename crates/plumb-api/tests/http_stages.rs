@@ -507,14 +507,23 @@ mod http_stages {
         }
     }
 
+    async fn send(app: &App, request: Request<Body>) -> Reply {
+        send_router(&app.router, request).await
+    }
+
+    /// A GET of `uri` through another router (e.g. over a differently configured state).
+    async fn send_to(router: &Router, uri: &str) -> Reply {
+        send_router(router, Request::get(uri).body(Body::empty()).unwrap()).await
+    }
+
     /// Sends `request` with the loopback `Host` a real HTTP/1.1 client always sends
     /// (architecture §33.8: a request without a loopback Host is 403).
-    async fn send(app: &App, mut request: Request<Body>) -> Reply {
+    async fn send_router(router: &Router, mut request: Request<Body>) -> Reply {
         request
             .headers_mut()
             .entry(axum::http::header::HOST)
             .or_insert(axum::http::HeaderValue::from_static("127.0.0.1:8080"));
-        let response = app.router.clone().oneshot(request).await.unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let etag = response
             .headers()
@@ -535,11 +544,9 @@ mod http_stages {
         send(app, Request::get(uri).body(Body::empty()).unwrap()).await
     }
 
-    async fn head_hash(app: &App) -> String {
-        get(app, "/api/model/version").await.json()["semantic_hash"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+    /// The current If-Match value: the ETag of a read (the quoted head revision ID, §33.2).
+    async fn head_tag(app: &App) -> String {
+        get(app, "/api/model/version").await.etag.unwrap()
     }
 
     async fn post(app: &App, uri: &str, if_match: Option<&str>, body: Value) -> Reply {
@@ -560,7 +567,7 @@ mod http_stages {
     }
 
     async fn run_stage(app: &App, stage: &str, scope: Value) -> Reply {
-        let tag = head_hash(app).await;
+        let tag = head_tag(app).await;
         post(
             app,
             &format!("/api/stages/{stage}/run"),
@@ -697,7 +704,7 @@ mod http_stages {
     #[tokio::test]
     async fn http_stages_run_stage_and_get_job_contract() {
         let app = app(data_graph(&["Email"]));
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let before = head(&app).revision.id;
         // If-Match is required and literal.
         let r = post(&app, "/api/stages/intake/run", None, json!({})).await;
@@ -713,6 +720,22 @@ mod http_stages {
         )
         .await;
         assert_eq!(r.status, StatusCode::PRECONDITION_FAILED);
+        // The head semantic hash is no longer a concurrency token (§33.2); neither are weak or
+        // wildcard validators.
+        let current = head(&app).revision;
+        for stale in [
+            current.semantic_hash.to_string(),
+            format!("W/\"{}\"", current.id),
+            "*".to_owned(),
+        ] {
+            let r = post(&app, "/api/stages/intake/run", Some(&stale), json!({})).await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (StatusCode::PRECONDITION_FAILED, "E_PRECONDITION_FAILED"),
+                "{stale}"
+            );
+            assert_eq!(r.json()["revision"], current.id.to_string());
+        }
         // Scope errors.
         for (stage, scope, status, code) in [
             (
@@ -814,7 +837,11 @@ mod http_stages {
         let body = r.json();
         assert_eq!(body["version"], body["revision"]);
         assert_eq!(body["revision"], before.to_string());
-        assert_eq!(body["semantic_hash"], tag);
+        assert_eq!(tag, format!("\"{before}\""));
+        assert_eq!(
+            body["semantic_hash"],
+            head(&app).revision.semantic_hash.to_string()
+        );
         assert_eq!(body["events"], json!([]));
         let job_id = body["job_id"].as_str().unwrap().to_owned();
         let done = wait_job(&app, &job_id).await;
@@ -977,7 +1004,7 @@ mod http_stages {
         let job_id = run_inline(&app, Recipe::Tags, None);
         let props = pending(&app, &job_id);
         assert_eq!(props.len(), 2);
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let r = post(
             &app,
             &format!("/api/proposals/{}/accept", props[0].id),
@@ -1014,7 +1041,7 @@ mod http_stages {
         let loaded = head(&app);
         assert!(!loaded.revision.decision_refs.is_empty());
         // The sibling is immutable and stale against the child.
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let r = post(
             &app,
             &format!("/api/proposals/{}/accept", props[1].id),
@@ -1491,6 +1518,91 @@ mod http_stages {
 
     // ------------------------------------------------------------------ gates
 
+    /// `(gate, state, reason code)` of each GET /api/gates entry, in order.
+    fn gate_states(gates: &Value) -> Vec<(String, String, Option<String>)> {
+        gates
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| {
+                (
+                    g["gate"].as_str().unwrap().to_owned(),
+                    g["state"].as_str().unwrap().to_owned(),
+                    g["reason"]["code"].as_str().map(str::to_owned),
+                )
+            })
+            .collect()
+    }
+
+    /// H0.11 (architecture §33.12): GET /api/gates reports every NOW gate as not_evaluated,
+    /// current or stale, with the typed reason when it is not current; F3 is reachable.
+    #[tokio::test]
+    async fn gates_report_not_evaluated_current_or_stale() {
+        let app = app(data_graph(&["Email"]));
+        let state = |gate: &str, state: &str, reason: Option<&str>| {
+            (gate.to_owned(), state.to_owned(), reason.map(str::to_owned))
+        };
+        // Without the F1 and F4 inputs those gates have never been evaluated.
+        let gates = get(&app, "/api/gates").await.json();
+        assert_eq!(
+            gate_states(&gates),
+            [
+                state("I0", "current", None),
+                state("F1", "not_evaluated", Some("E_GATE_INPUTS_MISSING")),
+                state("F2", "current", None),
+                state("F3", "current", None),
+                state("F4", "not_evaluated", Some("E_GATE_INPUTS_MISSING")),
+            ],
+            "{gates}"
+        );
+        let f1 = &gates[1];
+        assert_eq!(f1["passed"], false);
+        assert_eq!(f1["rules"], json!([]));
+        assert!(!f1["reason"]["message"].as_str().unwrap().is_empty());
+        // With the inputs every gate, F3 included, is evaluated through the same route.
+        let configured = router(open(&app.path, app.provider.clone(), &chain_gates()));
+        let r = send_to(&configured, "/api/gates").await;
+        assert_eq!(
+            gate_states(&r.json()),
+            ["I0", "F1", "F2", "F3", "F4"].map(|g| state(g, "current", None)),
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        // A semantic change: the gates evaluated before that cannot be evaluated now are stale.
+        let loaded = head(&app);
+        SqliteRevisionStore::open(&app.path)
+            .unwrap()
+            .commit(
+                &BranchName::main(),
+                &loaded.revision.id,
+                &PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch: SemanticPatch::AddNode {
+                        node: requirement("req:new", "Accepted", "Employees shall log in."),
+                    },
+                },
+                RevisionWriteMeta {
+                    decision_refs: vec![],
+                    created_by: id(ACTOR),
+                    created_at: ts(NOW),
+                },
+            )
+            .unwrap();
+        let gates = get(&app, "/api/gates").await.json();
+        assert_eq!(
+            gate_states(&gates),
+            [
+                state("I0", "current", None),
+                state("F1", "stale", Some("E_GATE_INPUTS_MISSING")),
+                // The new Accepted requirement needs an analyse run first.
+                state("F2", "stale", Some("E_GATE_INPUTS_STALE")),
+                state("F3", "current", None),
+                state("F4", "stale", Some("E_GATE_INPUTS_MISSING")),
+            ],
+            "{gates}"
+        );
+    }
+
     #[tokio::test]
     async fn http_stages_ready_requires_configured_inputs() {
         let app = app(data_graph(&["Email"]));
@@ -1803,7 +1915,7 @@ mod http_stages {
         let app = app(data_graph(&["Email", "Salary"]));
         let job_id = run_inline(&app, Recipe::Tags, None);
         let props = pending(&app, &job_id);
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let r = post(
             &app,
             &format!("/api/proposals/{}/accept", props[0].id),
@@ -1894,6 +2006,25 @@ mod http_stages {
         .unwrap();
         let err = state.ready().unwrap_err();
         assert_eq!(err.body().code, "E_STAGE_EVALUATION_FAILED", "{err:?}");
+        // Fable #182: details.error names the typed error, never an empty debug-string name.
+        let name = err.body().details["error"].as_str().unwrap();
+        assert!(!name.is_empty(), "{err:?}");
+    }
+
+    /// Fable #181: a run recipe without eligible scenarios still evaluates F4 on its base
+    /// revision; it never reports success without evaluating its gate.
+    #[tokio::test]
+    async fn run_without_eligible_targets_still_evaluates_its_gate() {
+        let app = app_with(data_graph(&["Email"]), &[], chain_gates());
+        let job_id = run_inline(&app, Recipe::Run, None);
+        assert_eq!(
+            job(&app, &job_id)["status"],
+            "ready",
+            "{}",
+            job(&app, &job_id)
+        );
+        let results = app.state.recipe_gate_results(&job_id).unwrap();
+        assert_eq!(results, vec![("F4".to_owned(), "pass".to_owned())]);
     }
 
     #[tokio::test]
@@ -2340,9 +2471,10 @@ mod http_stages {
         let app = app(data_graph(&["Email"]));
         let before = head(&app).revision.id;
         let job_id = run_inline(&app, Recipe::Rules, None);
-        // No Accepted DecisionTable: an empty target set completes with no step.
+        // No Accepted DecisionTable: the empty target set still produces its (empty) rules
+        // projection step (Fable #181 replaces the former step-less success).
         assert_eq!(job(&app, &job_id)["status"], "ready");
-        assert!(stage_store(&app).steps(&job_id).unwrap().is_empty());
+        assert_eq!(stage_store(&app).steps(&job_id).unwrap().len(), 1);
         assert_eq!(head(&app).revision.id, before);
     }
 
@@ -2803,8 +2935,10 @@ mod http_stages {
         assert_eq!(head(&app).revision.id, before);
     }
 
+    /// Fable #355 (replacing the former 502-per-turn behaviour): under the null provider mode a
+    /// session is refused at creation with a typed error, before anything is written.
     #[tokio::test]
-    async fn null_provider_session_turn_stays_inference_failed() {
+    async fn null_provider_refuses_session_creation() {
         let mut nodes = agents();
         nodes.push(requirement(
             "req:a",
@@ -2818,7 +2952,8 @@ mod http_stages {
             null_gates(),
             Some(Arc::new(plumb_inference::NullProvider)),
         );
-        let tag = head_hash(&app).await;
+        let before = head(&app).revision.id;
+        let tag = head_tag(&app).await;
         let created = post(
             &app,
             "/api/sessions",
@@ -2827,23 +2962,10 @@ mod http_stages {
         )
         .await;
         assert_eq!(
-            created.status,
-            StatusCode::OK,
-            "{}",
-            String::from_utf8_lossy(&created.bytes)
+            (created.status, created.code().as_str()),
+            (StatusCode::CONFLICT, "E_INFERENCE_UNAVAILABLE")
         );
-        let session = created.json()["id"].as_str().unwrap().to_owned();
-        let tag = head_hash(&app).await;
-        let r = post(
-            &app,
-            &format!("/api/sessions/{session}/turns"),
-            Some(&tag),
-            json!({"text": "Managers shall approve leave requests.", "stage": "S1"}),
-        )
-        .await;
-        assert_eq!(r.status, StatusCode::BAD_GATEWAY);
-        assert_eq!(r.code(), "E_INFERENCE_FAILED");
-        assert_eq!(r.json()["details"]["error"], "ProviderDisabled");
+        assert_eq!(head(&app).revision.id, before);
     }
 
     // ------------------------------------------------------------------ R0.3 proposal sets
@@ -2910,7 +3032,7 @@ mod http_stages {
             None,
         )
         .unwrap();
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let r = post(
             &app,
             "/api/proposals/intake",

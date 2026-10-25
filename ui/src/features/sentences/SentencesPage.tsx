@@ -1,9 +1,10 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, revisionEtag, ReviewedEtag, useReviewedEtag, type ReviewedItems } from "../../api/client";
 import type { components } from "../../api/schema";
 import { PreconditionFailedError, useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
+import { ReadFailure } from "../../components/ReadFailure";
 import { t } from "../../i18n";
 import {
   entitiesQueryKey,
@@ -15,6 +16,7 @@ import {
   writeErrorCode,
   type Question,
 } from "../questions/QuestionsPage";
+import { RoleGate } from "../../components/RoleGate";
 
 type Sentence = components["schemas"]["Sentence"];
 type SentencePage = components["schemas"]["SentencePage"];
@@ -30,23 +32,20 @@ export const MODALITIES = ["shall", "should", "may", "shall_not"] as const;
 
 const PROPOSED = "Proposed";
 
+/** The open Questions by ID, with the ETag of their reviewed read. */
+interface ReviewedQuestions {
+  readonly byId: ReadonlyMap<string, Question>;
+  readonly etag: string | null;
+}
+
 async function fetchEntities(): Promise<Entity[]> {
-  const { data, response } = await apiClient.GET("/api/model/entities");
-  if (data === undefined) {
-    throw new Error("GET /api/model/entities failed with HTTP " + String(response.status));
-  }
-  return (data as EntityPage).items;
+  return ((await readReviewed(apiClient.GET("/api/model/entities"))) as EntityPage).items;
 }
 
 /** GET /api/model/sentences, optionally filtered by the server to one entity's sentences. */
-async function fetchSentences(entity?: string): Promise<Sentence[]> {
-  const { data, response } = await apiClient.GET("/api/model/sentences", {
-    params: { query: entity === undefined ? {} : { entity } },
-  });
-  if (data === undefined) {
-    throw new Error("GET /api/model/sentences failed with HTTP " + String(response.status));
-  }
-  return (data as SentencePage).items;
+async function fetchSentences(entity?: string): Promise<ReviewedItems<Sentence>> {
+  const page = await readReviewed(apiClient.GET("/api/model/sentences", { params: { query: entity === undefined ? {} : { entity } } }));
+  return { items: (page as SentencePage).items, etag: page.etag };
 }
 
 function WriteError({ error }: { error: Error | null }) {
@@ -88,7 +87,7 @@ function SlotSelect({
 }
 
 /** The review controls of one sentence: structured slot edit, accept/reject and inline unknowns. */
-function SentenceReview({ sentence, openQuestions }: { sentence: Sentence; openQuestions: ReadonlyMap<string, Question> | undefined }) {
+function SentenceReview({ sentence, openQuestions }: { sentence: Sentence; openQuestions: ReviewedQuestions | undefined }) {
   const queryClient = useQueryClient();
   const [slots, setSlots] = useState(sentence.slots);
   const changes: SlotPatch = {};
@@ -104,18 +103,23 @@ function SentenceReview({ sentence, openQuestions }: { sentence: Sentence; openQ
   const changed = Object.keys(changes).length > 0;
   const path = { id: sentence.id };
   const onWritten = { onSuccess: () => void invalidateU22(queryClient) };
-  const edit = useVersionedMutation<WriteResult, SlotPatch>((patch, ifMatch) =>
-    apiClient.POST("/api/model/sentences/{id}/edit", { params: { path, header: { "If-Match": ifMatch } }, body: { slots: patch } }),
+  const reviewed = useReviewedEtag();
+  const edit = useVersionedMutation<WriteResult, SlotPatch>(
+    (patch, ifMatch) => apiClient.POST("/api/model/sentences/{id}/edit", { params: { path, header: { "If-Match": ifMatch } }, body: { slots: patch } }),
+    reviewed,
   );
-  const accept = useVersionedMutation<WriteResult>((_, ifMatch) =>
-    apiClient.POST("/api/model/sentences/{id}/accept", { params: { path, header: { "If-Match": ifMatch } } }),
+  const accept = useVersionedMutation<WriteResult>(
+    (_, ifMatch) => apiClient.POST("/api/model/sentences/{id}/accept", { params: { path, header: { "If-Match": ifMatch } } }),
+    reviewed,
   );
-  const reject = useVersionedMutation<WriteResult>((_, ifMatch) =>
-    apiClient.POST("/api/model/sentences/{id}/reject", { params: { path, header: { "If-Match": ifMatch } } }),
+  const reject = useVersionedMutation<WriteResult>(
+    (_, ifMatch) => apiClient.POST("/api/model/sentences/{id}/reject", { params: { path, header: { "If-Match": ifMatch } } }),
+    reviewed,
   );
 
   return (
     <div className="space-y-3 border-t pt-2" data-testid="sentence-review">
+      <RoleGate>
       <form
         aria-label={t("sentences.edit.title")}
         className="space-y-1"
@@ -146,11 +150,12 @@ function SentenceReview({ sentence, openQuestions }: { sentence: Sentence; openQ
       )}
       <WriteError error={accept.error} />
       <WriteError error={reject.error} />
+      </RoleGate>
       {sentence.unknowns.length > 0 && (
         <section aria-label={t("sentences.unknowns")} className="space-y-2">
           <h4 className="font-semibold">{t("sentences.unknowns")}</h4>
           {sentence.unknowns.map((unknown) => {
-            const question = openQuestions?.get(unknown.question_id);
+            const question = openQuestions?.byId.get(unknown.question_id);
             return (
               <div key={unknown.question_id + unknown.slot} className="rounded border p-2" data-unknown={unknown.question_id}>
                 <p className="text-sm">
@@ -163,7 +168,9 @@ function SentenceReview({ sentence, openQuestions }: { sentence: Sentence; openQ
                 ) : (
                   <>
                     <p className="text-sm">{question.text}</p>
-                    <QuestionAnswerCard question={question} />
+                    <ReviewedEtag.Provider value={openQuestions?.etag}>
+                      <QuestionAnswerCard question={question} />
+                    </ReviewedEtag.Provider>
                   </>
                 )}
               </div>
@@ -184,7 +191,7 @@ function SentenceItem({
   sentence: Sentence;
   viewed: boolean;
   onViewed: (id: string) => void;
-  openQuestions: ReadonlyMap<string, Question> | undefined;
+  openQuestions: ReviewedQuestions | undefined;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -222,7 +229,8 @@ function SentenceItem({
       >
         {t(open ? "sentences.reviewClose" : "sentences.review")}
       </button>
-      {open && <SentenceReview sentence={sentence} openQuestions={openQuestions} />}
+      {/* The form is seeded from the server slots; a server change resets it (Fable #221). */}
+      {open && <SentenceReview key={JSON.stringify(sentence.slots)} sentence={sentence} openQuestions={openQuestions} />}
     </li>
   );
 }
@@ -244,6 +252,7 @@ function SentenceSection({
   label,
   title,
   sentences,
+  etag,
   viewed,
   onViewed,
   openQuestions,
@@ -252,13 +261,17 @@ function SentenceSection({
   label: string;
   title: ReactNode;
   sentences: readonly Sentence[];
+  etag: string | null;
   viewed: ReadonlySet<string>;
   onViewed: (id: string) => void;
-  openQuestions: ReadonlyMap<string, Question> | undefined;
+  openQuestions: ReviewedQuestions | undefined;
 }) {
   const queryClient = useQueryClient();
-  const accept = useVersionedMutation<WriteResult, string>((id, ifMatch) =>
-    apiClient.POST("/api/model/sentences/{id}/accept", { params: { path: { id }, header: { "If-Match": ifMatch } } }),
+  // The first write is based on the reviewed section; each further write on the revision the
+  // previous accept of this run produced (no other change can have intervened without a 412).
+  const accept = useVersionedMutation<WriteResult, { id: string; etag: string | null }>(
+    (target, ifMatch) => apiClient.POST("/api/model/sentences/{id}/accept", { params: { path: { id: target.id }, header: { "If-Match": ifMatch } } }),
+    (target) => target.etag,
   );
   const [warning, setWarning] = useState<readonly string[] | null>(null);
   const [progress, setProgress] = useState<BulkProgress | null>(null);
@@ -267,10 +280,11 @@ function SentenceSection({
   const run = async (ids: readonly string[]) => {
     setWarning(null);
     let accepted = 0;
+    let based = etag;
     setProgress({ total: ids.length, accepted, state: "running" });
     for (const id of ids) {
       try {
-        await accept.mutateAsync(id);
+        based = revisionEtag((await accept.mutateAsync({ id, etag: based })).revision);
       } catch (error) {
         setProgress({ total: ids.length, accepted, state: error instanceof PreconditionFailedError ? "conflict" : "failed" });
         await invalidateU22(queryClient);
@@ -302,15 +316,19 @@ function SentenceSection({
       {sentences.length === 0 ? (
         <p className="text-sm">{t("sentences.sectionEmpty")}</p>
       ) : (
-        <ul className="space-y-2">
-          {sentences.map((sentence) => (
-            <SentenceItem key={sentence.id} sentence={sentence} viewed={viewed.has(sentence.id)} onViewed={onViewed} openQuestions={openQuestions} />
-          ))}
-        </ul>
+        <ReviewedEtag.Provider value={etag}>
+          <ul className="space-y-2">
+            {sentences.map((sentence) => (
+              <SentenceItem key={sentence.id} sentence={sentence} viewed={viewed.has(sentence.id)} onViewed={onViewed} openQuestions={openQuestions} />
+            ))}
+          </ul>
+        </ReviewedEtag.Provider>
       )}
+      <RoleGate>
       <button type="button" className="rounded border px-3 py-1" data-testid="bulk-accept" disabled={targets.length === 0 || running || warning !== null} onClick={start}>
         {t("sentences.bulk.accept")} <span data-testid="bulk-targets">{targets.length}</span>
       </button>
+      </RoleGate>
       {warning !== null && (
         <div role="alertdialog" aria-label={t("sentences.bulk.warningTitle")} className="space-y-2 rounded border border-amber-600 p-2 text-sm" data-testid="bulk-warning">
           <p>
@@ -375,24 +393,36 @@ export function SentencesPage() {
       return next;
     });
 
+  const title = <h1 className="text-xl font-semibold">{t("sentences.title")}</h1>;
   if (entities.isError || all.isError || perEntity.some((q) => q.isError)) {
-    return <p role="alert">{t("sentences.loadFailed")}</p>;
+    return (
+      <div className="space-y-4">
+        {title}
+        <ReadFailure error={entities.error ?? all.error ?? perEntity.find((q) => q.isError)?.error} messageKey="sentences.loadFailed" />
+      </div>
+    );
   }
   if (entities.data === undefined || all.data === undefined || perEntity.some((q) => q.data === undefined)) {
-    return <p>{t("sentences.loading")}</p>;
+    return (
+      <div className="space-y-4">
+        {title}
+        <p>{t("sentences.loading")}</p>
+      </div>
+    );
   }
-  const questionMap = openQuestions.data === undefined ? undefined : new Map(openQuestions.data.map((q) => [q.id, q] as const));
+  const questionMap: ReviewedQuestions | undefined =
+    openQuestions.data === undefined ? undefined : { byId: new Map(openQuestions.data.items.map((q) => [q.id, q] as const)), etag: openQuestions.data.etag };
   const grouped = new Set<string>();
   for (const query of perEntity) {
-    for (const sentence of query.data ?? []) {
+    for (const sentence of query.data?.items ?? []) {
       grouped.add(sentence.id);
     }
   }
-  const ungrouped = all.data.filter((sentence) => !grouped.has(sentence.id));
+  const ungrouped = all.data.items.filter((sentence) => !grouped.has(sentence.id));
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">{t("sentences.title")}</h1>
+      {title}
       {entities.data.map((entity, index) => (
         <SentenceSection
           key={entity.id}
@@ -403,14 +433,15 @@ export function SentencesPage() {
               {entity.name} <span className="font-mono text-sm">{entity.id}</span>
             </>
           }
-          sentences={perEntity[index]?.data ?? []}
+          sentences={perEntity[index]?.data?.items ?? []}
+          etag={perEntity[index]?.data?.etag ?? null}
           viewed={viewed}
           onViewed={onViewed}
           openQuestions={questionMap}
         />
       ))}
       {ungrouped.length > 0 && (
-        <SentenceSection sectionId="ungrouped" label={t("sentences.ungrouped")} title={t("sentences.ungrouped")} sentences={ungrouped} viewed={viewed} onViewed={onViewed} openQuestions={questionMap} />
+        <SentenceSection sectionId="ungrouped" label={t("sentences.ungrouped")} title={t("sentences.ungrouped")} sentences={ungrouped} etag={all.data.etag} viewed={viewed} onViewed={onViewed} openQuestions={questionMap} />
       )}
     </div>
   );

@@ -10,11 +10,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { http } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { components } from "../../api/schema";
-import { server } from "../../test/msw";
+import { etagJson, server, TEST_ETAG } from "../../test/msw";
 
 type Scenario = components["schemas"]["Scenario"];
 
@@ -125,6 +125,7 @@ interface Backend {
   calls: Call[];
   corrected: boolean;
   fail: (path: string) => Response | null;
+  extra?: Scenario[];
 }
 
 function handlers(backend: Backend) {
@@ -149,21 +150,21 @@ function handlers(backend: Backend) {
     if (path.endsWith("/correct")) {
       backend.corrected = true;
     }
-    return HttpResponse.json({ version: "rev:2", revision: "rev:2", semantic_hash: CURRENT, events: [] });
+    return etagJson({ version: "rev:2", revision: "rev:2", semantic_hash: CURRENT, events: [] });
   };
   return [
-    http.get("*/api/me", () => HttpResponse.json({ user: "alice", mode: "pilot", roles: ["analyst"] })),
+    http.get("*/api/me", () => etagJson({ user: "alice", mode: "pilot", roles: ["analyst"] })),
     http.get("*/api/model/version", () =>
-      HttpResponse.json({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
+      etagJson({ version: "rev:1", revision: "rev:1", hash: CURRENT, semantic_hash: CURRENT, evidence_hash: "ev:1" }),
     ),
     http.get("*/api/scenarios", async ({ request }) => {
       await record(request, "GET");
       const q = new URL(request.url).searchParams;
       if (q.get("status") === "Proposed" && q.get("derived") === "true" && q.get("requirement") === null) {
-        return HttpResponse.json({ items: CONFIRMABLE, next_cursor: null });
+        return etagJson({ items: CONFIRMABLE, next_cursor: null });
       }
       const pass = backend.corrected ? { ...R_PASS, then: [NEW_THEN] } : R_PASS;
-      return HttpResponse.json({ items: [...CONFIRMABLE, ACCEPTED_DERIVED, pass, R_UNDECIDABLE, R_FAIL, R_NEVER], next_cursor: null });
+      return etagJson({ items: [...CONFIRMABLE, ACCEPTED_DERIVED, pass, R_UNDECIDABLE, R_FAIL, R_NEVER, ...(backend.extra ?? [])], next_cursor: null });
     }),
     http.post("*/api/scenarios/confirm-derived", write),
     http.post("*/api/scenarios/run", write),
@@ -198,6 +199,21 @@ const lists = (backend: Backend) => backend.calls.filter((c) => c.method === "GE
 // ------------------------------------------------------------------ route, cards, filters
 
 describe("ScenariosPage", () => {
+  it("renders two identical Given and Then rows positionally, never keyed by their text (Fable #224)", async () => {
+    const errors = vi.spyOn(console, "error");
+    const twice = scenario("scenario:twice", "Accepted", "Confirmed", '{"operation":"op:approve"}', [], {
+      given: [OLD_THEN, OLD_THEN],
+      then: [NEW_THEN, NEW_THEN],
+      run: { ...FAIL_RUN, diff: [OLD_THEN, OLD_THEN] } as Scenario["run"],
+    });
+    await renderScenarios(newBackend({ extra: [twice] }));
+    const twiceCard = card("scenario:twice");
+    expect(twiceCard.querySelectorAll("[data-testid='given'] > li")).toHaveLength(2);
+    expect(twiceCard.querySelectorAll("[data-testid='then'] > li")).toHaveLength(2);
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("same key"))).toBe(false);
+    errors.mockRestore();
+  });
+
   it("renders the server scenarios on /model/scenarios with Given/When/Then, statuses and run state", async () => {
     const backend = newBackend();
     await renderScenarios(backend);
@@ -256,7 +272,7 @@ describe("Scenario confirmation", () => {
     const before = lists(backend).length;
     await user.click(within(card("scenario:tr")).getByTestId("scenario-confirm"));
     await waitFor(() => expect(lists(backend).length).toBeGreaterThan(before));
-    expect(posts(backend).map((c) => [c.path, c.ifMatch, c.body])).toEqual([["/api/scenarios/scenario:tr/confirm", CURRENT, null]]);
+    expect(posts(backend).map((c) => [c.path, c.ifMatch, c.body])).toEqual([["/api/scenarios/scenario:tr/confirm", TEST_ETAG, null]]);
   });
 
   it("groups only exact DecisionTable-derived confirmable scenarios for bulk confirmation", async () => {
@@ -284,7 +300,7 @@ describe("Scenario confirmation", () => {
     await user.click(screen.getByTestId("bulk-open"));
     await user.click(screen.getByTestId("bulk-confirm"));
     await waitFor(() => expect(posts(backend)).toHaveLength(1));
-    expect(posts(backend).map((c) => [c.path, c.ifMatch, c.body])).toEqual([["/api/scenarios/confirm-derived", CURRENT, { table_id: "dt:leave" }]]);
+    expect(posts(backend).map((c) => [c.path, c.ifMatch, c.body])).toEqual([["/api/scenarios/confirm-derived", TEST_ETAG, { table_id: "dt:leave" }]]);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(posts(backend)).toHaveLength(1);
   });
@@ -313,7 +329,7 @@ describe("Scenario correction", () => {
     expect(shownThen()).toBe(OLD_THEN);
     await user.click(within(card("scenario:r-pass")).getByTestId("correct-submit"));
     await waitFor(() => expect(shownThen()).toBe(NEW_THEN));
-    expect(posts(backend).map((c) => [c.path, c.ifMatch, c.body])).toEqual([["/api/scenarios/scenario:r-pass/correct", CURRENT, { then: [NEW_THEN] }]]);
+    expect(posts(backend).map((c) => [c.path, c.ifMatch, c.body])).toEqual([["/api/scenarios/scenario:r-pass/correct", TEST_ETAG, { then: [NEW_THEN] }]]);
     expect(backend.calls.some((c) => c.path.startsWith("/api/proposals"))).toBe(false);
   });
 });
@@ -373,7 +389,7 @@ describe("Scenario runs", () => {
     await user.click(screen.getByTestId("run-submit"));
     await waitFor(() => expect(lists(backend).length).toBeGreaterThan(before));
     expect(posts(backend).map((c) => [c.path, c.ifMatch, c.body])).toEqual([
-      ["/api/scenarios/run", CURRENT, { scope: ["scenario:r-fail", "scenario:r-pass"] }],
+      ["/api/scenarios/run", TEST_ETAG, { scope: ["scenario:r-fail", "scenario:r-pass"] }],
     ]);
   });
 
@@ -390,7 +406,7 @@ describe("Scenario runs", () => {
   it("shows a write failure code and never retries", async () => {
     const backend = newBackend({
       fail: (path) =>
-        path === "/api/scenarios/run" ? HttpResponse.json({ code: "E_SCENARIO_NOT_RUNNABLE", message: "not runnable", details: {} }, { status: 409 }) : null,
+        path === "/api/scenarios/run" ? etagJson({ code: "E_SCENARIO_NOT_RUNNABLE", message: "not runnable", details: {} }, { status: 409 }) : null,
     });
     const user = await renderScenarios(backend);
     await user.click(within(card("scenario:r-never")).getByTestId("run-select"));

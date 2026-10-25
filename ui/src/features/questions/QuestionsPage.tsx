@@ -1,12 +1,15 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readReviewed, revisionEtag, ReviewedEtag, useReviewedEtag, type ReviewedItems } from "../../api/client";
 import type { components } from "../../api/schema";
 import { modelVersionQueryKey, useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { ProposalReviewBar, type ProposalReviewAction } from "../../components/ProposalReviewBar";
 import { isAnswerComplete, TypedAnswerControl, type AnswerValue } from "../../components/TypedAnswerControl";
 import { t } from "../../i18n";
+import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
+import { ReadFailure } from "../../components/ReadFailure";
+import { RoleGate } from "../../components/RoleGate";
 
 export type Question = components["schemas"]["Question"];
 export type AnswerResponse = components["schemas"]["AnswerResponse"];
@@ -31,14 +34,9 @@ export async function invalidateU22(queryClient: QueryClient): Promise<void> {
 }
 
 /** GET /api/questions with optional exact filters and no page limit (all remaining items). */
-export async function fetchQuestions(status?: Question["status"]): Promise<Question[]> {
-  const { data, response } = await apiClient.GET("/api/questions", {
-    params: { query: status === undefined ? {} : { status } },
-  });
-  if (data === undefined) {
-    throw new Error("GET /api/questions failed with HTTP " + String(response.status));
-  }
-  return (data as QuestionPage).items;
+export async function fetchQuestions(status?: Question["status"]): Promise<ReviewedItems<Question> & { readonly health?: ItemHealth[] }> {
+  const page = await readReviewed(apiClient.GET("/api/questions", { params: { query: status === undefined ? {} : { status } } }));
+  return { items: (page as QuestionPage).items, health: (page as Partial<QuestionPage>).health, etag: page.etag };
 }
 
 /** The server error code of a failed write, when the body carries one. */
@@ -117,19 +115,24 @@ export function QuestionAnswerCard({ question }: { question: Question }) {
   const [stale, setStale] = useState(false);
   const [done, setDone] = useState(false);
 
-  const answer = useVersionedMutation<AnswerResponse, { answer: AnswerValue; rationale: string | null }>((body, ifMatch) =>
-    apiClient.POST("/api/questions/{id}/answer", {
-      params: { path: { id: question.id }, header: { "If-Match": ifMatch } },
-      body: { answer: body.answer as Record<string, never>, rationale: body.rationale, supersedes: null },
-    }),
+  const answer = useVersionedMutation<AnswerResponse, { answer: AnswerValue; rationale: string | null }>(
+    (body, ifMatch) =>
+      apiClient.POST("/api/questions/{id}/answer", {
+        params: { path: { id: question.id }, header: { "If-Match": ifMatch } },
+        body: { answer: body.answer as Record<string, never>, rationale: body.rationale, supersedes: null },
+      }),
+    useReviewedEtag(),
   );
-  const decide = useVersionedMutation<WriteResult, ProposalDecision>((decision, ifMatch) =>
-    decision.kind === "reject"
-      ? apiClient.POST("/api/proposals/{id}/reject", {
-          params: { path: { id: decision.proposalId }, header: { "If-Match": ifMatch } },
-          body: { reason: decision.reason },
-        })
-      : proposalActionRequest(decision.kind, decision.proposalId, decision.reason, ifMatch),
+  // A decision is based on the reviewed preview, which states its baseline revision.
+  const decide = useVersionedMutation<WriteResult, ProposalDecision>(
+    (decision, ifMatch) =>
+      decision.kind === "reject"
+        ? apiClient.POST("/api/proposals/{id}/reject", {
+            params: { path: { id: decision.proposalId }, header: { "If-Match": ifMatch } },
+            body: { reason: decision.reason },
+          })
+        : proposalActionRequest(decision.kind, decision.proposalId, decision.reason, ifMatch),
+    preview === null ? null : revisionEtag(preview.revision),
   );
 
   if (question.status !== "Open") {
@@ -258,8 +261,9 @@ function RoundManager({ stakeholders }: { stakeholders: readonly string[] }) {
   const [stakeholder, setStakeholder] = useState("");
   const [max, setMax] = useState("");
   const [round, setRound] = useState<CreateRoundResponse["round"] | null>(null);
-  const create = useVersionedMutation<CreateRoundResponse, { stakeholder: string; max: number }>((body, ifMatch) =>
-    apiClient.POST("/api/rounds", { params: { header: { "If-Match": ifMatch } }, body }),
+  const create = useVersionedMutation<CreateRoundResponse, { stakeholder: string; max: number }>(
+    (body, ifMatch) => apiClient.POST("/api/rounds", { params: { header: { "If-Match": ifMatch } }, body }),
+    useReviewedEtag(),
   );
   const parsed = parseRoundMax(max);
   const invalid = max !== "" && parsed === null;
@@ -389,16 +393,27 @@ function QuestionItem({ question }: { question: Question }) {
 export function QuestionsPage() {
   const questions = useQuery({ queryKey: [...questionsQueryKey, "inbox"], queryFn: () => fetchQuestions() });
 
+  const title = <h1 className="text-xl font-semibold">{t("questions.title")}</h1>;
   if (questions.isError) {
-    return <p role="alert">{t("questions.loadFailed")}</p>;
+    return (
+      <div className="space-y-4">
+        {title}
+        <ReadFailure error={questions.error} messageKey="questions.loadFailed" />
+      </div>
+    );
   }
   if (questions.data === undefined) {
-    return <p>{t("questions.loading")}</p>;
+    return (
+      <div className="space-y-4">
+        {title}
+        <p>{t("questions.loading")}</p>
+      </div>
+    );
   }
   // Groups by exact stakeholder_ref in server order of first appearance; unassigned last.
   const groups = new Map<string, Question[]>();
   const unassigned: Question[] = [];
-  for (const question of questions.data) {
+  for (const question of questions.data.items) {
     if (question.stakeholder_ref === null) {
       unassigned.push(question);
     } else {
@@ -409,10 +424,14 @@ export function QuestionsPage() {
   }
 
   return (
+    <ReviewedEtag.Provider value={questions.data.etag}>
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">{t("questions.title")}</h1>
-      <RoundManager stakeholders={[...groups.keys()]} />
-      {questions.data.length === 0 && <p>{t("questions.empty")}</p>}
+      {title}
+      <RoleGate>
+        <RoundManager stakeholders={[...groups.keys()]} />
+      </RoleGate>
+      <HealthMarkers health={questions.data.health} />
+      {questions.data.items.length === 0 && <p>{t("questions.empty")}</p>}
       {[...groups.entries()].map(([stakeholder, items]) => (
         <section key={stakeholder} aria-label={stakeholder} data-stakeholder={stakeholder} className="space-y-2">
           <h2 className="font-semibold">
@@ -436,5 +455,6 @@ export function QuestionsPage() {
         </section>
       )}
     </div>
+    </ReviewedEtag.Provider>
   );
 }

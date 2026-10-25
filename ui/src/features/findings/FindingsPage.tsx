@@ -1,13 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { apiClient } from "../../api/client";
+import { apiClient, readData } from "../../api/client";
 import type { components } from "../../api/schema";
 import { t, type MessageKey } from "../../i18n";
+import { HealthMarkers } from "../../components/HealthMarkers";
+import { ReadFailure } from "../../components/ReadFailure";
 
 type Finding = components["schemas"]["Finding"];
 type FindingRuleClass = components["schemas"]["FindingRuleClass"];
 type Assumption = components["schemas"]["Assumption"];
+type AssumptionPage = components["schemas"]["AssumptionPage"];
 
 /** The Findings list query root. */
 export const findingsQueryKey = ["findings"] as const;
@@ -29,19 +32,11 @@ const RULE_CLASS_LABELS: Readonly<Record<FindingRuleClass, MessageKey>> = {
 const POLICY_CLASSES: readonly FindingRuleClass[] = ["profile_policy", "organization_policy"];
 
 async function fetchFindings(): Promise<Finding[]> {
-  const { data, response } = await apiClient.GET("/api/findings");
-  if (data === undefined) {
-    throw new Error("GET /api/findings failed with HTTP " + String(response.status));
-  }
-  return data.items;
+  return (await readData(apiClient.GET("/api/findings"))).items;
 }
 
-async function fetchAssumptions(): Promise<Assumption[]> {
-  const { data, response } = await apiClient.GET("/api/assumptions");
-  if (data === undefined) {
-    throw new Error("GET /api/assumptions failed with HTTP " + String(response.status));
-  }
-  return data.items;
+function fetchAssumptions(): Promise<AssumptionPage> {
+  return readData(apiClient.GET("/api/assumptions"));
 }
 
 /** The server rule class only: never derived from the code or the family. */
@@ -165,7 +160,7 @@ export function FindingsPage() {
       <h1 className="text-xl font-semibold">{t("findings.pageTitle")}</h1>
       <section aria-label={t("findings.list")} className="space-y-2">
         <h2 className="font-semibold">{t("findings.list")}</h2>
-        {findings.isError && <p role="alert">{t("findings.loadFailed")}</p>}
+        {findings.isError && <ReadFailure error={findings.error} messageKey="findings.loadFailed" />}
         {findings.data === undefined && !findings.isError && <p>{t("findings.loading")}</p>}
         {findings.data !== undefined && findings.data.length === 0 && <p>{t("findings.empty")}</p>}
         {findings.data !== undefined && findings.data.length > 0 && (
@@ -178,12 +173,13 @@ export function FindingsPage() {
       </section>
       <section aria-label={t("findings.assumptions")} className="space-y-2">
         <h2 className="font-semibold">{t("findings.assumptions")}</h2>
-        {assumptions.isError && <p role="alert">{t("findings.loadFailed")}</p>}
+        {assumptions.isError && <ReadFailure error={assumptions.error} messageKey="findings.loadFailed" />}
         {assumptions.data === undefined && !assumptions.isError && <p>{t("findings.loading")}</p>}
-        {assumptions.data !== undefined && assumptions.data.length === 0 && <p>{t("findings.noAssumptions")}</p>}
-        {assumptions.data !== undefined && assumptions.data.length > 0 && (
+        <HealthMarkers health={assumptions.data?.health} />
+        {assumptions.data !== undefined && assumptions.data.items.length === 0 && <p>{t("findings.noAssumptions")}</p>}
+        {assumptions.data !== undefined && assumptions.data.items.length > 0 && (
           <ul className="space-y-2">
-            {assumptions.data.map((assumption) => (
+            {assumptions.data.items.map((assumption) => (
               <AssumptionItem key={assumption.id} assumption={assumption} />
             ))}
           </ul>

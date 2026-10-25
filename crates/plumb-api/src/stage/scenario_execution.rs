@@ -21,11 +21,41 @@ use serde_json::json;
 use crate::error::ApiError;
 
 /// The error name of a typed error: its debug output up to the first non-identifier character.
+/// A failure that has no subsystem error type is a [`NamedFailure`], never a bare string (whose
+/// debug output would yield an empty name, Fable #182).
 pub(crate) fn error_name<T: std::fmt::Debug>(error: &T) -> String {
     format!("{error:?}")
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect()
+}
+
+/// A failure without a subsystem error type: `name` is its stable error name (the debug form)
+/// and `message` its human-readable text (the display form).
+pub(crate) struct NamedFailure {
+    name: &'static str,
+    message: String,
+}
+
+impl NamedFailure {
+    pub(crate) fn new(name: &'static str, message: impl Into<String>) -> NamedFailure {
+        NamedFailure {
+            name,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Debug for NamedFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name)
+    }
+}
+
+impl std::fmt::Display for NamedFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 pub(crate) fn run_collision(run_ref: &Id) -> ApiError {
@@ -39,7 +69,7 @@ pub(crate) fn run_collision(run_ref: &Id) -> ApiError {
 pub(crate) fn link_key() -> Result<ExtensionKey, ApiError> {
     SCENARIO_TRACE_LINK_EXTENSION
         .parse()
-        .map_err(|_| ApiError::internal("scenario_trace_link"))
+        .map_err(|e| ApiError::internal_cause("scenario_trace_link", &e))
 }
 
 /// A current ScenarioRun node with its payload.
@@ -52,7 +82,7 @@ pub(crate) fn current_run<'g>(
     scenario: &Id,
 ) -> Result<(Id, CurrentRun<'g>), ApiError> {
     let run_ref = scenario_run_id(graph.project_id(), scenario)
-        .map_err(|_| ApiError::internal("scenario_run_id"))?;
+        .map_err(|e| ApiError::internal_cause("scenario_run_id", &e))?;
     if graph.edge(&run_ref).is_some() {
         return Err(run_collision(&run_ref));
     }

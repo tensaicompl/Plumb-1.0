@@ -20,14 +20,33 @@ pub(crate) const READINESS_STATEMENT: &str =
     "Readiness is advisory only and is not calculated by S4.7. It does not alter the F4 gate result.";
 
 /// Escapes Markdown control characters of a semantic string and normalizes line endings to LF.
+/// Line-start block markers (`-`, `+`, `=` setext underlines and ordered-list numerals, after
+/// up to three spaces) are escaped too, so every line renders as the literal text (Fable #144).
 pub(crate) fn escape(text: &str) -> String {
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-    let mut out = String::with_capacity(normalized.len());
-    for c in normalized.chars() {
+    let lines: Vec<String> = normalized.split('\n').map(escape_line).collect();
+    lines.join("\n")
+}
+
+/// [`escape`] of one line.
+fn escape_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len() + 2);
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    let (lead, rest) = line.split_at(indent.min(3));
+    out.push_str(lead);
+    // A list bullet or setext underline at the line start; `#`, `>` and `*` are escaped below.
+    if rest.starts_with(['-', '+', '=']) {
+        out.push('\\');
+    }
+    // An ordered-list marker: up to nine digits followed by `.` or `)`.
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    let ordered = (1..=9).contains(&digits) && rest[digits..].starts_with(['.', ')']);
+    for (index, c) in rest.char_indices() {
         if matches!(
             c,
             '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|'
-        ) {
+        ) || (ordered && index == digits)
+        {
             out.push('\\');
         }
         out.push(c);
@@ -237,4 +256,26 @@ pub(crate) fn render_model_report(graph: &Graph, input: &ModelReportInput<'_>) -
     blocks.push("## Readiness".to_owned());
     blocks.push(READINESS_STATEMENT.to_owned());
     document(blocks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fable #144: line-start block markers of a (multi-line) semantic string are escaped, so
+    /// the string renders unchanged instead of as a list, quote, heading or setext heading.
+    #[test]
+    fn escape_neutralizes_line_start_block_markers() {
+        let text = "- item\n+ plus\n> quote\n# head\n1. one\n12) two\n===\n---\n  - indented\nmid - dash 3. ok";
+        assert_eq!(
+            escape(text),
+            "\\- item\n\\+ plus\n\\> quote\n\\# head\n1\\. one\n12\\) two\n\\===\n\\---\n  \\- indented\nmid - dash 3. ok"
+        );
+        // Plain text, including CRLF, is unchanged apart from LF normalization.
+        assert_eq!(
+            escape("The system shall\r\nrecord leave."),
+            "The system shall\nrecord leave."
+        );
+        assert_eq!(escape("2026 is a year"), "2026 is a year");
+    }
 }

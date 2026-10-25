@@ -38,7 +38,9 @@ use serde_json::{json, Value};
 use crate::error::ApiError;
 use crate::stage::acquire::{derivation_ref, inference_of};
 use crate::stage::recipe::Phase;
-use crate::stage::scenario_execution::{error_name, execute_scenarios, ScenarioExecution};
+use crate::stage::scenario_execution::{
+    error_name, execute_scenarios, NamedFailure, ScenarioExecution,
+};
 use crate::state::{A03Runtime, A04Runtime};
 
 /// The canonical segmentation intermediate persisted between the two extract phases.
@@ -87,12 +89,25 @@ pub(crate) struct PhaseStage<'a> {
     pub(crate) segmentation: Option<(Hash, SegmentationIntermediate)>,
 }
 
+/// A typed planning error: its debug form names it, its display form describes it.
+trait PlanError: std::fmt::Debug + std::fmt::Display {}
+
+impl<T: std::fmt::Debug + std::fmt::Display> PlanError for T {}
+
 fn plan_failed(phase: Phase, error: impl std::fmt::Debug + std::fmt::Display) -> ApiError {
     ApiError::unprocessable(
         "E_STAGE_PLAN_FAILED",
         format!("phase {} cannot be planned: {error}", phase.as_str()),
     )
     .with_details(json!({ "phase": phase.as_str(), "error": error_name(&error) }))
+}
+
+/// The plan failure of inference material that could not be built (its builder reports text).
+fn material_failed(phase: Phase, message: String) -> ApiError {
+    plan_failed(
+        phase,
+        NamedFailure::new("InferenceRequestMaterialInvalid", message),
+    )
 }
 
 fn evaluation_failed(phase: Phase, error: impl std::fmt::Debug + std::fmt::Display) -> ApiError {
@@ -104,7 +119,7 @@ fn evaluation_failed(phase: Phase, error: impl std::fmt::Debug + std::fmt::Displ
 }
 
 fn to_value<T: Serialize>(value: &T) -> Result<Value, ApiError> {
-    serde_json::to_value(value).map_err(|_| ApiError::internal("phase_inputs"))
+    serde_json::to_value(value).map_err(|e| ApiError::internal_cause("phase_inputs", &e))
 }
 
 /// The inference requests a scenarios phase plans, in skeleton order.
@@ -191,7 +206,7 @@ impl<'a> PhaseStage<'a> {
         material: Result<plumb_inference::InferenceRequestMaterial, String>,
         absence_policy: InferenceAbsencePolicy,
     ) -> Result<PlannedInferenceRequest, ApiError> {
-        let material = material.map_err(|e| plan_failed(phase, e))?;
+        let material = material.map_err(|e| material_failed(phase, e))?;
         PlannedInferenceRequest::new(request.clone(), material, absence_policy)
             .map_err(|e| plan_failed(phase, e))
     }
@@ -199,7 +214,7 @@ impl<'a> PhaseStage<'a> {
     /// PLAN: the phase's inference requests with their exact material.
     pub(crate) fn plan_phase(&self, graph: &Graph) -> Result<StagePlan, ApiError> {
         let phase = self.phase;
-        let fail = |e: &dyn std::fmt::Display| plan_failed(phase, e.to_string());
+        let fail = |e: &dyn PlanError| plan_failed(phase, e);
         let m = |r: Result<plumb_inference::InferenceRequestMaterial, String>| r;
         let mut planned = Vec::new();
         match phase {
@@ -743,5 +758,32 @@ pub(crate) fn rules_projection(graph: &Graph, tables: &[Id]) -> Result<Vec<u8>, 
         }));
     }
     to_canonical_json(&json!({ "version": 1, "tables": entries }))
-        .map_err(|_| ApiError::internal("rules_projection"))
+        .map_err(|e| ApiError::internal_cause("rules_projection", &e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fable #182: a phase plan failure names its typed error in details.error, including when the
+    /// underlying builder reports only text.
+    #[test]
+    fn phase_plan_failures_name_the_typed_error() {
+        let text = material_failed(Phase::Segmentation, "bad material".to_owned());
+        assert_eq!(text.body().code, "E_STAGE_PLAN_FAILED");
+        assert_eq!(
+            text.body().details,
+            json!({"phase": "segmentation", "error": "InferenceRequestMaterialInvalid"})
+        );
+        let typed = plan_failed(
+            Phase::Classification,
+            serde_json::from_str::<Value>("{").unwrap_err(),
+        );
+        assert_eq!(typed.body().details["error"], "Error");
+        let fail = |e: &dyn PlanError| plan_failed(Phase::Calc, e);
+        let named = fail(&NamedFailure::new("CalcPlanInvalid", "x"));
+        assert_eq!(named.body().details["error"], "CalcPlanInvalid");
+        // Why a bare string is never passed: its debug form names nothing.
+        assert_eq!(error_name(&"bad material"), "");
+    }
 }

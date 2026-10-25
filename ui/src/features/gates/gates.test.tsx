@@ -88,6 +88,8 @@ const rule = (rule_id: string, state: GateRuleResult["state"], extra: Partial<Ga
 // I0 passes overall with one waived blocker; F1 fails with every other state; F4 passes.
 const I0: GateStatus = {
   gate: "I0",
+  state: "current",
+  reason: null,
   passed: true,
   findings: ["fnd:waived"],
   rules: [
@@ -106,6 +108,8 @@ const I0: GateStatus = {
 
 const F1: GateStatus = {
   gate: "F1",
+  state: "current",
+  reason: null,
   passed: false,
   findings: ["fnd:fail", "fnd:warn"],
   rules: [
@@ -129,7 +133,7 @@ const F1: GateStatus = {
   summary: { blocker_failed: 1, blocker_waived: 0, warnings: 1 },
 };
 
-const F4: GateStatus = { gate: "F4", passed: true, findings: [], rules: [], waivers: [], summary: { blocker_failed: 0, blocker_waived: 0, warnings: 0 } };
+const F4: GateStatus = { gate: "F4", state: "current", reason: null, passed: true, findings: [], rules: [], waivers: [], summary: { blocker_failed: 0, blocker_waived: 0, warnings: 0 } };
 
 const READINESS: Readiness = {
   overall: 0.99,
@@ -182,6 +186,33 @@ describe("GatesPage", () => {
     expect(within(gate("F4")).getByTestId("gate-result").textContent).toBe("Pass");
     // Rules stay in report order.
     expect([...gate("F1").querySelectorAll("[data-rule-id]")].map((li) => li.getAttribute("data-rule-id"))).toEqual(F1.rules.map((r) => r.rule_id));
+  });
+
+  it("shows a not-evaluated and a stale gate with the typed reason the server reports (H0.11)", async () => {
+    const notEvaluated: GateStatus = {
+      ...F4,
+      gate: "F2",
+      state: "not_evaluated",
+      reason: { code: "E_GATE_INPUTS_MISSING", message: "the F2 gate needs configured supplemental inputs" },
+      passed: false,
+    };
+    const stale: GateStatus = {
+      ...F4,
+      gate: "F3",
+      state: "stale",
+      reason: { code: "E_GATE_INPUTS_STALE", message: "the F3 gate needs a current analyse run" },
+      passed: false,
+    };
+    await renderGates([I0, F1, notEvaluated, stale, F4]);
+    expect(within(gate("F2")).getByTestId("gate-result").textContent).toBe("Unevaluated");
+    expect(within(gate("F2")).getByTestId("gate-reason-code").textContent).toBe("E_GATE_INPUTS_MISSING");
+    expect(within(gate("F2")).getByTestId("gate-reason-message").textContent).toBe("the F2 gate needs configured supplemental inputs");
+    expect(within(gate("F3")).getByTestId("gate-result").textContent).toBe("Stale");
+    expect(within(gate("F3")).getByTestId("gate-reason-code").textContent).toBe("E_GATE_INPUTS_STALE");
+    // Neither is shown as a pass or a fail, and neither has synthetic rules.
+    for (const name of ["F2", "F3"]) {
+      expect(gate(name).querySelectorAll("[data-rule-id], [data-testid='gate-summary']")).toHaveLength(0);
+    }
   });
 
   it("shows all six rule states distinctly with their exact material", async () => {

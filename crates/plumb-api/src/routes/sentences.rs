@@ -175,7 +175,8 @@ fn requirement<'g>(graph: &'g Graph, id: &str) -> Result<(&'g Node, &'g Requirem
 fn precondition(node: &Node) -> Result<ElementPrecondition, ApiError> {
     Ok(ElementPrecondition {
         id: node.id.clone(),
-        expected_hash: node_element_hash(node).map_err(|_| ApiError::internal("element_hash"))?,
+        expected_hash: node_element_hash(node)
+            .map_err(|e| ApiError::internal_cause("element_hash", &e))?,
     })
 }
 
@@ -193,7 +194,7 @@ fn confirm_proposal(loaded: &LoadedRevision, patch: SemanticPatch) -> Result<Pro
         AcceptancePolicy::HumanConfirm,
         None,
     )
-    .map_err(|_| ApiError::internal("proposal"))
+    .map_err(|e| ApiError::internal_cause("proposal", &e))
 }
 
 /// Shared accept/reject: SetStatus of a Proposed Requirement.

@@ -518,7 +518,14 @@ mod openapi {
         // Export formats and stage names.
         assert_eq!(
             schema(&doc, "ExportFormat")["enum"],
-            json!(["functional", "report", "decisions", "glossary"])
+            json!([
+                "functional",
+                "report",
+                "decisions",
+                "glossary",
+                "scenarios",
+                "gate_report"
+            ])
         );
         assert_eq!(
             schema(&doc, "StageName")["enum"],
@@ -576,6 +583,11 @@ mod openapi {
             assert_eq!(if_match[0]["in"], "header");
             assert_eq!(if_match[0]["required"], true);
             assert_eq!(if_match[0]["schema"], json!({"type": "string"}));
+            // H0.2 (§33.2): the token is the head revision ID, never the semantic hash.
+            let description = if_match[0]["description"].as_str().unwrap();
+            assert!(description.contains("revision ID"), "{path}");
+            assert!(description.contains("weak"), "{path}");
+            assert!(!description.contains("semantic_hash"), "{path}");
             assert_eq!(
                 op["responses"]["412"]["content"]["application/json"]["schema"],
                 component_ref("PreconditionFailedResponse"),
@@ -687,6 +699,9 @@ mod openapi {
                     json!({"type": "string"}),
                     "{path}"
                 );
+                let description = response["headers"]["ETag"]["description"].as_str().unwrap();
+                assert!(description.contains("strong entity-tag"), "{path}");
+                assert!(description.contains("revision ID"), "{path}");
             }
             assert!(op["parameters"]
                 .as_array()
@@ -712,8 +727,21 @@ mod openapi {
             assert_eq!(method, "GET");
             pageable.insert(path.clone());
             let name = response.as_str().unwrap().rsplit('/').next().unwrap();
-            assert_eq!(properties(&doc, name), set(&["items", "next_cursor"]));
-            assert_eq!(schema(&doc, name)["required"], json!(["items"]));
+            // H0.11: the four robust collections also report item health markers.
+            if ["AssumptionPage", "QuestionPage", "RulePage", "ScenarioPage"].contains(&name) {
+                assert_eq!(
+                    properties(&doc, name),
+                    set(&["items", "health", "next_cursor"])
+                );
+                assert_eq!(
+                    schema(&doc, name)["properties"]["health"]["items"],
+                    component_ref("ItemHealth")
+                );
+                assert_eq!(schema(&doc, name)["required"], json!(["items", "health"]));
+            } else {
+                assert_eq!(properties(&doc, name), set(&["items", "next_cursor"]));
+                assert_eq!(schema(&doc, name)["required"], json!(["items"]));
+            }
             assert_eq!(
                 schema(&doc, name)["properties"]["next_cursor"]["type"],
                 json!(["string", "null"])
@@ -1986,8 +2014,9 @@ mod openapi {
         // Hotfix 073 adds SemanticElementDiff and SemanticChangePreviewResponse; Hotfix 079 adds
         // ProcessNodeView, ProcessNodeViewKind and ProcessFlowView; Hotfix 080 adds
         // FindingRuleClass; Hotfix 082 adds GateRuleState, GateRuleApplicabilityState,
-        // GateRuleApplicability, GateRuleError, GateRuleResult, GateWaiver and GateSummaryView.
-        assert_eq!(schemas.len(), 128);
+        // GateRuleApplicability, GateRuleError, GateRuleResult, GateWaiver and GateSummaryView;
+        // H0.11 adds GateEvaluationState, GateStateReason, ItemHealth and RequirementClass.
+        assert_eq!(schemas.len(), 132);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",
@@ -2074,13 +2103,15 @@ mod openapi {
                 .cloned()
                 .collect::<BTreeSet<_>>()
         };
+        // H0.11: every NOW gate carries its evaluation state and, when not current, the reason.
+        let gate_fields = [
+            "gate", "state", "reason", "passed", "findings", "rules", "waivers", "summary",
+        ];
+        assert_eq!(keys("GateStatus"), set(&gate_fields));
+        assert_eq!(required(&doc, "GateStatus"), set(&gate_fields));
         assert_eq!(
-            keys("GateStatus"),
-            set(&["gate", "passed", "findings", "rules", "waivers", "summary"])
-        );
-        assert_eq!(
-            required(&doc, "GateStatus"),
-            set(&["gate", "passed", "findings", "rules", "waivers", "summary"])
+            enum_of(&doc, "GateEvaluationState"),
+            json!(["not_evaluated", "current", "stale"])
         );
         assert_eq!(
             enum_of(&doc, "GateRuleState"),
@@ -2166,6 +2197,38 @@ mod openapi {
         assert_eq!(
             query_param(&doc, "GET", "/api/search", "scope")["schema"],
             component_ref("SearchScope")
+        );
+        // Fable #321: closed-enum wire fields reference their closed enum schema.
+        assert_eq!(
+            enum_of(&doc, "RequirementClass"),
+            json!([
+                "functional",
+                "quality",
+                "interface",
+                "data",
+                "security",
+                "operational",
+                "compliance",
+                "transition",
+                "constraint"
+            ])
+        );
+        for name in ["ClassifyRequest", "RequirementSummary", "RequirementDetail"] {
+            assert_eq!(
+                schema(&doc, name)["properties"]["class"],
+                component_ref("RequirementClass"),
+                "{name}"
+            );
+        }
+        // Fable #269 / #350: q is required, and only Accepted elements are searchable.
+        let q = query_param(&doc, "GET", "/api/search", "q");
+        assert_eq!(q["required"], true);
+        assert_eq!(q["schema"], json!({"type": "string"}));
+        assert!(
+            operation(&doc, "GET", "/api/search")["responses"]["200"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Accepted elements only")
         );
 
         // Required reasons.
