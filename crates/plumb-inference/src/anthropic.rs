@@ -6,7 +6,8 @@
 //! the exact prompt as the system text and the canonical `{context, output_schema}` envelope as
 //! the single user message, and validates the model's strict-JSON text locally against the exact
 //! Draft 2020-12 Plumb schema. It never translates schemas into vendor constrained output,
-//! repairs output, retries, reads files or the environment, or touches a graph or store.
+//! repairs output, reads files or the environment, or touches a graph or store; only a
+//! transient status (429, 529, 5xx) is sent again, on the bounded [`RetryPolicy`] (H0.3).
 //!
 //! H0.8 (architecture §33.8): it authenticates with `x-api-key` (never `Authorization`), sends
 //! the configured `anthropic-version` and `anthropic-workspace-id` exactly when configured,
@@ -184,12 +185,59 @@ fn malformed(reason: impl Into<String>) -> ProviderError {
     }
 }
 
-/// The Anthropic Messages API provider. It holds the credential and endpoint only; each call
-/// builds its HTTP client from the request's validated policy (connect timeout, redirects
-/// disabled), so every timeout is bound into the request identity.
+/// The bounded retry schedule of transient provider statuses (H0.3, Fable #62): a 429, 529 or
+/// other 5xx answer is sent again, unchanged, up to `max_attempts` sends in total, after the
+/// provider's `retry-after` (seconds) when it is at most `max_retry_after`, otherwise after
+/// `base_delay * 2^(n-1)` capped at `max_delay`. A `retry-after` beyond the bound ends the
+/// call with the typed remote error. Every other status, transport failure, timeout (the
+/// generation may have been billed) and output rejection is final at once; output is never
+/// repaired. The schedule is connection behaviour only, never part of a request identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub base_delay: Duration,
+    pub max_delay: Duration,
+    pub max_retry_after: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(8),
+            max_retry_after: Duration::from_secs(60),
+        }
+    }
+}
+
+impl RetryPolicy {
+    /// The wait before send `attempt + 1` after a transient answer, or `None` to give up.
+    fn delay(&self, attempt: u32, retry_after: Option<&str>) -> Option<Duration> {
+        if attempt >= self.max_attempts {
+            return None;
+        }
+        if let Some(seconds) = retry_after.and_then(|v| v.trim().parse::<u64>().ok()) {
+            let wait = Duration::from_secs(seconds);
+            return (wait <= self.max_retry_after).then_some(wait);
+        }
+        let factor = 1u32 << (attempt.saturating_sub(1)).min(16);
+        Some(self.base_delay.saturating_mul(factor).min(self.max_delay))
+    }
+}
+
+/// 429, 529 and every other 5xx are transient.
+fn is_transient(status: u16) -> bool {
+    status == 429 || (500..=599).contains(&status)
+}
+
+/// The Anthropic Messages API provider. It holds the credential, endpoint and retry schedule
+/// only; each call builds its HTTP client from the request's validated policy (connect timeout,
+/// redirects disabled), so every timeout is bound into the request identity.
 pub struct AnthropicProvider {
     api_key: String,
     endpoint: Url,
+    retry: RetryPolicy,
 }
 
 /// A reqwest failure as a typed provider error: a timeout is distinct from other transport
@@ -259,7 +307,17 @@ impl AnthropicProvider {
         if endpoint.host_str().is_none_or(str::is_empty) {
             return Err(invalid("missing host"));
         }
-        Ok(AnthropicProvider { api_key, endpoint })
+        Ok(AnthropicProvider {
+            api_key,
+            endpoint,
+            retry: RetryPolicy::default(),
+        })
+    }
+
+    /// This provider with another transient-status retry schedule.
+    pub fn with_retry_policy(mut self, retry: RetryPolicy) -> AnthropicProvider {
+        self.retry = retry;
+        self
     }
 
     /// The credential as a sensitive header value (redacted from reqwest's own debug output).
@@ -323,25 +381,41 @@ impl InferenceProvider for AnthropicProvider {
             .redirect(redirect::Policy::none())
             .build()
             .map_err(transport_error)?;
-        let mut http = client
-            .post(self.endpoint.clone())
-            .header("x-api-key", self.key_header()?)
-            .header("anthropic-version", &config.api_version)
-            .header("content-type", JSON_MEDIA_TYPE);
-        if let Some(workspace) = &config.workspace_id {
-            http = http.header("anthropic-workspace-id", workspace);
-        }
-        let response = http.body(body).send().map_err(transport_error)?;
-        let status = response.status();
-        let header_request_id = response
-            .headers()
-            .get("request-id")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        let raw = response.bytes().map_err(transport_error)?.to_vec();
-        if !status.is_success() {
-            return Err(remote_error(status.as_u16(), header_request_id, &raw));
-        }
+        let mut attempt = 0;
+        let raw = loop {
+            attempt += 1;
+            let mut http = client
+                .post(self.endpoint.clone())
+                .header("x-api-key", self.key_header()?)
+                .header("anthropic-version", &config.api_version)
+                .header("content-type", JSON_MEDIA_TYPE);
+            if let Some(workspace) = &config.workspace_id {
+                http = http.header("anthropic-workspace-id", workspace);
+            }
+            let response = http.body(body.clone()).send().map_err(transport_error)?;
+            let status = response.status();
+            let header = |name: &str| {
+                response
+                    .headers()
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned)
+            };
+            let header_request_id = header("request-id");
+            let retry_after = header("retry-after");
+            let raw = response.bytes().map_err(transport_error)?.to_vec();
+            if status.is_success() {
+                break raw;
+            }
+            let error = remote_error(status.as_u16(), header_request_id, &raw);
+            match is_transient(status.as_u16())
+                .then(|| self.retry.delay(attempt, retry_after.as_deref()))
+                .flatten()
+            {
+                Some(wait) => std::thread::sleep(wait),
+                None => return Err(error),
+            }
+        };
 
         let message: Value =
             serde_json::from_slice(&raw).map_err(|_| malformed("response is not JSON"))?;
