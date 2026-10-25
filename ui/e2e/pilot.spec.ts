@@ -78,8 +78,9 @@ test.describe("HR pilot", () => {
 
   test("the scenarios run and show their verdicts", async ({ page }) => {
     await page.goto("/scenarios");
+    await expect(page.getByRole("list", { name: "Scenarios" }).getByRole("button").first()).toBeVisible();
     await page.getByRole("button", { name: "Run all" }).click();
-    await expect(page.getByText(/\d+ scenarios? ran · \d+ pass/)).toBeVisible();
+    await expect(page.getByText(/\d+ scenarios? ran · \d+ pass/)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("list", { name: "Scenarios" }).getByText(/^(Pass|Fail|Undecidable)$/).first()).toBeVisible();
   });
 

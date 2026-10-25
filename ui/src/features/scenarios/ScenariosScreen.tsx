@@ -268,7 +268,7 @@ export function ScenariosScreen() {
           <h1 className="m-0 font-display text-h2 font-bold tracking-display text-fg">{t("nav.scenarios")}</h1>
           {query.data !== undefined && <span className="text-footnote text-fg-3">{summary}</span>}
           <div className="flex-1" />
-          {canEdit && (
+          {canEdit && query.data !== undefined && (
             <>
               <Button variant="outline" size={34} onClick={() => (derived.length === 0 ? toast({ message: t("scenarios.confirmAll.none"), tone: "info" }) : setConfirmingAll(true))}>
                 {t("scenarios.confirmAll.open")}
