@@ -229,7 +229,8 @@ function SentenceItem({
       >
         {t(open ? "sentences.reviewClose" : "sentences.review")}
       </button>
-      {open && <SentenceReview sentence={sentence} openQuestions={openQuestions} />}
+      {/* The form is seeded from the server slots; a server change resets it (Fable #221). */}
+      {open && <SentenceReview key={JSON.stringify(sentence.slots)} sentence={sentence} openQuestions={openQuestions} />}
     </li>
   );
 }

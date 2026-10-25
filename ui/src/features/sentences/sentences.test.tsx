@@ -9,7 +9,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -116,6 +116,8 @@ interface Backend {
   versionReads: number;
   hold: Promise<void> | null;
   conflictOn: string | null;
+  /** Sentences another writer changed on the server. */
+  changed?: Record<string, Sentence>;
 }
 
 const hash = (n: number) => "psg:sha256:v" + String(n);
@@ -157,7 +159,8 @@ function handlers(backend: Backend) {
     http.get("*/api/model/sentences", async ({ request }) => {
       await record(request, "GET");
       const entityId = new URL(request.url).searchParams.get("entity");
-      return etagJson({ items: entityId === null ? ALL : (BY_ENTITY[entityId] ?? []), next_cursor: null }, undefined, tag(backend.head));
+      const items = (entityId === null ? ALL : (BY_ENTITY[entityId] ?? [])).map((s) => backend.changed?.[s.id] ?? s);
+      return etagJson({ items, next_cursor: null }, undefined, tag(backend.head));
     }),
     http.get("*/api/questions", async ({ request }) => {
       await record(request, "GET");
@@ -216,12 +219,15 @@ function handlers(backend: Backend) {
   ];
 }
 
+let lastClient: QueryClient | null = null;
+
 function newBackend(): Backend {
   return { calls: [], head: 0, versionReads: 0, hold: null, conflictOn: null };
 }
 
 function renderSentences() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  lastClient = queryClient;
   const router = routerModule.createAppRouter(createMemoryHistory({ initialEntries: ["/model/sentences"] }));
   render(
     <QueryClientProvider client={queryClient}>
@@ -310,6 +316,29 @@ describe("SentencesPage grouping", () => {
     expect(backend.calls.filter((c) => c.path.endsWith("/edit")).map((c) => [c.path, c.ifMatch, c.body])).toEqual([
       ["/api/model/sentences/req:s3/edit", tag(0), { slots: { class: "quality" } }],
     ]);
+  });
+
+  it("resets the slot form when the reviewed sentence changes on the server, so a save never mixes versions (Fable #221)", async () => {
+    const backend = newBackend();
+    server.use(...handlers(backend));
+    renderSentences();
+    await loaded();
+    const user = userEvent.setup();
+    const row = () => item("entity:approval", "req:s3");
+    await user.click(within(row()).getByTestId("sentence-review-toggle"));
+    const select = (slot: string) => within(row()).getByTestId("sentence-review").querySelector("select[data-slot=" + slot + "]") as HTMLSelectElement;
+    await user.selectOptions(select("class"), "quality");
+    expect(select("class").value).toBe("quality");
+    // Another writer changes the level; the list refetches with the new head.
+    backend.head += 1;
+    backend.changed = { "req:s3": { ...S3, slots: { ...S3.slots, level: "software" } } };
+    await act(async () => {
+      await lastClient?.invalidateQueries();
+    });
+    await waitFor(() => expect(select("level").value).toBe("software"));
+    // The unsaved local change was dropped with the old version: nothing stale can be sent.
+    expect(select("class").value).toBe("functional");
+    expect((within(row()).getByTestId("sentence-save") as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("accepts and rejects a single Proposed sentence through its endpoints with If-Match", async () => {

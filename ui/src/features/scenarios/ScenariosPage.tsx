@@ -221,8 +221,8 @@ function ScenarioCard({
           <p>{t("scenarios.none")}</p>
         ) : (
           <ul className="space-y-1" data-testid="given">
-            {scenario.given.map((text) => (
-              <li key={text}>
+            {scenario.given.map((text, index) => (
+              <li key={index}>
                 <SemanticValue text={text} />
               </li>
             ))}
@@ -244,8 +244,8 @@ function ScenarioCard({
       <section aria-label={t("scenarios.then")}>
         <h4 className="font-semibold">{t("scenarios.then")}</h4>
         <ul className="space-y-1" data-testid="then">
-          {scenario.then.map((text) => (
-            <li key={text}>
+          {scenario.then.map((text, index) => (
+            <li key={index}>
               <SemanticValue text={text} />
             </li>
           ))}
@@ -278,7 +278,8 @@ function ScenarioCard({
         )}
       </div>
       <WriteError error={confirm.error} />
-      {correcting && <CorrectionEditor scenario={scenario} onDone={() => setCorrecting(false)} />}
+      {/* Seeded from the server Then rows; a server change resets the editor (Fable #221). */}
+      {correcting && <CorrectionEditor key={JSON.stringify(scenario.then)} scenario={scenario} onDone={() => setCorrecting(false)} />}
       {scenario.run !== null && <ScenarioTrace run={scenario.run} />}
     </li>
   );
@@ -316,8 +317,8 @@ function BulkConfirm({ groups, etag }: { groups: Map<string, string[]>; etag: st
           </p>
           <p>{t("scenarios.bulk.allWarning")}</p>
           <ul className="font-mono" data-testid="bulk-samples">
-            {samples.slice(0, 3).map((id) => (
-              <li key={id}>{id}</li>
+            {samples.slice(0, 3).map((id, index) => (
+              <li key={index}>{id}</li>
             ))}
           </ul>
           {samples.length > 3 && <p data-testid="bulk-sample-note">{t("scenarios.bulk.sampleOnly")}</p>}

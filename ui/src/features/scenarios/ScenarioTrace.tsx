@@ -145,10 +145,10 @@ export function ScenarioTrace({ run }: { run: ScenarioRun }) {
             <p>{t("scenarios.none")}</p>
           ) : (
             <ul className="space-y-1">
-              {missing.map((text) => {
+              {missing.map((text, index) => {
                 const entry = parseMissing(text);
                 return (
-                  <li key={text} data-missing={entry?.owner_ref ?? ""}>
+                  <li key={index} data-missing={entry?.owner_ref ?? ""}>
                     {entry === null ? (
                       <code className="break-all">{text}</code>
                     ) : (
@@ -178,8 +178,8 @@ export function ScenarioTrace({ run }: { run: ScenarioRun }) {
         <section aria-label={t("scenarios.diff.title")} className="rounded border border-red-700 p-2" data-testid="run-diff">
           <h5 className="font-semibold">{t("scenarios.diff.title")}</h5>
           <ul className="space-y-1">
-            {diff.map((text) => (
-              <li key={text}>
+            {diff.map((text, index) => (
+              <li key={index}>
                 <code className="break-all">{text}</code>
               </li>
             ))}

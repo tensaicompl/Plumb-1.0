@@ -429,8 +429,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
         ) : (
           <>
             <ul className="font-mono text-sm" data-testid="evidence-refs">
-              {detail.spans.map((ref) => (
-                <li key={ref}>{ref}</li>
+              {detail.spans.map((ref, index) => (
+                <li key={index}>{ref}</li>
               ))}
             </ul>
             <button type="button" className="mt-2 rounded border px-3 py-1" onClick={() => setEvidenceOpen(true)}>
@@ -460,8 +460,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
               <p className="text-sm">{t("requirement.lint.none")}</p>
             ) : (
               <ul className="font-mono text-sm" data-testid="lint-findings">
-                {detail.lint_findings.map((finding) => (
-                  <li key={finding}>{finding}</li>
+                {detail.lint_findings.map((finding, index) => (
+                  <li key={index}>{finding}</li>
                 ))}
               </ul>
             )}
@@ -470,8 +470,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
               <p className="text-sm">{t("requirement.lint.none")}</p>
             ) : (
               <ul className="font-mono text-sm" data-testid="lint-smells">
-                {detail.smells.map((smell) => (
-                  <li key={smell}>{smell}</li>
+                {detail.smells.map((smell, index) => (
+                  <li key={index}>{smell}</li>
                 ))}
               </ul>
             )}
@@ -488,8 +488,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
               <p>{t("requirement.linked.none")}</p>
             ) : (
               <ul className="font-mono" data-linked={key}>
-                {detail.linked[key].map((ref) => (
-                  <li key={ref}>{ref}</li>
+                {detail.linked[key].map((ref, index) => (
+                  <li key={index}>{ref}</li>
                 ))}
               </ul>
             )}

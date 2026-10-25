@@ -188,8 +188,8 @@ function ProcessView({ id }: { id: string }) {
           <p data-testid="validation-empty">{t("processes.noValidation")}</p>
         ) : (
           <ul className="font-mono" data-testid="validation-list">
-            {data.validation.map((value) => (
-              <li key={value}>{value}</li>
+            {data.validation.map((value, index) => (
+              <li key={index}>{value}</li>
             ))}
           </ul>
         )}
@@ -200,8 +200,8 @@ function ProcessView({ id }: { id: string }) {
           <p>{t("processes.none")}</p>
         ) : (
           <ul className="font-mono" data-testid="branch-list">
-            {data.branches.map((value) => (
-              <li key={value}>{value}</li>
+            {data.branches.map((value, index) => (
+              <li key={index}>{value}</li>
             ))}
           </ul>
         )}

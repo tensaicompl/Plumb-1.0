@@ -34,8 +34,8 @@ function Analysis({ name, titleKey, noneKey, items }: { name: string; titleKey: 
       {items !== undefined && items !== null && items.length === 0 && <p>{t(noneKey)}</p>}
       {items !== undefined && items !== null && items.length > 0 && (
         <ul className="font-mono">
-          {items.map((item) => (
-            <li key={item}>{item}</li>
+          {items.map((item, index) => (
+            <li key={index}>{item}</li>
           ))}
         </ul>
       )}
@@ -151,8 +151,8 @@ function RuleItem({ rule }: { rule: Rule }) {
           <p>{t("rules.none")}</p>
         ) : (
           <ul className="font-mono">
-            {rule.conditions.map((condition) => (
-              <li key={condition}>{condition}</li>
+            {rule.conditions.map((condition, index) => (
+              <li key={index}>{condition}</li>
             ))}
           </ul>
         )}

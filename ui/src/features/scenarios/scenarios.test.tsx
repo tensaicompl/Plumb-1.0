@@ -125,6 +125,7 @@ interface Backend {
   calls: Call[];
   corrected: boolean;
   fail: (path: string) => Response | null;
+  extra?: Scenario[];
 }
 
 function handlers(backend: Backend) {
@@ -163,7 +164,7 @@ function handlers(backend: Backend) {
         return etagJson({ items: CONFIRMABLE, next_cursor: null });
       }
       const pass = backend.corrected ? { ...R_PASS, then: [NEW_THEN] } : R_PASS;
-      return etagJson({ items: [...CONFIRMABLE, ACCEPTED_DERIVED, pass, R_UNDECIDABLE, R_FAIL, R_NEVER], next_cursor: null });
+      return etagJson({ items: [...CONFIRMABLE, ACCEPTED_DERIVED, pass, R_UNDECIDABLE, R_FAIL, R_NEVER, ...(backend.extra ?? [])], next_cursor: null });
     }),
     http.post("*/api/scenarios/confirm-derived", write),
     http.post("*/api/scenarios/run", write),
@@ -198,6 +199,21 @@ const lists = (backend: Backend) => backend.calls.filter((c) => c.method === "GE
 // ------------------------------------------------------------------ route, cards, filters
 
 describe("ScenariosPage", () => {
+  it("renders two identical Given and Then rows positionally, never keyed by their text (Fable #224)", async () => {
+    const errors = vi.spyOn(console, "error");
+    const twice = scenario("scenario:twice", "Accepted", "Confirmed", '{"operation":"op:approve"}', [], {
+      given: [OLD_THEN, OLD_THEN],
+      then: [NEW_THEN, NEW_THEN],
+      run: { ...FAIL_RUN, diff: [OLD_THEN, OLD_THEN] } as Scenario["run"],
+    });
+    await renderScenarios(newBackend({ extra: [twice] }));
+    const twiceCard = card("scenario:twice");
+    expect(twiceCard.querySelectorAll("[data-testid='given'] > li")).toHaveLength(2);
+    expect(twiceCard.querySelectorAll("[data-testid='then'] > li")).toHaveLength(2);
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("same key"))).toBe(false);
+    errors.mockRestore();
+  });
+
   it("renders the server scenarios on /model/scenarios with Given/When/Then, statuses and run state", async () => {
     const backend = newBackend();
     await renderScenarios(backend);
