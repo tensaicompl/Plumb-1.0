@@ -1102,7 +1102,40 @@ pub(crate) fn evaluate_gate(
     })
 }
 
-/// Persists an evaluated report for `loaded`'s revision (upsert per revision and gate).
+/// The hash of the supplemental inputs `gate` would be evaluated with over `loaded` now,
+/// assembled exactly as [`evaluate_gate`] assembles them (`None` for I0, which has none). F3
+/// assembles at the report's captured `evaluation_at`. An assembly failure is returned as is.
+pub(crate) fn current_input_hash(
+    state: &ApiState,
+    loaded: &LoadedRevision,
+    gate: GateId,
+    evaluation_at: Option<Timestamp>,
+) -> Result<Option<Hash>, ApiError> {
+    let a03 = state.runtime("stage_gates")?;
+    let a04 = state.stage_runtime("stage_gates")?;
+    let hash = match gate {
+        GateId::I0 => return Ok(None),
+        GateId::F1 => input_hash(&f1_inputs(state, loaded, a03, a04)?)?,
+        GateId::F2 => input_hash(&f2_inputs(state, loaded, a03, a04)?)?,
+        GateId::F3 => {
+            let at = evaluation_at.ok_or_else(|| inputs_missing(gate))?;
+            let findings = analyze_assumption_expiry(&loaded.graph, &FixedClock::new(at))
+                .map_err(|e| evaluation_failed(gate, e))?
+                .findings;
+            input_hash(&F3ValidationInputs::new(
+                f3_decision_artifacts(state, loaded)?,
+                findings,
+            ))?
+        }
+        GateId::F4 => input_hash(&f4_inputs(state, loaded, a04)?)?,
+        other => return Err(evaluation_failed(other, "not a NOW gate")),
+    };
+    Ok(Some(hash))
+}
+
+/// Persists an evaluated report for `loaded`'s revision: first its canonical bytes as an
+/// immutable content-addressed GateReport artifact (Fable #195), then the (revision, gate)
+/// index row (upsert per revision and gate).
 pub(crate) fn persist_report(
     state: &ApiState,
     loaded: &LoadedRevision,
@@ -1111,12 +1144,27 @@ pub(crate) fn persist_report(
     created_at: Timestamp,
 ) -> Result<GateReportRecord, ApiError> {
     let report = &evaluated.report;
+    let report_hash = report
+        .content_hash()
+        .map_err(|_| ApiError::internal("gate_report"))?;
+    let bytes = to_canonical_json(report).map_err(|_| ApiError::internal("gate_report"))?;
+    let stored = state
+        .with_artifact_store(|store| {
+            store.put(
+                ArtifactKind::GateReport,
+                "application/json",
+                &bytes,
+                created_at,
+            )
+        })?
+        .map_err(|_| ApiError::internal("artifact_store"))?;
+    if stored != report_hash {
+        return Err(ApiError::internal("gate_report"));
+    }
     let record = NewGateReport {
         revision_id: loaded.revision.id.clone(),
         gate: report.gate.to_string(),
-        report_hash: report
-            .content_hash()
-            .map_err(|_| ApiError::internal("gate_report"))?,
+        report_hash,
         report_json: serde_json::to_value(report).map_err(|_| ApiError::internal("gate_report"))?,
         supplemental_input_hash: evaluated.supplemental_input_hash.clone(),
         evaluation_at: evaluated.evaluation_at,

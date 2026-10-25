@@ -86,11 +86,34 @@ impl From<ExternalValidationError> for CompilerError {
     }
 }
 
+/// Fable #97: the require_text rule (non-empty, no surrounding whitespace or control
+/// characters) and a `type/subtype` shape of RFC 6838 restricted names, optionally followed by
+/// `; name=value` parameters.
 fn require_media_type(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.chars().any(char::is_control) {
-        Err(format!("invalid media type {value:?}"))
-    } else {
+    fn restricted_name(part: &str) -> bool {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "!#$&-^_.+".contains(c))
+    }
+    let invalid = || format!("invalid media type {value:?}");
+    crate::context::require_text("media type", value).map_err(|_| invalid())?;
+    let mut sections = value.split(';');
+    let essence = sections.next().unwrap_or_default();
+    let shaped = matches!(
+        essence.split('/').collect::<Vec<_>>().as_slice(),
+        [kind, subtype] if restricted_name(kind) && restricted_name(subtype)
+    );
+    let parameters_ok = sections.all(|parameter| {
+        matches!(
+            parameter.trim_start().split_once('='),
+            Some((name, value)) if restricted_name(name) && !value.is_empty()
+        )
+    });
+    if shaped && parameters_ok {
         Ok(())
+    } else {
+        Err(invalid())
     }
 }
 

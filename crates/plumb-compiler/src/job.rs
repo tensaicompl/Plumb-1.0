@@ -421,6 +421,13 @@ impl StageJob {
         )
     }
 
+    /// Failed -> Queued only (H0.3, architecture §33.3): an operationally failed job is
+    /// re-queued under its unchanged identity. A Failed job never holds a run, so nothing else
+    /// changes.
+    pub fn retry(&mut self) -> Result<(), StageJobError> {
+        self.transition(&[StageJobStatus::Failed], StageJobStatus::Queued)
+    }
+
     /// Requires `run` to be a valid run of exactly this job's capture (and, once completed,
     /// the job's own run).
     fn check_run(&self, run: &CompileRun) -> Result<(), StageJobError> {
@@ -643,7 +650,10 @@ impl StageJob {
         if original != &proposal.patch_set.patch {
             return Err(mismatch("original_patch"));
         }
-        if node.validate().is_err() || node.status != ElementStatus::Accepted {
+        if node.validate().is_err() {
+            return Err(mismatch("decision_node"));
+        }
+        if node.status != ElementStatus::Accepted {
             return Err(mismatch("decision_status"));
         }
         let NodePayload::ResolutionDecision(decision) = &node.payload else {
@@ -721,7 +731,10 @@ impl StageJob {
             let SemanticPatch::AddNode { node } = companion else {
                 return Err(mismatch("compound_shape"));
             };
-            if node.validate().is_err() || node.status != ElementStatus::Accepted {
+            if node.validate().is_err() {
+                return Err(mismatch("decision_node"));
+            }
+            if node.status != ElementStatus::Accepted {
                 return Err(mismatch("decision_status"));
             }
             let NodePayload::ResolutionDecision(decision) = &node.payload else {

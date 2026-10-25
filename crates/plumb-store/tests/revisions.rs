@@ -1009,6 +1009,64 @@ mod revisions {
         assert_eq!(store.head(&branch("main")).unwrap(), Some(r2.id));
     }
 
+    /// Fable #368: artifacts committed with a revision are written in the revision-commit
+    /// transaction, so a rejected commit leaves none of them behind.
+    #[test]
+    fn commit_with_artifacts_is_one_transaction() {
+        let db = Db::new();
+        let (mut store, r1) = db.initialized();
+        let base = base_graph();
+        let artifact = |text: &str| plumb_artifacts::Artifact {
+            hash: Hash::content_sha256(text.as_bytes()),
+            kind: ArtifactKind::SourceOriginal,
+            media_type: "text/markdown".into(),
+            bytes: text.as_bytes().to_vec(),
+            created_at: ts(T2),
+        };
+        let first = artifact("# first");
+        let r2 = store
+            .commit_with_artifacts(
+                &branch("main"),
+                &r1.id,
+                &add_accepted(&base, "req:one"),
+                meta(T2),
+                std::slice::from_ref(&first),
+            )
+            .unwrap()
+            .revision;
+        let artifacts = SqliteArtifactStore::open(&db.path).unwrap();
+        assert_eq!(artifacts.get(&first.hash).unwrap().bytes, first.bytes);
+        // A stale commit stores neither its revision nor its artifacts.
+        let lost = artifact("# lost");
+        assert!(matches!(
+            store.commit_with_artifacts(
+                &branch("main"),
+                &r1.id,
+                &add_accepted(&base, "req:two"),
+                meta(T3),
+                std::slice::from_ref(&lost),
+            ),
+            Err(StoreError::StaleBase { .. })
+        ));
+        assert!(!artifacts.exists(&lost.hash).unwrap());
+        // An artifact whose hash is not its bytes' hash fails the whole commit.
+        let mut forged = artifact("# forged");
+        forged.hash = Hash::content_sha256(b"other");
+        assert!(store
+            .commit_with_artifacts(
+                &branch("main"),
+                &r2.id,
+                &add_accepted(&base, "req:three"),
+                meta(T3),
+                std::slice::from_ref(&forged),
+            )
+            .is_err());
+        assert!(!artifacts
+            .exists(&Hash::content_sha256(b"# forged"))
+            .unwrap());
+        assert_eq!(store.head(&branch("main")).unwrap(), Some(r2.id));
+    }
+
     #[test]
     fn patch_set_semantic_base_is_checked_even_when_head_matches() {
         let db = Db::new();

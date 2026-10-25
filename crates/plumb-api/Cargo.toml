@@ -30,6 +30,7 @@ serde_yaml = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
+rusqlite = { workspace = true }
 tempfile = { workspace = true }
 jsonschema = { workspace = true }
 tower = { workspace = true }

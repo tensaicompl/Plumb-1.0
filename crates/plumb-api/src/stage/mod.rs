@@ -47,6 +47,9 @@ const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The bound of a stored failure message.
 const MAX_FAILURE_MESSAGE: usize = 512;
 
+/// The failure code of a job interrupted by the end of its process.
+const JOB_INTERRUPTED: &str = "E_JOB_INTERRUPTED";
+
 /// The operation ID of stage-produced design events.
 const STAGE_OPERATION: &str = "run_stage";
 
@@ -151,6 +154,8 @@ pub(crate) fn start(state: &ApiState) -> Result<(), ApiError> {
         acceptance::reconcile_pending(state)?;
         return start_worker(state);
     }
+    // H0.10: committed plain work is settled before anything in flight is interrupted.
+    acceptance::settle_plain_commits(state)?;
     let now = state.now();
     let children = state
         .with_stage_store(|store| store.in_flight_stage_jobs())?
@@ -164,7 +169,7 @@ pub(crate) fn start(state: &ApiState) -> Result<(), ApiError> {
     state
         .with_stage_store(|store| {
             store.interrupt_recipe_jobs(
-                "E_JOB_INTERRUPTED",
+                JOB_INTERRUPTED,
                 "the job was interrupted by a process restart",
                 now,
             )
@@ -379,9 +384,16 @@ impl Run<'_> {
                 )
             })?
             .map_err(crate::stage::store_error)?;
-        let (output, run_ref, run) = match inserted {
+        // A child re-queued by a retry (H0.3) runs again as a new attempt.
+        let reused = match inserted {
             WorkflowInsert::Existing(record) => {
                 job = decode_child(&record.stage_job_json, &record.stage_job_id)?;
+                (job.status() != StageJobStatus::Queued).then_some(record)
+            }
+            WorkflowInsert::Inserted(_) => None,
+        };
+        let (output, run_ref, run) = match reused {
+            Some(record) => {
                 match job.status() {
                     StageJobStatus::Ready | StageJobStatus::Committed => {}
                     StageJobStatus::Stale => return Err(StepEnd::Stale),
@@ -409,7 +421,7 @@ impl Run<'_> {
                 }
                 (output, run_ref, run)
             }
-            WorkflowInsert::Inserted(_) => match self.run_child(&stage, &ctx, &base, &mut job) {
+            None => match self.run_child(&stage, &ctx, &base, &mut job) {
                 Ok(done) => done,
                 Err(end) => {
                     if matches!(
@@ -663,6 +675,14 @@ impl ApiState {
                 "stage recipe job {job_id}"
             )));
         }
+        // H0.3: a job a dead process left interrupted is retried by a rerun on the same head
+        // (the capture binds the head, so the base is unchanged); every other stored job is
+        // returned as stored.
+        if record.status == StageStatus::Failed
+            && record.failure_code.as_deref() == Some(JOB_INTERRUPTED)
+        {
+            self.retry_recipe_job(&job_id)?;
+        }
         let revision = capture.initial_base_revision.to_string();
         Ok(StageRun {
             job_id: job_id.clone(),
@@ -674,6 +694,49 @@ impl ApiState {
                 job_id: job_id.to_string(),
             },
         })
+    }
+
+    /// The retry service (H0.3, §33.3): re-queues a Failed recipe job as a new attempt under
+    /// its unchanged ID, moving each of its Failed children back to Queued through
+    /// [`StageJob::retry`]. The branch head must still be the job's captured base (409
+    /// `E_STAGE_RETRY_BASE_MOVED` otherwise, nothing changed); any other status is 409
+    /// `E_STAGE_RETRY_NOT_FAILED`. Execution is separate (enqueue or execute the job).
+    pub fn retry_recipe_job(&self, id: &Hash) -> Result<(), ApiError> {
+        let record = self.recipe_record(id)?;
+        if record.status != StageStatus::Failed {
+            return Err(ApiError::conflict(
+                "E_STAGE_RETRY_NOT_FAILED",
+                "only a failed recipe job can be retried",
+            )
+            .with_details(json!({ "job_id": id, "status": record.status.as_str() })));
+        }
+        let head = self.load_head()?;
+        if head.revision.id != record.base_revision_id {
+            return Err(ApiError::conflict(
+                "E_STAGE_RETRY_BASE_MOVED",
+                "the branch head moved since the job was captured; it is never rebased",
+            )
+            .with_details(json!({
+                "job_id": id,
+                "base_revision": record.base_revision_id.as_str(),
+                "head_revision": head.revision.id.as_str(),
+            })));
+        }
+        let steps = self
+            .with_stage_store(|store| store.steps(id))?
+            .map_err(crate::stage::store_error)?;
+        for child_id in steps.iter().filter_map(|s| s.stage_job_id.as_ref()) {
+            let mut child = acceptance::load_child(self, child_id)?;
+            if child.status() == StageJobStatus::Failed {
+                child
+                    .retry()
+                    .map_err(|e| ApiError::internal(&format!("stage_job: {e}")))?;
+                persist_child(self, &child, StageStatus::Failed, self.now())?;
+            }
+        }
+        self.with_stage_store(|store| store.retry_recipe_job(id, self.now()))?
+            .map_err(crate::stage::store_error)?;
+        Ok(())
     }
 
     /// Hands a queued recipe job to this instance's worker.

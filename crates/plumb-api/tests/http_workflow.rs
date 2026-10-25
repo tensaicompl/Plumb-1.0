@@ -5115,6 +5115,97 @@ mod http_workflow {
         );
     }
 
+    /// Fable #368: import artifacts are persisted in the revision-commit transaction, so an
+    /// import whose CAS is lost leaves no unreferenced original or extracted artifact.
+    #[tokio::test]
+    async fn lost_import_commit_persists_no_artifacts() {
+        let app = app();
+        let stale = app.state.head().unwrap();
+        concurrent_commit(&app.path);
+        let bytes = b"# Leave\n\nEmployees shall record their overtime.\n";
+        let err = app
+            .state
+            .create_source(&stale, "overtime.md", "text/markdown", bytes)
+            .unwrap_err();
+        assert_eq!(err.body().code, "E_PRECONDITION_FAILED");
+        let artifacts = SqliteArtifactStore::open(&app.path).unwrap();
+        assert!(!artifacts.exists(&Hash::content_sha256(bytes)).unwrap());
+        // The committed import stores them with its revision.
+        let loaded = app.state.head().unwrap();
+        app.state
+            .create_source(&loaded, "overtime.md", "text/markdown", bytes)
+            .unwrap();
+        assert!(artifacts.exists(&Hash::content_sha256(bytes)).unwrap());
+    }
+
+    /// H0.10 (§33.11): a turn whose transcript CAS committed before a crash is recovered onto
+    /// the revision that CAS produced, never onto the head current at read time, and its
+    /// proposals stay bound to that revision.
+    #[tokio::test]
+    async fn recovered_turn_keeps_its_base_revision() {
+        let app = app();
+        let session = create_session(&app, json!(["req:a"])).await.json()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let base = head(&app).revision.id;
+        app.provider
+            .set(ProviderMode::Propose, Some(&semantic(&app).await));
+        let r = turn(&app, &session, "Employees should see their balance.").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let transcript_revision = head(&app).revision.id;
+        let turn_record = workflow(&app).turns(&id(&session)).unwrap()[0].clone();
+        assert_eq!(turn_record.proposal_ids.len(), 1);
+        let proposal_id = turn_record.proposal_ids[0].clone();
+        // Rewind the workflow rows to the instant after the transcript CAS (the crash point):
+        // the turn and its proposal are still prepared on the turn base.
+        {
+            let conn = rusqlite::Connection::open(&app.path).unwrap();
+            conn.execute(
+                "UPDATE workflow_session_turns SET state = 'prepared', \
+                 committed_revision_id = NULL WHERE session_id = ?1",
+                [session.as_str()],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE workflow_proposals SET state = 'prepared', base_revision_id = ?1 \
+                 WHERE proposal_id = ?2",
+                [base.as_str(), proposal_id.as_str()],
+            )
+            .unwrap();
+        }
+        // Another writer moves the head before anyone reads the session again.
+        concurrent_commit(&app.path);
+        let moved = head(&app).revision.id;
+        assert_ne!(moved, transcript_revision);
+        let app = restarted(app, ACTOR);
+        assert_eq!(
+            get(&app, &format!("/api/sessions/{session}")).await.status,
+            StatusCode::OK
+        );
+        let recovered = workflow(&app).turns(&id(&session)).unwrap()[0].clone();
+        assert_eq!(recovered.state, WorkflowTurnState::Committed);
+        assert_eq!(
+            recovered.committed_revision_id.as_ref(),
+            Some(&transcript_revision),
+            "the turn records the revision its transcript CAS produced"
+        );
+        let stored = workflow(&app).proposal(&proposal_id).unwrap().unwrap();
+        assert_eq!(stored.state, WorkflowProposalState::Pending);
+        assert_eq!(stored.base_revision_id, transcript_revision);
+        // Never rebound to the moved head: the proposal is not acceptable there.
+        assert_error(
+            &write(
+                &app,
+                &format!("/api/proposals/{proposal_id}/create"),
+                Some(json!({"reason": null})),
+            )
+            .await,
+            StatusCode::CONFLICT,
+            "E_PROPOSAL_BASELINE_CHANGED",
+        );
+    }
+
     // ------------------------------------------------------------------ scenarios
 
     fn run_ref(scenario: &str) -> Id {

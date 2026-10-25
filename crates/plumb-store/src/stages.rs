@@ -324,8 +324,42 @@ impl SqliteStageStore {
         Ok(updated)
     }
 
-    /// Fails every in-flight recipe job left by a previous process with `code` (A0.4 restart
-    /// sweep); returns the failed IDs in order.
+    /// Re-queues a Failed recipe job for a new attempt under its unchanged ID (H0.3, §33.3):
+    /// `failed -> queued` with its failure and result cleared and the steps of the failed
+    /// attempt removed, in one transaction. Another current state is
+    /// [`StoreError::WorkflowStateConflict`] and nothing changes.
+    pub fn retry_recipe_job(
+        &mut self,
+        id: &Hash,
+        at: Timestamp,
+    ) -> Result<StageRecipeJobRecord, StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = recipe_on(&tx, id)?.ok_or_else(|| not_found("stage_recipe_job", id))?;
+        if current.status != StageStatus::Failed {
+            return Err(StoreError::WorkflowStateConflict {
+                kind: "stage_recipe_job",
+                id: id.to_string(),
+                expected: StageStatus::Failed.as_str().to_owned(),
+                actual: current.status.as_str().to_owned(),
+            });
+        }
+        tx.execute(
+            "DELETE FROM stage_recipe_job_steps WHERE recipe_job_id = ?1",
+            [id.as_str()],
+        )?;
+        tx.execute(
+            "UPDATE stage_recipe_jobs SET status = 'queued', result_revision_id = NULL, \
+             failure_code = NULL, failure_message = NULL, updated_at = ?1 \
+             WHERE recipe_job_id = ?2",
+            params![at.to_string(), id.as_str()],
+        )?;
+        let updated = recipe_on(&tx, id)?.ok_or_else(|| not_found("stage_recipe_job", id))?;
+        tx.commit()?;
+        Ok(updated)
+    }
+
     /// The database file of this store (`None` for an in-memory database).
     pub fn database_path(&self) -> Option<std::path::PathBuf> {
         self.conn
@@ -334,6 +368,8 @@ impl SqliteStageStore {
             .map(std::path::PathBuf::from)
     }
 
+    /// Fails every in-flight recipe job left by a previous process with `code` (A0.4 restart
+    /// sweep); returns the failed IDs in order.
     pub fn interrupt_recipe_jobs(
         &mut self,
         code: &str,

@@ -1004,7 +1004,9 @@ mod turn {
             .map(|i| to_canonical_json(i).unwrap().len())
             .collect();
         assert_eq!(full.context.context_item_bytes, sizes.iter().sum::<usize>());
-        // Mandatory scope that does not fit fails; nothing is dropped.
+        // Mandatory scope that does not fit fails; nothing is dropped and (Fable #94) nothing
+        // is persisted: every validation precedes the first store write.
+        let mut store = MemoryStore::default();
         let err = prepare_turn(
             &base(),
             &session(&[LEAVE]),
@@ -1013,10 +1015,11 @@ mod turn {
                 max_context_bytes: sizes[0] - 1,
                 ..config()
             },
-            &mut MemoryStore::default(),
+            &mut store,
             &FixedClock::new(ts(USER_AT)),
         )
         .unwrap_err();
+        assert!(store.puts.is_empty(), "{:?}", store.puts);
         assert!(matches!(
             err,
             SessionError::ContextBudgetExceeded { required, limit } if required == sizes[0] && limit == sizes[0] - 1
@@ -1226,6 +1229,41 @@ mod turn {
         assert_eq!(inspected.persisted_inference, persisted);
         // Repeatable.
         assert_eq!(inspect(&f, &persisted).unwrap(), inspected);
+    }
+
+    /// H0.10 (§33.11): a session-generated proposal's materiality and acceptance policy are
+    /// recomputed from its actual semantic delta, so a semantic change is never labelled
+    /// NonSemantic / AutoNonSemantic.
+    #[test]
+    fn mislabelled_semantic_proposal_is_relabelled_from_its_delta() {
+        let mut f = prepared();
+        let honest = semantic(
+            &f,
+            NEW_REQ,
+            "Managers approve leave within two days.",
+            &[&user_evidence(&f)],
+        );
+        let mislabelled = Proposal::new(
+            honest.stage,
+            honest.patch_set.clone(),
+            honest.evidence_refs.clone(),
+            Vec::new(),
+            ProposalMateriality::NonSemantic,
+            AcceptancePolicy::AutoNonSemantic,
+            None,
+        )
+        .unwrap();
+        let inspected =
+            inspect_value(&mut f, output("Relabelled.", &[&mislabelled], None)).unwrap();
+        assert_eq!(inspected.proposals.len(), 1);
+        let relabelled = &inspected.proposals[0];
+        assert_eq!(relabelled.materiality, ProposalMateriality::Semantic);
+        assert_eq!(relabelled.acceptance_policy, AcceptancePolicy::HumanConfirm);
+        assert_eq!(relabelled.patch_set, mislabelled.patch_set);
+        assert_eq!(
+            relabelled, &honest,
+            "the identity follows the recomputed labels"
+        );
     }
 
     #[test]

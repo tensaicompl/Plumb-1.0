@@ -1266,6 +1266,219 @@ mod http_stages {
         );
     }
 
+    /// Rewinds the stored child `child_id` to Ready (its pre-commit state) and its parent to
+    /// `parent_status`, exactly as a crash right after the plain CAS leaves them.
+    fn rewind_to_ready(app: &App, job_id: &Hash, child_id: &Hash, parent_status: &str) {
+        let stored = stage_store(app).stage_job(child_id).unwrap().unwrap();
+        let mut value: Value = serde_json::from_str(&stored.stage_job_json).unwrap();
+        value["status"] = json!("ready");
+        value["committed_revision"] = Value::Null;
+        value["committed_output_ref"] = Value::Null;
+        let text = String::from_utf8(to_canonical_json(&value).unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(&app.path).unwrap();
+        conn.execute(
+            "UPDATE stage_jobs SET stage_job_json = ?1, status = 'ready' WHERE stage_job_id = ?2",
+            [text.as_str(), child_id.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE stage_recipe_jobs SET status = ?1, result_revision_id = NULL \
+             WHERE recipe_job_id = ?2",
+            [parent_status, job_id.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE stage_recipe_job_steps SET result_revision_id = NULL WHERE recipe_job_id = ?1",
+            [job_id.as_str()],
+        )
+        .unwrap();
+    }
+
+    /// H0.10 (§33.11): a plain automatic commit that reached the store before a crash is
+    /// settled on recovery to that committed revision, found on the branch lineage; it is never
+    /// interrupted, failed or committed a second time.
+    #[tokio::test]
+    async fn plain_commit_crash_settles_to_committed_revision() {
+        let app = app(data_graph(&["Email"]));
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        assert_eq!(job(&app, &job_id)["status"], "committed");
+        let committed = head(&app).revision;
+        let child_id = stage_store(&app).steps(&job_id).unwrap()[0]
+            .stage_job_id
+            .clone()
+            .unwrap();
+        let committed_child = stage_store(&app).stage_job(&child_id).unwrap().unwrap();
+        rewind_to_ready(&app, &job_id, &child_id, "evaluating");
+        // Another writer moved the head afterwards: the walk must still find the commit.
+        commit_patch(&app, |_| SemanticPatch::AddNode {
+            node: requirement("req:later", "Proposed", "A later change."),
+        });
+        let moved = head(&app).revision.id;
+        // The first process has exited.
+        app.state.release_jobs_lock();
+        let state = open(&app.path, app.provider.clone(), &Gates::default());
+        assert_eq!(head(&app).revision.id, moved, "no second commit");
+        let child = stage_store(&app).stage_job(&child_id).unwrap().unwrap();
+        assert_eq!(child.status, StageStatus::Committed);
+        assert_eq!(child.stage_job_json, committed_child.stage_job_json);
+        let record = stage_store(&app).recipe_job(&job_id).unwrap().unwrap();
+        assert_eq!(record.status, StageStatus::Committed);
+        assert_eq!(record.result_revision_id.as_ref(), Some(&committed.id));
+        assert_eq!(record.failure_code, None);
+        let (view, _) = state.get_job(job_id.as_str()).unwrap();
+        assert_eq!(serde_json::to_value(view).unwrap()["status"], "committed");
+    }
+
+    /// Fable #196: reconciling an interrupted acceptance resolves the workflow proposal with the
+    /// revision whose decision refs contain its acceptance decision, never the current head.
+    #[tokio::test]
+    async fn interrupted_acceptance_resolves_with_its_decision_revision() {
+        let app = app(data_graph(&["Email", "Salary"]));
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        let target = pending(&app, &job_id)[0].clone();
+        let loaded = head(&app);
+        let companion = build_acceptance_companion(
+            &loaded.graph,
+            &target,
+            &AcceptanceInput {
+                reason_codes: Vec::new(),
+                decided_by: id(ACTOR),
+                decided_at: ts(NOW),
+                rationale: None,
+            },
+        )
+        .unwrap();
+        SqliteArtifactStore::open(&app.path)
+            .unwrap()
+            .put(
+                ArtifactKind::Patch,
+                "application/json",
+                &companion.original_patch_bytes,
+                ts(NOW),
+            )
+            .unwrap();
+        let commit = SqliteRevisionStore::open(&app.path)
+            .unwrap()
+            .commit(
+                &BranchName::main(),
+                &loaded.revision.id,
+                &companion.patch_set,
+                RevisionWriteMeta {
+                    decision_refs: vec![companion.decision_ref.clone()],
+                    created_by: id(ACTOR),
+                    created_at: ts(NOW),
+                },
+            )
+            .unwrap();
+        // The head moves on before the restart.
+        commit_patch(&app, |_| SemanticPatch::AddNode {
+            node: requirement("req:later", "Proposed", "A later change."),
+        });
+        assert_ne!(head(&app).revision.id, commit.revision.id);
+        app.state.release_jobs_lock();
+        let _state = open(&app.path, app.provider.clone(), &Gates::default());
+        let record = workflow(&app).proposal(&target.id).unwrap().unwrap();
+        assert_eq!(record.state, WorkflowProposalState::Accepted);
+        assert_eq!(
+            record.resolved_revision_id.as_ref(),
+            Some(&commit.revision.id)
+        );
+    }
+
+    /// H0.3 (§33.3): a job interrupted by a dead process is retryable. Rerunning the same
+    /// recipe on the same head re-queues the interrupted job under its unchanged ID and
+    /// executes it again; an explicit retry of a job whose base moved is refused.
+    #[tokio::test]
+    async fn interrupted_job_reruns_as_a_new_attempt() {
+        let app = app(data_graph(&["Email"]));
+        let queued = app.state.run_stage(Recipe::Tags, None, None).unwrap();
+        // The first process died before executing it.
+        app.state.release_jobs_lock();
+        let state = open(&app.path, app.provider.clone(), &Gates::default());
+        let view = serde_json::to_value(state.get_job(queued.job_id.as_str()).unwrap().0).unwrap();
+        assert_eq!(view["status"], "failed");
+        // A rerun executes again under the same content-addressed ID.
+        let rerun = state.run_stage(Recipe::Tags, None, None).unwrap();
+        assert_eq!(rerun.job_id, queued.job_id);
+        state.execute_recipe_job(&rerun.job_id).unwrap();
+        let view = serde_json::to_value(state.get_job(rerun.job_id.as_str()).unwrap().0).unwrap();
+        assert_eq!(view["status"], "committed", "{view}");
+        assert_eq!(
+            data_classes(&app),
+            vec![("attr:0".into(), Some("pii".into()))]
+        );
+        // Committed work is never retried.
+        let err = state.retry_recipe_job(&rerun.job_id).unwrap_err();
+        assert_eq!(err.body().code, "E_STAGE_RETRY_NOT_FAILED");
+
+        // An interrupted child is re-queued with its parent (same child ID, new attempt).
+        let app = self::app(data_graph(&["Email", "Salary"]));
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        assert_eq!(job(&app, &job_id)["status"], "ready");
+        let child_id = stage_store(&app).steps(&job_id).unwrap()[0]
+            .stage_job_id
+            .clone()
+            .unwrap();
+        // Rewind to a crash during acquisition: parent and child in flight.
+        {
+            let stored = stage_store(&app).stage_job(&child_id).unwrap().unwrap();
+            let mut value: Value = serde_json::from_str(&stored.stage_job_json).unwrap();
+            value["status"] = json!("acquiring");
+            value["compile_run_ref"] = Value::Null;
+            let text = String::from_utf8(to_canonical_json(&value).unwrap()).unwrap();
+            let conn = rusqlite::Connection::open(&app.path).unwrap();
+            conn.execute(
+                "UPDATE stage_jobs SET stage_job_json = ?1, status = 'acquiring', \
+                 compile_run_ref = NULL WHERE stage_job_id = ?2",
+                [text.as_str(), child_id.as_str()],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE stage_recipe_jobs SET status = 'acquiring', result_revision_id = NULL \
+                 WHERE recipe_job_id = ?1",
+                [job_id.as_str()],
+            )
+            .unwrap();
+        }
+        app.state.release_jobs_lock();
+        let state = open(&app.path, app.provider.clone(), &Gates::default());
+        assert_eq!(
+            stage_store(&app)
+                .stage_job(&child_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            StageStatus::Failed
+        );
+        let rerun = state.run_stage(Recipe::Tags, None, None).unwrap();
+        assert_eq!(rerun.job_id, job_id);
+        state.execute_recipe_job(&job_id).unwrap();
+        let view = serde_json::to_value(state.get_job(job_id.as_str()).unwrap().0).unwrap();
+        assert_eq!(view["status"], "ready", "{view}");
+        assert_eq!(
+            stage_store(&app)
+                .stage_job(&child_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            StageStatus::Ready
+        );
+        assert_eq!(pending(&app, &job_id).len(), 2);
+
+        // A failed job whose base moved is not retried.
+        let app = self::app(data_graph(&["Email"]));
+        let queued = app.state.run_stage(Recipe::Tags, None, None).unwrap();
+        app.state.release_jobs_lock();
+        let state = open(&app.path, app.provider.clone(), &Gates::default());
+        commit_patch(&app, |_| SemanticPatch::AddNode {
+            node: requirement("req:later", "Proposed", "A later change."),
+        });
+        let err = state.retry_recipe_job(&queued.job_id).unwrap_err();
+        assert_eq!(err.body().code, "E_STAGE_RETRY_BASE_MOVED");
+        let view = serde_json::to_value(state.get_job(queued.job_id.as_str()).unwrap().0).unwrap();
+        assert_eq!(view["status"], "failed");
+    }
+
     // ------------------------------------------------------------------ gates
 
     #[tokio::test]
@@ -1695,6 +1908,94 @@ mod http_stages {
         .unwrap();
         let expected = Hash::content_sha256(&to_canonical_json(&assembled).unwrap());
         assert_eq!(report.supplemental_input_hash, Some(expected));
+    }
+
+    /// Overwrites the stored report row of `gate` on the head revision.
+    fn tamper_report(app: &App, gate: &str, report_json: &str, report_hash: &str, input: &str) {
+        let conn = rusqlite::Connection::open(&app.path).unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE gate_reports SET report_json = ?1, report_hash = ?2, \
+                 supplemental_input_hash = ?3 WHERE gate = ?4 AND revision_id = ?5",
+                [
+                    report_json,
+                    report_hash,
+                    input,
+                    gate,
+                    head(app).revision.id.as_str(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+
+    fn head_report(app: &App, gate: &str) -> plumb_store::GateReportRecord {
+        let revision = head(app).revision.id;
+        stage_store(app)
+            .gate_reports()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.gate == gate && r.revision_id == revision)
+            .unwrap()
+    }
+
+    /// H0.10 (§33.11): a persisted GateReport is current only when it has a result for every
+    /// rule of its gate in the active profile and its supplemental-input hash equals the
+    /// currently assembled inputs; otherwise it is re-evaluated on demand.
+    #[tokio::test]
+    async fn persisted_gate_report_currency_needs_every_rule_and_current_inputs() {
+        let app = app_with(data_graph(&["Email"]), &[], chain_gates());
+        run_inline(&app, Recipe::Lint, None);
+        let original = head_report(&app, "F1");
+        let input = original.supplemental_input_hash.clone().unwrap();
+        // A report missing one PASS rule still validates (summary and result are unchanged).
+        let mut truncated: plumb_validation::GateReport =
+            serde_json::from_str(&original.report_json).unwrap();
+        let index = truncated
+            .rules
+            .iter()
+            .position(|r| serde_json::to_value(r.state).unwrap() == "PASS")
+            .unwrap();
+        truncated.rules.remove(index);
+        truncated.validate().unwrap();
+        let text = String::from_utf8(to_canonical_json(&truncated).unwrap()).unwrap();
+        let hash = truncated.content_hash().unwrap();
+        tamper_report(&app, "F1", &text, hash.as_str(), input.as_str());
+        assert_eq!(get(&app, "/api/gates").await.status, StatusCode::OK);
+        assert_eq!(
+            head_report(&app, "F1").report_json,
+            original.report_json,
+            "an incomplete report is not current and is re-evaluated"
+        );
+        // A report bound to other supplemental inputs is not current either.
+        let other = Hash::content_sha256(b"other inputs");
+        tamper_report(
+            &app,
+            "F1",
+            &original.report_json,
+            original.report_hash.as_str(),
+            other.as_str(),
+        );
+        assert_eq!(get(&app, "/api/gates").await.status, StatusCode::OK);
+        assert_eq!(head_report(&app, "F1").supplemental_input_hash, Some(input));
+    }
+
+    /// Fable #195: every gate evaluation persists its canonical report bytes as an immutable,
+    /// content-addressed GateReport artifact; the (revision, gate) row is only the index.
+    #[tokio::test]
+    async fn every_gate_evaluation_persists_a_gate_report_artifact() {
+        let app = app_with(data_graph(&["Email"]), &[], chain_gates());
+        run_inline(&app, Recipe::Lint, None);
+        assert_eq!(get(&app, "/api/gates").await.status, StatusCode::OK);
+        let records = stage_store(&app).gate_reports().unwrap();
+        assert!(records.len() >= 2, "{records:?}");
+        let artifacts = SqliteArtifactStore::open(&app.path).unwrap();
+        for record in &records {
+            let artifact = artifacts.get(&record.report_hash).unwrap();
+            assert_eq!(artifact.kind, ArtifactKind::GateReport);
+            assert_eq!(artifact.media_type, "application/json");
+            assert_eq!(artifact.bytes, record.report_json.as_bytes());
+        }
     }
 
     // ------------------------------------------------------------------ R0.4 gate input assembly

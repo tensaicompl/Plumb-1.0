@@ -2174,8 +2174,10 @@ mod http_core {
         assert!(events.try_recv().is_err());
     }
 
+    /// Fable #368 (H0.10) changes the A0.2 contract: the import artifacts are stored in the
+    /// revision-commit transaction, so a lost race leaves none behind.
     #[tokio::test]
-    async fn http_core_source_artifacts_survive_a_lost_race() {
+    async fn http_core_source_artifacts_are_not_left_by_a_lost_race() {
         let (app, clock) = racing_app();
         let before = revision_count(&app);
         let bytes: &[u8] = b"# Raced\n\nThis upload loses its race.\n";
@@ -2195,8 +2197,8 @@ mod http_core {
         assert_eq!(current.id.version(), before + 1);
         assert_eq!(r.json()["revision"], current.id.to_string());
         let expected = imported("text/markdown", "raced.md", bytes);
-        assert!(artifact_exists(&app, &expected.original_artifact.hash));
-        assert!(artifact_exists(&app, &expected.extracted_artifact.hash));
+        assert!(!artifact_exists(&app, &expected.original_artifact.hash));
+        assert!(!artifact_exists(&app, &expected.extracted_artifact.hash));
         assert!(head(&app).graph.node(&expected.source.id).is_none());
         assert_eq!(clock.reads.load(Ordering::SeqCst), 1);
     }

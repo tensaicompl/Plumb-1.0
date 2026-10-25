@@ -16,6 +16,7 @@ architecture text, so the plan can be updated when it is picked up again.
 | `set_attribute_type` accepts only Accepted value_type Concept names | It also accepts the pilot primitive types (String, Int, Bool, Date, DateTime, Decimal(n)); CLI `set-attribute-type`. |
 | Process analysis forbids `performed_by` on Operation tasks | Allowed as the task's swimlane (Hotfix 079 lane move). |
 | Lint RELATIVE_TIME_NO_ANCHOR flags "complete within 2 seconds" | complete/finish/execute + within N units is anchored by the action itself. |
+| A0.4: a repeated run_stage returns the existing job in any status; terminal jobs are never reset | Except an `E_JOB_INTERRUPTED` job, which a rerun on the same head re-queues as a new attempt under the same ID (H0.3 retry) |
 | Proposals are never rebased | Still true. New: stale pending proposals are flagged; `proposals --refresh` re-submits stale Question answers from their recorded decision (a re-resolution of the governed answer, not a patch rebase). |
 | (none) | Rejection memory: a stage proposal rejected on its own revision is not proposed again; rejecting an already stale proposal is not remembered. |
 | E0.1 builds a reference PSG from fixture-contract.yaml | The product builds the pilot (CLI simulation); E0.1 keeps byte references of the five deterministic outputs in `fixtures/hr-leave/derived/`. |
@@ -26,10 +27,10 @@ architecture text, so the plan can be updated when it is picked up again.
 | Task | Status |
 |---|---|
 | H0.1 | done on main |
-| H0.3 | partial: a second process no longer interrupts a live process's jobs (`<db>.jobs.lock`); retry of a killed job not done |
+| H0.3 | partial: a second process no longer interrupts a live process's jobs (`<db>.jobs.lock`); `ApiState::retry_recipe_job` re-queues a Failed job under its ID (Failed children through `StageJob::retry`; moved head 409 `E_STAGE_RETRY_BASE_MOVED`, other status 409 `E_STAGE_RETRY_NOT_FAILED`) and a rerun of an `E_JOB_INTERRUPTED` job on the same head retries it. No attempt column/table, owner lease or CLI `retry` command; the steps of the failed attempt are replaced |
 | H0.5 | done for extract, vocabulary, domain, lifecycle transitions and calculations; analyser dispositions persisted and shown; verification obligations not covered |
 | H0.6 | done (governed blocker rule, waiver actor at evaluation, findings list/materialize/waive, stale Open findings closed by materialize); I0 findings are materialized through the same path |
-| H0.10 | partial: stale flag, answer refresh, rejection memory; everything else in the task list open |
+| H0.10 | partial: stale flag, answer refresh, rejection memory; plain-commit crash settlement, session-turn revision binding, session proposal relabelling from the semantic delta, GateReport currency (complete rule set + current supplemental-input hash, durable reports only) and Fable #94, #96, #97, #195, #196, #368 (import artifacts in the commit transaction) done; the rest open |
 | H0.2, H0.4, H0.7, H0.8, H0.9, H0.11, R0.7 | open |
 | E0.1–E0.3 | done as described above |
 | E0.4 | partial: `make all` runs fmt/clippy/tests/UI/openapi/placeholders; `make cov` enforces the line thresholds (all met, 92% overall); mutation testing and UI coverage not done |

@@ -1557,6 +1557,7 @@ dependencies = [
  "plumb-sim",
  "plumb-store",
  "plumb-validation",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",

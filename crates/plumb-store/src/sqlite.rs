@@ -103,9 +103,38 @@ impl SqliteRevisionStore {
         patch_set: &PatchSet,
         meta: RevisionWriteMeta,
     ) -> Result<CommitResult, StoreError> {
+        self.commit_with_artifacts(branch, expected_head, patch_set, meta, &[])
+    }
+
+    /// [`SqliteRevisionStore::commit`] that also stores `artifacts` (each under the content
+    /// hash of its bytes, which must equal its `hash`) in the same transaction (Fable #368): a
+    /// rejected commit leaves none of them behind.
+    pub fn commit_with_artifacts(
+        &mut self,
+        branch: &BranchName,
+        expected_head: &RevisionId,
+        patch_set: &PatchSet,
+        meta: RevisionWriteMeta,
+        artifacts: &[plumb_artifacts::Artifact],
+    ) -> Result<CommitResult, StoreError> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for artifact in artifacts {
+            let stored = put_artifact_in_transaction(
+                &tx,
+                artifact.kind,
+                &artifact.media_type,
+                &artifact.bytes,
+                artifact.created_at,
+            )?;
+            if stored != artifact.hash {
+                return Err(plumb_artifacts::ArtifactStoreError::IntegrityViolation(
+                    artifact.hash.clone(),
+                )
+                .into());
+            }
+        }
         let actual =
             read_head(&tx, branch)?.ok_or_else(|| StoreError::BranchNotFound(branch.clone()))?;
         if actual != *expected_head {
