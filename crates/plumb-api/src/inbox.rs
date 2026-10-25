@@ -87,6 +87,14 @@ impl<'a> Names<'a> {
         Names { added, graphs }
     }
 
+    /// Name lookup in one graph (no proposal).
+    pub(crate) fn of_graph(graph: &'a Graph) -> Names<'a> {
+        Names {
+            added: BTreeMap::new(),
+            graphs: vec![graph],
+        }
+    }
+
     fn node(&self, id: &Id) -> Option<&'a Node> {
         self.added
             .get(id)
@@ -99,7 +107,7 @@ impl<'a> Names<'a> {
     }
 
     /// The plain-language label of an element ID (its ID when unknown).
-    fn label(&self, id: &Id) -> String {
+    pub(crate) fn label(&self, id: &Id) -> String {
         match self.node(id) {
             Some(node) => self.node_label(node),
             None => match self.edge(id) {

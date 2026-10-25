@@ -939,6 +939,23 @@
         ],
         "type": "object"
       },
+      "ElementLabel": {
+        "additionalProperties": false,
+        "description": "The plain-language label of one model element (its name; its ID when it has none).",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "type": "object"
+      },
       "Entity": {
         "additionalProperties": false,
         "properties": {
@@ -1356,6 +1373,13 @@
             },
             "type": "array"
           },
+          "title": {
+            "description": "The active profile's plain-language title of the rule; `null` when the rule is not in\nthe active profile.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "waiver_ref": {
             "type": [
               "string",
@@ -1374,7 +1398,8 @@
           "semantic_condition_key",
           "finding_ref",
           "waiver_ref",
-          "error"
+          "error",
+          "title"
         ],
         "type": "object"
       },
@@ -3231,6 +3256,13 @@
           "id": {
             "type": "string"
           },
+          "labels": {
+            "description": "The plain-language label of each element ID in `linked` (an operation, process or\nscenario name), sorted by ID.",
+            "items": {
+              "$ref": "#/components/schemas/ElementLabel"
+            },
+            "type": "array"
+          },
           "linked": {
             "$ref": "#/components/schemas/RequirementLinks"
           },
@@ -3258,6 +3290,13 @@
             },
             "type": "array"
           },
+          "source_identifier": {
+            "description": "The requirement's identifier in its source document (e.g. \"HR-009\"); `null` when the\nsource did not give one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "spans": {
             "items": {
               "type": "string"
@@ -3282,7 +3321,9 @@
           "evidence",
           "lint_findings",
           "linked",
-          "lint_current"
+          "labels",
+          "lint_current",
+          "source_identifier"
         ],
         "type": "object"
       },
@@ -3317,8 +3358,14 @@
       },
       "RequirementPage": {
         "additionalProperties": false,
-        "description": "A page of results; `next_cursor` is null on the last page.",
+        "description": "A page of results; `next_cursor` is null on the last page. An item of the page whose\nprojection failed is in `health` (with its typed error) instead of `items`; corruption\nis reported, never hidden, and the remaining items are still returned.",
         "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ItemHealth"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/RequirementSummary"
@@ -3333,7 +3380,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "health"
         ],
         "type": "object"
       },
@@ -3368,6 +3416,13 @@
             },
             "type": "array"
           },
+          "source_identifier": {
+            "description": "The requirement's identifier in its source document (e.g. \"HR-009\"); `null` when the\nsource did not give one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "status": {
             "type": "string"
           },
@@ -3382,7 +3437,8 @@
           "status",
           "smells",
           "coverage",
-          "lint_current"
+          "lint_current",
+          "source_identifier"
         ],
         "type": "object"
       },
@@ -5692,6 +5748,7 @@
                         "targets": [
                           "example"
                         ],
+                        "title": "example",
                         "waiver_ref": "example"
                       }
                     ],
@@ -9726,6 +9783,13 @@
             "content": {
               "application/json": {
                 "example": {
+                  "health": [
+                    {
+                      "code": "example",
+                      "id": "example",
+                      "message": "example"
+                    }
+                  ],
                   "items": [
                     {
                       "class": "functional",
@@ -9742,6 +9806,7 @@
                       "smells": [
                         "example"
                       ],
+                      "source_identifier": "example",
                       "status": "example",
                       "text": "The system shall allow an employee to create a draft leave request."
                     }
@@ -9819,6 +9884,12 @@
                     }
                   ],
                   "id": "HR-001",
+                  "labels": [
+                    {
+                      "id": "example",
+                      "label": "example"
+                    }
+                  ],
                   "linked": {
                     "operations": [
                       "example"
@@ -9837,6 +9908,7 @@
                   "smells": [
                     "example"
                   ],
+                  "source_identifier": "example",
                   "spans": [
                     "example"
                   ],

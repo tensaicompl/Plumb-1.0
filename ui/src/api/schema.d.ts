@@ -1604,6 +1604,11 @@ export interface components {
             score: number;
             subject_ref: string;
         };
+        /** @description The plain-language label of one model element (its name; its ID when it has none). */
+        ElementLabel: {
+            id: string;
+            label: string;
+        };
         Entity: {
             attributes: components["schemas"]["EntityAttribute"][];
             id: string;
@@ -1718,6 +1723,11 @@ export interface components {
             semantic_condition_key: string | null;
             state: components["schemas"]["GateRuleState"];
             targets: string[];
+            /**
+             * @description The active profile's plain-language title of the rule; `null` when the rule is not in
+             *     the active profile.
+             */
+            title: string | null;
             waiver_ref: string | null;
         };
         /**
@@ -2322,6 +2332,11 @@ export interface components {
             /** @description The evidence references of `spans`, in the same order, with their source text. */
             evidence: components["schemas"]["EvidenceExcerpt"][];
             id: string;
+            /**
+             * @description The plain-language label of each element ID in `linked` (an operation, process or
+             *     scenario name), sorted by ID.
+             */
+            labels: components["schemas"]["ElementLabel"][];
             linked: components["schemas"]["RequirementLinks"];
             /**
              * @description Whether a current F1 gate report exists for the branch head (R0.4). When false,
@@ -2336,6 +2351,11 @@ export interface components {
             /** Format: double */
             readiness?: number | null;
             smells: string[];
+            /**
+             * @description The requirement's identifier in its source document (e.g. "HR-009"); `null` when the
+             *     source did not give one.
+             */
+            source_identifier: string | null;
             spans: string[];
             status: string;
             text: string;
@@ -2345,8 +2365,13 @@ export interface components {
             processes: string[];
             scenarios: string[];
         };
-        /** @description A page of results; `next_cursor` is null on the last page. */
+        /**
+         * @description A page of results; `next_cursor` is null on the last page. An item of the page whose
+         *     projection failed is in `health` (with its typed error) instead of `items`; corruption
+         *     is reported, never hidden, and the remaining items are still returned.
+         */
         RequirementPage: {
+            health: components["schemas"]["ItemHealth"][];
             items: components["schemas"]["RequirementSummary"][];
             next_cursor?: string | null;
         };
@@ -2370,6 +2395,11 @@ export interface components {
              *     (F1 evaluates Accepted Requirements only). Always `[]` when `lint_current` is false.
              */
             smells: string[];
+            /**
+             * @description The requirement's identifier in its source document (e.g. "HR-009"); `null` when the
+             *     source did not give one.
+             */
+            source_identifier: string | null;
             status: string;
             text: string;
         };
@@ -3232,6 +3262,7 @@ export interface operations {
                      *             "targets": [
                      *               "example"
                      *             ],
+                     *             "title": "example",
                      *             "waiver_ref": "example"
                      *           }
                      *         ],
@@ -6725,6 +6756,13 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "health": [
+                     *         {
+                     *           "code": "example",
+                     *           "id": "example",
+                     *           "message": "example"
+                     *         }
+                     *       ],
                      *       "items": [
                      *         {
                      *           "class": "functional",
@@ -6741,6 +6779,7 @@ export interface operations {
                      *           "smells": [
                      *             "example"
                      *           ],
+                     *           "source_identifier": "example",
                      *           "status": "example",
                      *           "text": "The system shall allow an employee to create a draft leave request."
                      *         }
@@ -6811,6 +6850,12 @@ export interface operations {
                      *         }
                      *       ],
                      *       "id": "HR-001",
+                     *       "labels": [
+                     *         {
+                     *           "id": "example",
+                     *           "label": "example"
+                     *         }
+                     *       ],
                      *       "linked": {
                      *         "operations": [
                      *           "example"
@@ -6829,6 +6874,7 @@ export interface operations {
                      *       "smells": [
                      *         "example"
                      *       ],
+                     *       "source_identifier": "example",
                      *       "spans": [
                      *         "example"
                      *       ],
