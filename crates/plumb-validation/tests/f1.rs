@@ -444,7 +444,8 @@ mod f1_contract {
             (LINEAGE, NotApplicable),
             (TYPE_KNOWN, Pass),
             (NO_DUPLICATE, Pass),
-            (NO_CONTRADICTION, Pass),
+            // H0.7: no contradiction producer input exists, so the rule records why.
+            (NO_CONTRADICTION, NotApplicable),
             (TERMS, Pass),
             (MODALITY, Pass),
             (CRITERIA, NotApplicable),
@@ -487,7 +488,6 @@ mod f1_contract {
             GROUNDED,
             TYPE_KNOWN,
             NO_DUPLICATE,
-            NO_CONTRADICTION,
             TERMS,
             MODALITY,
             QUALITY,
@@ -496,6 +496,7 @@ mod f1_contract {
             assert_eq!(state(&report, rule_id), Pass, "{rule_id}");
             assert!(rule(&report, rule_id).targets.is_empty());
         }
+        assert_eq!(state(&report, NO_CONTRADICTION), NotApplicable);
         assert_eq!(state(&report, LINEAGE), NotApplicable);
         assert_eq!(state(&report, CRITERIA), NotApplicable);
     }
@@ -1151,6 +1152,11 @@ mod f1_contract {
         );
         assert_eq!(state(&r, TYPE_KNOWN), Pass);
         assert_eq!(targets(&r, TYPE_KNOWN), [A, B]);
+        // Fable #299: the result declares that it passes by construction.
+        assert_eq!(
+            rule(&r, TYPE_KNOWN).evidence,
+            ["pass_by_construction:closed_requirement_kind_and_level"]
+        );
         // Unknown values cannot enter a typed Requirement, so no valid graph can violate it.
         let raw = json!({"statement": "x shall y.", "requirement_kind": "business_requirement", "level": "system", "modality": "shall",
             "title": null, "rationale": null, "priority": null, "source_identifier": null, "verification_method": null, "owner_refs": null, "stakeholder_refs": null});
@@ -1255,7 +1261,9 @@ mod f1_contract {
             rule(&r, NO_CONTRADICTION).evidence,
             vec![contradiction.id.to_string()]
         );
-        // Superficially opposite statements without finding material pass.
+        // H0.7 adjudication: F1 runs no contradiction detector and no producer of
+        // NO_CONTRADICTION finding material exists, so superficially opposite statements
+        // without any finding material are NOT_APPLICABLE with the recorded reason.
         let (_, r) = run(
             vec![
                 req_node(A, "The operator shall retain records.", &[&ev[0]]),
@@ -1263,7 +1271,26 @@ mod f1_contract {
             ],
             vec![],
         );
+        assert_eq!(state(&r, NO_CONTRADICTION), NotApplicable);
+        assert_eq!(
+            rule(&r, NO_CONTRADICTION).applicability,
+            Applicability::NotApplicable {
+                reason: "No contradiction finding material exists: F1 runs no contradiction detector and no deterministic contradiction producer is configured.".into()
+            }
+        );
+        // Governed contradiction material that is resolved is producer input: PASS.
+        let mut resolved = nodes.clone();
+        resolved.push(finding_node(
+            contradiction.id.as_str(),
+            Accepted,
+            NO_CONTRADICTION,
+            false,
+            &[A, B],
+        ));
+        let gr = graph(resolved, vec![]);
+        let r = evaluate(&gr, inputs(&gr));
         assert_eq!(state(&r, NO_CONTRADICTION), Pass);
+        assert_eq!(targets(&r, NO_CONTRADICTION), [A, B]);
     }
 
     // ------------------------------------------------------------------ TERMS_RESOLVED
@@ -1731,6 +1758,13 @@ mod f1_contract {
             &[&ev[1]],
         );
         assert_eq!(criteria(vec![data], vec![]).0, NotApplicable);
+        // Fable #299: a governed outside_implementation_scope decision takes a behavioral
+        // requirement out of the rule's implementation scope.
+        let (d, e) = governed(
+            "dec:00000000000000o1",
+            json!({"kind": "outside_implementation_scope", "requirement_ref": A}),
+        );
+        assert_eq!(criteria(vec![functional(), d], vec![e]).0, NotApplicable);
         let (_, r) = run(vec![functional()], vec![]);
         assert_eq!(
             rule(&r, CRITERIA).semantic_condition_key.as_deref(),
@@ -1781,6 +1815,29 @@ mod f1_contract {
             .insert(LintRuleId::RelativeTimeNoAnchor, LintSeverity::Warn);
         let r = evaluate(&g, inputs_with(&g, BTreeMap::new(), vec![], policy));
         assert_eq!(state(&r, QUALITY), Pass);
+    }
+
+    /// Fable #126: a blank statement belongs to STATEMENT_PRESENT; QUALITY skips it and still
+    /// evaluates every other Requirement instead of becoming an evaluator ERROR.
+    #[test]
+    fn f1_quality_skips_blank_statements() {
+        let ev = fragments();
+        let (mut nodes, _) = base();
+        nodes.push(req_node(A, "The operator shall respond within 2 days.", &[&ev[0]]));
+        nodes.push(req_node(B, " \t ", &[&ev[1]]));
+        let g = graph(nodes, vec![]);
+        let r = evaluate(&g, inputs(&g));
+        assert_eq!(state(&r, STATEMENT_PRESENT), Fail);
+        assert_eq!(targets(&r, STATEMENT_PRESENT), [B]);
+        assert_eq!(state(&r, QUALITY), Fail);
+        assert_eq!(targets(&r, QUALITY), [A]);
+        // Only the blank one: QUALITY passes over the evaluated (none) and is not an ERROR.
+        let (mut nodes, _) = base();
+        nodes.push(req_node(B, " ", &[&ev[1]]));
+        let g = graph(nodes, vec![]);
+        let r = evaluate(&g, inputs(&g));
+        assert_eq!(state(&r, QUALITY), Pass);
+        assert!(rule(&r, QUALITY).targets.is_empty());
     }
 
     #[test]
@@ -2218,7 +2275,7 @@ mod f1_contract {
             assert_eq!(rule(&report, rule_id).targets, all, "{rule_id}");
         }
         assert_eq!(state(&report, NO_DUPLICATE), Pass);
-        assert_eq!(state(&report, NO_CONTRADICTION), Pass);
+        assert_eq!(state(&report, NO_CONTRADICTION), NotApplicable);
         assert_eq!(state(&report, SUPERSEDED), Pass);
         assert_eq!(state(&report, LINEAGE), Fail);
         assert_eq!(rule(&report, LINEAGE).targets, all);

@@ -2221,12 +2221,18 @@ pub(crate) enum Marker {
     DeferredVerification {
         requirement_ref: Id,
     },
+    /// Takes a Requirement out of the F1 implementation scope of CRITERIA_FOR_BEHAVIOR
+    /// (H0.7, Fable #299).
+    OutsideImplementationScope {
+        requirement_ref: Id,
+    },
 }
 
-const MARKER_KINDS: [&str; 3] = [
+const MARKER_KINDS: [&str; 4] = [
     "human_requirement_origin",
     "external_vocabulary_identifier",
     "deferred_verification",
+    "outside_implementation_scope",
 ];
 
 /// A governed S1.6 decision marker.
