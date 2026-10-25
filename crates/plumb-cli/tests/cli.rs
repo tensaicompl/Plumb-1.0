@@ -1214,7 +1214,7 @@ mod cli {
         let env = env();
         let source = env.import();
         assert!(source.starts_with("src:"), "{source}");
-        // The same file again is the shared service's conflict (its audit differs).
+        // The same file again exists: identity ignores the audit metadata (Fable #314).
         let file = env.path("requirements.md");
         let (code, _, err) = env.run(&[
             "import",
@@ -1225,7 +1225,7 @@ mod cli {
             "requirements.md",
         ]);
         assert_eq!(code, 1);
-        assert!(err.contains("E_SOURCE_CONFLICT"), "{err}");
+        assert!(err.contains("E_SOURCE_EXISTS"), "{err}");
         let (code, _, err) = env.run(&[
             "import",
             file.to_str().unwrap(),
