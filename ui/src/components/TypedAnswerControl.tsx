@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useEffect, useId } from "react";
 
 import type { components } from "../api/schema";
 import { t, type MessageKey } from "../i18n";
@@ -88,11 +88,13 @@ export type AnswerField =
   | { readonly name: string; readonly type: "enum-set"; readonly choices: readonly string[]; readonly minItems: number }
   | { readonly name: string; readonly type: "string"; readonly minLength: number; readonly maxLength: number | null }
   | { readonly name: string; readonly type: "number"; readonly integer: boolean; readonly minimum: number | null; readonly maximum: number | null }
-  | { readonly name: string; readonly type: "boolean" };
+  | { readonly name: string; readonly type: "boolean" }
+  | { readonly name: string; readonly type: "const"; readonly value: string | number | boolean };
 
 const STRING_KEYS = new Set(["type", "enum", "minLength", "maxLength", "description", "title"]);
 const NUMBER_KEYS = new Set(["type", "minimum", "maximum", "description", "title"]);
 const ARRAY_KEYS = new Set(["type", "items", "uniqueItems", "minItems", "description", "title"]);
+const CONST_KEYS = new Set(["const", "description", "title"]);
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -119,6 +121,12 @@ function optionalNumber(value: unknown): number | null | undefined {
 function parseField(name: string, schema: unknown): AnswerField | null {
   if (!isObject(schema)) {
     return null;
+  }
+  // A fixed scalar value (JSON Schema `const`) with no other constraint: shown, never edited.
+  if ("const" in schema) {
+    const value = schema["const"];
+    const scalar = typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value));
+    return scalar && onlyKeys(schema, CONST_KEYS) ? { name, type: "const", value } : null;
   }
   switch (schema["type"]) {
     case "string": {
@@ -212,6 +220,8 @@ function fieldComplete(field: AnswerField, value: unknown): boolean {
       );
     case "boolean":
       return typeof value === "boolean";
+    case "const":
+      return value === field.value;
   }
 }
 
@@ -345,6 +355,20 @@ function FieldControl({
           />
         </div>
       );
+    case "const":
+      return (
+        <div data-field={field.name} data-field-type="const">
+          {label}
+          <input
+            id={id}
+            type="text"
+            readOnly
+            aria-readonly="true"
+            value={typeof field.value === "boolean" ? t(field.value ? "answer.yes" : "answer.no") : String(field.value)}
+            className="rounded border bg-slate-100"
+          />
+        </div>
+      );
     case "boolean":
       return (
         <fieldset data-field={field.name} data-field-type="boolean">
@@ -362,9 +386,22 @@ function FieldControl({
   }
 }
 
+/** The answer of `fields` from `value`: unset fields omitted, every const field at its value. */
+function withConsts(fields: readonly AnswerField[], value: AnswerValue): AnswerValue {
+  const updated: Record<string, unknown> = {};
+  for (const field of fields) {
+    const current = field.type === "const" ? field.value : value[field.name];
+    if (current !== undefined) {
+      updated[field.name] = current;
+    }
+  }
+  return updated;
+}
+
 /**
  * The answer control of one Question. Its kind selects an explicit renderer; its fields come only
- * from `answer_schema` (property names, required set, enum choices and constraints). A missing or
+ * from `answer_schema` (property names, required set, enum choices and constraints). A `const`
+ * property is shown read-only and is always part of the answer. A missing or
  * unrenderable schema is shown as unsupported and never produces an answer. The control is
  * controlled: `onChange` receives the exact answer object, without rationale or supersession.
  */
@@ -379,6 +416,13 @@ export function TypedAnswerControl({
 }) {
   const renderer = answerRenderer(question.kind);
   const fields = parseAnswerSchema(question.answer_schema);
+  // Fixed (const) values are always part of the answer, even before any other field is set.
+  const missingConst = fields?.some((field) => field.type === "const" && value[field.name] !== field.value) ?? false;
+  useEffect(() => {
+    if (fields !== null && missingConst) {
+      onChange(withConsts(fields, value));
+    }
+  });
   if (fields === null) {
     return (
       <div role="alert" data-renderer={renderer} data-answer-state="unsupported" className="rounded border border-red-700 p-2 text-sm">
@@ -387,14 +431,7 @@ export function TypedAnswerControl({
     );
   }
   const setField = (name: string, next: unknown) => {
-    const updated: Record<string, unknown> = {};
-    for (const field of fields) {
-      const current = field.name === name ? next : value[field.name];
-      if (current !== undefined) {
-        updated[field.name] = current;
-      }
-    }
-    onChange(updated);
+    onChange(withConsts(fields, { ...value, [name]: next }));
   };
   return (
     <fieldset data-renderer={renderer} data-answer-state="ready" className="space-y-2 rounded border p-2 text-sm">
