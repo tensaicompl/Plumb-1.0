@@ -37,16 +37,57 @@ architecture text, so the plan can be updated when it is picked up again.
 | `PLUMB.F2.INVARIANT.EXPRESSIBLE` | The manual/formal alternative is not representable in the pilot (no field, `verified_by` excludes Invariant); scope problems are violations, not evaluator errors. |
 | `PLUMB.F2.SOD.NO_VIOLATION` | All four constraint kinds are evaluated over static assignments; dynamic SoD = no single assigned role (with inheritance) activates two governed roles. Condition key `separation_constraint_violated`. |
 
+## H0.4 simulation adjudications (lane C)
+
+| Item | Contract on this branch |
+|---|---|
+| Directory `outcome_selections` | Optional family (`#[serde(default)]`); each selection becomes a HUMAN_CONFIRM `SetNodeExtension` of `plumb_sim:outcome_selection` on the Accepted Outcome. |
+| Content-dependent conditions (Fable #116, #117) | Reported as `Undecidable` with `MissingSemanticKind::ModelCondition` (keys such as `conflicting_transitions`, `decision_input_routing`, `decision_input_mismatch:<i>`); the trace envelope is unchanged. |
+| Calculation result refs (§33.11) | A Then `result:<key>` resolves to the named Calculation's actual execution result; if it did not run, `ScenarioDiff::MissingExecutionResult` (Fail). |
+| Scenario-run staleness | Coarse: `scenario_run_currency` reports any run from an older model baseline as `StaleDependencies`. The API `run_view` still judges currency by `specification_hash` only. |
+| Fable #118 | SCN-019/025/034 attribute-write expectations are a frozen interpreter verdict (Fail); fixtures unchanged. |
+| Holiday question | Answer schema is exact (`holiday_consumes_working_day` const false + calendar enum); the UI typed-answer control cannot render `const` yet. |
+
+## H0.8 inference/serving adjudications (lane E)
+
+| Item | Contract on this branch |
+|---|---|
+| Serving | `serve` refuses non-loopback binds (`E_NON_LOOPBACK_BIND`); every request needs a loopback `Host` (missing Host = 403 `E_FORBIDDEN_HOST`); a non-loopback `Origin` = 403 `E_FORBIDDEN_ORIGIN`. |
+| Provider timeouts (Fable #63) | Optional `request_timeout_ms` / `connect_timeout_ms` (part of the request ID); default total = 120 s + 30 ms x max_tokens, capped at 2 h; `ProviderError::Timeout`. |
+| Recorded parameters (Fable #66) | The inference artifact `parameters` is exactly `{model, max_tokens}`. |
+| Replay | MockProvider refuses fixtures whose output fails the schema (`SchemaInvalidOutput`). |
+| Prompts (Fable #64, #65) | Every prompt carries the same prompt-injection boundary paragraph and an "Output shape" example validated against its schema; s2-process drops the deferred node kinds; session-turn forbids AUTO_DERIVATION. |
+| Open | compiler `stage.rs` goldens still use provider "anthropic" with config `{}`. |
+
+## H0.9 / H0.10 store and core adjudications (lanes A, F1, F2)
+
+| Item | Contract on this branch |
+|---|---|
+| Proposal occurrences | Store schema v4: proposals keyed by `(proposal_id, base_revision_id)` with `occ:<16 hex>`; in-place v2/v3 migration; lookups by proposal ID resolve the pending occurrence on the loaded head. |
+| Store open modes | Only `init` and tests create a database; read-only commands (`vocab`, `questions`, `rounds show`, `export`, `report`, `proposals`, `findings list`) open SQLite read-only; typed store error codes (`E_DATABASE_NOT_INITIALIZED`, `E_DATABASE_BUSY`, `E_DATABASE_READ_ONLY`, `E_STORE_CORRUPT`, `E_STORE_VERSION_UNSUPPORTED`). |
+| Artifact integrity | Every artifact read recomputes its hash (`E_STORE_CORRUPT` on mismatch); gate reports are stored as content-addressed artifacts. |
+| Graph-bound payload references | Graph validation rejects missing, wrong-type and wrong-status payload refs (census in `plumb_psg::payload_refs`). Deviations: `Question.context_refs` is external (Hotfix 047); `ResourceScope.resource_ref` also allows Operation (Hotfix 042). Analyzer branches for such refs are now unreachable. |
+| Canonical JSON | Fail-closed: duplicate member names, integers outside +/-(2^53-1) (including u64 locators) are rejected. |
+| Calendar coverage | Enforced in plumb-expr when a calendar declares it; not yet carried by the PSG Calendar payload or CLI config; plumb-sim maps it to `CalendarUnavailable` (Failed) instead of Undecidable. |
+| Proposal confidence | f64 (wire form equals identity bytes). |
+| Architecture text | §33.11 census and S2.5 working_days text were edited; `SUPPORTING-DOCS.sha256` was not updated. |
+
 ## Plan tasks: status on this branch
 
 | Task | Status |
 |---|---|
 | H0.1 | done on main |
+| H0.2 | see lane G (pending merge) |
 | H0.3 | partial: a second process no longer interrupts a live process's jobs (`<db>.jobs.lock`); `ApiState::retry_recipe_job` re-queues a Failed job under its ID (Failed children through `StageJob::retry`; moved head 409 `E_STAGE_RETRY_BASE_MOVED`, other status 409 `E_STAGE_RETRY_NOT_FAILED`) and a rerun of an `E_JOB_INTERRUPTED` job on the same head retries it. No attempt column/table, owner lease or CLI `retry` command; the steps of the failed attempt are replaced |
+| H0.4 | done (business failure classes, outcome selection, Fable #116/#117/#119, #118 frozen) |
 | H0.5 | done for extract, vocabulary, domain, lifecycle transitions and calculations; analyser dispositions persisted and shown; verification obligations not covered |
 | H0.6 | done (governed blocker rule, waiver actor at evaluation, findings list/materialize/waive, stale Open findings closed by materialize); I0 findings are materialized through the same path |
-| H0.10 | partial: stale flag, answer refresh, rejection memory; plain-commit crash settlement, session-turn revision binding, session proposal relabelling from the semantic delta, GateReport currency (complete rule set + current supplemental-input hash, durable reports only) and Fable #94, #96, #97, #195, #196, #368 (import artifacts in the commit transaction) done; the rest open |
-| H0.2, H0.4, H0.7, H0.8, H0.9, H0.11, R0.7 | open |
+| H0.7 | done (see rule adjudications) |
+| H0.8 | done; eager CLI validation of the anthropic policy is part of H0.9 runtime validation |
+| H0.9 | done (open modes, typed store errors, eager runtime validation, durability profile documented in docs/operations.md) |
+| H0.10 | mostly done: canonical JSON, cycles, text ranges, payload-reference census, supersession, numeric/date/calendar integrity, impact seeds, proposal occurrences, artifact integrity, crash settlement, session integrity, gate-report currency, import text fidelity, lint fidelity, intake novelty, scenario dependency invalidation, prompt/schema alignment. Open: calendar coverage in the PSG/config, fine-grained scenario staleness, duplicate-analysis per-decision disposition |
+| H0.11 | see lane G (pending merge) |
+| R0.7 | done: `crates/plumb-cli/tests/customer_zero.rs` (a second, non-HR domain driven through the CLI from committed replay, with an oracle and a determinism check); lint diagnostics shown by `stage` |
 | E0.1–E0.3 | done as described above |
 | E0.4 | partial: `make all` runs fmt/clippy/tests/UI/openapi/placeholders; `make cov` enforces the line thresholds (all met, 92% overall); mutation testing and UI coverage not done |
 | E0.5 | `docs/pilot/BUILD-REPORT.md`; the standards-alignment report is not written |
