@@ -400,6 +400,52 @@ mod waiver_contract {
         ));
     }
 
+    /// H0.6 / Fable #125: the gate-time consumer re-checks the waiver actor. A waiver whose
+    /// `decided_by` is not an Accepted human Agent is malformed and never applied, even when the
+    /// decision node got into the graph (the producer check alone is not enough).
+    #[test]
+    fn consumer_rejects_non_human_waiver_actor() {
+        let r = rule(DECISION_REQUIRED);
+        let g = graph(&[DECISION_REQUIRED]);
+        let t = targets();
+        let created = create_waiver(&g, &request(&r, &t), &policy(&[])).unwrap();
+        let waived = applied(&g, &created.proposal);
+        let (key, fid) = fixture_finding(DECISION_REQUIRED);
+        // Control: the human waiver applies.
+        assert!(governed_waiver(&waived, &r, &policy(&[]), &key, &fid, &t)
+            .unwrap()
+            .is_some());
+        for actor in ["agent:service", "agent:llm", "agent:intern", "agent:ghost"] {
+            let nodes: Vec<Node> = waived
+                .nodes()
+                .values()
+                .cloned()
+                .map(|mut n| {
+                    if n.id == created.decision_ref {
+                        if let NodePayload::ResolutionDecision(d) = &mut n.payload {
+                            d.decided_by = id(actor);
+                        }
+                    }
+                    n
+                })
+                .collect();
+            let edges = waived.edges().values().cloned().collect();
+            let forged = graph_of(nodes, edges);
+            assert!(
+                matches!(
+                    governed_waiver(&forged, &r, &policy(&[]), &key, &fid, &t),
+                    Err(EvaluationError::MalformedWaiverDecision { .. })
+                ),
+                "{actor} must not satisfy a waiver"
+            );
+            // The real evaluator never applies it either.
+            assert!(
+                evaluate(&forged, DECISION_REQUIRED, policy(&[])).is_err(),
+                "{actor}"
+            );
+        }
+    }
+
     #[test]
     fn actor_and_rationale_rules() {
         let r = rule(DECISION_REQUIRED);

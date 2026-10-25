@@ -196,7 +196,17 @@ mod evaluator_contract {
     }
 
     fn build_graph(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
-        let mut all = vec![requirement("req:HR-001")];
+        // The waiver decisions of these fixtures are decided by this Accepted human Agent (the
+        // gate-time consumer requires one, H0.6).
+        let mut all = vec![
+            requirement("req:HR-001"),
+            node(
+                "actor:compliance-owner",
+                "Accepted",
+                "Agent",
+                json!({"agent_kind": "human"}),
+            ),
+        ];
         all.extend(nodes);
         Graph::new(id(PROJECT), id(PROFILE), all, edges).unwrap_or_else(|v| panic!("{v:?}"))
     }
@@ -2677,7 +2687,7 @@ mod evaluator_contract {
         let other_profile = Graph::new(
             id(PROJECT),
             id("profile:other-software"),
-            vec![requirement("req:HR-001")],
+            same.nodes().values().cloned().collect(),
             vec![],
         )
         .unwrap();

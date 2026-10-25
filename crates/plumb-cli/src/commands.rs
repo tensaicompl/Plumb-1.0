@@ -425,6 +425,50 @@ pub fn confirm(
     Done::new(&result, text)
 }
 
+/// `findings list`: every current gate finding with disposition and governance (read-only).
+pub fn findings_list(state: &ApiState) -> Result<Done, CliError> {
+    let loaded = state.head()?;
+    let findings = state.findings(&loaded)?;
+    let text = findings
+        .iter()
+        .map(|f| {
+            format!(
+                "{} {} {} {} {}{}{} [{}]",
+                f.id,
+                f.gate,
+                f.severity,
+                f.code,
+                f.disposition,
+                if f.governed { " governed" } else { "" },
+                if f.materialized { " materialized" } else { "" },
+                f.affected_refs.join(" ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Done::new(&findings, text)
+}
+
+/// `findings materialize`: persist actionable findings and close stale Open ones.
+pub fn findings_materialize(state: &ApiState) -> Result<Done, CliError> {
+    let loaded = state.head()?;
+    match state.materialize_gate_findings(&loaded)? {
+        Some(result) => {
+            let text = format!("materialized findings: revision {}", result.revision);
+            Done::new(&result, text)
+        }
+        None => Done::new(&serde_json::Value::Null, "no change".to_owned()),
+    }
+}
+
+/// `findings waive`: the governed waiver of one current, materialized finding.
+pub fn findings_waive(state: &ApiState, finding: &str, reason: &str) -> Result<Done, CliError> {
+    let loaded = state.head()?;
+    let result = state.waive_finding(&loaded, finding, reason)?;
+    let text = format!("waived {finding}: revision {}", result.revision);
+    Done::new(&result, text)
+}
+
 /// `set-attribute-type`: the shared `set_attribute_type` service on the head.
 pub fn set_attribute_type(
     state: &ApiState,
@@ -504,7 +548,17 @@ pub fn answer(
 }
 
 /// `proposals` (R0.6): every pending proposal sorted by ID, read-only.
-pub fn proposals(state: &ApiState) -> Result<Done, CliError> {
+pub fn proposals(state: &ApiState, refresh: bool) -> Result<Done, CliError> {
+    let mut refreshed = Vec::new();
+    if refresh {
+        let loaded = state.head()?;
+        for (stale, outcome) in state.refresh_stale_answers(&loaded)? {
+            refreshed.push(match outcome {
+                Ok(new) => format!("{stale} re-submitted as {new}"),
+                Err(why) => format!("{stale} rejected: {why}"),
+            });
+        }
+    }
     let pending = state.pending_proposals()?;
     let text = pending
         .iter()
@@ -517,10 +571,19 @@ pub fn proposals(state: &ApiState) -> Result<Done, CliError> {
                 _ => p.origin.clone(),
             };
             format!(
-                "{} {} origin={} base={} requires_reason={}",
-                p.proposal_id, p.action, origin, p.base_revision, p.requires_reason
+                "{} {} origin={} base={} requires_reason={}{}",
+                p.proposal_id,
+                p.action,
+                origin,
+                p.base_revision,
+                p.requires_reason,
+                if p.stale { " STALE" } else { "" }
             )
         })
+        .collect::<Vec<_>>();
+    let text = refreshed
+        .into_iter()
+        .chain(text)
         .collect::<Vec<_>>()
         .join("\n");
     Done::new(&pending, text)

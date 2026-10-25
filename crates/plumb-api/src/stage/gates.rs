@@ -1275,6 +1275,15 @@ impl ApiState {
             .collect())
     }
 
+    /// The reports of every NOW gate on `loaded` that is current or can be evaluated now, in
+    /// I0, F1, F2, F3, F4 order (a gate that cannot be evaluated is omitted).
+    pub(crate) fn current_or_evaluated_reports(&self, loaded: &LoadedRevision) -> Vec<GateReport> {
+        [GateId::I0, GateId::F1, GateId::F2, GateId::F3, GateId::F4]
+            .into_iter()
+            .filter_map(|gate| self.current_or_evaluated_report(loaded, gate).ok())
+            .collect()
+    }
+
     /// The current persisted report of `gate` on `loaded`, evaluating and persisting it first
     /// when the head has none yet (as `ready` does), e.g. after an evidence-only revision.
     pub(crate) fn current_or_evaluated_report(

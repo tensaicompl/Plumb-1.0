@@ -11,9 +11,11 @@
 //! wraps the material in a proposal.
 
 use plumb_core::{to_canonical_json, CoreError, Hash, HashKind, Id, Timestamp};
+use std::collections::BTreeSet;
+
 use plumb_psg::{
-    AgentKind, AuditMeta, Edge, ElementStatus, Finding, Graph, Node, NodePayload, RelationKind,
-    RelationProperties, ResolutionDecision,
+    AgentKind, AuditMeta, Edge, ElementStatus, Finding, Graph, Node, NodePayload, NodeType,
+    RelationKind, RelationProperties, ResolutionDecision,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -89,7 +91,14 @@ pub fn governed_waiver(
             continue;
         }
         check_finding_identity(finding_ref, finding, rule, targets)?;
-        check_waiver_decision(&decision_node.id, decision, rule, finding_key, finding_ref)?;
+        check_waiver_decision(
+            graph,
+            &decision_node.id,
+            decision,
+            rule,
+            finding_key,
+            finding_ref,
+        )?;
         qualifying.push(decision_node.id.clone());
     }
 
@@ -126,6 +135,50 @@ pub fn governed_waiver(
             decision_ref,
         })),
     }
+}
+
+/// The findings governed by recorded governance (H0.6, architecture §33.6): those whose
+/// Accepted Question is answered by an Accepted ResolutionDecision that no Accepted decision
+/// supersedes, and those named by an Accepted waiver decision of an Accepted human Agent.
+pub fn governed_finding_refs(graph: &Graph) -> BTreeSet<Id> {
+    let accepted = |n: &Node| n.status == ElementStatus::Accepted;
+    let decisions: Vec<(&Id, &ResolutionDecision)> = graph
+        .node_ids_by_type(NodeType::ResolutionDecision)
+        .iter()
+        .filter_map(|id| graph.node(id))
+        .filter(|n| accepted(n))
+        .filter_map(|n| match &n.payload {
+            NodePayload::ResolutionDecision(d) => Some((&n.id, d)),
+            _ => None,
+        })
+        .collect();
+    let superseded: BTreeSet<&Id> = decisions
+        .iter()
+        .filter_map(|(_, d)| d.supersedes.as_ref())
+        .collect();
+    let mut governed = BTreeSet::new();
+    for (_, decision) in decisions.iter().filter(|(id, _)| !superseded.contains(id)) {
+        if let Some(question) = decision.question_ref.as_ref().and_then(|q| graph.node(q)) {
+            if let (true, NodePayload::Question(q)) = (accepted(question), &question.payload) {
+                governed.insert(q.finding_ref.clone());
+            }
+        }
+        let human = graph.node(&decision.decided_by).is_some_and(|n| {
+            accepted(n)
+                && matches!(&n.payload, NodePayload::Agent(a) if a.agent_kind == AgentKind::Human)
+        });
+        if claims_waiver(decision) && human {
+            if let Some(finding) = decision
+                .answer
+                .get("finding_ref")
+                .and_then(|f| f.as_str())
+                .and_then(|f| f.parse::<Id>().ok())
+            {
+                governed.insert(finding);
+            }
+        }
+    }
+    governed
 }
 
 /// Requires the accepted Finding at the deterministic ID to be the evaluated finding: same
@@ -170,6 +223,7 @@ fn claims_waiver(decision: &ResolutionDecision) -> bool {
 
 /// Requires a decision that claims to be a waiver to be exactly the waiver of this finding.
 fn check_waiver_decision(
+    graph: &Graph,
     decision_id: &Id,
     decision: &ResolutionDecision,
     rule: &RuleMetadata,
@@ -208,6 +262,17 @@ fn check_waiver_decision(
     }
     if !decision.rationale.as_deref().is_some_and(is_clean_text) {
         return Err(malformed("rationale is missing or not clean text".into()));
+    }
+    // The producer checks the actor too; the consumer must not trust that (Fable #125).
+    let human = graph.node(&decision.decided_by).is_some_and(|n| {
+        n.status == ElementStatus::Accepted
+            && matches!(&n.payload, NodePayload::Agent(a) if a.agent_kind == AgentKind::Human)
+    });
+    if !human {
+        return Err(malformed(format!(
+            "decided_by {} is not an Accepted human Agent",
+            decision.decided_by
+        )));
     }
     Ok(())
 }
@@ -518,8 +583,15 @@ pub fn prepare_waiver_material(
     if !claims_waiver(&decision) {
         return Err(self_check("the decision does not claim a waiver".into()));
     }
-    check_waiver_decision(&decision_ref, &decision, rule, &finding_key, &finding_ref)
-        .map_err(|e| self_check(e.to_string()))?;
+    check_waiver_decision(
+        graph,
+        &decision_ref,
+        &decision,
+        rule,
+        &finding_key,
+        &finding_ref,
+    )
+    .map_err(|e| self_check(e.to_string()))?;
     decision_node
         .validate()
         .map_err(|e| self_check(e.to_string()))?;

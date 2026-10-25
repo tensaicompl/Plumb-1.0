@@ -1057,6 +1057,7 @@ fn no_unresolved_semantic_blocker(
     _: &RuleMetadata,
 ) -> Outcome {
     let inputs = inputs(ctx)?;
+    let governed = crate::waiver::governed_finding_refs(graph);
     let mut verdict = Verdict::default();
     for node in accepted_nodes(graph, NodeType::Finding) {
         if let NodePayload::Finding(f) = &node.payload {
@@ -1064,6 +1065,7 @@ fn no_unresolved_semantic_blocker(
                 && f.severity == FindingSeverity::Blocker
                 && f.status == "Open"
                 && f.code != NO_SEMANTIC_BLOCKER
+                && !governed.contains(&node.id)
             {
                 verdict.violate(&node.id, node.id.to_string());
             }
@@ -1074,6 +1076,7 @@ fn no_unresolved_semantic_blocker(
         if p.family == "F2"
             && p.severity == FindingSeverity::Blocker
             && p.code != NO_SEMANTIC_BLOCKER
+            && !governed.contains(&f.id)
         {
             for target in &p.affected_refs {
                 verdict.violate(target, f.id.to_string());

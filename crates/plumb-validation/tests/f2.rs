@@ -1627,6 +1627,86 @@ mod f2_contract {
         );
     }
 
+    /// A Question about `finding` and an answering decision with `status`.
+    fn answered(fx: Fx, n: u8, finding: &str, status: ElementStatus) -> Fx {
+        let question = format!("q:00000000000000{n:02}");
+        let decision = format!("dec:00000000000000{n:02}");
+        fx.with(node(
+            &question,
+            Accepted,
+            NodePayload::Question(plumb_psg::Question {
+                finding_ref: id(finding),
+                question_kind: plumb_psg::QuestionKind::YesNo,
+                prompt: "Resolve it?".into(),
+                status: "Answered".into(),
+                answer_schema: None,
+                stakeholder_ref: None,
+                priority: None,
+                round_ref: None,
+                context_refs: None,
+            }),
+        ))
+        .with(node(
+            &decision,
+            status,
+            NodePayload::ResolutionDecision(plumb_psg::ResolutionDecision {
+                question_ref: Some(id(&question)),
+                proposal_ref: None,
+                answer: json!({"kind": "test"}),
+                decided_by: id("agent:expert"),
+                decided_at: "2026-01-01T00:00:00.000000000Z".parse().unwrap(),
+                patch_ref: format!("sha256:{}", "a".repeat(64)).parse().unwrap(),
+                rationale: Some("Expert answer.".into()),
+                supersedes: None,
+            }),
+        ))
+        .rel_as(RelationKind::Resolves, &decision, &question, status)
+    }
+
+    /// H0.6: an Open blocker stops counting only through recorded governance: an Accepted,
+    /// non-superseded ResolutionDecision answering a Question whose finding_ref is the finding.
+    /// The same holds for supplemental analysis findings, by finding ID.
+    #[test]
+    fn governed_blocker_is_not_unresolved() {
+        let blocker = || {
+            Fx::clean().with(finding_node(
+                "fnd:00000000000000b5",
+                CALC_TYPECHECK,
+                "F2",
+                FindingSeverity::Blocker,
+                "Open",
+            ))
+        };
+        assert_eq!(blocker().state(NO_SEMANTIC_BLOCKER), FAIL);
+        let governed = answered(blocker(), 1, "fnd:00000000000000b5", Accepted);
+        assert_eq!(governed.state(NO_SEMANTIC_BLOCKER), PASS);
+        // A non-Accepted (or superseded) decision governs nothing.
+        let proposed = answered(blocker(), 1, "fnd:00000000000000b5", Proposed);
+        assert_eq!(proposed.state(NO_SEMANTIC_BLOCKER), FAIL);
+        let superseded = answered(
+            blocker(),
+            1,
+            "fnd:00000000000000b5",
+            ElementStatus::Superseded,
+        );
+        assert_eq!(superseded.state(NO_SEMANTIC_BLOCKER), FAIL);
+        // An answer about another finding governs nothing.
+        let other = answered(blocker(), 1, "fnd:00000000000000ff", Accepted);
+        assert_eq!(other.state(NO_SEMANTIC_BLOCKER), FAIL);
+
+        let supplemental = finding(
+            TRANSITION_COMPLETE,
+            "state_transition_trigger_unresolved:y",
+            &["entity:customer"],
+            FindingSeverity::Blocker,
+        );
+        let sid = supplemental.id.to_string();
+        let open = Fx::clean().finding(supplemental.clone());
+        assert_eq!(open.state(NO_SEMANTIC_BLOCKER), FAIL);
+        let governed = answered(Fx::clean().finding(supplemental), 2, &sid, Accepted);
+        assert_eq!(governed.state(NO_SEMANTIC_BLOCKER), PASS);
+    }
+
     // ------------------------------------------------------------------ determinism and purity
 
     /// Several members in every unordered collection.

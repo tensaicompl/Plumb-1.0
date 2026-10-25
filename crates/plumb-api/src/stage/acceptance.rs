@@ -258,6 +258,43 @@ fn commit_plain(
     Ok(Some(committed.commit.revision.id))
 }
 
+/// The effect of a patch independent of its baseline, audit and element-hash preconditions:
+/// the canonical JSON of each leaf's operation, target ID and new payload or status.
+fn effect_key(patch: &plumb_patch::SemanticPatch) -> Result<String, StepEnd> {
+    use plumb_patch::SemanticPatch as P;
+    fn leaves(patch: &P, out: &mut Vec<serde_json::Value>) {
+        match patch {
+            P::Compound { patches } => patches.iter().for_each(|p| leaves(p, out)),
+            P::AddNode { node } => out.push(json!({"op": "add_node", "id": node.id,
+                "status": node.status, "payload": node.payload})),
+            P::AddEdge { edge } => out.push(json!({"op": "add_edge", "id": edge.id,
+                "status": edge.status, "kind": edge.kind, "from": edge.from, "to": edge.to})),
+            other => out.push(serde_json::to_value(other).unwrap_or(serde_json::Value::Null)),
+        }
+    }
+    let mut out = Vec::new();
+    leaves(patch, &mut out);
+    serde_json::to_string(&out).map_err(|_| StepEnd::Failed(internal("effect_key")))
+}
+
+/// The effects of every stage proposal the analyst rejected on the revision it was built on
+/// (a content decision). Rejecting an already stale proposal is clean-up and is not remembered.
+fn rejected_effects(state: &ApiState) -> Result<std::collections::BTreeSet<String>, StepEnd> {
+    let rejected = state
+        .with_workflow_store(|store| store.rejected_proposals(WorkflowOrigin::Stage))?
+        .map_err(|_| StepEnd::Failed(internal("workflow_store")))?;
+    let mut effects = std::collections::BTreeSet::new();
+    for record in rejected {
+        if record.resolved_revision_id.as_ref() != Some(&record.base_revision_id) {
+            continue;
+        }
+        let proposal: Proposal = serde_json::from_str(&record.proposal_json)
+            .map_err(|_| StepEnd::Failed(internal("workflow_proposal")))?;
+        effects.insert(effect_key(&proposal.patch_set.patch)?);
+    }
+    Ok(effects)
+}
+
 /// Persists every proposal of the run pending, linked to its jobs, in one store transaction.
 fn persist_pending(
     state: &ApiState,
@@ -268,8 +305,13 @@ fn persist_pending(
     base: &LoadedRevision,
     at: Timestamp,
 ) -> Result<(), StepEnd> {
+    let remembered = rejected_effects(state)?;
     let mut records = Vec::with_capacity(proposals.len());
     for proposal in proposals {
+        // Rejection memory (H0.10): the analyst already rejected exactly this change.
+        if remembered.contains(&effect_key(&proposal.patch_set.patch)?) {
+            continue;
+        }
         let report = run_intake(base, proposal)?;
         let kind = classify(&base.graph, proposal)?;
         records.push(NewWorkflowProposal {

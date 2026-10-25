@@ -352,13 +352,14 @@ mod services {
         ProposalMateriality, SemanticPatch,
     };
     use plumb_psg::{
-        contributes_to_semantic_hash, edge_element_hash, is_baseline, node_element_hash,
+        contributes_to_semantic_hash, edge_element_hash, is_baseline, node_element_hash, AuditMeta,
         ConceptKind, ElementStatus, FindingSeverity, Graph, Node, NodePayload, NodeType,
     };
     use plumb_store::{
         LoadedRevision, NewWorkflowProposal, StoreError, WorkflowInsert, WorkflowOrigin,
         WorkflowProposal, WorkflowProposalState,
     };
+    use plumb_validation::{GeneratedFinding, ValidationPolicy};
     use serde::Serialize;
     use serde_json::{json, Value};
 
@@ -571,6 +572,41 @@ mod services {
         pub base_revision: String,
         /// Whether its stored X1.3 intake requires a reason.
         pub requires_reason: bool,
+        /// Whether it was built on another revision than the current head: it can only be
+        /// rejected, or rebuilt (a stage rerun, or `refresh_stale_answers` for answers).
+        pub stale: bool,
+    }
+
+    /// One current gate finding with its H0.6 disposition and governance state.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+    pub struct FindingView {
+        pub id: String,
+        pub gate: String,
+        pub code: String,
+        pub severity: String,
+        pub message: String,
+        pub affected_refs: Vec<String>,
+        /// `question_resolvable`, `waivable` or `non_waivable` (architecture §33.6).
+        pub disposition: String,
+        /// Whether recorded governance (an answered Question or a waiver) covers it.
+        pub governed: bool,
+        /// Whether it exists as a durable Finding node.
+        pub materialized: bool,
+    }
+
+    /// One stale answer proposal and its new proposal ID, or why it was not re-submitted.
+    pub type AnswerRefresh = (String, Result<String, String>);
+
+    /// The question-answering ResolutionDecision a proposal adds, if any.
+    fn answer_decision(patch: &SemanticPatch) -> Option<&plumb_psg::ResolutionDecision> {
+        match patch {
+            SemanticPatch::AddNode { node } => match &node.payload {
+                NodePayload::ResolutionDecision(d) if d.question_ref.is_some() => Some(d),
+                _ => None,
+            },
+            SemanticPatch::Compound { patches } => patches.iter().find_map(answer_decision),
+            _ => None,
+        }
     }
 
     const GOVERNANCE: &str = "governance_type";
@@ -1826,6 +1862,207 @@ mod services {
                 .map(Some)
         }
 
+        /// The current gate findings (every evaluable NOW gate plus the per-candidate F2
+        /// analysis findings), each with its disposition and governance state (H0.6).
+        pub fn findings(&self, loaded: &LoadedRevision) -> Result<Vec<FindingView>, ApiError> {
+            let policy = self.stage_runtime("findings")?.validation_policy.clone();
+            let governed = plumb_validation::governed_finding_refs(&loaded.graph);
+            let mut all: Vec<(String, GeneratedFinding)> = Vec::new();
+            for report in self.current_or_evaluated_reports(loaded) {
+                for finding in report.findings {
+                    all.push((report.gate.to_string(), finding));
+                }
+            }
+            if let Ok(analysis) = self.f2_analysis_findings(loaded) {
+                all.extend(analysis.into_iter().map(|f| ("F2".to_owned(), f)));
+            }
+            let mut views: Vec<FindingView> = Vec::new();
+            for (gate, finding) in all {
+                if views.iter().any(|v| v.id == finding.id.as_str()) {
+                    continue;
+                }
+                let disposition = self.disposition(&finding, &policy);
+                views.push(FindingView {
+                    id: finding.id.to_string(),
+                    gate,
+                    code: finding.payload.code.clone(),
+                    severity: wire(&finding.payload.severity)?,
+                    message: finding.payload.message.clone(),
+                    affected_refs: finding
+                        .payload
+                        .affected_refs
+                        .iter()
+                        .map(Id::to_string)
+                        .collect(),
+                    disposition: disposition.to_owned(),
+                    governed: governed.contains(&finding.id),
+                    materialized: loaded.graph.node(&finding.id).is_some(),
+                });
+            }
+            views.sort_by(|a, b| (&a.gate, &a.id).cmp(&(&b.gate, &b.id)));
+            Ok(views)
+        }
+
+        /// The H0.6 disposition of one finding: a matching Question template makes it
+        /// question_resolvable; a decision_required (or profile-enabled profile_allow) rule
+        /// makes it waivable; anything else can only be fixed in the model.
+        fn disposition(
+            &self,
+            finding: &GeneratedFinding,
+            policy: &ValidationPolicy,
+        ) -> &'static str {
+            if plumb_functional::question_templates::match_template(
+                &finding.payload.code,
+                &finding.semantic_condition_key,
+            )
+            .is_ok()
+            {
+                return "question_resolvable";
+            }
+            let rule = self
+                .profile()
+                .rules
+                .iter()
+                .find(|r| r.id == finding.payload.code);
+            match rule.map(|r| r.waiver_policy) {
+                Some(plumb_validation::WaiverPolicy::DecisionRequired) => "waivable",
+                Some(plumb_validation::WaiverPolicy::ProfileAllow)
+                    if policy
+                        .profile_allow_waiver_rule_ids
+                        .contains(&finding.payload.code) =>
+                {
+                    "waivable"
+                }
+                _ => "non_waivable",
+            }
+        }
+
+        /// `materialize_gate_findings` (H0.6): one non-semantic AutoNonSemantic proposal that
+        /// adds every current actionable (waivable or question-resolvable) gate finding absent
+        /// from the graph as an Accepted Finding node, and closes (status `Resolved`) every Open
+        /// Finding node that no current gate or analysis finding produces any more. `None` when
+        /// nothing changes.
+        pub fn materialize_gate_findings(
+            &self,
+            loaded: &LoadedRevision,
+        ) -> Result<Option<WriteResult>, ApiError> {
+            let a04 = self.stage_runtime("materialize_gate_findings")?;
+            let created_at = self.now();
+            let audit = AuditMeta::new(a04.stage_actor_ref.clone(), created_at, None, None)
+                .map_err(|_| ApiError::internal("audit"))?;
+            let policy = a04.validation_policy.clone();
+            let reports = self.current_or_evaluated_reports(loaded);
+            let mut current: std::collections::BTreeSet<Id> = reports
+                .iter()
+                .flat_map(|r| r.findings.iter().map(|f| f.id.clone()))
+                .collect();
+            if let Ok(analysis) = self.f2_analysis_findings(loaded) {
+                current.extend(analysis.into_iter().map(|f| f.id));
+            }
+            let mut patches = Vec::new();
+            let mut added = std::collections::BTreeSet::new();
+            for finding in reports.iter().flat_map(|r| r.findings.iter()) {
+                if loaded.graph.node(&finding.id).is_some()
+                    || !added.insert(finding.id.clone())
+                    || self.disposition(finding, &policy) == "non_waivable"
+                {
+                    continue;
+                }
+                patches.push(SemanticPatch::AddNode {
+                    node: Node {
+                        id: finding.id.clone(),
+                        revision: 1,
+                        status: ElementStatus::Accepted,
+                        payload: NodePayload::Finding(finding.payload.clone()),
+                        evidence: Vec::new(),
+                        derivations: Vec::new(),
+                        standards: Vec::new(),
+                        tags: Default::default(),
+                        extensions: Default::default(),
+                        audit: audit.clone(),
+                    },
+                });
+            }
+            let governed = plumb_validation::governed_finding_refs(&loaded.graph);
+            for id in loaded.graph.node_ids_by_type(NodeType::Finding) {
+                let Some(node) = loaded.graph.node(id) else {
+                    continue;
+                };
+                let NodePayload::Finding(f) = &node.payload else {
+                    continue;
+                };
+                if node.status != ElementStatus::Accepted
+                    || f.status != "Open"
+                    || current.contains(id)
+                    || governed.contains(id)
+                {
+                    continue;
+                }
+                let mut closed = f.clone();
+                closed.status = "Resolved".to_owned();
+                patches.push(SemanticPatch::ReplacePayload {
+                    target: ElementPrecondition {
+                        id: node.id.clone(),
+                        expected_hash: node_element_hash(node)
+                            .map_err(|_| ApiError::internal("element_hash"))?,
+                    },
+                    payload: NodePayload::Finding(closed),
+                });
+            }
+            if patches.is_empty() {
+                return Ok(None);
+            }
+            let patch = if patches.len() == 1 {
+                patches.remove(0)
+            } else {
+                SemanticPatch::Compound { patches }
+            };
+            let proposal = Proposal::new(
+                StageId::S0,
+                PatchSet {
+                    base_semantic_hash: loaded.revision.semantic_hash.clone(),
+                    patch,
+                },
+                Vec::new(),
+                Vec::new(),
+                ProposalMateriality::NonSemantic,
+                AcceptancePolicy::AutoNonSemantic,
+                None,
+            )
+            .map_err(|_| ApiError::internal("proposal"))?;
+            self.write(
+                loaded,
+                &proposal,
+                false,
+                None,
+                created_at,
+                "materialize_gate_findings",
+            )
+            .map(Some)
+        }
+
+        /// `waive_finding` (HTTP and CLI): the governed waiver of one current, materialized
+        /// gate finding by the caller's actor with `reason`.
+        pub fn waive_finding(
+            &self,
+            loaded: &LoadedRevision,
+            finding: &str,
+            reason: &str,
+        ) -> Result<WriteResult, ApiError> {
+            require_clean_reason(reason)?;
+            let finding_id =
+                parse_id(finding).ok_or_else(|| ApiError::invalid("finding is not an ID"))?;
+            crate::routes::waive_finding(
+                self,
+                loaded,
+                &finding_id,
+                None,
+                reason,
+                self.now(),
+                "waive_finding",
+            )
+        }
+
         /// `ask` (R0.6): materializes Questions from the findings of the current persisted F2
         /// report of `loaded` with the configured `question_routing`, through the shared
         /// [`ApiState::materialize_questions`] service.
@@ -1851,6 +2088,7 @@ mod services {
         /// recipe and stage job from its durable stage link; a missing link is corrupt state.
         pub fn pending_proposals(&self) -> Result<Vec<PendingProposalView>, ApiError> {
             self.runtime("workflow_store")?;
+            let head = self.load_head()?.revision.id;
             let records = self
                 .with_workflow_store(|store| store.pending_proposals())?
                 .map_err(workflow_error)?;
@@ -1883,10 +2121,80 @@ mod services {
                     stage_job_id,
                     base_revision: record.base_revision_id.to_string(),
                     requires_reason: stored.intake.requires_reason,
+                    stale: record.base_revision_id != head,
                 });
             }
             views.sort_by(|a, b| a.proposal_id.cmp(&b.proposal_id));
             Ok(views)
+        }
+
+        /// Re-submits every stale pending answer proposal (a Question answer built on another
+        /// revision than `loaded`) on `loaded` from its recorded decision: the original answer
+        /// is the decision marker restricted to the Question's answer schema properties, with
+        /// the same rationale and supersession. The stale proposal is then rejected. Nothing is
+        /// rebased: the governed answer is resolved again on the current graph. An answer that
+        /// no longer applies (e.g. already decided) only rejects the stale proposal. Returns
+        /// (stale proposal, new proposal or the reason it was not re-submitted).
+        pub fn refresh_stale_answers(
+            &self,
+            loaded: &LoadedRevision,
+        ) -> Result<Vec<AnswerRefresh>, ApiError> {
+            let mut outcomes = Vec::new();
+            for view in self.pending_proposals()? {
+                if !view.stale || view.origin != "question" {
+                    continue;
+                }
+                let stored = load_reconciled(self, loaded, &view.proposal_id)?;
+                let decision = answer_decision(&stored.proposal.patch_set.patch);
+                let resubmitted = match decision {
+                    None => Err("the proposal records no answer decision".to_owned()),
+                    Some(decision) => {
+                        let question = decision
+                            .question_ref
+                            .as_ref()
+                            .and_then(|q| loaded.graph.node(q))
+                            .and_then(|n| match &n.payload {
+                                NodePayload::Question(q) => Some((n.id.clone(), q.clone())),
+                                _ => None,
+                            });
+                        match question {
+                            None => Err("its question no longer exists".to_owned()),
+                            Some((question_ref, question)) => {
+                                let keys: Vec<String> = question
+                                    .answer_schema
+                                    .as_ref()
+                                    .and_then(|s| s.get("properties"))
+                                    .and_then(Value::as_object)
+                                    .map(|p| p.keys().cloned().collect())
+                                    .unwrap_or_default();
+                                let answer: serde_json::Map<String, Value> = keys
+                                    .iter()
+                                    .filter_map(|k| {
+                                        decision.answer.get(k).map(|v| (k.clone(), v.clone()))
+                                    })
+                                    .collect();
+                                self.answer_question(
+                                    loaded,
+                                    question_ref.as_str(),
+                                    Value::Object(answer),
+                                    decision.rationale.clone(),
+                                    decision.supersedes.clone(),
+                                )
+                                .map(|r| r.proposal_id)
+                                .map_err(|e| e.body().message.clone())
+                            }
+                        }
+                    }
+                };
+                self.act_on_proposal(
+                    loaded,
+                    &view.proposal_id,
+                    ProposalAction::Reject,
+                    Some("Re-submitted on the current revision.".to_owned()),
+                )?;
+                outcomes.push((view.proposal_id, resubmitted));
+            }
+            Ok(outcomes)
         }
 
         /// The pending S1.2 EARS proposal of `requirement` on `loaded` (R0.6): a pending
@@ -1990,6 +2298,6 @@ mod services {
 
 pub(crate) use services::{baseline_changed, not_pending, workflow_error};
 pub use services::{
-    export_artifact, require_importable, round_size, DirectoryElementView, MaterializedQuestions,
-    PendingProposalView, ProposalAction,
+    export_artifact, require_importable, round_size, DirectoryElementView, FindingView,
+    MaterializedQuestions, PendingProposalView, ProposalAction,
 };

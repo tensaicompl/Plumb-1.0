@@ -55,9 +55,8 @@ fn config() -> Value {
         "calculation_scope_overrides": [],
         "runtime_semantic_values": [],
         "vocabulary_policy": {"language": "en"},
-        // The fixture profile says 0.8, which flags HR-023/HR-024 (Approved vs Rejected
-        // notification) as duplicates with no governed way to dismiss it yet (H0.6).
-        "duplicate_policy": {"jaccard_threshold": "0.85"},
+        // The fixture profile's threshold (fixtures/hr-leave/profile.yaml).
+        "duplicate_policy": {"jaccard_threshold": "0.8"},
         "calculation_scope": null,
         "operation_scope": null,
         "process_scope": null,
@@ -1017,6 +1016,43 @@ fn hr_pilot_simulation() {
     for recipe in ["extract", "consolidate", "lint"] {
         sim.settle(recipe);
     }
+    // The fixture's duplicate threshold (0.8) flags HR-023/HR-024 (notify on Approved vs
+    // Rejected) as duplicates: an F1 blocker that is governed through a waiver (H0.6).
+    let findings = sim.json(&["findings", "list"]);
+    println!("findings: {findings:#}\n");
+    let duplicate = findings
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["code"] == "PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED")
+        .expect("the HR-023/HR-024 duplicate is a current F1 finding")
+        .clone();
+    assert_eq!(duplicate["disposition"], "waivable", "{duplicate}");
+    assert_eq!(duplicate["governed"], false, "{duplicate}");
+    let (code, _) = sim.cli(&["findings", "materialize"], &[]);
+    assert_eq!(code, 0);
+    let (code, _) = sim.cli(
+        &[
+            "findings",
+            "waive",
+            duplicate["id"].as_str().unwrap(),
+            "--reason",
+            "HR-023 and HR-024 notify different outcomes; they are distinct requirements.",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0);
+    let (code, lint) = sim.cli(&["lint"], &[]);
+    assert_eq!(code, 0, "F1 passes once the duplicate is waived: {lint}");
+    let after = sim.json(&["findings", "list"]);
+    assert!(
+        after
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["id"] == duplicate["id"] && f["governed"] == true),
+        "{after}"
+    );
     sim.cli(&["ready"], &[]);
     sim.cli(&["directory"], &[]);
     sim.accept_all();
@@ -1134,10 +1170,61 @@ fn hr_pilot_simulation() {
             ],
             &[],
         );
-        // Each answer is a proposal on the current head; several answers on one calculation are
-        // not compatible as a set, so each is accepted before the next is given.
-        sim.accept_all();
     }
+    // All answers were given on one head (as in a real round). Three of them change the same
+    // calculation, so accepting one makes the others stale (never rebased). The stale answer
+    // proposals are listed as stale and re-submitted from their recorded answers (H0.10).
+    let pending = sim.json(&["proposals"]);
+    let pending = pending.as_array().unwrap();
+    assert_eq!(pending.len(), questions.as_array().unwrap().len());
+    assert!(pending.iter().all(|p| p["stale"] == false), "{pending:?}");
+    let first = pending[0]["proposal_id"].as_str().unwrap();
+    let (code, _) = sim.cli(
+        &[
+            "apply",
+            first,
+            "--action",
+            "accept",
+            "--reason",
+            "Expert answer.",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0);
+    let after = sim.json(&["proposals"]);
+    let after = after.as_array().unwrap();
+    assert_eq!(after.len(), pending.len() - 1);
+    assert!(after.iter().all(|p| p["stale"] == true), "{after:?}");
+    for _ in 0..pending.len() {
+        let (code, _) = sim.cli(&["proposals", "--refresh"], &[]);
+        assert_eq!(code, 0);
+        let fresh = sim.json(&["proposals"]);
+        let Some(next) = fresh
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["stale"] == false)
+        else {
+            break;
+        };
+        let (code, _) = sim.cli(
+            &[
+                "apply",
+                next["proposal_id"].as_str().unwrap(),
+                "--action",
+                "accept",
+                "--reason",
+                "Expert answer.",
+            ],
+            &[],
+        );
+        assert_eq!(code, 0);
+    }
+    assert_eq!(
+        sim.json(&["proposals"]).as_array().unwrap().len(),
+        0,
+        "every answer accepted"
+    );
     sim.confirm_all(&[]);
     sim.settle("analyse");
     sim.settle("scenarios");
@@ -1152,4 +1239,103 @@ fn hr_pilot_simulation() {
         code, 0,
         "every NOW gate passes at the end of the pilot: {gates}"
     );
+}
+
+/// H0.10 (rejection memory): a stage proposal the analyst rejected is not proposed again when
+/// the stage reruns on a later revision with the same input.
+#[test]
+fn rejected_stage_proposal_is_not_reproposed() {
+    let sim = Sim::new();
+    sim.cli(&["init", "--project", "project:hr"], &[]);
+    let md = fixture("requirements.md");
+    sim.cli(
+        &[
+            "import",
+            md.to_str().unwrap(),
+            "--media-type",
+            "text/markdown",
+            "--name",
+            "requirements.md",
+        ],
+        &[],
+    );
+    sim.stage("extract");
+    let pending = sim.json(&["proposals"]);
+    let pending = pending.as_array().unwrap();
+    let rejected = pending[0]["proposal_id"].as_str().unwrap().to_owned();
+    let (code, _) = sim.cli(
+        &[
+            "apply",
+            &rejected,
+            "--action",
+            "reject",
+            "--reason",
+            "Out of scope.",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0);
+    sim.accept_all();
+    sim.confirm_all(&[]);
+    let accepted = sim.accepted("Requirement").len();
+    assert_eq!(accepted, pending.len() - 1);
+    // The head moved (accept + confirm); the rerun sees the same source.
+    sim.stage("extract");
+    let again = sim.json(&["proposals"]);
+    assert_eq!(again.as_array().unwrap().len(), 0, "re-proposed: {again}");
+    assert_eq!(sim.accepted("Requirement").len(), accepted);
+}
+
+/// H0.10 (rejection memory): rejecting a proposal that is already stale is clean-up, not a
+/// content decision, so a rerun on the current revision proposes it again.
+#[test]
+fn rejecting_a_stale_proposal_is_not_remembered() {
+    let sim = Sim::new();
+    sim.cli(&["init", "--project", "project:hr"], &[]);
+    let md = fixture("requirements.md");
+    let import = |path: &str, name: &str| {
+        sim.cli(
+            &[
+                "import",
+                path,
+                "--media-type",
+                "text/markdown",
+                "--name",
+                name,
+            ],
+            &[],
+        )
+    };
+    import(md.to_str().unwrap(), "requirements.md");
+    sim.stage("extract");
+    let first = sim.json(&["proposals"]);
+    let target = first[0]["proposal_id"].as_str().unwrap().to_owned();
+    // Another source moves the head: every pending extract proposal is now stale.
+    let extra = sim.dir.join("extra.md");
+    std::fs::write(
+        &extra,
+        "# Extra\n\n1. **HR-900** [functional] The system shall export reports.\n",
+    )
+    .unwrap();
+    import(extra.to_str().unwrap(), "extra.md");
+    let stale = sim.json(&["proposals"]);
+    assert!(
+        stale.as_array().unwrap().iter().all(|p| p["stale"] == true),
+        "{stale}"
+    );
+    let (code, _) = sim.cli(
+        &["apply", &target, "--action", "reject", "--reason", "Stale."],
+        &[],
+    );
+    assert_eq!(code, 0);
+    sim.stage("extract");
+    let fresh = sim.json(&["proposals"]);
+    let fresh_count = fresh
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["stale"] == false)
+        .count();
+    // All 32 fixture requirements (the stale-rejected one included) plus HR-900.
+    assert_eq!(fresh_count, first.as_array().unwrap().len() + 1, "{fresh}");
 }

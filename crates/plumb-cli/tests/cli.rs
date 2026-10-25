@@ -34,7 +34,7 @@ mod cli {
         b"# Leave\n\nEmployees shall submit leave requests.\n\nManagers shall approve leave requests.\n";
 
     /// The 22 commands with their minimal required arguments.
-    const COMMANDS: [&[&str]; 28] = [
+    const COMMANDS: [&[&str]; 29] = [
         &["init", "--project", "project:pilot"],
         &[
             "import",
@@ -78,6 +78,7 @@ mod cli {
         // R0.6.
         &["directory"],
         &["confirm", "req:a", "actor:b", "--reason", "Reviewed."],
+        &["findings", "list"],
         &["set-attribute-type", "attr:a", "--type", "Date"],
         &["ask"],
         &["answer", "q:0000000000000001", "--answer", "{}"],
@@ -471,7 +472,7 @@ mod cli {
     // ------------------------------------------------------------------ parsing
 
     #[test]
-    fn cli_parses_all_twenty_eight_commands() {
+    fn cli_parses_all_twenty_nine_commands() {
         // Without --config every parsed command stops at configuration: exit 1, not a clap
         // error, so each argument tree parses.
         for args in COMMANDS {
@@ -515,6 +516,7 @@ mod cli {
                 "serve",
                 "directory",
                 "confirm",
+                "findings",
                 "set-attribute-type",
                 "ask",
                 "answer",

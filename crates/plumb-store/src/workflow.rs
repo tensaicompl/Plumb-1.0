@@ -259,6 +259,30 @@ impl SqliteWorkflowStore {
         Ok(proposals)
     }
 
+    /// Every `rejected` proposal of `origin`, as the complete stored record, sorted by proposal
+    /// ID ascending. Read-only.
+    pub fn rejected_proposals(
+        &self,
+        origin: WorkflowOrigin,
+    ) -> Result<Vec<WorkflowProposal>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {PROPOSAL_COLUMNS} FROM workflow_proposals \
+             WHERE state = ?1 AND origin_kind = ?2 ORDER BY proposal_id"
+        ))?;
+        let raws = stmt
+            .query_map(
+                [WorkflowProposalState::Rejected.as_str(), origin.as_str()],
+                raw_proposal,
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut proposals = raws
+            .into_iter()
+            .map(RawProposal::decode)
+            .collect::<Result<Vec<_>, _>>()?;
+        proposals.sort_by(|a, b| a.proposal_id.cmp(&b.proposal_id));
+        Ok(proposals)
+    }
+
     /// Moves a `pending` proposal to `accepted` or `rejected` with its resolution revision and
     /// time. Any other current state is [`StoreError::WorkflowStateConflict`].
     pub fn resolve_proposal(

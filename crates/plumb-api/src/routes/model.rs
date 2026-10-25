@@ -1785,7 +1785,7 @@ async fn export_process(
 /// The Hotfix 048 waiver of current finding `finding_id` (Hotfix 065): the waiver material
 /// comes from the current, head-bound gate reports and is checked against the persisted
 /// Finding; `requirement` additionally scopes it to an Accepted Requirement.
-pub(super) fn waive(
+pub(crate) fn waive(
     state: &ApiState,
     loaded: &LoadedRevision,
     finding_id: &Id,
@@ -1794,7 +1794,9 @@ pub(super) fn waive(
     created_at: Timestamp,
     operation_id: &'static str,
 ) -> Result<WriteResult, ApiError> {
-    let reports = state.current_gate_reports(loaded)?;
+    // Current reports, evaluated on demand when the head has none (e.g. right after the
+    // findings were materialized in a non-semantic revision).
+    let reports = state.current_or_evaluated_reports(loaded);
     let generated: Vec<(&GeneratedFinding, &ValidationPolicy)> = reports
         .iter()
         .flat_map(|r| r.findings.iter().map(move |f| (f, &r.policy)))

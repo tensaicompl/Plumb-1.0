@@ -47,4 +47,6 @@ pub use process_analysis::{
 };
 pub use profile::{load_builtin_software_profile, load_profile_yaml};
 pub use registry::{ValidationRegistry, EXPECTED_NOW_RULE_COUNT, NOW_GATES};
-pub use waiver::{governed_waiver, AppliedWaiver, WaiverDecisionMarker, WAIVER_KIND};
+pub use waiver::{
+    governed_finding_refs, governed_waiver, AppliedWaiver, WaiverDecisionMarker, WAIVER_KIND,
+};

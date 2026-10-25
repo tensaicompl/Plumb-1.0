@@ -23,6 +23,7 @@ mod sessions;
 mod sources;
 mod stages;
 
+pub(crate) use model::waive as waive_finding;
 pub(crate) use scenarios::lifecycle_error as scenario_lifecycle_error;
 
 /// Largest request body of `POST /api/sources` (architecture §33.1).

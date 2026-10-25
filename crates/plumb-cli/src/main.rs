@@ -191,6 +191,11 @@ enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// List, materialize or waive the current gate findings (H0.6).
+    Findings {
+        #[command(subcommand)]
+        command: FindingsCommand,
+    },
     /// Set an Attribute's value type (a pilot primitive type or an Accepted value_type Concept).
     SetAttributeType {
         attribute: String,
@@ -210,7 +215,11 @@ enum Command {
         rationale: Option<String>,
     },
     /// List every pending proposal with the information needed to act on it.
-    Proposals,
+    Proposals {
+        /// Re-submit stale answer proposals on the current revision first.
+        #[arg(long)]
+        refresh: bool,
+    },
     /// Append one pilot effort record.
     LogEffort {
         #[arg(long)]
@@ -221,6 +230,20 @@ enum Command {
         amount: String,
         #[arg(long)]
         note: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FindingsCommand {
+    /// Every current gate finding with its disposition and governance state (read-only).
+    List,
+    /// Persist the current actionable findings as Finding nodes and close stale Open ones.
+    Materialize,
+    /// Waive one current, materialized finding (decision_required or profile-enabled rules).
+    Waive {
+        finding: String,
+        #[arg(long)]
+        reason: String,
     },
 }
 
@@ -348,6 +371,13 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
         Command::Serve { listen } => commands::serve(state, listen),
         Command::Directory => commands::directory(&state),
         Command::Confirm { elements, reason } => commands::confirm(&state, &elements, reason),
+        Command::Findings { command } => match command {
+            FindingsCommand::List => commands::findings_list(&state),
+            FindingsCommand::Materialize => commands::findings_materialize(&state),
+            FindingsCommand::Waive { finding, reason } => {
+                commands::findings_waive(&state, &finding, &reason)
+            }
+        },
         Command::SetAttributeType {
             attribute,
             value_type,
@@ -358,7 +388,7 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
             answer,
             rationale,
         } => commands::answer(&state, &question, &answer, rationale),
-        Command::Proposals => commands::proposals(&state),
+        Command::Proposals { refresh } => commands::proposals(&state, refresh),
         _ => Err(CliError::Usage("unsupported command".into())),
     }
 }
