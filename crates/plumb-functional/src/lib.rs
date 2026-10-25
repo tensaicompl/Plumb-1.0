@@ -119,7 +119,8 @@ pub use decision_table::{
 pub use directory::{
     produce_directory, DirectoryAudit, DirectoryCalendarBinding, DirectoryCalendarDraft,
     DirectoryDecisionTableDraft, DirectoryDisposition, DirectoryDraft, DirectoryElement,
-    DirectoryError, DirectoryOutcome, DirectoryResult,
+    DirectoryError, DirectoryEventDisposition, DirectoryOutcome, DirectoryResult,
+    DirectoryStateDisposition,
 };
 pub use domain::{
     analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,
