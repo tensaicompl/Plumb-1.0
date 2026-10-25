@@ -33,8 +33,8 @@ use crate::openapi::{
     SplitRequest, WaiveRequirementFindingRequest,
 };
 use crate::state::{
-    check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
-    require_clean_reason, wire, ApiState, PageRequest, QueryParams,
+    check_if_match, is_clean_text, paginate_projected, parse_body, parse_id, parse_wire, project,
+    read_json, require_clean_reason, wire, ApiState, PageRequest, QueryParams,
 };
 
 use super::model::{preview_instant, require_previewed, semantic_change_preview};
@@ -172,6 +172,7 @@ fn summary(
         },
         readiness: None,
         lint_current: f1.is_some(),
+        source_identifier: requirement.source_identifier.clone(),
     })
 }
 
@@ -204,26 +205,39 @@ async fn list_requirements(
         let NodePayload::Requirement(requirement) = &node.payload else {
             continue;
         };
+        let matches = |text: &str| {
+            needle
+                .as_ref()
+                .is_none_or(|n| text.to_lowercase().contains(n.as_str()))
+        };
         if status.is_some_and(|s| s != node.status)
             || class.is_some_and(|c| c != requirement.requirement_kind)
-            || needle
-                .as_ref()
-                .is_some_and(|n| !requirement.statement.to_lowercase().contains(n.as_str()))
+            || !(matches(&requirement.statement)
+                || requirement
+                    .source_identifier
+                    .as_deref()
+                    .is_some_and(matches))
         {
             continue;
         }
-        items.push((
-            node.id.to_string(),
-            summary(&loaded.graph, f1.as_ref(), node, requirement)?,
-        ));
+        let id = node.id.to_string();
+        let view = project(&id, summary(&loaded.graph, f1.as_ref(), node, requirement))?;
+        items.push((id, view));
     }
     let request = PageRequest {
         operation_id: "list_requirements",
         path: Default::default(),
         query: &query,
     };
-    let (items, next_cursor) = paginate(items, &request, &loaded)?;
-    Ok(read_json(&loaded, RequirementPage { items, next_cursor }))
+    let (items, health, next_cursor) = paginate_projected(items, &request, &loaded)?;
+    Ok(read_json(
+        &loaded,
+        RequirementPage {
+            items,
+            health,
+            next_cursor,
+        },
+    ))
 }
 
 /// The Requirement node `id`, or 404.
@@ -275,6 +289,16 @@ async fn get_requirement(
             }
         })
         .collect();
+    let processes = specified_by(&loaded.graph, &node.id, NodeType::Process);
+    let linked: Vec<Id> = summary
+        .coverage
+        .operations
+        .iter()
+        .chain(&processes)
+        .chain(&summary.coverage.scenarios)
+        .filter_map(|ref_id| ref_id.parse().ok())
+        .collect();
+    let labels = crate::inbox::element_labels(&loaded.graph, &linked);
     let body = RequirementDetail {
         id: summary.id,
         text: summary.text,
@@ -293,10 +317,12 @@ async fn get_requirement(
         ears_proposal_ref: ears.as_ref().map(|(_, id)| id.to_string()),
         linked: RequirementLinks {
             operations: summary.coverage.operations,
-            processes: specified_by(&loaded.graph, &node.id, NodeType::Process),
+            processes,
             scenarios: summary.coverage.scenarios,
         },
+        labels,
         lint_current: summary.lint_current,
+        source_identifier: summary.source_identifier,
     };
     Ok(read_json(&loaded, body))
 }

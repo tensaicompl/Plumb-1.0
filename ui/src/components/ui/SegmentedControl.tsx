@@ -1,4 +1,5 @@
-import { useRef, type KeyboardEvent, type MouseEvent } from "react";
+import { ChevronDown } from "lucide-react";
+import { useRef, type ComponentPropsWithRef, type KeyboardEvent, type MouseEvent } from "react";
 
 import { cn, isPlainClick } from "./cn";
 
@@ -121,21 +122,27 @@ export function SegmentedLinks({ label, items, onNavigate, className }: { label:
 
 // ------------------------------------------------------------------ FilterChip
 
-export interface FilterChipProps {
+export interface FilterChipProps extends Omit<ComponentPropsWithRef<"button">, "children"> {
   readonly label: string;
   readonly active?: boolean;
   readonly count?: number;
   readonly onToggle?: () => void;
+  /** The chip opens a Menu (Kind, Status): a chevron instead of a pressed state. */
+  readonly menu?: boolean;
   readonly className?: string;
 }
 
-/** A filter chip: 30 px outline pill; active chips are pressed with a midnight border. */
-export function FilterChip({ label, active = false, count, onToggle, className }: FilterChipProps) {
+/**
+ * A filter chip: 30 px outline pill; active chips have a midnight border. A toggle chip is
+ * pressed when active; a `menu` chip is a Menu trigger (button props pass through).
+ */
+export function FilterChip({ label, active = false, count, onToggle, menu = false, className, ...rest }: FilterChipProps) {
   return (
     <button
       type="button"
-      aria-pressed={active}
+      aria-pressed={menu ? undefined : active}
       onClick={onToggle}
+      {...rest}
       className={cn(
         "inline-flex h-[30px] cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-pill border px-3 text-footnote transition-colors duration-[120ms] ease-standard",
         active ? "border-primary bg-surface font-semibold text-fg" : "border-line bg-card font-medium text-fg-2 hover:bg-surface",
@@ -144,6 +151,7 @@ export function FilterChip({ label, active = false, count, onToggle, className }
     >
       {label}
       {count !== undefined && <span className="font-mono text-eyebrow opacity-70">{count}</span>}
+      {menu && <ChevronDown size={14} strokeWidth={1.6} aria-hidden="true" />}
     </button>
   );
 }

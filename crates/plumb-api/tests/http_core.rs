@@ -1200,6 +1200,14 @@ mod http_core {
     /// route: report order, exact wire values, summary copied from the report.
     fn gate_json(report: &GateReport) -> Value {
         let ids = |ids: &[Id]| ids.iter().map(Id::to_string).collect::<Vec<_>>();
+        let shipped = profile();
+        let title = |rule_id: &str| {
+            shipped
+                .rules
+                .iter()
+                .find(|m| m.id == rule_id)
+                .map(|m| m.title.clone())
+        };
         let mut findings: Vec<String> = report.findings.iter().map(|f| f.id.to_string()).collect();
         findings.sort();
         let rules: Vec<Value> = report
@@ -1229,6 +1237,7 @@ mod http_core {
                         "code": e.code, "message": e.message,
                         "targets": ids(&e.targets), "evidence": e.evidence
                     })),
+                    "title": title(&r.rule_id),
                 })
             })
             .collect();
@@ -1663,11 +1672,19 @@ mod http_core {
                 "ears_suggestion": null,
                 "ears_proposal_ref": null,
                 "linked": {"operations": ["op:submit"], "processes": ["proc:leave"], "scenarios": ["scn:a"]},
-                "lint_current": true
+                "labels": [
+                    {"id": "op:submit", "kind": "operation", "label": "Submit leave"},
+                    {"id": "proc:leave", "kind": "process", "label": "Leave"},
+                    {"id": "scn:a", "kind": "scenario", "label": "Submit"}
+                ],
+                "lint_current": true,
+                "source_identifier": null
             })
         );
         let list = get(&app, "/api/requirements").await.json();
         assert_eq!(ids_of(&list), ["req:a", "req:b", "req:c", "req:p"]);
+        assert_eq!(list["health"], json!([]));
+        assert_eq!(list["items"][0]["source_identifier"], Value::Null);
         assert_eq!(list["items"][3]["smells"], json!([]));
         assert_eq!(
             ids_of(&get(&app, "/api/requirements?status=Proposed").await.json()),
@@ -1736,6 +1753,59 @@ mod http_core {
                 .await
                 .status,
             StatusCode::NOT_FOUND
+        );
+    }
+
+    /// S3: a requirement's source identifier ("HR-009") is projected by the list and the
+    /// detail, and the text filter also matches it (case-insensitively).
+    #[tokio::test]
+    async fn http_core_requirement_source_identifier() {
+        let (mut nodes, edges) = fixture_parts();
+        nodes.push(node(
+            "req:hr9",
+            "Accepted",
+            "Requirement",
+            json!({
+                "statement": "Submitting a valid leave request shall change its status.",
+                "requirement_kind": "functional", "level": "system", "modality": "shall",
+                "title": null, "rationale": null, "priority": null,
+                "source_identifier": "HR-009", "verification_method": null,
+                "owner_refs": null, "stakeholder_refs": null
+            }),
+        ));
+        let app = app_with(graph_of(nodes, edges), &[], fixed());
+        let list = get(&app, "/api/requirements").await.json();
+        let item = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == "req:hr9")
+            .unwrap();
+        assert_eq!(item["source_identifier"], "HR-009");
+        assert_eq!(
+            ids_of(&get(&app, "/api/requirements?q=hr-009").await.json()),
+            ["req:hr9"]
+        );
+        let detail = get(&app, "/api/requirements/req:hr9").await.json();
+        assert_eq!(detail["source_identifier"], "HR-009");
+        assert_eq!(detail["labels"], json!([]));
+    }
+
+    /// S3: every gate rule result carries the active profile's plain-language rule title.
+    #[tokio::test]
+    async fn http_core_gate_rules_carry_the_profile_title() {
+        let app = app();
+        let gates = current_gates(&get(&app, "/api/gates").await.json());
+        let rule = gates
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rules"].as_array().unwrap())
+            .find(|r| r["rule_id"] == "PLUMB.F1.REQ.GROUNDED")
+            .unwrap();
+        assert_eq!(
+            rule["title"],
+            "Accepted requirements are grounded in evidence or explicit human origin"
         );
     }
 

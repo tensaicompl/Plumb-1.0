@@ -744,8 +744,17 @@ mod openapi {
             assert_eq!(method, "GET");
             pageable.insert(path.clone());
             let name = response.as_str().unwrap().rsplit('/').next().unwrap();
-            // H0.11: the four robust collections also report item health markers.
-            if ["AssumptionPage", "QuestionPage", "RulePage", "ScenarioPage"].contains(&name) {
+            // H0.11: the robust collections also report item health markers (S3 adds the
+            // requirement list).
+            if [
+                "AssumptionPage",
+                "QuestionPage",
+                "RequirementPage",
+                "RulePage",
+                "ScenarioPage",
+            ]
+            .contains(&name)
+            {
                 assert_eq!(
                     properties(&doc, name),
                     set(&["items", "health", "next_cursor"])
@@ -1004,6 +1013,44 @@ mod openapi {
                 "{name} must require lint_current"
             );
         }
+        // S3 (Requirements screen): the requirement's source identifier ("HR-009") is a
+        // required nullable string of both read schemas.
+        for name in ["RequirementSummary", "RequirementDetail"] {
+            let s = schema(&doc, name);
+            assert_eq!(
+                s["properties"]["source_identifier"]["type"],
+                json!(["string", "null"]),
+                "{name}"
+            );
+            assert!(
+                s["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("source_identifier")),
+                "{name} must require source_identifier"
+            );
+        }
+        // S3: the plain-language labels of the linked elements (the S4 ElementLabel).
+        let detail = schema(&doc, "RequirementDetail");
+        assert_eq!(detail["properties"]["labels"]["type"], "array");
+        assert_eq!(
+            detail["properties"]["labels"]["items"],
+            component_ref("ElementLabel")
+        );
+        assert_eq!(
+            required(&doc, "ElementLabel"),
+            set(&["id", "kind", "label"])
+        );
+        assert!(detail["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("labels")));
+        // S3: the requirement list reports items whose projection failed (H0.11 health).
+        assert_eq!(required(&doc, "RequirementPage"), set(&["items", "health"]));
+        assert_eq!(
+            schema(&doc, "RequirementPage")["properties"]["health"]["items"]["$ref"],
+            "#/components/schemas/ItemHealth"
+        );
         assert_eq!(operations(&doc).len(), 86);
         has(
             "Sentence",
@@ -2246,11 +2293,17 @@ mod openapi {
             "finding_ref",
             "waiver_ref",
             "error",
+            "title",
         ];
         assert_eq!(keys("GateRuleResult"), set(&rule_fields));
         assert_eq!(required(&doc, "GateRuleResult"), set(&rule_fields));
         let rule = schema(&doc, "GateRuleResult");
-        for nullable in ["semantic_condition_key", "finding_ref", "waiver_ref"] {
+        for nullable in [
+            "semantic_condition_key",
+            "finding_ref",
+            "waiver_ref",
+            "title",
+        ] {
             assert_eq!(
                 rule["properties"][nullable]["type"],
                 json!(["string", "null"]),

@@ -1131,6 +1131,10 @@ pub struct GateRuleResult {
     pub waiver_ref: Option<String>,
     #[schema(required = true)]
     pub error: Option<GateRuleError>,
+    /// The active profile's plain-language title of the rule; `null` when the rule is not in
+    /// the active profile.
+    #[schema(required = true)]
+    pub title: Option<String>,
 }
 
 /// One governed waiver applied by a gate report.
@@ -1327,8 +1331,12 @@ pub struct RequirementSummary {
     /// Whether a current F1 gate report exists for the branch head (R0.4). When false, lint
     /// results are unavailable (not "no findings").
     pub lint_current: bool,
+    /// The requirement's identifier in its source document (e.g. "HR-009"); `null` when the
+    /// source did not give one.
+    #[schema(required = true)]
+    pub source_identifier: Option<String>,
 }
-page!(RequirementPage, RequirementSummary);
+health_page!(RequirementPage, RequirementSummary);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -1373,9 +1381,16 @@ pub struct RequirementDetail {
     /// proposal acceptance (R0.6); `null` exactly when `ears_suggestion` is `null`.
     pub ears_proposal_ref: Option<String>,
     pub linked: RequirementLinks,
+    /// The plain-language label of each element ID in `linked` (an operation, process or
+    /// scenario name), sorted by ID.
+    pub labels: Vec<ElementLabel>,
     /// Whether a current F1 gate report exists for the branch head (R0.4). When false,
     /// `smells` and `lint_findings` are `[]`, `readiness` is `null` and lint is unavailable.
     pub lint_current: bool,
+    /// The requirement's identifier in its source document (e.g. "HR-009"); `null` when the
+    /// source did not give one.
+    #[schema(required = true)]
+    pub source_identifier: Option<String>,
 }
 
 /// The closed requirement class vocabulary (`Requirement.requirement_kind`, §7.5).

@@ -42,6 +42,7 @@ function gate(name: GateStatus["gate"], overrides: Partial<GateStatus> = {}): Ga
 
 const rule = (overrides: Partial<GateStatus["rules"][number]>): GateStatus["rules"][number] => ({
   rule_id: "PLUMB.F2.EVENT.CONSUMER",
+  title: null,
   state: "FAIL",
   declared_severity: "blocker",
   effective_severity: "blocker",

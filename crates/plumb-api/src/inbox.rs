@@ -99,7 +99,7 @@ impl<'a> Names<'a> {
     }
 
     /// The plain-language label of an element ID (its ID when unknown).
-    fn label(&self, id: &Id) -> String {
+    pub(crate) fn label(&self, id: &Id) -> String {
         match self.node(id) {
             Some(node) => self.node_label(node),
             None => match self.edge(id) {

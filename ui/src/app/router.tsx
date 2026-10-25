@@ -1,24 +1,24 @@
 import { createRootRoute, createRoute, createRouter, redirect, useParams, type RouterHistory } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
-import { DecisionsPage } from "../features/decisions/DecisionsPage";
-import { FindingsPage } from "../features/findings/FindingsPage";
-import { GatesPage } from "../features/gates/GatesPage";
 import { OverviewScreen } from "../features/overview/OverviewScreen";
 import { SourcesScreen } from "../features/sources/SourcesScreen";
-import { RequirementDetail } from "../features/requirements/RequirementDetail";
-import { RequirementsPage } from "../features/requirements/RequirementsPage";
 import { GlossaryView } from "../features/model/GlossaryView";
 import { ModelScreen } from "../features/model/ModelScreen";
 import { EntitiesView } from "../features/model/EntitiesView";
 import { RulesView } from "../features/model/RulesView";
 import { CalculationsView } from "../features/model/CalculationsView";
 import { ProcessesView } from "../features/model/ProcessesView";
+import { GatesTab } from "../features/quality/GatesTab";
+import { HistoryTab } from "../features/quality/HistoryTab";
+import { IssuesTab } from "../features/quality/IssuesTab";
+import { QualityScreen } from "../features/quality/QualityScreen";
+import { parseRequirementsSearch, RequirementsScreen } from "../features/requirements/RequirementsScreen";
 import { ScenariosScreen } from "../features/scenarios/ScenariosScreen";
 import { AppShell } from "./AppShell";
 import { InboxScreen } from "../features/inbox/InboxScreen";
 import { parseInboxSearch } from "../features/inbox/model";
-import { Legacy, QualityInterim } from "./routes/interim";
+import { Legacy } from "./routes/interim";
 import { NotFoundPage, RouteErrorPage } from "./RouteStatus";
 
 // The explicit route tree: the spec §3 URL structure, every URL deep-linkable. Screen lanes
@@ -76,28 +76,20 @@ const inboxItemRoute = createRoute({ getParentRoute: () => inboxRoute, path: "$i
 
 // ------------------------------------------------------------------ Requirements
 
+// One screen for the list and the selected requirement: `$id` is a child route, so selecting a
+// row keeps the screen (and its filters) mounted. `?affected=` comes from Quality → Show affected.
 const requirementsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/requirements",
-  component: () => (
-    <Legacy>
-      <RequirementsPage />
-    </Legacy>
-  ),
-});
-
-const requirementRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/requirements/$id",
-  component: function RequirementRoute() {
-    const { id } = requirementRoute.useParams();
-    return (
-      <Legacy>
-        <RequirementDetail key={id} requirementId={id} />
-      </Legacy>
-    );
+  validateSearch: parseRequirementsSearch,
+  component: function RequirementsRoute() {
+    const params = useParams({ strict: false }) as { id?: string };
+    const { affected } = requirementsRoute.useSearch();
+    return <RequirementsScreen selectedId={params.id} affected={affected === undefined ? undefined : affected.split(",").filter(Boolean)} />;
   },
 });
+
+const requirementRoute = createRoute({ getParentRoute: () => requirementsRoute, path: "$id", component: () => null });
 
 // ------------------------------------------------------------------ Model
 
@@ -140,13 +132,21 @@ const scenarioRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sce
 const qualityRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/quality",
-  component: QualityInterim,
+  component: QualityScreen,
 });
 
-const qualityIndexRoute = createRoute({ getParentRoute: () => qualityRoute, path: "/", component: GatesPage });
-const qualityGateRoute = createRoute({ getParentRoute: () => qualityRoute, path: "$gate", component: GatesPage });
-const qualityHistoryRoute = createRoute({ getParentRoute: () => qualityRoute, path: "history", component: DecisionsPage });
-const qualityIssuesRoute = createRoute({ getParentRoute: () => qualityRoute, path: "issues", component: FindingsPage });
+// /quality shows every gate collapsed; /quality/$gate expands that gate (Overview tiles link here).
+const qualityIndexRoute = createRoute({ getParentRoute: () => qualityRoute, path: "/", component: () => <GatesTab expanded={null} /> });
+const qualityGateRoute = createRoute({
+  getParentRoute: () => qualityRoute,
+  path: "$gate",
+  component: function QualityGateRoute() {
+    const { gate } = qualityGateRoute.useParams();
+    return <GatesTab expanded={gate} />;
+  },
+});
+const qualityHistoryRoute = createRoute({ getParentRoute: () => qualityRoute, path: "history", component: HistoryTab });
+const qualityIssuesRoute = createRoute({ getParentRoute: () => qualityRoute, path: "issues", component: IssuesTab });
 
 // ------------------------------------------------------------------ Sources
 
@@ -165,8 +165,7 @@ export const routeTree = rootRoute.addChildren([
   indexRoute,
   overviewRoute,
   inboxRoute.addChildren([inboxIndexRoute, inboxItemRoute]),
-  requirementsRoute,
-  requirementRoute,
+  requirementsRoute.addChildren([requirementRoute]),
   modelRoute.addChildren([modelIndexRoute, ...glossaryRoutes, ...entitiesRoutes, ...rulesRoutes, ...calculationsRoutes, ...processesRoutes]),
   scenariosRoute,
   scenarioRoute,

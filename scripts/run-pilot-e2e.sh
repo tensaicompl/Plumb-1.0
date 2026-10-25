@@ -64,9 +64,9 @@ for _ in $(seq 1 60); do
   fi
   sleep 0.5
 done
-npx playwright test --grep-invert @inbox-db --reporter=list
+npx playwright test --grep-invert @inbox-db --workers=1 --reporter=list
 
 kill "$API_PID" 2>/dev/null || true
 wait "$API_PID" 2>/dev/null || true
 serve "$INBOX_DB"
-npx playwright test --grep @inbox-db --reporter=list
+npx playwright test --grep @inbox-db --workers=1 --reporter=list

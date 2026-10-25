@@ -61,8 +61,8 @@ test.describe("HR pilot", () => {
   test("the 32 HR requirements are listed with their statements", async ({ page }) => {
     await page.goto("/requirements");
     await expect(page.getByText("The system shall allow an employee to create a draft leave request.")).toBeVisible();
-    await page.getByLabel("Status").fill("accepted");
-    await page.getByRole("button", { name: "Apply filters" }).click();
+    await expect(page.getByText("32 · from requirements.md")).toBeVisible();
+    await page.getByRole("searchbox", { name: "Search requirements" }).fill("Warsaw");
     await expect(page.getByText("Business timestamps shall use the Europe/Warsaw time zone.")).toBeVisible();
   });
 
@@ -88,7 +88,7 @@ test.describe("HR pilot", () => {
   });
 
   test("the gates screen shows the waived duplicate blocker", async ({ page }) => {
-    await page.goto("/quality");
+    await page.goto("/quality/F1");
     await expect(page.getByText("PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED").first()).toBeVisible();
     await expect(page.getByText(/waived/i).first()).toBeVisible();
   });

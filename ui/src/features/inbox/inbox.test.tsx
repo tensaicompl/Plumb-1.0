@@ -826,6 +826,7 @@ describe("Item cards", () => {
         rules: [
           {
             rule_id: "PLUMB.F2.EVENT.CONSUMER",
+            title: null,
             state: "FAIL",
             declared_severity: "blocker",
             effective_severity: "blocker",

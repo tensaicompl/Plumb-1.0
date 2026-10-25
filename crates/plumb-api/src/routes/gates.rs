@@ -9,6 +9,7 @@ use plumb_core::{GateId, Id};
 use plumb_psg::NodeType;
 use plumb_validation::{
     Applicability, AppliedWaiver, EvaluatorFailure, GateResult, RuleResult, RuleResultState,
+    ValidationProfile,
 };
 
 use crate::error::ApiError;
@@ -40,7 +41,7 @@ async fn get_gates(State(state): State<ApiState>) -> Result<Response, ApiError> 
     for gate in [GateId::I0, GateId::F1, GateId::F2, GateId::F3, GateId::F4] {
         let name = parse_wire::<GateName>(&wire(&gate)?, "gate")?;
         match state.current_or_evaluated_report(&loaded, gate) {
-            Ok(report) => gates.push(current_view(name, &report)?),
+            Ok(report) => gates.push(current_view(name, &report, state.profile())?),
             Err(error) if error.body().status.is_server_error() => return Err(error),
             Err(error) => {
                 let state = if state.has_any_gate_report(gate)? {
@@ -75,13 +76,14 @@ async fn get_gates(State(state): State<ApiState>) -> Result<Response, ApiError> 
 fn current_view(
     gate: GateName,
     report: &plumb_validation::GateReport,
+    profile: &ValidationProfile,
 ) -> Result<GateStatus, ApiError> {
     let mut findings: Vec<String> = report.findings.iter().map(|f| f.id.to_string()).collect();
     findings.sort();
     let rules = report
         .rules
         .iter()
-        .map(rule_view)
+        .map(|rule| rule_view(rule, profile))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(GateStatus {
         gate,
@@ -115,8 +117,9 @@ fn ids(ids: &[Id]) -> Vec<String> {
     ids.iter().map(Id::to_string).collect()
 }
 
-/// The direct projection of one already-validated report rule result (Hotfix 082).
-fn rule_view(rule: &RuleResult) -> Result<GateRuleResult, ApiError> {
+/// The direct projection of one already-validated report rule result (Hotfix 082), with the
+/// active profile's plain-language rule title.
+fn rule_view(rule: &RuleResult, profile: &ValidationProfile) -> Result<GateRuleResult, ApiError> {
     let applicability = match &rule.applicability {
         Applicability::Applicable => GateRuleApplicability {
             state: GateRuleApplicabilityState::Applicable,
@@ -139,6 +142,11 @@ fn rule_view(rule: &RuleResult) -> Result<GateRuleResult, ApiError> {
         finding_ref: rule.finding_ref.as_ref().map(Id::to_string),
         waiver_ref: rule.waiver_ref.as_ref().map(Id::to_string),
         error: rule.error.as_ref().map(error_view),
+        title: profile
+            .rules
+            .iter()
+            .find(|m| m.id == rule.rule_id)
+            .map(|m| m.title.clone()),
     })
 }
 
