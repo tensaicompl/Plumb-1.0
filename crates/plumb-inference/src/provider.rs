@@ -104,6 +104,10 @@ pub enum ProviderError {
     /// The request could not be sent or the response could not be received.
     #[error("provider transport failure: {reason}")]
     Transport { reason: String },
+    /// The configured connect or total request timeout elapsed (distinct from other transport
+    /// failures: the generation may have been billed).
+    #[error("provider request timed out: {reason}")]
+    Timeout { reason: String },
     /// The provider answered with a non-success HTTP status.
     #[error("provider returned HTTP {status} ({error_type:?}): {message:?}")]
     Remote {
@@ -159,6 +163,19 @@ pub(crate) struct VerifiedMaterial {
     pub(crate) prompt: String,
     pub(crate) schema: Value,
     pub(crate) compiled: JSONSchema,
+}
+
+impl VerifiedMaterial {
+    /// Validates `output` against the compiled task output schema; every violation is listed
+    /// (sorted) in [`ProviderError::SchemaInvalidOutput`].
+    pub(crate) fn validate_output(&self, output: &Value) -> Result<(), ProviderError> {
+        if let Err(errors) = self.compiled.validate(output) {
+            let mut errors: Vec<String> = errors.map(|e| e.to_string()).collect();
+            errors.sort();
+            return Err(ProviderError::SchemaInvalidOutput { errors });
+        }
+        Ok(())
+    }
 }
 
 impl InferenceRequestMaterial {
