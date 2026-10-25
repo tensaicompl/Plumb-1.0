@@ -185,7 +185,8 @@ function FiltersPane({ filter, counts, hrefFor }: { filter: InboxFilter; counts:
       >
         <span className="truncate">{t(FILTER_LABEL[f])}</span>
         {counts !== null && (
-          <span data-count className="font-mono text-eyebrow font-medium opacity-70">
+          // The handoff's 70 % opacity count is below WCAG AA at 11 px; the muted text tokens meet it.
+          <span data-count className={cn("font-mono text-eyebrow font-medium", active ? "text-fg-3-surface" : "text-fg-3")}>
             {counts[f]}
           </span>
         )}
@@ -927,7 +928,14 @@ export function InboxScreen({ filter = "all", selectedId }: { filter?: InboxFilt
               leading={<IconTile icon={<Icon size={16} strokeWidth={1.6} />} selected={isSelected} />}
               title={<span data-row-title>{item.title}</span>}
               subtitle={item.typeLabel + " · " + item.originLabel}
-              trailing={item.stale ? <StatusPill status="stale" /> : undefined}
+              trailing={
+                item.stale ? (
+                  // On a white base the attention tint keeps its text at AA contrast, also on a selected row.
+                  <span className="rounded-pill bg-card">
+                    <StatusPill status="stale" />
+                  </span>
+                ) : undefined
+              }
               meta={formatAge(item.createdAt)}
             />
           );

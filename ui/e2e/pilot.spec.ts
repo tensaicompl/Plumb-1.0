@@ -50,8 +50,11 @@ test.describe("HR pilot", () => {
     await expect(page).toHaveURL(/\/overview$/);
     await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: /Inbox/ }).click();
     await expect(page).toHaveURL(/\/inbox$/);
-    await expect(page.getByRole("heading", { level: 1, name: "Proposals" })).toBeVisible();
-    await expect(page.getByText(/No proposal is pending\.|Pending proposals/).first()).toBeVisible();
+    // S2: the Inbox lists every pending decision; the finished pilot has none (the duplicate
+    // blocker is waived), so it is all caught up and offers the next pipeline step.
+    await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "You're all caught up" })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: /Inbox/ }).locator("[data-badge]")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 
