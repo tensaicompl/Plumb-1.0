@@ -1692,3 +1692,53 @@ fn validate_for_plan_accepts_only_declared_absent_fallback() {
         Err(CompilerError::InvalidArtifactSet(_))
     ));
 }
+
+/// Fable #97: planned and input media types follow the require_text rule (non-empty, no
+/// surrounding whitespace or control characters) and a `type/subtype` shape.
+#[test]
+fn planned_and_input_media_types_are_validated() {
+    let bytes = b"req:HR-001".to_vec();
+    for bad in [
+        "",
+        " text/plain",
+        "text/plain ",
+        "text/plain\n",
+        "textplain",
+        "text/",
+        "/plain",
+        "text/plain/extra",
+        "text /plain",
+    ] {
+        let planned = PlannedArtifact {
+            kind: ArtifactKind::Projection,
+            media_type: bad.into(),
+            bytes: bytes.clone(),
+        };
+        assert!(
+            matches!(
+                planned.validate(),
+                Err(CompilerError::InvalidPlannedArtifact(_))
+            ),
+            "planned {bad:?}"
+        );
+        let input = ArtifactInput {
+            hash: Hash::content_sha256(&bytes),
+            kind: ArtifactKind::Projection,
+            media_type: bad.into(),
+            bytes: bytes.clone(),
+        };
+        assert!(
+            matches!(input.validate(), Err(CompilerError::InvalidArtifactInput(_))),
+            "input {bad:?}"
+        );
+    }
+    for good in ["text/plain", "application/json", "application/vnd.plumb+json"] {
+        PlannedArtifact {
+            kind: ArtifactKind::Projection,
+            media_type: good.into(),
+            bytes: bytes.clone(),
+        }
+        .validate()
+        .unwrap();
+    }
+}

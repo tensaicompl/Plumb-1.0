@@ -639,6 +639,71 @@ mod job {
         );
     }
 
+    /// Fable #96: a structurally invalid decision node is a distinct `decision_node` mismatch in
+    /// both governed recorders, never reported as `decision_status`.
+    #[test]
+    fn governed_recorders_report_an_invalid_decision_node_distinctly() {
+        let mut w = world();
+        let o = w.outputs();
+        let job = ready(&w, &o);
+        let invalid_node = |set: &mut PatchSet, index: usize| {
+            if let SemanticPatch::Compound { patches } = &mut set.patch {
+                if let SemanticPatch::AddNode { node } = &mut patches[index] {
+                    node.revision = 0;
+                }
+            }
+        };
+        let mut governed = companion(&o.p1);
+        invalid_node(&mut governed, 1);
+        let base = w.rev1.id.clone();
+        let result = w
+            .store
+            .commit(&main(), &base, &companion(&o.p1), meta())
+            .unwrap();
+        let mut single = job.clone();
+        governed_mismatch(
+            single.record_governed_proposal_commit(&o.run, &o.p1, &governed, &result),
+            "decision_node",
+        );
+        assert_eq!(single.status(), Ready);
+        let members = members(&o);
+        let mut envelope = set_envelope(&members, false);
+        invalid_node(&mut envelope, members.len());
+        let all: Vec<Id> = members.iter().map(|m| m.id.clone()).collect();
+        let mut batch = job.clone();
+        governed_mismatch(
+            batch.record_governed_proposal_set_commit(&o.run, &members, &all, &envelope, &result),
+            "decision_node",
+        );
+        assert_eq!(batch.status(), Ready);
+    }
+
+    /// H0.3: `retry` moves only a Failed job back to Queued; identity is unchanged.
+    #[test]
+    fn retry_requeues_only_a_failed_job() {
+        let mut w = world();
+        let o = w.outputs();
+        let mut failed = w.capture();
+        failed.start_acquiring().unwrap();
+        failed.mark_failed().unwrap();
+        let id_before = failed.id().clone();
+        failed.retry().unwrap();
+        assert_eq!(failed.status(), Queued);
+        assert_eq!(failed.id(), &id_before);
+        assert_eq!(failed.recompute_id().unwrap(), id_before);
+        failed.validate().unwrap();
+        invalid(failed.retry(), Queued);
+        let mut ready = ready(&w, &o);
+        invalid(ready.retry(), Ready);
+        let mut acquiring = w.capture();
+        acquiring.start_acquiring().unwrap();
+        invalid(acquiring.retry(), Acquiring);
+        let rev2 = w.concurrent(&w.accept_b()).revision;
+        let mut stale = ready.clone();
+        assert_eq!(stale.observe_head(&rev2.id), Stale);
+        invalid(stale.retry(), Stale);
+    }
+
     #[test]
     fn legal_transitions() {
         let w = world();
