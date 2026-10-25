@@ -84,6 +84,17 @@ architecture text, so the plan can be updated when it is picked up again.
 | Operations | 76 (was 74): `list_proposals` (not paged: the pending set changes without a revision) and `discard_proposal`; UI Proposals screen after Questions. |
 | Stage configuration | Any ID position in the runtime config accepts `{"$one": QUERY}` / `{"$all": QUERY}` selectors (exact payload-field match on Accepted nodes), resolved at stage time and recorded under `inputs.selections`; explicit IDs still work unchanged. An ambiguous or empty `$one` is 422 `E_STAGE_CONFIG_UNRESOLVED` (in keyed entry lists an unmatched entry is dropped). Architecture "F4 in-scope inputs are explicit; never inferred" is read as: a selector is explicit user configuration. |
 
+## Real-model run (claude-opus-5-5) adjudications
+
+| Item | Contract on this branch |
+|---|---|
+| Structured outputs | The Anthropic adapter sends `output_config.format` (`json_schema`) built from the committed schema bytes in their authored member order (decoding follows it; key-sorted constraints forced filler output). The constraint is the API-supported subset: numeric bounds, `maxItems`, `uniqueItems`, `minItems` > 1 dropped; `oneOf` -> `anyOf`; object variants requiring the same keys merged (grammar size). A schema with an open object (session-turn) is sent unconstrained. Every answer is still validated against the full schema. |
+| Effort | Optional `effort` (low..max) in the Anthropic config, sent in `output_config` and recorded with the generation parameters. |
+| Optional intents (S1.1 item 12) | Not all-or-nothing: an invalid intent is dropped with an `intent_dropped` issue (`duplicate_intent`, `candidate_not_in_context`, `need_stakeholders_empty_or_repeated`, `stakeholder_not_supplied`, `concern_text_not_grounded`); schema and classification errors still reject the output. Agreed with the user. |
+| Retry after a rejected answer | A retry whose previous attempt failed with `E_STAGE_EVALUATION_FAILED` asks the provider again instead of reusing the rejected answer. |
+| Prompts | s1-classify: no need intents without supplied stakeholders. s2-lifecycle: each distinct state once per owner. s2-domain: an obligation that a record shall identify/include/record a field grounds nullable false. |
+| Opt-in real run | `PLUMB_REAL_KEY_FILE=<file> cargo test -p plumb-cli --features llm --test sim_hr hr_pilot_real_model -- --ignored --nocapture` writes `real-report.json`. |
+
 ## Plan tasks: status on this branch
 
 | Task | Status |
