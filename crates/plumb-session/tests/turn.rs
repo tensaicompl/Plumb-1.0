@@ -15,7 +15,7 @@ mod turn {
     };
     use plumb_inference::{
         persist_inference_bundle, InferenceArtifact, InferenceProvider, MockProvider,
-        PersistedInferenceRefs, ProviderExecution, ProviderPolicy,
+        PersistedInferenceRefs, ProviderError, ProviderExecution, ProviderPolicy,
     };
     use plumb_intake::{IntakeError, IntakeValidationInput, LexicalIndex};
     use plumb_patch::{
@@ -55,9 +55,9 @@ mod turn {
 
     // Independent goldens (Python hashlib over the exact files and envelope bytes).
     const PROMPT_HASH: &str =
-        "sha256:4d23caab9d199142616e283a7928d099556056fdda8267850a44744ddfba7e0d";
+        "sha256:912f9fa4db08aed1f391c0efc796109ea959aa97c3e755fa537a144da16faa33";
     const SCHEMA_HASH: &str =
-        "sha256:a3fd9c17a2bc1fffb333902bcfdabcbd5c75acd359c5b71cdcd2c034cae8ae92";
+        "sha256:24689e51797eed5d88230e3e6217955913a3b9a0bca337b5e8aad714b4b1a764";
     const USER_ENVELOPE: &str = "{\"actor_ref\":\"agent:alice\",\"role\":\"user\",\"session_ref\":\"session:s1\",\"text\":\"How should Managers approve leave?\",\"timestamp\":\"2026-03-01T09:00:00.000000000Z\",\"version\":1}";
     const USER_ENVELOPE_HASH: &str =
         "sha256:6cafa82d123a3d6bc9da2d8c3e073ef0b50363c046d3e91cfae3c03b6deab80f";
@@ -438,12 +438,17 @@ mod turn {
     /// persisted with the existing bundle helper.
     fn acquire(f: &mut Fixture, output: Value) -> PersistedInferenceRefs {
         f.plan.material.validate_for(&f.plan.request).unwrap();
-        let provider = MockProvider::with_fixtures([(
-            f.plan.request.id.clone(),
-            execution(&f.plan.request, output),
-        )])
-        .unwrap();
-        let executed = provider.execute(&f.plan.request, &f.plan.material).unwrap();
+        let fixture = execution(&f.plan.request, output);
+        let provider =
+            MockProvider::with_fixtures([(f.plan.request.id.clone(), fixture.clone())]).unwrap();
+        let executed = match provider.execute(&f.plan.request, &f.plan.material) {
+            Ok(executed) => executed,
+            // A replay is never a schema bypass (architecture §33.8): the provider rejects a
+            // schema-invalid output. Such an output is persisted directly instead, so the
+            // consumer's own (defence-in-depth) checks of a persisted artifact stay covered.
+            Err(ProviderError::SchemaInvalidOutput { .. }) => fixture,
+            Err(other) => panic!("{other:?}"),
+        };
         persist_inference_bundle(&mut f.store, &f.plan.request, &executed, ts(ACQUIRED_AT)).unwrap()
     }
 
@@ -1340,6 +1345,16 @@ mod turn {
         );
         let mut extra = output("Reply.", &[&p], None);
         extra["unexpected"] = json!(true);
+        // The replay provider itself refuses the schema-invalid output (architecture §33.8).
+        let provider = MockProvider::with_fixtures([(
+            f.plan.request.id.clone(),
+            execution(&f.plan.request, extra.clone()),
+        )])
+        .unwrap();
+        assert!(matches!(
+            provider.execute(&f.plan.request, &f.plan.material),
+            Err(ProviderError::SchemaInvalidOutput { .. })
+        ));
         assert!(matches!(
             inspect_value(&mut f, extra),
             Err(SessionError::OutputDecode(_))
