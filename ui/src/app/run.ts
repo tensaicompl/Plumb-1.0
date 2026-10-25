@@ -95,6 +95,35 @@ export function useJobPolling(navigation: RunNavigation): void {
 }
 
 /**
+ * Retries a failed stage job (`POST /api/jobs/{id}/retry`) against the model version the user
+ * sees, then tracks the new job. A 412 opens the conflict sheet; other failures are toasted.
+ */
+export function useRetryJob() {
+  const version = useModelVersion();
+  const start = useRunStore((state) => state.start);
+  const mutation = useVersionedMutation(
+    (target: { jobId: string; stage: StageName }, ifMatch: string) =>
+      apiClient.POST("/api/jobs/{id}/retry", { params: { path: { id: target.jobId }, header: { "If-Match": ifMatch } }, body: {} }),
+    version.data?.etag,
+  );
+  return {
+    retry: (jobId: string, stage: StageName) =>
+      mutation.mutate(
+        { jobId, stage },
+        {
+          onSuccess: (data) => start(data.job_id, stage),
+          onError: (error) => {
+            if (error.name !== "PreconditionFailedError") {
+              toast({ tone: "error", message: tf("shell.run.rejected", { message: writeErrorMessage(error) ?? error.message }) });
+            }
+          },
+        },
+      ),
+    retrying: mutation.isPending,
+  };
+}
+
+/**
  * Starts a stage (`run_stage`) against the model version the user sees (its ETag is If-Match),
  * then tracks its job. A 412 opens the conflict sheet; other failures are toasted.
  */

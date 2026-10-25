@@ -5,10 +5,11 @@ import { useConnectionStore } from "../../api/useEvents";
 import { modelVersionQueryKey, useModelVersion } from "../../api/useVersionedMutation";
 import { cn, IconButton, Kbd, Menu, modKey, Skeleton, type MenuItem } from "../../components/ui";
 import { t, tf, type MessageKey } from "../../i18n";
+import { useMe, type Me } from "../auth";
 import { useNextAction, type NextAction } from "../nextAction";
-import { isJobActive, RUNNABLE_STAGES, stageLabel, usePipeline, type StepState } from "../pipeline";
+import { isJobActive, RUNNABLE_STAGES, stageLabel, usePipeline, usesInference, type StepState } from "../pipeline";
 import { useIsCompact, useShellStore } from "../preferences";
-import { useRunStage, useRunStore } from "../run";
+import { useRetryJob, useRunStage, useRunStore } from "../run";
 import { buildHref, useGo } from "./navigation";
 
 // ------------------------------------------------------------------ project and version
@@ -19,12 +20,29 @@ export function versionLabel(revision: string): string {
   return match === null ? revision : tf("shell.version.number", { n: match[1] ?? "" });
 }
 
-/**
- * The project's display name. The contract has no project read yet (no name, identifier or
- * database path in any response), so this is the catalogue's "Untitled project" until one lands.
- */
+/** The served project as the toolbar and Settings show it. */
+export interface ProjectView {
+  /** The display name ("HR leave"), or "Untitled project" when the server reports none. */
+  readonly name: string;
+  readonly id: string | null;
+  readonly database: string | null;
+}
+
+/** The served project (`GET /api/me` `project`). */
+export function useProject(): ProjectView {
+  const me = useMe();
+  // Defensive: an older server (or a test fixture) may not report the project.
+  const project = me.data?.project as Me["project"] | undefined;
+  return {
+    name: project?.name ?? t("shell.project.untitled"),
+    id: project?.id ?? null,
+    database: project?.database ?? null,
+  };
+}
+
+/** The project's display name. */
 export function useProjectName(): string {
-  return t("shell.project.untitled");
+  return useProject().name;
 }
 
 export type VersionState = "upToDate" | "updating" | "changed";
@@ -91,6 +109,7 @@ function VersionIndicator({ compact }: { compact: boolean }) {
 export function useRunNextAction(): (action: NextAction) => void {
   const go = useGo();
   const { run } = useRunStage();
+  const { retry } = useRetryJob();
   const openOverlay = useShellStore((state) => state.openOverlay);
   return (action) => {
     const target = action.target;
@@ -98,6 +117,8 @@ export function useRunNextAction(): (action: NextAction) => void {
       go(buildHref(target.to, target.params, target.search));
     } else if (target.type === "run") {
       run(target.stage);
+    } else if (target.type === "retry") {
+      retry(target.jobId, target.stage);
     } else if (target.type === "export") {
       openOverlay("export");
     }
@@ -135,6 +156,8 @@ const STEP_META: Partial<Readonly<Record<StepState, MessageKey>>> = {
 function RunStepButton({ compact }: { compact: boolean }) {
   const job = useRunStore((state) => state.job);
   const pipeline = usePipeline();
+  const me = useMe();
+  const aiOff = me.data?.inference_available === false;
   const { run, starting } = useRunStage();
   const menuOpen = useShellStore((state) => state.runMenuOpen);
   const setMenuOpen = useShellStore((state) => state.setRunMenuOpen);
@@ -143,13 +166,16 @@ function RunStepButton({ compact }: { compact: boolean }) {
   const pct = activeJob === null ? 0 : Math.round(activeJob.progress * 100);
   const busy = running || starting;
   const items: MenuItem[] = RUNNABLE_STAGES.map((stage) => {
-    const state = pipeline.steps.find((s) => s.stage === stage)?.state;
-    const meta = state === undefined ? undefined : STEP_META[state];
+    const step = pipeline.steps.find((s) => s.stage === stage);
+    // A step that cannot run says why instead of failing when chosen.
+    const blocked: MessageKey | undefined =
+      aiOff && usesInference(stage) ? "shell.run.meta.needsAi" : (step?.missingConfig?.length ?? 0) > 0 ? "shell.run.meta.notConfigured" : undefined;
+    const meta = blocked ?? (step === undefined ? undefined : STEP_META[step.state]);
     return {
       id: stage,
       label: tf("shell.run.stepLabel", { step: stageLabel(stage) }),
       meta: meta === undefined ? undefined : t(meta),
-      disabled: busy,
+      disabled: busy || blocked !== undefined,
       onSelect: () => run(stage),
     };
   });
@@ -158,7 +184,7 @@ function RunStepButton({ compact }: { compact: boolean }) {
     if (busy) {
       return;
     }
-    if (pipeline.next !== null) {
+    if (pipeline.next !== null && !(aiOff && usesInference(pipeline.next))) {
       run(pipeline.next);
     } else {
       // Without pipeline data the next step is unknown: let the user choose it.

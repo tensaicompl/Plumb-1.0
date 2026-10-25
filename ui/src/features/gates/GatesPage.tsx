@@ -5,7 +5,7 @@ import { apiClient, readData } from "../../api/client";
 import type { components } from "../../api/schema";
 import { PILOT_GATES } from "../../app/nav";
 import { t, type MessageKey } from "../../i18n";
-import { gatesQueryKey } from "../home/HomePage";
+import { gatesQuery } from "../../app/work";
 import { ReadFailure } from "../../components/ReadFailure";
 
 type GateStatus = components["schemas"]["GateStatus"];
@@ -224,7 +224,7 @@ function ReadinessSection({ readiness }: { readiness: Readiness }) {
  * of the current GateReport; readiness is a separate advisory section.
  */
 export function GatesPage() {
-  const gates = useQuery({ queryKey: gatesQueryKey, queryFn: fetchGates });
+  const gates = useQuery({ queryKey: gatesQuery.queryKey, queryFn: fetchGates });
   const readiness = useQuery({ queryKey: readinessQueryKey, queryFn: fetchReadiness });
 
   return (

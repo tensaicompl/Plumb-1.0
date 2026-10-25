@@ -122,7 +122,21 @@ afterEach(() => {
 // ------------------------------------------------------------------ fixtures
 
 const VERSION_ETAG = '"rev:42:aaaaaaaaaaaaaaaa"';
-const ME: Me = { user: "Marta Nowak", mode: "pilot", roles: ["analyst", "reviewer"], inference_available: true };
+const ME: Me = {
+  user: "Marta Nowak",
+  mode: "pilot",
+  roles: ["analyst", "reviewer"],
+  inference_available: true,
+  inference_model: "claude-sonnet-4-5",
+  project: { id: "project:hr-leave", name: "HR leave", database: "/srv/plumb/hr-leave/plumb.sqlite" },
+};
+type PipelineResponse = components["schemas"]["PipelineResponse"];
+type PipelineStepWire = components["schemas"]["PipelineStep"];
+function pipelineStep(recipe: PipelineStepWire["recipe"], status: PipelineStepWire["status"], extra: Partial<PipelineStepWire> = {}): PipelineStepWire {
+  return { recipe, status, job_id: null, progress: null, pending_proposals: 0, error: null, updated_at: null, missing_config: [], ...extra };
+}
+/** No recipe has run, the next step is unknown (the pre-pipeline behaviour). */
+const NO_PIPELINE: PipelineResponse = { steps: [], sources: 1, open_questions: 0, next: null };
 const VERSION = {
   version: "rev:42:aaaaaaaaaaaaaaaa",
   revision: "rev:42:aaaaaaaaaaaaaaaa",
@@ -158,6 +172,8 @@ interface Backend {
   me: Me;
   jobs: JobResponse[];
   runs: { stage: string; ifMatch: string | null }[];
+  retries: { job: string; ifMatch: string | null }[];
+  pipeline: PipelineResponse;
   searches: string[];
   exports: string[];
   versionReads: number;
@@ -171,6 +187,8 @@ function newBackend(overrides: Partial<Backend> = {}): Backend {
     me: ME,
     jobs: [],
     runs: [],
+    retries: [],
+    pipeline: NO_PIPELINE,
     searches: [],
     exports: [],
     versionReads: 0,
@@ -207,6 +225,11 @@ function handlers(backend: Backend) {
     http.post("*/api/stages/:stage/run", ({ request, params }) => {
       backend.runs.push({ stage: String(params["stage"]), ifMatch: request.headers.get("If-Match") });
       return etagJson({ job_id: "job:" + backend.runs.length, events: [], revision: VERSION.revision, semantic_hash: VERSION.semantic_hash, version: VERSION.version });
+    }),
+    http.get("*/api/pipeline", () => etagJson(backend.pipeline)),
+    http.post("*/api/jobs/:id/retry", ({ request, params }) => {
+      backend.retries.push({ job: String(params["id"]), ifMatch: request.headers.get("If-Match") });
+      return etagJson({ job_id: "job:retry-" + backend.retries.length, events: [], revision: VERSION.revision, semantic_hash: VERSION.semantic_hash, version: VERSION.version });
     }),
     http.get("*/api/jobs/:id", () => {
       const next = backend.jobs.length > 1 ? backend.jobs.shift() : backend.jobs[0];
@@ -303,7 +326,7 @@ describe("Toolbar", () => {
   it("shows the project, the version, search, the computed Next action, Run step and the Assistant toggle", async () => {
     const { user, router } = renderAt("/overview");
     const bar = await screen.findByRole("banner");
-    expect(within(bar).getByRole("button", { name: /Untitled project/ })).toBeTruthy();
+    expect(await within(bar).findByRole("button", { name: /HR leave/ })).toBeTruthy();
     const version = await within(bar).findByText("v42");
     expect(version.closest("[data-version-state]")?.getAttribute("data-version-state")).toBe("upToDate");
     expect(within(bar).getByText("Up to date")).toBeTruthy();
@@ -316,7 +339,7 @@ describe("Toolbar", () => {
     await user.click(next);
     await waitFor(() => expect(router.state.location.pathname).toBe("/inbox"));
     // The project name opens Settings (project details).
-    await user.click(within(toolbar()).getByRole("button", { name: /Untitled project/ }));
+    await user.click(within(toolbar()).getByRole("button", { name: /HR leave/ }));
     expect(await screen.findByRole("dialog", { name: "Settings" })).toBeTruthy();
   });
 
@@ -401,7 +424,49 @@ describe("Toolbar", () => {
     expect(await screen.findByText("Requirements step failed", undefined, { timeout: 3000 })).toBeTruthy();
     const retry = await within(toolbar()).findByRole("button", { name: /Retry Requirements/ });
     await user.click(retry);
-    await waitFor(() => expect(backend.runs.map((r) => r.stage)).toEqual(["extract", "extract"]));
+    // S1: Retry re-runs the failed job against the reviewed version.
+    await waitFor(() => expect(backend.retries).toEqual([{ job: "job:1", ifMatch: VERSION_ETAG }]));
+    expect(backend.runs.map((r) => r.stage)).toEqual(["extract"]);
+  });
+
+  it("runs the server's next step and retries a step the pipeline reports failed", async () => {
+    const backend = newBackend({
+      proposals: [],
+      questions: [],
+      gates: ALL_PASS,
+      pipeline: { steps: [pipelineStep("extract", "done", { job_id: "job:x", progress: 1 })], sources: 1, open_questions: 0, next: "lint" },
+    });
+    const { user } = renderAt("/overview", backend);
+    expect(await within(await screen.findByRole("banner")).findByRole("button", { name: /Run Glossary & quality/ })).toBeTruthy();
+    await user.click(within(toolbar()).getByRole("button", { name: "Run next step" }));
+    await waitFor(() => expect(backend.runs).toEqual([{ stage: "lint", ifMatch: VERSION_ETAG }]));
+    cleanup();
+    app.run.useRunStore.getState().clear();
+    const failing = newBackend({
+      pipeline: { steps: [pipelineStep("flows", "failed", { job_id: "job:f", error: { code: "E_STAGE_EVALUATION_FAILED", message: "The flows step failed." } })], sources: 1, open_questions: 0, next: null },
+    });
+    const second = renderAt("/overview", failing);
+    const retry = await within(await screen.findByRole("banner")).findByRole("button", { name: /Retry Flows/ });
+    expect(retry.getAttribute("title")).toBe("Flows failed — Retry");
+    await second.user.click(retry);
+    await waitFor(() => expect(failing.retries).toEqual([{ job: "job:f", ifMatch: VERSION_ETAG }]));
+  });
+
+  it("marks steps that cannot run in the menu: AI steps while AI is off, steps missing configuration", async () => {
+    const backend = newBackend({
+      me: { ...ME, inference_available: false, inference_model: null },
+      pipeline: { steps: [pipelineStep("extract", "done"), pipelineStep("lint", "not_started", { missing_config: ["gates.f1"] })], sources: 1, open_questions: 0, next: null },
+    });
+    const { user } = renderAt("/overview", backend);
+    await within(await screen.findByRole("banner")).findByRole("button", { name: /Review 7 proposals/ });
+    await user.click(within(toolbar()).getByRole("button", { name: "Choose a step to run" }));
+    const menu = await screen.findByRole("menu");
+    const item = (name: string) => within(menu).getByRole("menuitem", { name: new RegExp("^" + name) });
+    expect(item("Requirements step").getAttribute("aria-disabled")).toBe("true");
+    expect(item("Requirements step").textContent).toContain("Needs AI");
+    expect(item("Glossary & quality step").getAttribute("aria-disabled")).toBe("true");
+    expect(item("Glossary & quality step").textContent).toContain("Not configured");
+    expect(item("Directory step").getAttribute("aria-disabled")).toBeNull();
   });
 
   it("is compact below 1280 px: icon-only search and run, the version pill without its status text", async () => {
@@ -520,9 +585,10 @@ describe("Settings", () => {
     await screen.findByRole("banner");
     await user.click(screen.getByRole("button", { name: "Settings" }));
     const dialog = await screen.findByRole("dialog", { name: "Settings" });
-    expect(await within(dialog).findByText("Available")).toBeTruthy();
-    expect(within(dialog).getByText(/Untitled project/).textContent).toContain("v42");
-    expect(within(dialog).getByText("Not reported by this server")).toBeTruthy();
+    // S1: the project, its identifier, the database and the AI model come from GET /api/me.
+    expect(await within(dialog).findByText("Available · claude-sonnet-4-5")).toBeTruthy();
+    expect(within(dialog).getByTestId("settings-project").textContent).toBe("HR leave · project:hr-leave · v42");
+    expect(within(dialog).getByText("/srv/plumb/hr-leave/plumb.sqlite")).toBeTruthy();
     expect(within(dialog).getByText("PLUMB_API_KEY")).toBeTruthy();
     const appearance = within(dialog).getByRole("radiogroup", { name: "Appearance" });
     expect(within(appearance).getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("true");
@@ -549,6 +615,15 @@ describe("Settings", () => {
     await screen.findByRole("banner");
     await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByText("Off — no API key configured")).toBeTruthy();
+  });
+
+  it("falls back to an untitled project when the server reports none", async () => {
+    const { user } = renderAt("/overview", newBackend({ me: { user: "alice", mode: "pilot", roles: [], inference_available: true } as unknown as Me }));
+    expect(await within(await screen.findByRole("banner")).findByRole("button", { name: /Untitled project/ })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const dialog = await screen.findByRole("dialog", { name: "Settings" });
+    expect(await within(dialog).findByText("Available")).toBeTruthy();
+    expect(within(dialog).getByText("Not reported by this server")).toBeTruthy();
   });
 });
 
@@ -581,7 +656,7 @@ describe("Global keys and the Assistant panel", () => {
     await user.click(within(bar).getByRole("button", { name: "Assistant" }));
     const panel = await screen.findByRole("complementary", { name: "Assistant" });
     expect(within(panel).getByText("Scope · Project")).toBeTruthy();
-    expect(within(panel).getByTestId("session-panel").getAttribute("data-session-mode")).toBe("project");
+    expect(within(panel).getByTestId("assistant-conversation").getAttribute("data-scope")).toBe("project");
     expect(within(bar).getByRole("button", { name: "Assistant" }).getAttribute("aria-pressed")).toBe("true");
     await user.click(within(panel).getByRole("button", { name: "Close the Assistant" }));
     expect(screen.queryByRole("complementary", { name: "Assistant" })).toBeNull();
@@ -591,7 +666,7 @@ describe("Global keys and the Assistant panel", () => {
     renderAt("/requirements/req:7");
     const scoped = await screen.findByRole("complementary", { name: "Assistant" });
     expect(within(scoped).getByText("Scope · req:7")).toBeTruthy();
-    expect(within(scoped).getByTestId("session-panel").getAttribute("data-session-mode")).toBe("requirement");
+    expect(within(scoped).getByTestId("assistant-conversation").getAttribute("data-scope")).toBe("requirement");
   });
 });
 

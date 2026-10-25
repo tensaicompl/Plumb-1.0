@@ -20,6 +20,9 @@ export function etagJson<T extends JsonBodyType>(body: T, init?: ResponseInit, e
  */
 export const SHELL_READS: readonly string[] = ["/api/me", "/api/model/version", "/api/proposals", "/api/questions", "/api/findings", "/api/gates", "/api/pipeline"];
 
+/** The fallback pipeline: one imported source, no recipe run yet and no known next step. */
+export const FALLBACK_PIPELINE = { steps: [], sources: 1, open_questions: 0, next: null };
+
 /** Whether a request path is one of the shell's own reads. */
 export function isShellRead(path: string): boolean {
   return SHELL_READS.includes(path);
@@ -29,7 +32,17 @@ export function isShellRead(path: string): boolean {
 // with an empty project; feature tests register their own handlers (server.use), which take
 // precedence. Nothing here starts a service worker or performs network I/O.
 export const handlers: RequestHandler[] = [
-  http.get("*/api/me", () => HttpResponse.json({ user: "alice", mode: "pilot", roles: ["analyst"], inference_available: true })),
+  http.get("*/api/me", () =>
+    HttpResponse.json({
+      user: "alice",
+      mode: "pilot",
+      roles: ["analyst"],
+      inference_available: true,
+      inference_model: null,
+      project: { id: "project:pilot", name: "Pilot", database: null },
+    }),
+  ),
+  http.get("*/api/pipeline", () => etagJson(FALLBACK_PIPELINE)),
   http.get("*/api/model/version", () =>
     etagJson({ version: "rev:1:0000000000000000", revision: "rev:1:0000000000000000", hash: "psg:sha256:0", semantic_hash: "psg:sha256:0", evidence_hash: "ev:sha256:0" }),
   ),
@@ -37,7 +50,6 @@ export const handlers: RequestHandler[] = [
   http.get("*/api/questions", () => etagJson({ items: [], health: [], next_cursor: null })),
   http.get("*/api/findings", () => etagJson({ items: [], next_cursor: null })),
   http.get("*/api/gates", () => etagJson([])),
-  http.get("*/api/pipeline", () => etagJson({ steps: [], next: null, open_questions: 0, sources: 0 })),
 ];
 
 export const server = setupServer(...handlers);

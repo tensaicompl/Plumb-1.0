@@ -2,18 +2,20 @@ import type { components } from "../api/schema";
 import { gateName, type GateName } from "../components/ui";
 import { t, tc, tf } from "../i18n";
 import { PILOT_GATES } from "./nav";
-import { isJobActive, stageLabel, usePipeline, type PipelineSnapshot, type StageName } from "./pipeline";
+import { useMe } from "./auth";
+import { isJobActive, stageLabel, usePipeline, usesInference, type PipelineSnapshot, type StageName } from "./pipeline";
 import { useRunStore, type RunJob } from "./run";
 import { useWorkCounts } from "./work";
 
 type GateStatus = components["schemas"]["GateStatus"];
 
-export type NextActionKind = "running" | "retry" | "proposals" | "questions" | "staleGate" | "step" | "blockedGate" | "ready";
+export type NextActionKind = "running" | "retry" | "proposals" | "questions" | "import" | "staleGate" | "step" | "blockedGate" | "ready";
 
 /** Where the next action leads. */
 export type NextActionTarget =
   | { readonly type: "route"; readonly to: string; readonly params?: Readonly<Record<string, string>>; readonly search?: Readonly<Record<string, string>> }
   | { readonly type: "run"; readonly stage: StageName }
+  | { readonly type: "retry"; readonly stage: StageName; readonly jobId: string }
   | { readonly type: "export" }
   | { readonly type: "none" };
 
@@ -40,6 +42,8 @@ export interface NextActionInput {
   /** Open questions (undefined while loading). */
   readonly openQuestions: number | undefined;
   readonly gates: readonly GateStatus[] | undefined;
+  /** False when the server has no AI provider: steps that need it are not offered. */
+  readonly inferenceAvailable?: boolean;
 }
 
 /**
@@ -47,7 +51,7 @@ export interface NextActionInput {
  * proposals → open questions → a stale or never-evaluated gate → the next pipeline step → a
  * blocked gate → "Your specification is ready — Export". Null until the counts and gates load.
  */
-export function computeNextAction({ job, pipeline, proposals, openQuestions, gates }: NextActionInput): NextAction | null {
+export function computeNextAction({ job, pipeline, proposals, openQuestions, gates, inferenceAvailable = true }: NextActionInput): NextAction | null {
   if (job !== null && isJobActive(job)) {
     const pct = Math.round(job.progress * 100);
     const step = stageLabel(job.stage);
@@ -61,16 +65,17 @@ export function computeNextAction({ job, pipeline, proposals, openQuestions, gat
       progress: pct,
     };
   }
-  const failed = job?.status === "failed" ? { stage: job.stage, error: job.error } : pipeline?.steps.find((s) => s.state === "failed");
+  const failed = job?.status === "failed" ? { stage: job.stage, error: job.error, jobId: job.id } : pipeline?.steps.find((s) => s.state === "failed");
   if (failed !== undefined) {
     const step = stageLabel(failed.stage);
+    const jobId = failed.jobId ?? null;
     return {
       kind: "retry",
       title: tf("next.retry.title", { step }),
       short: tf("next.retry.short", { step }),
       description: failed.error ?? "",
       cta: t("next.retry.cta"),
-      target: { type: "run", stage: failed.stage },
+      target: jobId === null ? { type: "run", stage: failed.stage } : { type: "retry", stage: failed.stage, jobId },
     };
   }
   if (proposals === undefined || openQuestions === undefined || gates === undefined) {
@@ -96,6 +101,16 @@ export function computeNextAction({ job, pipeline, proposals, openQuestions, gat
       target: { type: "route", to: "/inbox", search: { filter: "questions" } },
     };
   }
+  if (pipeline?.sources === 0) {
+    return {
+      kind: "import",
+      title: t("next.import.title"),
+      short: t("next.import.short"),
+      description: t("next.import.description"),
+      cta: t("next.import.cta"),
+      target: { type: "route", to: "/sources" },
+    };
+  }
   const byGate = new Map(gates.map((status) => [status.gate, status]));
   // An outdated gate first, then one that was never evaluated (absent from the response).
   const outdated =
@@ -116,7 +131,7 @@ export function computeNextAction({ job, pipeline, proposals, openQuestions, gat
       target: gateTarget(outdated),
     };
   }
-  if (pipeline?.next !== undefined && pipeline.next !== null) {
+  if (pipeline?.next !== undefined && pipeline.next !== null && (inferenceAvailable || !usesInference(pipeline.next))) {
     const step = stageLabel(pipeline.next);
     return {
       kind: "step",
@@ -158,5 +173,13 @@ export function useNextAction(): NextAction | null {
   const job = useRunStore((state) => state.job);
   const pipeline = usePipeline();
   const work = useWorkCounts();
-  return computeNextAction({ job, pipeline, proposals: work.proposals, openQuestions: work.openQuestions, gates: work.gates });
+  const me = useMe();
+  return computeNextAction({
+    job,
+    pipeline,
+    proposals: work.proposals,
+    openQuestions: work.openQuestions,
+    gates: work.gates,
+    inferenceAvailable: me.data?.inference_available !== false,
+  });
 }

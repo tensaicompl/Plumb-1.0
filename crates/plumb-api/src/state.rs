@@ -795,6 +795,11 @@ impl ApiState {
         Ok(f(&mut store))
     }
 
+    /// The database file the server opened (S1); `None` for an in-memory database.
+    pub(crate) fn database_path(&self) -> Result<Option<String>, ApiError> {
+        self.with_revision_store(|store| store.database_path())
+    }
+
     /// Loads the branch head once: the only revision a request reads or writes against.
     pub(crate) fn load_head(&self) -> Result<LoadedRevision, ApiError> {
         self.with_revision_store(|store| {

@@ -50,6 +50,14 @@ impl SqliteRevisionStore {
         Ok(Self { conn })
     }
 
+    /// The database file this store opened; `None` for an in-memory or temporary database.
+    pub fn database_path(&self) -> Option<String> {
+        self.conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+    }
+
     /// The durability pragmas of this store's connection (Fable #199).
     pub fn durability(&self) -> Result<Durability, StoreError> {
         durability_of(&self.conn)

@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 
 use crate::error::ApiError;
 use crate::openapi::{
-    DesignEvent, MeResponse, ModelVersionResponse, SearchHit, SearchPage, SearchScope,
+    DesignEvent, MeResponse, ModelVersionResponse, ProjectInfo, SearchHit, SearchPage, SearchScope,
 };
 use crate::state::{
     paginate_ordered, parse_wire, read_json, wire, ApiState, PageRequest, QueryParams,
@@ -97,10 +97,17 @@ async fn search_model(
 }
 
 /// `get_me`: the injected identity without its provenance actor; `inference_model` is the
-/// provider policy's `model` while inference is available (B2).
+/// provider policy's `model` while inference is available (B2); `project` is the head's project
+/// with its humanised name and the database file the server opened (S1).
 async fn get_me(State(state): State<ApiState>) -> Result<Response, ApiError> {
     let loaded = state.load_head()?;
     let identity = state.identity();
+    let project_id = loaded.revision.project_id.to_string();
+    let project = ProjectInfo {
+        name: project_display_name(&project_id),
+        id: project_id,
+        database: state.database_path()?,
+    };
     Ok(read_json(
         &loaded,
         MeResponse {
@@ -109,8 +116,42 @@ async fn get_me(State(state): State<ApiState>) -> Result<Response, ApiError> {
             mode: identity.mode().to_owned(),
             inference_available: state.inference_available(),
             inference_model: state.inference_model(),
+            project,
         },
     ))
+}
+
+/// The display name of a project ID: the part after the type prefix, words split on `-`, `_`
+/// and `.`, sentence case, with words of at most two letters read as abbreviations
+/// ("project:hr-leave" → "HR leave", "project:pilot" → "Pilot").
+fn project_display_name(project_id: &str) -> String {
+    let local = project_id
+        .split_once(':')
+        .map_or(project_id, |(_, local)| local);
+    let words: Vec<String> = local
+        .split(['-', '_', '.'])
+        .filter(|w| !w.is_empty())
+        .enumerate()
+        .map(|(index, word)| {
+            let lower = word.to_lowercase();
+            if word.chars().count() <= 2 && word.chars().all(char::is_alphabetic) {
+                lower.to_uppercase()
+            } else if index == 0 {
+                let mut chars = lower.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default()
+            } else {
+                lower
+            }
+        })
+        .collect();
+    if words.is_empty() {
+        project_id.to_owned()
+    } else {
+        words.join(" ")
+    }
 }
 
 /// `get_model_version`: the head revision, its hashes and its provenance (B2); `version` and
@@ -189,6 +230,19 @@ async fn forward_events(mut socket: WebSocket, mut receiver: broadcast::Receiver
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S1: project IDs read as plain names in the toolbar and Settings.
+    #[test]
+    fn a_project_id_reads_as_a_display_name() {
+        assert_eq!(project_display_name("project:hr-leave"), "HR leave");
+        assert_eq!(project_display_name("project:pilot"), "Pilot");
+        assert_eq!(
+            project_display_name("project:leave_management.v2"),
+            "Leave management v2"
+        );
+        assert_eq!(project_display_name("project:QA-Portal"), "QA portal");
+        assert_eq!(project_display_name("project:-"), "project:-");
+    }
 
     /// Fable #237: a lagged subscriber is closed with the distinct events-missed code.
     #[test]

@@ -83,7 +83,14 @@ your feature folder.
 - Design events already invalidate every query (`src/api/useEvents.ts`); do not subscribe again.
 - The Next action (`useNextAction()`) and the Run step control live in the shell; the Overview
   card reuses `useNextAction()` (`title`, `description`, `cta`, `progress`) and `useRunNextAction()`.
-  Pipeline step states come from `usePipeline()`; plug `GET /api/pipeline` in there when it lands.
+  Pipeline step states come from `usePipeline()`, which reads `GET /api/pipeline` (key
+  `["pipeline"]`, a shell read: `src/test/msw.ts` answers it with `FALLBACK_PIPELINE`) and merges
+  the tracked stage job over it. A failed step's Retry is `POST /api/jobs/{id}/retry`
+  (`useRetryJob()` in `src/app/run.ts`). The served project (name, ID, database) is
+  `useProject()` from `src/app/shell/Toolbar.tsx` (`GET /api/me` `project`).
+- `src/test/appHarness.tsx` renders the whole app at a path with MSW and records every request
+  (`setupApp`, `resetApp`, `renderApp`, `calls`, `uploadedFile`); the Overview, Sources and
+  Assistant tests use it.
 
 ## Copy
 
@@ -110,14 +117,14 @@ destination's interim component with your screen and keep the URLs (spec §3), a
 
 | Screen | URLs | Interim today | Old folders it replaces (delete them, and their tests, when your screen covers them) |
 |---|---|---|---|
-| Overview | `/overview` (`/` redirects) | `features/home/HomePage` | `features/home` |
+| Overview | `/overview` (`/` redirects) | done (S1): `features/overview/OverviewScreen` | `features/home` (deleted) |
 | Inbox | `/inbox`, `/inbox/$id` (`?filter=…`) | `InboxInterim`: `ProposalsPage`, `QuestionsPage`, `SentencesPage` | `features/proposals`, `features/questions`, `features/sentences` (move `TypedAnswerControl` usage into the inspector) |
 | Requirements | `/requirements`, `/requirements/$id` | `RequirementsPage`, `RequirementDetail` | `features/requirements` |
 | Model | `/model/glossary`, `/model/entities`, `/model/rules`, `/model/calculations`, `/model/processes`, each with `/$id` | `ModelInterim` + the five pages | `features/glossary`, `features/entities`, `features/rules`, `features/calculations`, `features/processes` |
 | Scenarios | `/scenarios`, `/scenarios/$id` | `ScenariosPage` | `features/scenarios` |
 | Quality | `/quality`, `/quality/$gate`, `/quality/issues`, `/quality/history` | `QualityInterim`: `GatesPage`, `FindingsPage`, `DecisionsPage` | `features/gates`, `features/findings`, `features/decisions` |
-| Sources | `/sources`, `/sources/$id` | `SourcesInterim`, `SourceInterim` (no old page; the contract has no source list yet) | none (remove the interim components) |
-| Assistant | the shell's right panel (`AssistantPanel`) | `features/sessions/SessionPanel` | `features/sessions` (keep the panel frame in `src/app/shell/Panels.tsx`) |
+| Sources | `/sources`, `/sources/$id` | done (S1): `features/sources/SourcesScreen` | interim components removed |
+| Assistant | the shell's right panel (`AssistantPanel`) | done (S1): `features/assistant/AssistantConversation` | `features/sessions` (deleted; the frame stays in `src/app/shell/Panels.tsx`) |
 
 When the last route of an interim component is replaced, delete it from
 `src/app/routes/interim.tsx`. Shared old components (`src/components/*.tsx` outside `ui/`) go when

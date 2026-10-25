@@ -1979,6 +1979,10 @@
           "mode": {
             "type": "string"
           },
+          "project": {
+            "$ref": "#/components/schemas/ProjectInfo",
+            "description": "The project this server serves (S1)."
+          },
           "roles": {
             "items": {
               "type": "string"
@@ -1993,7 +1997,8 @@
           "user",
           "roles",
           "mode",
-          "inference_available"
+          "inference_available",
+          "project"
         ],
         "type": "object"
       },
@@ -2779,6 +2784,32 @@
             "type": "object"
           }
         ]
+      },
+      "ProjectInfo": {
+        "additionalProperties": false,
+        "description": "The served project (S1, UI-SPEC §5.9): what the toolbar and Settings show.",
+        "properties": {
+          "database": {
+            "description": "The database file the server opened; null when it has none (an in-memory database).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The head revision's project ID (\"project:hr-leave\").",
+            "type": "string"
+          },
+          "name": {
+            "description": "The display name, humanised from the project ID (\"HR leave\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
       },
       "ProposalActionRequest": {
         "additionalProperties": false,
@@ -4389,6 +4420,13 @@
           "locator_kind": {
             "type": "string"
           },
+          "requirements": {
+            "description": "The requirements whose evidence cites this span, by ID (S1): the passages that became\nrequirements.",
+            "items": {
+              "$ref": "#/components/schemas/SpanRequirement"
+            },
+            "type": "array"
+          },
           "source_ref": {
             "type": "string"
           },
@@ -4399,13 +4437,21 @@
               "integer",
               "null"
             ]
+          },
+          "text": {
+            "description": "The text the importer extracted for this span (S1); null when it extracted none.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
           "source_ref",
           "locator_kind",
-          "content_hash"
+          "content_hash",
+          "requirements"
         ],
         "type": "object"
       },
@@ -4428,6 +4474,26 @@
         },
         "required": [
           "items"
+        ],
+        "type": "object"
+      },
+      "SpanRequirement": {
+        "additionalProperties": false,
+        "description": "A requirement a span became (S1).",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_identifier": {
+            "description": "The requirement's identifier in the source document (\"HR-009\"), when it has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
         ],
         "type": "object"
       },
@@ -6411,6 +6477,10 @@
                 "example": {
                   "inference_available": true,
                   "mode": "example",
+                  "project": {
+                    "id": "example",
+                    "name": "example"
+                  },
                   "roles": [
                     "example"
                   ],
@@ -11879,6 +11949,11 @@
                       "content_hash": "example",
                       "id": "example",
                       "locator_kind": "example",
+                      "requirements": [
+                        {
+                          "id": "example"
+                        }
+                      ],
                       "source_ref": "example"
                     }
                   ]

@@ -966,6 +966,20 @@ pub struct MeResponse {
     /// The configured model name (the provider policy's `model`) while inference is available;
     /// null when inference is off or no model name is configured (B2).
     pub inference_model: Option<String>,
+    /// The project this server serves (S1).
+    pub project: ProjectInfo,
+}
+
+/// The served project (S1, UI-SPEC §5.9): what the toolbar and Settings show.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectInfo {
+    /// The head revision's project ID ("project:hr-leave").
+    pub id: String,
+    /// The display name, humanised from the project ID ("HR leave").
+    pub name: String,
+    /// The database file the server opened; null when it has none (an in-memory database).
+    pub database: Option<String>,
 }
 
 /// Model identity. `version` == `revision` and `hash` == `semantic_hash` (compatibility
@@ -1196,8 +1210,22 @@ pub struct Span {
     pub start: Option<u64>,
     pub end: Option<u64>,
     pub content_hash: String,
+    /// The text the importer extracted for this span (S1); null when it extracted none.
+    pub text: Option<String>,
+    /// The requirements whose evidence cites this span, by ID (S1): the passages that became
+    /// requirements.
+    pub requirements: Vec<SpanRequirement>,
 }
 page!(SpanPage, Span);
+
+/// A requirement a span became (S1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpanRequirement {
+    pub id: String,
+    /// The requirement's identifier in the source document ("HR-009"), when it has one.
+    pub source_identifier: Option<String>,
+}
 
 /// Compatibility stage names of `POST /api/stages/{stage}/run`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

@@ -2104,8 +2104,9 @@ mod openapi {
         // AcceptProposalSetResponse and ConfirmElementsRequest; B2 adds PipelineStepStatus,
         // PipelineError, PipelineStep, PipelineResponse, RetryJobRequest, GenerateQuestionsRequest,
         // GenerateQuestionsResponse, MaterializeFindingsRequest, MaterializeFindingsResponse,
-        // SourceListItem and SourceList; S2 adds RefreshProposalResponse.
-        assert_eq!(schemas.len(), 158);
+        // SourceListItem and SourceList; S2 adds RefreshProposalResponse. S1 adds ProjectInfo
+        // (`get_me.project`) and SpanRequirement (`Span.requirements`).
+        assert_eq!(schemas.len(), 160);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",

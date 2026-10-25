@@ -72,7 +72,7 @@ afterEach(() => {
 
 const ETAG = '"rev:42:aaaaaaaaaaaaaaaa"';
 const HEAD = "rev:42:aaaaaaaaaaaaaaaa";
-const ANALYST: Me = { user: "Marta Nowak", mode: "pilot", roles: ["analyst"], inference_available: true };
+const ANALYST: Me = { user: "Marta Nowak", mode: "pilot", roles: ["analyst"], inference_available: true, project: { id: "project:pilot", name: "Pilot", database: null } };
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 

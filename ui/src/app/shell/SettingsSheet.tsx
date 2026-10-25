@@ -3,11 +3,11 @@ import type { ReactNode } from "react";
 
 import { useModelVersion } from "../../api/useVersionedMutation";
 import { cn, IconButton, SegmentedControl, Sheet } from "../../components/ui";
-import { t, useLocaleStore, type Locale, type MessageKey } from "../../i18n";
+import { t, tf, useLocaleStore, type Locale, type MessageKey } from "../../i18n";
 import { useMe } from "../auth";
 import { APPEARANCES, useAppearanceStore, useShellStore, type Appearance } from "../preferences";
 import { rolesLabel } from "./Sidebar";
-import { useProjectName, versionLabel } from "./Toolbar";
+import { useProject, versionLabel } from "./Toolbar";
 
 const APPEARANCE_LABEL: Readonly<Record<Appearance, MessageKey>> = {
   system: "settings.appearance.system",
@@ -37,8 +37,9 @@ export function SettingsSheet() {
   const setAppearance = useAppearanceStore((state) => state.setAppearance);
   const me = useMe();
   const version = useModelVersion();
-  const projectName = useProjectName();
+  const project = useProject();
   const ai = me.data?.inference_available;
+  const model = me.data?.inference_model ?? null;
   return (
     <Sheet
       open={open}
@@ -75,13 +76,19 @@ export function SettingsSheet() {
           />
         </Row>
         <Row label={t("settings.project")}>
-          <span className="text-fg">
-            {projectName}
+          <span data-testid="settings-project" className="text-fg">
+            {project.name}
+            {project.id !== null && (
+              <>
+                {SEPARATOR}
+                <span className="font-mono">{project.id}</span>
+              </>
+            )}
             {version.data !== undefined && " · " + versionLabel(version.data.revision)}
           </span>
         </Row>
         <Row label={t("settings.database")}>
-          <span className="font-mono text-caption text-fg-2">{t("settings.notReported")}</span>
+          <span className="break-all font-mono text-caption text-fg-2">{project.database ?? t("settings.notReported")}</span>
         </Row>
         {me.data !== undefined && (
           <Row label={t("settings.user")}>
@@ -95,7 +102,11 @@ export function SettingsSheet() {
           {ai !== undefined && (
             <span className="flex items-center gap-2 text-fg">
               <span aria-hidden="true" className={cn("size-2 rounded-pill", ai ? "bg-pass" : "bg-neutral")} />
-              {t(ai ? "settings.ai.available" : "settings.ai.off")}
+              {ai
+                ? model === null
+                  ? t("settings.ai.available")
+                  : tf("settings.ai.availableModel", { model })
+                : t("settings.ai.off")}
             </span>
           )}
         </Row>
@@ -106,6 +117,9 @@ export function SettingsSheet() {
     </Sheet>
   );
 }
+
+/** The separator between the facts of one row (punctuation, not copy). */
+const SEPARATOR = " · ";
 
 /** The server environment variable that holds the AI key (a technical name, not copy). */
 const API_KEY_VARIABLE = "PLUMB_API_KEY";
