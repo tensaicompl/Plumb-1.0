@@ -1028,7 +1028,7 @@ mod http_core {
                     || (reply.status == StatusCode::METHOD_NOT_ALLOWED
                         && !allow.split(',').any(|m| m.trim() == spec.method)));
             assert!(
-                ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2"].contains(&spec.owner),
+                ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2", "S2"].contains(&spec.owner),
                 "{}",
                 spec.operation_id
             );
@@ -1114,7 +1114,16 @@ mod http_core {
             ),
             (5, 3, 2)
         );
-        assert_eq!(routed.len(), 84);
+        // S2 routes the Inbox refresh of a stale answer.
+        assert_eq!(
+            (
+                count(&routed, "S2", None),
+                count(&routed, "S2", Some("POST")),
+                count(&routed, "S2", Some("GET"))
+            ),
+            (1, 1, 0)
+        );
+        assert_eq!(routed.len(), 85);
         // An unregistered path is the typed 404 (H0.11 replaces the former empty body).
         let r = get(&app, "/api/nowhere").await;
         assert_eq!(
