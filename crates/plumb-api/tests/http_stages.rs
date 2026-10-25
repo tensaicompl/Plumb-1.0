@@ -529,11 +529,9 @@ mod http_stages {
         send(app, Request::get(uri).body(Body::empty()).unwrap()).await
     }
 
-    async fn head_hash(app: &App) -> String {
-        get(app, "/api/model/version").await.json()["semantic_hash"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+    /// The current If-Match value: the ETag of a read (the quoted head revision ID, §33.2).
+    async fn head_tag(app: &App) -> String {
+        get(app, "/api/model/version").await.etag.unwrap()
     }
 
     async fn post(app: &App, uri: &str, if_match: Option<&str>, body: Value) -> Reply {
@@ -554,7 +552,7 @@ mod http_stages {
     }
 
     async fn run_stage(app: &App, stage: &str, scope: Value) -> Reply {
-        let tag = head_hash(app).await;
+        let tag = head_tag(app).await;
         post(
             app,
             &format!("/api/stages/{stage}/run"),
@@ -691,7 +689,7 @@ mod http_stages {
     #[tokio::test]
     async fn http_stages_run_stage_and_get_job_contract() {
         let app = app(data_graph(&["Email"]));
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let before = head(&app).revision.id;
         // If-Match is required and literal.
         let r = post(&app, "/api/stages/intake/run", None, json!({})).await;
@@ -707,6 +705,22 @@ mod http_stages {
         )
         .await;
         assert_eq!(r.status, StatusCode::PRECONDITION_FAILED);
+        // The head semantic hash is no longer a concurrency token (§33.2); neither are weak or
+        // wildcard validators.
+        let current = head(&app).revision;
+        for stale in [
+            current.semantic_hash.to_string(),
+            format!("W/\"{}\"", current.id),
+            "*".to_owned(),
+        ] {
+            let r = post(&app, "/api/stages/intake/run", Some(&stale), json!({})).await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (StatusCode::PRECONDITION_FAILED, "E_PRECONDITION_FAILED"),
+                "{stale}"
+            );
+            assert_eq!(r.json()["revision"], current.id.to_string());
+        }
         // Scope errors.
         for (stage, scope, status, code) in [
             (
@@ -808,7 +822,11 @@ mod http_stages {
         let body = r.json();
         assert_eq!(body["version"], body["revision"]);
         assert_eq!(body["revision"], before.to_string());
-        assert_eq!(body["semantic_hash"], tag);
+        assert_eq!(tag, format!("\"{before}\""));
+        assert_eq!(
+            body["semantic_hash"],
+            head(&app).revision.semantic_hash.to_string()
+        );
         assert_eq!(body["events"], json!([]));
         let job_id = body["job_id"].as_str().unwrap().to_owned();
         let done = wait_job(&app, &job_id).await;
@@ -971,7 +989,7 @@ mod http_stages {
         let job_id = run_inline(&app, Recipe::Tags, None);
         let props = pending(&app, &job_id);
         assert_eq!(props.len(), 2);
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let r = post(
             &app,
             &format!("/api/proposals/{}/accept", props[0].id),
@@ -1008,7 +1026,7 @@ mod http_stages {
         let loaded = head(&app);
         assert!(!loaded.revision.decision_refs.is_empty());
         // The sibling is immutable and stale against the child.
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let r = post(
             &app,
             &format!("/api/proposals/{}/accept", props[1].id),
@@ -1580,7 +1598,7 @@ mod http_stages {
         let app = app(data_graph(&["Email", "Salary"]));
         let job_id = run_inline(&app, Recipe::Tags, None);
         let props = pending(&app, &job_id);
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let r = post(
             &app,
             &format!("/api/proposals/{}/accept", props[0].id),
@@ -2507,7 +2525,7 @@ mod http_stages {
             null_gates(),
             Some(Arc::new(plumb_inference::NullProvider)),
         );
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let created = post(
             &app,
             "/api/sessions",
@@ -2522,7 +2540,7 @@ mod http_stages {
             String::from_utf8_lossy(&created.bytes)
         );
         let session = created.json()["id"].as_str().unwrap().to_owned();
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let r = post(
             &app,
             &format!("/api/sessions/{session}/turns"),
@@ -2599,7 +2617,7 @@ mod http_stages {
             None,
         )
         .unwrap();
-        let tag = head_hash(&app).await;
+        let tag = head_tag(&app).await;
         let r = post(
             &app,
             "/api/proposals/intake",

@@ -9,8 +9,8 @@ A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime ha
 ## Conventions
 
 - The API is a task-oriented compatibility projection over the PSG. Requests and responses are JSON unless stated otherwise; errors carry `code`, `message` and `details`.
-- Every ordinary `GET` success response carries an `ETag` header equal to the current `semantic_hash`.
-- Every `POST` (including dry-run intake, stage runs and session creation and turns) requires an `If-Match` header with the current `semantic_hash`. A mismatch returns `412 Precondition Failed` with `code`, `message`, `details` and the current branch-head `revision` and `semantic_hash`.
+- Every ordinary `GET` success response carries an `ETag` header: the RFC 9110 strong entity-tag of the loaded branch-head revision ID (the quoted `rev:...`).
+- Every `POST` (including dry-run intake, stage runs and session creation and turns) requires an `If-Match` header naming the current branch-head revision ID, quoted as in `ETag` or bare; weak validators and `*` never match, and `semantic_hash` is not a concurrency token. A mismatch returns `412 Precondition Failed` with `code`, `message`, `details` and the current branch-head `revision` and `semantic_hash`.
 - Every successful write returns `version`, `revision`, `semantic_hash` and `events` (DesignEvent `{kind, ids, version}`); `version` is the compatibility alias of `revision`. Endpoint-specific results add fields to these four.
 - `GET /api/model/version` returns `version`, `hash`, `revision`, `semantic_hash` and `evidence_hash`, where `version` == `revision` and `hash` == `semantic_hash`.
 - Paged lists return `{items, next_cursor}` and accept `cursor` and `limit` (minimum 1). Items are filtered, sorted by stable public ID ascending, continued exclusively after the cursor's `after_id` and then limited; without `limit` all remaining items are returned and `next_cursor` is null.

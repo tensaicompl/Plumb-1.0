@@ -609,8 +609,8 @@ fn load_segmentation(state: &ApiState, hash: &Hash) -> Result<SegmentationInterm
 
 impl ApiState {
     /// Captures `recipe` over the branch head and inserts or reuses its recipe job (the
-    /// synchronous part of `run_stage`; execution is separate). `if_match`, when given, must be
-    /// the head's semantic hash (412 otherwise).
+    /// synchronous part of `run_stage`; execution is separate). `if_match`, when given, must
+    /// name the head revision exactly (412 otherwise, architecture §33.2).
     pub fn run_stage(
         &self,
         recipe: Recipe,
@@ -621,7 +621,7 @@ impl ApiState {
         let a04 = self.stage_runtime("stage_runtime")?;
         let loaded = self.load_head()?;
         if let Some(tag) = if_match {
-            if tag != loaded.revision.semantic_hash.as_str() {
+            if !crate::state::if_match_names(tag, &loaded.revision) {
                 return Err(crate::state::precondition_failed(&loaded.revision));
             }
         }

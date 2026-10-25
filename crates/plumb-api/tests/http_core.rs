@@ -594,14 +594,7 @@ mod http_core {
     /// stay current.
     async fn app_with_source(file: &str, body: &[u8]) -> (App, String) {
         let app = app();
-        let r = upload(
-            &app,
-            Some(&semantic(&app)),
-            Some(file),
-            "text/markdown",
-            body,
-        )
-        .await;
+        let r = upload(&app, Some(&etag(&app)), Some(file), "text/markdown", body).await;
         assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
         let source = r.json()["id"].as_str().unwrap().to_owned();
         let App { _dir, path, .. } = app;
@@ -729,6 +722,11 @@ mod http_core {
 
     fn semantic(app: &App) -> String {
         head(app).revision.semantic_hash.to_string()
+    }
+
+    /// The current If-Match value: the strong entity-tag of the head revision ID (§33.2).
+    fn etag(app: &App) -> String {
+        format!("\"{}\"", head(app).revision.id)
     }
 
     fn revision_count(app: &App) -> u64 {
@@ -1105,7 +1103,7 @@ mod http_core {
             b"# Policy\n\nLeave needs approval.\n\nHalf days count.\n",
         )
         .await;
-        let expected = semantic(&app);
+        let expected = etag(&app);
         for uri in ORDINARY_GETS {
             let uri = uri.replace("SOURCE", &source);
             let r = get(&app, &uri).await;
@@ -1991,7 +1989,7 @@ mod http_core {
         let w = post(
             &app,
             "/api/model/attributes/attr:days/unit",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"unit": "day"})),
         )
         .await;
@@ -2043,7 +2041,7 @@ mod http_core {
         ] {
             let before = head(&app).revision;
             let expected = imported(media, name, bytes);
-            let r = upload(&app, Some(&semantic(&app)), Some(name), media, bytes).await;
+            let r = upload(&app, Some(&etag(&app)), Some(name), media, bytes).await;
             assert_eq!(r.status, StatusCode::OK, "{name}: {:?}", r.json());
             let body = r.json();
             let after = head(&app).revision;
@@ -2106,7 +2104,7 @@ mod http_core {
         // The same content again: the source exists.
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("leave.md"),
             "text/markdown",
             md,
@@ -2119,7 +2117,7 @@ mod http_core {
         // Unsupported media, missing or blank filename.
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("x.pdf"),
             "application/pdf",
             b"%PDF",
@@ -2134,26 +2132,19 @@ mod http_core {
         );
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("x.md"),
             "text/x-markdown",
             b"# x",
         )
         .await;
         assert_eq!(r.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
-        let r = upload(&app, Some(&semantic(&app)), None, "text/markdown", b"# x").await;
+        let r = upload(&app, Some(&etag(&app)), None, "text/markdown", b"# x").await;
         assert_eq!(
             (r.status, r.code().as_str()),
             (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
         );
-        let r = upload(
-            &app,
-            Some(&semantic(&app)),
-            Some(" "),
-            "text/markdown",
-            b"# x",
-        )
-        .await;
+        let r = upload(&app, Some(&etag(&app)), Some(" "), "text/markdown", b"# x").await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST);
         // A failed precondition writes no artifact.
         let fresh: &[u8] = b"# Fresh\n\nNever stored.\n";
@@ -2181,7 +2172,7 @@ mod http_core {
         let bytes: &[u8] = b"# Raced\n\nThis upload loses its race.\n";
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("raced.md"),
             "text/markdown",
             bytes,
@@ -2264,7 +2255,7 @@ mod http_core {
             let r = post(
                 &app,
                 uri,
-                Some(before.revision.semantic_hash.as_str()),
+                Some(&format!("\"{}\"", before.revision.id)),
                 body,
             )
             .await;
@@ -2330,7 +2321,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/model/calculations/calc:p/confirm",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             None,
         )
         .await;
@@ -2339,7 +2330,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/glossary/term:leave/edit",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"term": "leave request"})),
         )
         .await;
@@ -2358,10 +2349,17 @@ mod http_core {
         all.push(("create_source", "/api/sources", None));
         assert_eq!(all.len(), 9, "the nine A0.2 POST operations");
         for (operation, uri, body) in &all {
+            // The semantic hash is no longer a concurrency token (§33.2), and weak or wildcard
+            // validators never match.
             for if_match in [
                 None,
                 Some("psg:sha256:0000"),
+                Some(current.semantic_hash.as_str()),
                 Some(&format!("\"{}\"", current.semantic_hash)[..]),
+                Some(&format!("W/\"{}\"", current.id)[..]),
+                Some("*"),
+                Some(&format!("\"{}\", \"{}\"", current.id, current.id)[..]),
+                Some(&format!("{} ", current.id)[..]),
             ] {
                 let r = if *operation == "create_source" {
                     upload(&app, if_match, Some("x.md"), "text/markdown", b"# x\n").await
@@ -2395,6 +2393,43 @@ mod http_core {
         assert_eq!(posts, 9);
     }
 
+    /// Architecture §33.2: the ETag is the strong entity-tag of the loaded revision ID; If-Match
+    /// accepts exactly that quoted form or the bare revision ID.
+    #[tokio::test]
+    async fn http_core_if_match_is_the_quoted_or_bare_revision_id() {
+        let app = app();
+        let reviewed = get(&app, "/api/requirements").await.etag().unwrap();
+        let current = head(&app).revision;
+        assert_eq!(reviewed, format!("\"{}\"", current.id));
+        let r = post(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(&reviewed),
+            Some(json!({"class": "operational"})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        let bare = head(&app).revision.id.to_string();
+        let r = post(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(&bare),
+            Some(json!({"class": "functional"})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        // The first tag now names an older revision.
+        let r = post(
+            &app,
+            "/api/requirements/req:p/classify",
+            Some(&reviewed),
+            Some(json!({"class": "operational"})),
+        )
+        .await;
+        assert_eq!(r.code(), "E_PRECONDITION_FAILED");
+        assert_eq!(r.json()["revision"], head(&app).revision.id.to_string());
+    }
+
     #[tokio::test]
     async fn http_core_cas_race_is_412_without_retry() {
         let (app, clock) = racing_app();
@@ -2403,7 +2438,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/requirements/req:p/classify",
-            Some(loaded.semantic_hash.as_str()),
+            Some(loaded.id.as_str()),
             Some(json!({"class": "operational"})),
         )
         .await;
@@ -2432,7 +2467,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/requirements/req:c/classify",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"class": "functional"})),
         )
         .await;
@@ -2453,7 +2488,7 @@ mod http_core {
     #[tokio::test]
     async fn http_core_write_validation_errors() {
         let app = app();
-        let h = semantic(&app);
+        let h = etag(&app);
         let cases: Vec<(&str, Option<Value>, StatusCode, &str)> = vec![
             (
                 "/api/requirements/req:a/classify",
@@ -2818,7 +2853,7 @@ mod http_core {
         // A path parameter is part of the request identity.
         let a = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("a.md"),
             "text/markdown",
             b"# A\n\nOne.\n\nTwo.\n",
@@ -2830,7 +2865,7 @@ mod http_core {
             .to_owned();
         let b = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("b.md"),
             "text/markdown",
             b"# B\n\nThree.\n\nFour.\n",
@@ -2947,7 +2982,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/model/calculations/calc:p/confirm",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             None,
         )
         .await;
@@ -2977,7 +3012,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/model/attributes/attr:days/unit",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"unit": "day"})),
         )
         .await;
@@ -3092,7 +3127,7 @@ mod http_core {
         let text = vec![b'a'; 5 * 1024 * 1024];
         let r = upload(
             &app,
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some("big.md"),
             "text/markdown",
             &text,
@@ -3214,7 +3249,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/proposals/intake",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"kind": "create", "payload": proposal, "evidence": []})),
         )
         .await;
@@ -3269,7 +3304,7 @@ mod http_core {
         let r = post(
             &app,
             "/api/proposals/intake",
-            Some(&semantic(&app)),
+            Some(&etag(&app)),
             Some(json!({"kind": "create", "payload": proposal, "evidence": []})),
         )
         .await;

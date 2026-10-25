@@ -576,6 +576,11 @@ mod openapi {
             assert_eq!(if_match[0]["in"], "header");
             assert_eq!(if_match[0]["required"], true);
             assert_eq!(if_match[0]["schema"], json!({"type": "string"}));
+            // H0.2 (§33.2): the token is the head revision ID, never the semantic hash.
+            let description = if_match[0]["description"].as_str().unwrap();
+            assert!(description.contains("revision ID"), "{path}");
+            assert!(description.contains("weak"), "{path}");
+            assert!(!description.contains("semantic_hash"), "{path}");
             assert_eq!(
                 op["responses"]["412"]["content"]["application/json"]["schema"],
                 component_ref("PreconditionFailedResponse"),
@@ -687,6 +692,9 @@ mod openapi {
                     json!({"type": "string"}),
                     "{path}"
                 );
+                let description = response["headers"]["ETag"]["description"].as_str().unwrap();
+                assert!(description.contains("strong entity-tag"), "{path}");
+                assert!(description.contains("revision ID"), "{path}");
             }
             assert!(op["parameters"]
                 .as_array()

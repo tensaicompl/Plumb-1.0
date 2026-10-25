@@ -996,27 +996,38 @@ pub(crate) fn precondition_failed(revision: &GraphRevision) -> ApiError {
     ApiError::precondition_failed(revision.id.to_string(), revision.semantic_hash.to_string())
 }
 
-/// Compares `If-Match` literally with the loaded head's semantic hash.
+/// Whether `value` names exactly `revision` (architecture §33.2): the strong entity-tag (the
+/// quoted revision ID) or the bare revision ID. Weak validators, `*`, lists and the semantic
+/// hash never match.
+pub(crate) fn if_match_names(value: &str, revision: &GraphRevision) -> bool {
+    let tag = value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(value);
+    tag == revision.id.as_str()
+}
+
+/// Requires `If-Match` to name the loaded head revision exactly (400 when absent, 412 otherwise).
 pub(crate) fn check_if_match(headers: &HeaderMap, loaded: &LoadedRevision) -> Result<(), ApiError> {
     let value = headers
         .get("if-match")
         .ok_or_else(|| ApiError::invalid("the If-Match header is required"))?
         .to_str()
         .map_err(|_| ApiError::invalid("the If-Match header is not valid text"))?;
-    if value != loaded.revision.semantic_hash.as_str() {
+    if !if_match_names(value, &loaded.revision) {
         return Err(precondition_failed(&loaded.revision));
     }
     Ok(())
 }
 
-/// A JSON read response carrying `ETag` = the loaded revision's semantic hash.
+/// A JSON read response carrying `ETag` = the loaded revision's strong entity-tag.
 pub(crate) fn read_json<T: Serialize>(loaded: &LoadedRevision, body: T) -> Response {
     with_etag(loaded, Json(body).into_response())
 }
 
-/// Adds `ETag` = the loaded revision's semantic hash.
+/// Adds `ETag` = the strong entity-tag of the loaded revision ID (`"rev:<version>:<hex>"`).
 pub(crate) fn with_etag(loaded: &LoadedRevision, mut response: Response) -> Response {
-    if let Ok(value) = HeaderValue::from_str(loaded.revision.semantic_hash.as_str()) {
+    if let Ok(value) = HeaderValue::from_str(&format!("\"{}\"", loaded.revision.id)) {
         response.headers_mut().insert("etag", value);
     }
     response

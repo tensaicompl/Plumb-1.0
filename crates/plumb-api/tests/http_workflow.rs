@@ -861,9 +861,17 @@ mod http_workflow {
             .to_owned()
     }
 
+    /// The current If-Match value: the ETag of a read (the quoted head revision ID, §33.2).
+    async fn etag(app: &App) -> String {
+        get(app, "/api/model/version").await.headers["etag"]
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
     /// A POST with the current If-Match.
     async fn write(app: &App, uri: &str, body: Option<Value>) -> Reply {
-        let tag = semantic(app).await;
+        let tag = etag(app).await;
         post(app, uri, Some(&tag), body).await
     }
 
@@ -1685,6 +1693,50 @@ mod http_workflow {
     }
 
     // ------------------------------------------------------------------ sentences and CRUD
+
+    /// H0.2 (architecture §33.2): the concurrency token is the exact head revision ID, so a
+    /// change of Proposed state alone (equal semantic hash, new revision) makes a reviewed view
+    /// stale, and the old semantic-hash token never matches.
+    #[tokio::test]
+    async fn stale_proposed_view_is_precondition_failed() {
+        let app = app();
+        let reviewed = get(&app, "/api/model/sentences").await;
+        let reviewed_tag = reviewed.headers["etag"].to_str().unwrap().to_owned();
+        let before = head(&app).revision;
+        assert_eq!(reviewed_tag, format!("\"{}\"", before.id));
+        let uri = "/api/model/sentences/req:p/accept";
+        let old_token = post(&app, uri, Some(before.semantic_hash.as_str()), None).await;
+        assert_error(
+            &old_token,
+            StatusCode::PRECONDITION_FAILED,
+            "E_PRECONDITION_FAILED",
+        );
+
+        concurrent_commit(&app.path);
+        let after = head(&app).revision;
+        assert_eq!(after.semantic_hash, before.semantic_hash);
+        assert_ne!(after.id, before.id);
+        let stale = post(&app, uri, Some(&reviewed_tag), None).await;
+        assert_error(
+            &stale,
+            StatusCode::PRECONDITION_FAILED,
+            "E_PRECONDITION_FAILED",
+        );
+        assert_eq!(stale.json()["revision"], after.id.to_string());
+        assert_eq!(
+            stale.json()["semantic_hash"],
+            after.semantic_hash.to_string()
+        );
+        assert_eq!(head(&app).revision.id, after.id);
+
+        let current = get(&app, "/api/model/sentences").await.headers["etag"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let r = post(&app, uri, Some(&current), None).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_eq!(head(&app).revision.parent, Some(after.id));
+    }
 
     #[tokio::test]
     async fn http_workflow_sentences_project_and_write_requirements() {
@@ -2867,7 +2919,7 @@ mod http_workflow {
             "E_SEMANTIC_INVARIANT",
         );
         let before = revision(&app).await;
-        let tag = semantic(&app).await;
+        let tag = etag(&app).await;
         let r = answer(&app, &question, json!({"performer_ref": "actor:clerk"})).await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.text());
         let body = r.json();
@@ -2895,7 +2947,11 @@ mod http_workflow {
             body["patch_preview"],
             serde_json::to_value(&persisted.patch_set.patch).unwrap()
         );
-        assert_eq!(persisted.patch_set.base_semantic_hash.to_string(), tag);
+        assert_eq!(tag, format!("\"{before}\""));
+        assert_eq!(
+            persisted.patch_set.base_semantic_hash,
+            head(&app).revision.semantic_hash
+        );
         // The proposal adds a performer relation, so it is a create action.
         assert_error(
             &write(
@@ -4018,7 +4074,7 @@ mod http_workflow {
             },
         )
         .unwrap();
-        let tag = semantic(&app).await;
+        let tag = etag(&app).await;
         let r = post(
             &app,
             &format!("/api/questions/{question}/answer"),

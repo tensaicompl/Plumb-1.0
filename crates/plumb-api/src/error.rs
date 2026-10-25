@@ -104,7 +104,7 @@ impl ApiError {
         let mut error = ApiError::new(
             StatusCode::PRECONDITION_FAILED,
             "E_PRECONDITION_FAILED",
-            "If-Match is not the current semantic_hash",
+            "If-Match does not name the current branch-head revision",
         );
         error.0.head = Some((revision, semantic_hash));
         error

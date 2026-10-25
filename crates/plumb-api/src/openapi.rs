@@ -761,7 +761,7 @@ pub struct WriteResult {
     pub events: Vec<DesignEvent>,
 }
 
-/// 412: the request's If-Match was not the current semantic hash. `revision` and
+/// 412: the request's If-Match did not name the current branch-head revision. `revision` and
 /// `semantic_hash` are the current branch-head values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -3038,13 +3038,13 @@ fn apply_http_contract(doc: &mut Value) -> Result<(), OpenApiContractError> {
                 "name": "If-Match",
                 "in": "header",
                 "required": true,
-                "description": "The current semantic_hash of the branch head.",
+                "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
                 "schema": {"type": "string"}
             }));
             responses_mut(operation)?.insert(
                 "412".to_owned(),
                 json!({
-                    "description": "Precondition Failed: If-Match is not the current semantic_hash; revision and semantic_hash are the current branch-head values.",
+                    "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values.",
                     "content": {"application/json": {"schema": component_ref("PreconditionFailedResponse")}}
                 }),
             );
@@ -3062,7 +3062,7 @@ fn apply_http_contract(doc: &mut Value) -> Result<(), OpenApiContractError> {
                         .insert(
                             "ETag".to_owned(),
                             json!({
-                                "description": "The current semantic_hash.",
+                                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
                                 "schema": {"type": "string"}
                             }),
                         );
@@ -3300,8 +3300,8 @@ An operation listed here is not operational until its handler task is done.\n\n"
     out.push_str("## Conventions\n\n");
     for line in [
         "The API is a task-oriented compatibility projection over the PSG. Requests and responses are JSON unless stated otherwise; errors carry `code`, `message` and `details`.",
-        "Every ordinary `GET` success response carries an `ETag` header equal to the current `semantic_hash`.",
-        "Every `POST` (including dry-run intake, stage runs and session creation and turns) requires an `If-Match` header with the current `semantic_hash`. A mismatch returns `412 Precondition Failed` with `code`, `message`, `details` and the current branch-head `revision` and `semantic_hash`.",
+        "Every ordinary `GET` success response carries an `ETag` header: the RFC 9110 strong entity-tag of the loaded branch-head revision ID (the quoted `rev:...`).",
+        "Every `POST` (including dry-run intake, stage runs and session creation and turns) requires an `If-Match` header naming the current branch-head revision ID, quoted as in `ETag` or bare; weak validators and `*` never match, and `semantic_hash` is not a concurrency token. A mismatch returns `412 Precondition Failed` with `code`, `message`, `details` and the current branch-head `revision` and `semantic_hash`.",
         "Every successful write returns `version`, `revision`, `semantic_hash` and `events` (DesignEvent `{kind, ids, version}`); `version` is the compatibility alias of `revision`. Endpoint-specific results add fields to these four.",
         "`GET /api/model/version` returns `version`, `hash`, `revision`, `semantic_hash` and `evidence_hash`, where `version` == `revision` and `hash` == `semantic_hash`.",
         "Paged lists return `{items, next_cursor}` and accept `cursor` and `limit` (minimum 1). Items are filtered, sorted by stable public ID ascending, continued exclusively after the cursor's `after_id` and then limited; without `limit` all remaining items are returned and `next_cursor` is null.",
