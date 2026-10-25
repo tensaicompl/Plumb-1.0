@@ -39,9 +39,29 @@ fn config() -> Value {
         "vocabulary_policy": {"language": "en"},
         // The fixture profile's threshold (fixtures/hr-leave/profile.yaml).
         "duplicate_policy": {"jaccard_threshold": "0.8"},
-        "calculation_scope": null,
-        "operation_scope": null,
-        "process_scope": null,
+        // The stage scopes name the elements earlier stages generate by selector, never by
+        // ID: written once before the pipeline runs and resolved when each stage runs.
+        "calculation_scope": {
+            "bindings": [
+                {"node_ref": attribute("start date"), "symbol": "start_date", "exposure": {"kind": "root"}},
+                {"node_ref": attribute("end date"), "symbol": "end_date", "exposure": {"kind": "root"}},
+                {"node_ref": attribute("half day"), "symbol": "day_fraction", "exposure": {"kind": "root"}}
+            ],
+            "calendar_refs": {"$all": {"type": "Calendar"}}
+        },
+        "operation_scope": {
+            "performer_refs": {"$all": {"type": ["BusinessRole", "Actor"]}},
+            "domain_refs": {"$all": {"type": ["Entity", "Attribute"]}},
+            "calculation_refs": [],
+            "governor_refs": {"$all": {"type": "Rule"}},
+            "event_refs": [], "data_schema_refs": [], "event_payload_attribute_refs": [],
+            "support_refs": []
+        },
+        "process_scope": {
+            "operation_refs": [],
+            "performer_refs": {"$all": {"type": ["BusinessRole", "Actor"]}},
+            "event_refs": [], "outcome_refs": [], "transition_refs": []
+        },
         "authorization_draft": null,
         "scenario_derivation": {
             "decision_tables": [{"decision_table_ref": "dt:annual-eligibility", "spec": eligibility_table()}],
@@ -69,6 +89,11 @@ fn config() -> Value {
             "f4": {"in_scope_scenario_refs": [], "required_scenario_kinds": [], "visible_assumption_refs": []}
         },
     })
+}
+
+/// The Accepted Attribute named `name`, by selector.
+fn attribute(name: &str) -> Value {
+    json!({"$one": {"type": "Attribute", "where": {"name": name}}})
 }
 
 /// The HR directory: stakeholders, actors, business roles, the office calendar and rules.
@@ -622,21 +647,8 @@ fn hr_pilot_simulation() {
     sim.confirm_all(&[]);
     sim.census();
     sim.settle("analyse");
-    let mut domain = sim.accepted("Entity");
-    domain.extend(sim.accepted("Attribute"));
-    let mut performers = sim.accepted("BusinessRole");
-    performers.extend(sim.accepted("Actor"));
-    sim.set(
-        "operation_scope",
-        json!({"performer_refs": performers, "domain_refs": domain, "calculation_refs": [],
-               "governor_refs": sim.accepted("Rule"), "event_refs": [], "data_schema_refs": [],
-               "event_payload_attribute_refs": [], "support_refs": []}),
-    );
-    sim.set(
-        "process_scope",
-        json!({"operation_refs": [], "performer_refs": performers, "event_refs": [],
-               "outcome_refs": [], "transition_refs": []}),
-    );
+    // The configuration is never edited between stages: flows and calc resolve their
+    // configured selectors against the graph they run on.
     sim.settle("flows");
     let attribute = |name: &str| {
         sim.nodes()
@@ -662,14 +674,6 @@ fn hr_pilot_simulation() {
             &[],
         );
     }
-    sim.set(
-        "calculation_scope",
-        json!({"bindings": [
-                   {"node_ref": attribute("start date"), "symbol": "start_date", "exposure": {"kind": "root"}},
-                   {"node_ref": attribute("end date"), "symbol": "end_date", "exposure": {"kind": "root"}},
-                   {"node_ref": attribute("half day"), "symbol": "day_fraction", "exposure": {"kind": "root"}}],
-               "calendar_refs": sim.accepted("Calendar")}),
-    );
     for recipe in ["analyse", "calc", "rules", "scenarios", "tags", "run"] {
         sim.settle(recipe);
     }

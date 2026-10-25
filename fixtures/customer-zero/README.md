@@ -10,8 +10,9 @@ Files:
 
 - `source.md` — the only import input.
 - `config.json` — the complete initial CLI configuration (replay provider, gate inputs,
-  directory, question routing). Graph-dependent scopes (operation, process and calculation
-  scopes) are filled during the flow, the way an analyst edits them after reviewing IDs.
+  directory, question routing). The operation, process and calculation scopes name the
+  elements earlier stages generate by selector (`$one` / `$all`, docs/formats.md), so the
+  file is written once before the flow and never edited during it.
 - `expected.yaml` — the frozen expected-results contract the flow asserts section by section.
 - `replay/` — the recorded inference executions, one file per stage invocation, generated only
   by the ignored test `regenerate_customer_zero_replay` in `crates/plumb-cli/tests/customer_zero.rs`
