@@ -4757,6 +4757,61 @@ mod http_workflow {
         assert_eq!(plain["evidence"], json!([]));
     }
 
+    /// S1 (UI Sources reading view, UI-SPEC §5.7): each span carries the text the importer
+    /// extracted and the requirements whose evidence cites it (ID and source identifier), so the
+    /// reading view highlights the passages that became requirements.
+    #[tokio::test]
+    async fn source_spans_carry_their_text_and_the_requirements_they_became() {
+        let (mut nodes, edges) = base_parts();
+        let statement = "Always, the clerk shall pack the order.";
+        let other = "The warehouse opens at nine.";
+        let source = plumb_import::import_markdown(
+            "requirements.md",
+            format!("{statement}\n\n{other}\n").as_bytes(),
+            &plumb_import::ImportAudit {
+                created_by: id(ACTOR),
+                created_at: ts(T0),
+            },
+        )
+        .unwrap();
+        let fragment_with = |text: &str| {
+            source
+                .fragments
+                .iter()
+                .find(|f| {
+                    matches!(&f.payload, NodePayload::EvidenceFragment(e)
+                        if e.extracted_text.as_deref() == Some(text))
+                })
+                .unwrap()
+                .id
+                .to_string()
+        };
+        let cited = fragment_with(statement);
+        let uncited = fragment_with(other);
+        let mut value =
+            serde_json::to_value(requirement("req:ears", "Accepted", statement)).unwrap();
+        value["evidence"] = json!([cited]);
+        value["payload"]["data"]["source_identifier"] = json!("HR-001");
+        nodes.push(source.source.clone());
+        nodes.extend(source.fragments.clone());
+        nodes.push(serde_json::from_value(value).unwrap());
+        let graph = Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap();
+        let app = app_with(graph, |_| Vec::new());
+        let spans = get(&app, &format!("/api/sources/{}/spans", source.source.id))
+            .await
+            .json();
+        let items = spans["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        let span = |fragment: &str| items.iter().find(|s| s["id"] == fragment).unwrap();
+        assert_eq!(span(&cited)["text"], statement);
+        assert_eq!(
+            span(&cited)["requirements"],
+            json!([{"id": "req:ears", "source_identifier": "HR-001"}])
+        );
+        assert_eq!(span(&uncited)["text"], other);
+        assert_eq!(span(&uncited)["requirements"], json!([]));
+    }
+
     #[tokio::test]
     async fn requirement_detail_surfaces_pending_ears_proposal() {
         let provider = Arc::new(ConsolidateProvider {

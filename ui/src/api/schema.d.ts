@@ -1891,6 +1891,8 @@ export interface components {
              */
             inference_model?: string | null;
             mode: string;
+            /** @description The project this server serves (S1). */
+            project: components["schemas"]["ProjectInfo"];
             roles: string[];
             user: string;
         };
@@ -2162,6 +2164,15 @@ export interface components {
             op: "move_lane";
             performer_ref: string;
             reason?: string | null;
+        };
+        /** @description The served project (S1, UI-SPEC §5.9): what the toolbar and Settings show. */
+        ProjectInfo: {
+            /** @description The database file the server opened; null when it has none (an in-memory database). */
+            database?: string | null;
+            /** @description The head revision's project ID ("project:hr-leave"). */
+            id: string;
+            /** @description The display name, humanised from the project ID ("HR leave"). */
+            name: string;
         };
         /** @description A proposal action; `reason` is required at runtime when intake demands one. */
         ProposalActionRequest: {
@@ -2648,14 +2659,27 @@ export interface components {
             end?: number | null;
             id: string;
             locator_kind: string;
+            /**
+             * @description The requirements whose evidence cites this span, by ID (S1): the passages that became
+             *     requirements.
+             */
+            requirements: components["schemas"]["SpanRequirement"][];
             source_ref: string;
             /** Format: int64 */
             start?: number | null;
+            /** @description The text the importer extracted for this span (S1); null when it extracted none. */
+            text?: string | null;
         };
         /** @description A page of results; `next_cursor` is null on the last page. */
         SpanPage: {
             items: components["schemas"]["Span"][];
             next_cursor?: string | null;
+        };
+        /** @description A requirement a span became (S1). */
+        SpanRequirement: {
+            id: string;
+            /** @description The requirement's identifier in the source document ("HR-009"), when it has one. */
+            source_identifier?: string | null;
         };
         SplitRequest: {
             parts: string[];
@@ -3813,6 +3837,10 @@ export interface operations {
                      * @example {
                      *       "inference_available": true,
                      *       "mode": "example",
+                     *       "project": {
+                     *         "id": "example",
+                     *         "name": "example"
+                     *       },
                      *       "roles": [
                      *         "example"
                      *       ],
@@ -8496,6 +8524,11 @@ export interface operations {
                      *           "content_hash": "example",
                      *           "id": "example",
                      *           "locator_kind": "example",
+                     *           "requirements": [
+                     *             {
+                     *               "id": "example"
+                     *             }
+                     *           ],
                      *           "source_ref": "example"
                      *         }
                      *       ]

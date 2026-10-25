@@ -1360,10 +1360,32 @@ mod http_core {
         );
     }
 
+    /// `get_me.project` (S1, UI-SPEC §5.9): the head's project ID, a display name humanised from
+    /// it, and the database file the server opened.
+    #[tokio::test]
+    async fn me_reports_the_project() {
+        let app = app();
+        let me = get(&app, "/api/me").await.json();
+        let project = &me["project"];
+        assert_eq!(project["id"], PROJECT);
+        assert_eq!(project["name"], "Pilot");
+        let database = PathBuf::from(project["database"].as_str().unwrap());
+        assert_eq!(
+            database.canonicalize().unwrap(),
+            app.path.canonicalize().unwrap()
+        );
+        assert_eq!(
+            project.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["database", "id", "name"]
+        );
+    }
+
     #[tokio::test]
     async fn http_core_meta_and_gates() {
         let app = app();
-        let me = get(&app, "/api/me").await.json();
+        let mut me = get(&app, "/api/me").await.json();
+        // The project (S1) is asserted by `me_reports_the_project`.
+        assert!(me.as_object_mut().unwrap().remove("project").is_some());
         assert_eq!(
             me,
             json!({"user": "alice", "roles": ["analyst", "reviewer"], "mode": "pilot", "inference_available": true, "inference_model": null})

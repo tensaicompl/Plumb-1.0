@@ -16,7 +16,7 @@ use plumb_psg::{EvidenceLocator, NodePayload, NodeType};
 
 use crate::application::require_importable;
 use crate::error::ApiError;
-use crate::openapi::{Source, SourceList, SourceListItem, Span, SpanPage};
+use crate::openapi::{Source, SourceList, SourceListItem, Span, SpanPage, SpanRequirement};
 use crate::routes::MAX_SOURCE_UPLOAD_BODY_BYTES;
 use crate::state::{check_if_match, paginate, read_json, ApiState, PageRequest, QueryParams};
 
@@ -171,6 +171,25 @@ async fn get_source_spans(
     let query = QueryParams::parse(query.as_deref(), &[], true)?;
     let loaded = state.load_head()?;
     let (source_id, _) = source_payload(&loaded.graph, &id)?;
+    // The requirements citing each fragment as evidence, by requirement ID (S1).
+    let mut cited_by: std::collections::BTreeMap<&Id, Vec<SpanRequirement>> = Default::default();
+    for requirement_id in loaded.graph.node_ids_by_type(NodeType::Requirement) {
+        let Some(node) = loaded.graph.node(requirement_id) else {
+            continue;
+        };
+        let NodePayload::Requirement(requirement) = &node.payload else {
+            continue;
+        };
+        for evidence in &node.evidence {
+            cited_by
+                .entry(evidence.as_id())
+                .or_default()
+                .push(SpanRequirement {
+                    id: node.id.to_string(),
+                    source_identifier: requirement.source_identifier.clone(),
+                });
+        }
+    }
     let mut items = Vec::new();
     for fragment_id in loaded.graph.node_ids_by_type(NodeType::EvidenceFragment) {
         let Some(node) = loaded.graph.node(fragment_id) else {
@@ -199,6 +218,8 @@ async fn get_source_spans(
                 start,
                 end,
                 content_hash: fragment.content_hash.to_string(),
+                text: fragment.extracted_text.clone(),
+                requirements: cited_by.remove(&node.id).unwrap_or_default(),
             },
         ));
     }
