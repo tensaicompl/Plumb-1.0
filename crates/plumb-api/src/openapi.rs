@@ -1,7 +1,7 @@
 //! The pilot HTTP API contract (plan A0.1, Hotfix 062): compatibility DTOs, contract-only
-//! utoipa operation stubs for the 79 NOW operations (the 72 of Hotfix 062, the two U2.1
-//! semantic change previews of Hotfix 073, the two H0.11 proposal-governance operations and
-//! the three B1 Inbox operations),
+//! utoipa operation stubs for the 84 NOW operations (the 72 of Hotfix 062, the two U2.1
+//! semantic change previews of Hotfix 073, the two H0.11 proposal-governance operations, the
+//! three B1 Inbox operations and the five B2 UI pipeline operations),
 //! deterministic compatibility patches,
 //! HR-fixture-seeded and schema-fallback examples, and the rendered OpenAPI document and API
 //! reference.
@@ -84,11 +84,13 @@ const fn op(
     }
 }
 
-/// The 79 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
+/// The 84 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
 /// accept (01-72, Hotfix 062), the two U2.1 semantic change previews (73-74, Hotfix 073),
-/// proposal discovery and discard (75-76, H0.11, architecture §33.12), then the B1 Inbox
-/// proposal detail, set acceptance and governed confirmation (77-79).
-pub const OPERATIONS: [OperationSpec; 79] = [
+/// proposal discovery and discard (75-76, H0.11, architecture §33.12), the B1 Inbox proposal
+/// detail, set acceptance and governed confirmation (77-79), then the B2 UI pipeline operations
+/// (80-84: pipeline state, job retry, question generation, finding materialization and the
+/// source list).
+pub const OPERATIONS: [OperationSpec; 84] = [
     op(1, "GET", "/api/me", "get_me", "meta", false, "A0.2"),
     op(
         2,
@@ -785,6 +787,52 @@ pub const OPERATIONS: [OperationSpec; 79] = [
         false,
         "B1",
     ),
+    // B2 (UI pipeline): the backend gaps of the new UI (UI-SPEC §9).
+    op(
+        80,
+        "GET",
+        "/api/pipeline",
+        "get_pipeline",
+        "stages",
+        false,
+        "B2",
+    ),
+    op(
+        81,
+        "POST",
+        "/api/jobs/{id}/retry",
+        "retry_job",
+        "stages",
+        false,
+        "B2",
+    ),
+    op(
+        82,
+        "POST",
+        "/api/questions/generate",
+        "generate_questions",
+        "questions",
+        false,
+        "B2",
+    ),
+    op(
+        83,
+        "POST",
+        "/api/findings/materialize",
+        "materialize_findings",
+        "findings",
+        false,
+        "B2",
+    ),
+    op(
+        84,
+        "GET",
+        "/api/sources",
+        "list_sources",
+        "sources",
+        false,
+        "B2",
+    ),
 ];
 
 /// The WebSocket compatibility operation.
@@ -905,6 +953,9 @@ pub struct MeResponse {
     /// Whether this server can run inference (sessions and inference-requiring recipes): false
     /// exactly when the configured provider mode is `null` (H0.11, Fable #355).
     pub inference_available: bool,
+    /// The configured model name (the provider policy's `model`) while inference is available;
+    /// null when inference is off or no model name is configured (B2).
+    pub inference_model: Option<String>,
 }
 
 /// Model identity. `version` == `revision` and `hash` == `semantic_hash` (compatibility
@@ -919,6 +970,10 @@ pub struct ModelVersionResponse {
     pub revision: String,
     pub semantic_hash: String,
     pub evidence_hash: String,
+    /// When the head revision was written (B2).
+    pub created_at: String,
+    /// The actor that wrote the head revision (B2).
+    pub created_by: String,
 }
 
 /// A NOW-scope gate.
@@ -1149,6 +1204,9 @@ pub enum StageName {
     Scenarios,
     Tags,
     Run,
+    // B2: the configured directory (pending actor, role, stakeholder, calendar, rule and
+    // decision-table proposals; nothing is committed).
+    Directory,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -2425,6 +2483,133 @@ pub struct ModelDiff {
     pub modified: Vec<String>,
 }
 
+// ============================================================================ UI pipeline (B2)
+
+/// The derived state of one pipeline step (B2): `queued` a captured job not started yet;
+/// `running` acquiring or evaluating; `needs_review` its latest job is ready on the head with
+/// pending proposals of that job; `done` committed, or ready with nothing pending; `stale` its
+/// latest job is stale, or ready with pending proposals built on another revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineStepStatus {
+    NotStarted,
+    Queued,
+    Running,
+    NeedsReview,
+    Done,
+    Failed,
+    Stale,
+}
+
+/// The typed failure of a failed step's latest job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineError {
+    pub code: String,
+    pub message: String,
+}
+
+/// One stage recipe of the pipeline, from its latest recipe job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineStep {
+    pub recipe: StageName,
+    pub status: PipelineStepStatus,
+    /// The latest recipe job of this recipe; null when it never ran.
+    pub job_id: Option<String>,
+    /// The latest job's status-derived progress; null when it never ran.
+    #[schema(minimum = 0.0, maximum = 1.0)]
+    pub progress: Option<f64>,
+    /// Pending workflow proposals produced by any job of this recipe (stale ones included).
+    pub pending_proposals: u64,
+    pub error: Option<PipelineError>,
+    /// When the latest job last changed.
+    pub updated_at: Option<String>,
+    /// The configuration the recipe needs and that is absent (`run_stage` would be 409
+    /// `E_STAGE_CONFIG_MISSING`); empty when it can run.
+    pub missing_config: Vec<String>,
+}
+
+/// `get_pipeline`: every stage recipe in pipeline order with the Overview counts. `next` is the
+/// first step that is not `done` and whose configuration is complete; null when there is none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineResponse {
+    pub steps: Vec<PipelineStep>,
+    /// Imported sources (SourceArtifact nodes) on the head.
+    pub sources: u64,
+    /// Accepted Questions whose status is open.
+    pub open_questions: u64,
+    pub next: Option<StageName>,
+}
+
+/// `retry_job` takes no parameters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetryJobRequest {}
+
+/// `generate_questions`: with `stakeholder`, also the round of at most `max` (default 1000)
+/// of that stakeholder's eligible unassigned questions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateQuestionsRequest {
+    #[serde(default)]
+    pub stakeholder: Option<String>,
+    #[serde(default)]
+    #[schema(minimum = 1, maximum = 1000)]
+    pub max: Option<u64>,
+}
+
+/// The questions of the current gate reports (new, existing and updated) and, when requested
+/// and the stakeholder had eligible unassigned questions, its new round.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateQuestionsResponse {
+    pub version: String,
+    pub revision: String,
+    pub semantic_hash: String,
+    pub events: Vec<DesignEvent>,
+    pub question_ids: Vec<String>,
+    pub round: Option<Round>,
+}
+
+/// `materialize_findings` takes no parameters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MaterializeFindingsRequest {}
+
+/// The newly materialized Finding nodes (stale open findings it closed are in `events`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MaterializeFindingsResponse {
+    pub version: String,
+    pub revision: String,
+    pub semantic_hash: String,
+    pub events: Vec<DesignEvent>,
+    pub finding_ids: Vec<String>,
+}
+
+/// One imported source: the `get_source` projection plus its display name, import time and
+/// passage (span) count.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceListItem {
+    pub id: String,
+    pub hash: String,
+    pub media_type: String,
+    pub source_kind: String,
+    pub name: String,
+    pub imported_at: String,
+    pub spans_count: u64,
+}
+
+/// Every imported source, by ID. Not paged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceList {
+    pub items: Vec<SourceListItem>,
+}
+
 // ============================================================================ operation stubs
 //
 // Contract-only: each function exists solely to carry its #[utoipa::path] metadata. If-Match,
@@ -2861,9 +3046,35 @@ mod stubs {
         request_body(content = ConfirmElementsRequest),
         responses((status = 200, description = "The listed Proposed elements are Accepted: Terms, Calculations and Scenarios through their dedicated confirmations (one revision each), every other element through one generic governed confirmation", body = WriteResult)))]
     pub fn confirm_elements() {}
+
+    // B2 (UI pipeline).
+
+    #[utoipa::path(get, path = "/api/pipeline", operation_id = "get_pipeline", tag = "stages",
+        responses((status = 200, description = "Every stage recipe in pipeline order (extract, consolidate, lint, directory, analyse, flows, calc, rules, scenarios, tags, run), derived from its latest recipe job and the pending workflow proposals", body = PipelineResponse)))]
+    pub fn get_pipeline() {}
+
+    #[utoipa::path(post, path = "/api/jobs/{id}/retry", operation_id = "retry_job", tag = "stages",
+        params(("id" = String, Path, description = "Job ID")),
+        request_body(content = RetryJobRequest),
+        responses((status = 200, description = "The failed job is queued again as its next attempt under the same ID (the run_stage response); 409 E_STAGE_RETRY_NOT_FAILED or E_STAGE_RETRY_BASE_MOVED otherwise", body = StageRunResponse)))]
+    pub fn retry_job() {}
+
+    #[utoipa::path(post, path = "/api/questions/generate", operation_id = "generate_questions", tag = "questions",
+        request_body(content = GenerateQuestionsRequest),
+        responses((status = 200, description = "Questions materialized from the current gate reports with the configured routing, and the optional stakeholder round", body = GenerateQuestionsResponse)))]
+    pub fn generate_questions() {}
+
+    #[utoipa::path(post, path = "/api/findings/materialize", operation_id = "materialize_findings", tag = "findings",
+        request_body(content = MaterializeFindingsRequest),
+        responses((status = 200, description = "Actionable current gate findings persisted as Finding nodes; stale open ones closed", body = MaterializeFindingsResponse)))]
+    pub fn materialize_findings() {}
+
+    #[utoipa::path(get, path = "/api/sources", operation_id = "list_sources", tag = "sources",
+        responses((status = 200, description = "Every imported source", body = SourceList)))]
+    pub fn list_sources() {}
 }
 
-/// The utoipa base contract of the 79 operations.
+/// The utoipa base contract of the 84 operations.
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Plumb Modeller API"),
@@ -2892,6 +3103,8 @@ mod stubs {
         stubs::export_model, stubs::get_model_diff, stubs::preview_requirement_split,
         stubs::preview_glossary_merge, stubs::list_proposals, stubs::discard_proposal,
         stubs::get_proposal, stubs::accept_proposal_set, stubs::confirm_elements,
+        stubs::get_pipeline, stubs::retry_job, stubs::generate_questions,
+        stubs::materialize_findings, stubs::list_sources,
     ),
     components(schemas(
         DesignEvent, PreconditionFailedResponse, CursorConflictResponse, CursorErrorCode, StageName,
@@ -3416,7 +3629,7 @@ fn check_inventory(doc: &Value) -> Result<(), OpenApiContractError> {
     expected.sort();
     if found != expected {
         return Err(invariant(
-            "operations differ from the frozen 79-operation inventory",
+            "operations differ from the frozen 84-operation inventory",
         ));
     }
     Ok(())
@@ -3661,7 +3874,7 @@ pub fn openapi_document() -> Result<Value, OpenApiContractError> {
     let mut api = ApiDoc::openapi();
     api.info.version = env!("CARGO_PKG_VERSION").to_owned();
     api.info.description = Some(
-        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) and B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79)."
+        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79) and B2 (the UI pipeline operations 80-84)."
             .to_owned(),
     );
     api.info.license = None;
@@ -3702,7 +3915,7 @@ The machine-readable contract is `api/modeller.openapi.json`, the source of the 
         OPERATIONS.len()
     ));
     out.push_str(
-        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 and B1 those of operations 77-79. \
+        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 B1 those of operations 77-79 and B2 those of operations 80-84. \
 An operation listed here is not operational until its handler task is done.\n\n",
     );
     out.push_str("## Conventions\n\n");
@@ -3740,7 +3953,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
             .count()
     };
     out.push_str("\n## Implementation ownership\n\n");
-    for owner in ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1"] {
+    for owner in ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1", "B2"] {
         out.push_str(&format!(
             "- {owner}: {} operations ({} POST, {} GET).\n",
             owned(owner, ""),
@@ -3755,6 +3968,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
         "H0.11 (architecture §33.12): a preview never persists a pending proposal. It returns the previewed `proposal_id` and `built_at`; confirmation is the direct write (split or merge) with the same request plus `preview: {proposal_id, built_at}` and the baseline revision as If-Match, which commits only exactly the previewed proposal (409 `E_PREVIEW_MISMATCH` otherwise).",
         "H0.11 appends operations 75 and 76: `GET /api/proposals` lists every pending workflow proposal (not paged), and `POST /api/proposals/{id}/discard` moves a pending answer or intake proposal to the terminal state `abandoned` without a revision. Accepted, rejected and abandoned proposals are kept as history.",
         "B1 (UI Inbox, UI-SPEC §5.2) appends operations 77 to 79: `GET /api/proposals/{id}` is one pending proposal with its facts, evidence passages (UTF-8 byte highlight offsets) and model change; `POST /api/proposals/accept-set` accepts pending proposals atomically in one revision through the R0.3 set acceptance and, unless `confirm` is false, then confirms the Proposed elements they created; `POST /api/model/confirm` is the governed confirmation of the CLI `confirm`. List items gain `title`, `element_kind`, `created_at` and `stage`.",
+        "B2 appends operations 80 to 84 for the UI (UI-SPEC §9): `GET /api/pipeline` derives every stage recipe's state from its latest recipe job and the pending proposals; `POST /api/jobs/{id}/retry` re-queues a failed recipe job through the H0.3 retry service; `POST /api/questions/generate` is the CLI `ask` (optionally with a stakeholder round); `POST /api/findings/materialize` is the CLI `findings materialize`; `GET /api/sources` lists every imported source. `directory` becomes a `run_stage` recipe, `get_me` gains `inference_model` and `get_model_version` gains `created_at` and `created_by`.",
     ] {
         out.push_str(&format!("- {line}\n"));
     }

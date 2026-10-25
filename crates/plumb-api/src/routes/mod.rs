@@ -1,6 +1,7 @@
 //! Router composition of the pilot runtime handlers: the 30 A0.2-owned operations (plan A0.2,
 //! Hotfix 063), the 40 A0.3-owned operations (plan A0.3, Hotfix 065) and the two A0.4-owned
-//! stage and job operations (plan A0.4, Hotfix 067): all 72 operations.
+//! stage and job operations (plan A0.4, Hotfix 067): all 72 operations; later tasks add their
+//! own (U2.1, H0.11 and the B2 UI pipeline operations).
 
 use std::path::Path;
 use std::time::Instant;
@@ -15,6 +16,7 @@ use crate::error::ApiError;
 use crate::server::{is_loopback_authority, is_loopback_origin};
 use crate::state::ApiState;
 
+mod findings;
 mod gates;
 mod meta;
 mod model;
@@ -143,7 +145,8 @@ pub fn router_with_ui(state: ApiState, ui_dir: Option<&Path>) -> Router {
         .merge(proposals::routes())
         .merge(sessions::routes())
         .merge(scenarios::routes())
-        .merge(stages::routes());
+        .merge(stages::routes())
+        .merge(findings::routes());
     let api = match ui_dir {
         None => api.fallback(route_not_found),
         Some(dir) => {

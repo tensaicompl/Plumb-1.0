@@ -1,7 +1,7 @@
 //! Source routes (plan A0.2): evidence import and source/span reads.
 //!
 //! An upload imports evidence only: the importer chosen by the exact part media type produces the
-//! source and fragment nodes and two content-addressed artifacts. The artifacts are persisted
+//! source and fragment nodes and two content-addressed artifacts. B2 adds `list_sources`. The artifacts are persisted
 //! before the graph commit and stay (immutable, possibly orphaned) if the commit loses its race.
 //! No segmentation, model call or Requirement creation happens here.
 
@@ -16,7 +16,7 @@ use plumb_psg::{EvidenceLocator, NodePayload, NodeType};
 
 use crate::application::require_importable;
 use crate::error::ApiError;
-use crate::openapi::{Source, Span, SpanPage};
+use crate::openapi::{Source, SourceList, SourceListItem, Span, SpanPage};
 use crate::routes::MAX_SOURCE_UPLOAD_BODY_BYTES;
 use crate::state::{check_if_match, paginate, read_json, ApiState, PageRequest, QueryParams};
 
@@ -24,7 +24,9 @@ pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route(
             "/api/sources",
-            post(create_source).layer(DefaultBodyLimit::max(MAX_SOURCE_UPLOAD_BODY_BYTES)),
+            post(create_source)
+                .layer(DefaultBodyLimit::max(MAX_SOURCE_UPLOAD_BODY_BYTES))
+                .get(list_sources),
         )
         .route("/api/sources/{id}", get(get_source))
         .route("/api/sources/{id}/spans", get(get_source_spans))
@@ -107,6 +109,41 @@ fn source_payload<'g>(
         NodePayload::SourceArtifact(source) => Ok((&node.id, source)),
         _ => Err(missing()),
     }
+}
+
+/// `list_sources` (B2): every SourceArtifact by ID with its display name, import time (its
+/// audit `created_at`) and EvidenceFragment count.
+async fn list_sources(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    let loaded = state.load_head()?;
+    let graph = &loaded.graph;
+    let mut counts: std::collections::BTreeMap<&Id, u64> = Default::default();
+    for fragment_id in graph.node_ids_by_type(NodeType::EvidenceFragment) {
+        if let Some(NodePayload::EvidenceFragment(fragment)) =
+            graph.node(fragment_id).map(|n| &n.payload)
+        {
+            *counts.entry(&fragment.source_ref).or_default() += 1;
+        }
+    }
+    let mut items = Vec::new();
+    for source_id in graph.node_ids_by_type(NodeType::SourceArtifact) {
+        let Some(node) = graph.node(source_id) else {
+            continue;
+        };
+        let NodePayload::SourceArtifact(source) = &node.payload else {
+            continue;
+        };
+        items.push(SourceListItem {
+            id: node.id.to_string(),
+            hash: source.content_hash.to_string(),
+            media_type: source.media_type.clone(),
+            source_kind: source.source_kind.clone(),
+            name: source.display_name.clone(),
+            imported_at: node.audit.created_at.to_string(),
+            spans_count: counts.get(&node.id).copied().unwrap_or(0),
+        });
+    }
+    items.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(read_json(&loaded, SourceList { items }))
 }
 
 /// `get_source`.

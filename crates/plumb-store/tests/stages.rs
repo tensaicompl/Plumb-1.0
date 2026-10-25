@@ -364,7 +364,7 @@ mod stages {
     fn stages_attempts_are_durable_and_leased() {
         let db = Db::new();
         let mut store = db.store();
-        assert_eq!(STORE_SCHEMA_VERSION, 6);
+        assert_eq!(STORE_SCHEMA_VERSION, 7);
         let mut job = db.recipe("1");
         job.lease = Some(lease("own:aaaaaaaaaaaaaaaa", T2));
         let queued = inserted(store.insert_recipe_job(&job).unwrap());
@@ -1096,5 +1096,176 @@ mod stages {
         }
         assert!("done".parse::<StageStatus>().is_err());
         assert!(StageStatus::Queued.is_in_flight() && !StageStatus::Ready.is_in_flight());
+    }
+
+    /// The `directory` recipe job and step of a store-schema-v7 store.
+    fn directory_job(db: &Db, job: &str) -> NewStageRecipeJob {
+        NewStageRecipeJob {
+            recipe: "directory".to_owned(),
+            recipe_job_json: json!({"recipe": "directory"}),
+            ..db.recipe(job)
+        }
+    }
+
+    fn directory_step(db: &Db, job: &str) -> NewStageStep {
+        NewStageStep {
+            recipe_job_id: generic(job),
+            ordinal: 0,
+            phase: "directory".to_owned(),
+            compiler_stage: "S2".to_owned(),
+            input_revision_id: db.r1.clone(),
+        }
+    }
+
+    /// The pipeline (UI backend gap): store schema v7 admits the `directory` recipe and phase,
+    /// so the configured directory runs as an ordinary recipe job.
+    #[test]
+    fn stages_v7_admits_the_directory_recipe_and_phase() {
+        assert_eq!(STORE_SCHEMA_VERSION, 7);
+        let db = Db::new();
+        let mut store = db.store();
+        let job = inserted(store.insert_recipe_job(&directory_job(&db, "7")).unwrap());
+        assert_eq!(job.recipe, "directory");
+        store.insert_step(&directory_step(&db, "7")).unwrap();
+        assert_eq!(store.steps(&generic("7")).unwrap()[0].phase, "directory");
+        // Anything else is still refused.
+        let mut other = directory_job(&db, "8");
+        other.recipe = "nope".to_owned();
+        assert!(store.insert_recipe_job(&other).is_err());
+    }
+
+    /// A v6 store (no `directory` recipe or phase) migrates in place to v7: every recipe job and
+    /// step keeps its row, the schema equals a fresh one and `directory` is admitted.
+    #[test]
+    fn stages_v6_store_migrates_to_v7_admitting_directory() {
+        let fresh = Db::new();
+        let db = Db::new();
+        let mut store = db.store();
+        for job in ["1", "2"] {
+            inserted(store.insert_recipe_job(&db.recipe(job)).unwrap());
+        }
+        assert!(store.claim_recipe_job(&generic("2"), ts(T2)).unwrap());
+        store
+            .insert_step(&NewStageStep {
+                recipe_job_id: generic("2"),
+                ordinal: 0,
+                phase: "segmentation".to_owned(),
+                compiler_stage: "S1".to_owned(),
+                input_revision_id: db.r1.clone(),
+            })
+            .unwrap();
+        drop(store);
+        let schema = |db: &Db| -> Vec<String> {
+            let conn = db.raw();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT type || name || COALESCE(sql, '') FROM sqlite_master ORDER BY name",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows.into_iter().map(|r| r.replace('"', "")).collect()
+        };
+        let rows = |db: &Db, sql: &str| -> Vec<String> {
+            let conn = db.raw();
+            let mut stmt = conn.prepare(sql).unwrap();
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        // Rebuild the exact v6 shape: the recipe and phase CHECKs without `directory`.
+        let conn = db.raw();
+        let ddl = |table: &str| -> String {
+            conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE name = ?1",
+                [table],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+            .replace(", 'directory'", "")
+        };
+        let (jobs, steps) = (ddl("stage_recipe_jobs"), ddl("stage_recipe_job_steps"));
+        assert!(!jobs.contains("directory") && !steps.contains("directory"));
+        conn.execute_batch(&format!(
+            "PRAGMA foreign_keys = OFF; \
+             CREATE TABLE jobs_v6 AS SELECT * FROM stage_recipe_jobs; \
+             CREATE TABLE steps_v6 AS SELECT * FROM stage_recipe_job_steps; \
+             DROP TABLE stage_recipe_job_steps; DROP TABLE stage_recipe_jobs; \
+             {jobs}; {steps}; \
+             INSERT INTO stage_recipe_jobs SELECT * FROM jobs_v6; \
+             INSERT INTO stage_recipe_job_steps SELECT * FROM steps_v6; \
+             DROP TABLE jobs_v6; DROP TABLE steps_v6; \
+             UPDATE schema_meta SET version = 6;"
+        ))
+        .unwrap();
+        drop(conn);
+        assert!(db.exec_err(
+            "UPDATE stage_recipe_jobs SET recipe = 'directory' WHERE recipe_job_id LIKE 'sha256:1%'"
+        ));
+        let jobs_before = rows(
+            &db,
+            "SELECT recipe_job_id || recipe || status || attempt FROM stage_recipe_jobs \
+             ORDER BY rowid",
+        );
+        let steps_before = rows(
+            &db,
+            "SELECT recipe_job_id || phase FROM stage_recipe_job_steps",
+        );
+        let mut store = db.store();
+        let version: i64 = db
+            .raw()
+            .query_row("SELECT version FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, STORE_SCHEMA_VERSION);
+        assert_eq!(
+            rows(
+                &db,
+                "SELECT recipe_job_id || recipe || status || attempt FROM stage_recipe_jobs \
+                 ORDER BY rowid",
+            ),
+            jobs_before
+        );
+        assert_eq!(
+            rows(
+                &db,
+                "SELECT recipe_job_id || phase FROM stage_recipe_job_steps"
+            ),
+            steps_before
+        );
+        assert_eq!(store.recipe_job_attempts(&generic("2")).unwrap().len(), 1);
+        drop(fresh.store());
+        assert_eq!(schema(&db), schema(&fresh));
+        inserted(store.insert_recipe_job(&directory_job(&db, "7")).unwrap());
+        store.insert_step(&directory_step(&db, "7")).unwrap();
+    }
+
+    /// The pipeline's "latest job of a recipe": recipe jobs in insertion order, independent of
+    /// their content-addressed IDs and of a clock that may not advance.
+    #[test]
+    fn stages_recipe_jobs_in_creation_order() {
+        let db = Db::new();
+        let mut store = db.store();
+        for job in ["3", "1", "2"] {
+            inserted(store.insert_recipe_job(&db.recipe(job)).unwrap());
+        }
+        let ids: Vec<Hash> = store
+            .recipe_jobs_in_creation_order()
+            .unwrap()
+            .into_iter()
+            .map(|j| j.recipe_job_id)
+            .collect();
+        assert_eq!(ids, vec![generic("3"), generic("1"), generic("2")]);
+        // Reused (existing) jobs keep their position.
+        store.insert_recipe_job(&db.recipe("3")).unwrap();
+        assert_eq!(
+            store.recipe_jobs_in_creation_order().unwrap()[0].recipe_job_id,
+            generic("3")
+        );
     }
 }

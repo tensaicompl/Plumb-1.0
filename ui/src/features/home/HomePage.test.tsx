@@ -121,6 +121,8 @@ const VERSION: ModelVersion = {
   hash: "psg:sha256:current",
   semantic_hash: "psg:sha256:current",
   evidence_hash: "ev:sha256:evidence",
+  created_at: "2026-05-01T12:00:00.000000000Z",
+  created_by: "agent:cli",
 };
 
 const GATES: GateStatus[] = [

@@ -68,6 +68,10 @@ const ANSWER: PendingProposal = {
   requires_reason: true,
   stale: false,
   discardable: true,
+  title: "Proposal",
+  element_kind: "other",
+  created_at: "2026-05-01T12:00:00.000000000Z",
+  stage: null,
 };
 
 const STAGE: PendingProposal = {
@@ -81,6 +85,10 @@ const STAGE: PendingProposal = {
   requires_reason: false,
   stale: false,
   discardable: false,
+  title: "Proposal",
+  element_kind: "other",
+  created_at: "2026-05-01T12:00:00.000000000Z",
+  stage: null,
 };
 
 const STALE: PendingProposal = {
@@ -94,6 +102,10 @@ const STALE: PendingProposal = {
   requires_reason: false,
   stale: true,
   discardable: true,
+  title: "Proposal",
+  element_kind: "other",
+  created_at: "2026-05-01T12:00:00.000000000Z",
+  stage: null,
 };
 
 const WRITE = { version: "rev:1:0000000000000000", revision: "rev:1:0000000000000000", semantic_hash: CURRENT, events: [] };

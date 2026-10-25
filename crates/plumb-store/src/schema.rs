@@ -17,9 +17,10 @@ use crate::StoreError;
 /// workflow proposals and their stage links by occurrence `(proposal_id, base_revision_id)`;
 /// version 5 (H0.11, architecture §33.12) admits the terminal proposal state `abandoned`;
 /// version 6 (H0.3, architecture §33.3) adds the recipe-job `attempt`, `owner_id` and
-/// `lease_expires_at` columns and the `stage_recipe_job_attempts` history.
-/// Valid v1, v2, v3, v4 and v5 stores are migrated transactionally.
-pub const STORE_SCHEMA_VERSION: i64 = 6;
+/// `lease_expires_at` columns and the `stage_recipe_job_attempts` history; version 7 (UI
+/// pipeline) admits the `directory` recipe and phase.
+/// Valid v1, v2, v3, v4, v5 and v6 stores are migrated transactionally.
+pub const STORE_SCHEMA_VERSION: i64 = 7;
 
 /// The earlier store schema versions that are migrated.
 const STORE_SCHEMA_VERSION_V1: i64 = 1;
@@ -27,6 +28,7 @@ const STORE_SCHEMA_VERSION_V2: i64 = 2;
 const STORE_SCHEMA_VERSION_V3: i64 = 3;
 const STORE_SCHEMA_VERSION_V4: i64 = 4;
 const STORE_SCHEMA_VERSION_V5: i64 = 5;
+const STORE_SCHEMA_VERSION_V6: i64 = 6;
 
 /// Version of the persisted PSG interpretation/validation contract a snapshot was written under
 /// (owned by `plumb-psg`, next to the serialized forms it versions).
@@ -305,16 +307,17 @@ CREATE TABLE workflow_session_turns (
 );
 ";
 
-/// The stage-orchestration tables of store schema v3 (Hotfix 067; v6 adds the attempt and lease
-/// columns of `stage_recipe_jobs` through [`migrate_attempts`]). JSON columns hold RFC 8785
-/// text; typed decoding belongs to the application layer.
-const CREATE_STAGE_TABLES: &str = "
-CREATE TABLE stage_recipe_jobs (
+/// The v7 `stage_recipe_jobs` definition under `name`, before the v6 attempt and lease columns
+/// that [`add_attempt_columns`] appends (v7 admits the `directory` recipe).
+fn create_stage_recipe_jobs(name: &str) -> String {
+    format!(
+        "
+CREATE TABLE {name} (
   recipe_job_id TEXT PRIMARY KEY,
   recipe_job_json TEXT NOT NULL,
   config_json TEXT NOT NULL,
   recipe TEXT NOT NULL CHECK (recipe IN ('intake', 'lint', 'extract', 'consolidate', 'calc', 'rules',
-    'analyse', 'flows', 'scenarios', 'tags', 'run')),
+    'analyse', 'flows', 'scenarios', 'tags', 'run', 'directory')),
   branch TEXT NOT NULL,
   base_revision_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('queued', 'acquiring', 'evaluating', 'ready', 'stale',
@@ -330,23 +333,20 @@ CREATE TABLE stage_recipe_jobs (
   FOREIGN KEY (base_revision_id) REFERENCES graph_revisions(id),
   FOREIGN KEY (result_revision_id) REFERENCES graph_revisions(id)
 );
+"
+    )
+}
 
-CREATE TABLE stage_jobs (
-  stage_job_id TEXT PRIMARY KEY,
-  stage_job_json TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('queued', 'acquiring', 'evaluating', 'ready', 'stale',
-    'failed', 'committed')),
-  compile_run_ref TEXT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (compile_run_ref) REFERENCES artifacts(hash)
-);
-
-CREATE TABLE stage_recipe_job_steps (
+/// The v7 `stage_recipe_job_steps` definition under `name` (v7 admits the `directory` phase).
+fn create_stage_recipe_job_steps(name: &str) -> String {
+    format!(
+        "
+CREATE TABLE {name} (
   recipe_job_id TEXT NOT NULL,
   ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
   phase TEXT NOT NULL CHECK (phase IN ('i0', 'f1', 'f2', 'f4', 'segmentation', 'classification',
     'consolidate', 'calc', 'rules', 'analyse', 'flows', 'scenarios', 'tags', 'execute',
-    'verification')),
+    'verification', 'directory')),
   compiler_stage TEXT NOT NULL CHECK (compiler_stage IN ('S0', 'S1', 'S2', 'S3', 'S4')),
   input_revision_id TEXT NOT NULL,
   stage_job_id TEXT NULL,
@@ -362,6 +362,23 @@ CREATE TABLE stage_recipe_job_steps (
   FOREIGN KEY (compile_run_ref) REFERENCES artifacts(hash),
   FOREIGN KEY (intermediate_artifact_ref) REFERENCES artifacts(hash),
   FOREIGN KEY (result_revision_id) REFERENCES graph_revisions(id)
+);
+"
+    )
+}
+
+/// The stage-orchestration tables of store schema v3 (Hotfix 067; v6 adds the attempt and lease
+/// columns of `stage_recipe_jobs` through [`migrate_attempts`]). JSON columns hold RFC 8785
+/// text; typed decoding belongs to the application layer.
+const CREATE_STAGE_TABLES: &str = "
+CREATE TABLE stage_jobs (
+  stage_job_id TEXT PRIMARY KEY,
+  stage_job_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'acquiring', 'evaluating', 'ready', 'stale',
+    'failed', 'committed')),
+  compile_run_ref TEXT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (compile_run_ref) REFERENCES artifacts(hash)
 );
 
 CREATE TABLE gate_reports (
@@ -402,14 +419,58 @@ CREATE TABLE stage_recipe_job_attempts (
 /// The additive v4/v5 -> v6 step (H0.3): the attempt and lease columns (every existing job is its
 /// attempt 1, ownerless) and the attempt history, backfilled with one record per started job.
 fn migrate_attempts(tx: &Transaction<'_>) -> Result<(), StoreError> {
-    tx.execute_batch(
-        "ALTER TABLE stage_recipe_jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1 \
-           CHECK (attempt >= 1);
-         ALTER TABLE stage_recipe_jobs ADD COLUMN owner_id TEXT NULL;
-         ALTER TABLE stage_recipe_jobs ADD COLUMN lease_expires_at TEXT NULL;",
-    )?;
+    add_attempt_columns(tx, "stage_recipe_jobs")?;
     tx.execute_batch(CREATE_ATTEMPT_TABLES)?;
     backfill_attempts(tx)
+}
+
+/// The v6 attempt and lease columns of the recipe-job table `name`.
+fn add_attempt_columns(tx: &Transaction<'_>, name: &str) -> Result<(), StoreError> {
+    tx.execute_batch(&format!(
+        "ALTER TABLE {name} ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1 \
+           CHECK (attempt >= 1);
+         ALTER TABLE {name} ADD COLUMN owner_id TEXT NULL;
+         ALTER TABLE {name} ADD COLUMN lease_expires_at TEXT NULL;"
+    ))?;
+    Ok(())
+}
+
+/// The v3 stage-orchestration tables in their v7 form (the recipe-job table without the v6
+/// columns, which [`migrate_attempts`] adds).
+fn create_stage_tables(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    tx.execute_batch(&create_stage_recipe_jobs("stage_recipe_jobs"))?;
+    tx.execute_batch(CREATE_STAGE_TABLES)?;
+    tx.execute_batch(&create_stage_recipe_job_steps("stage_recipe_job_steps"))?;
+    Ok(())
+}
+
+/// The v6 -> v7 rebuild (UI pipeline): only the recipe and phase CHECKs change to admit
+/// `directory`, so every recipe job and step row is copied unchanged, column for column and in
+/// insertion order. The attempt history, stage links and gate reports keep referencing the
+/// tables by name.
+fn migrate_directory_recipe(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    tx.execute_batch(&create_stage_recipe_jobs("stage_recipe_jobs_v7"))?;
+    add_attempt_columns(tx, "stage_recipe_jobs_v7")?;
+    tx.execute_batch(&create_stage_recipe_job_steps("stage_recipe_job_steps_v7"))?;
+    tx.execute_batch(
+        "INSERT INTO stage_recipe_jobs_v7 (recipe_job_id, recipe_job_json, config_json, recipe, \
+           branch, base_revision_id, status, result_revision_id, failure_code, failure_message, \
+           created_at, updated_at, attempt, owner_id, lease_expires_at) \
+         SELECT recipe_job_id, recipe_job_json, config_json, recipe, branch, base_revision_id, \
+           status, result_revision_id, failure_code, failure_message, created_at, updated_at, \
+           attempt, owner_id, lease_expires_at FROM stage_recipe_jobs ORDER BY rowid;
+         INSERT INTO stage_recipe_job_steps_v7 (recipe_job_id, ordinal, phase, compiler_stage, \
+           input_revision_id, stage_job_id, compile_run_ref, intermediate_artifact_ref, gate, \
+           result_revision_id) \
+         SELECT recipe_job_id, ordinal, phase, compiler_stage, input_revision_id, stage_job_id, \
+           compile_run_ref, intermediate_artifact_ref, gate, result_revision_id \
+           FROM stage_recipe_job_steps ORDER BY rowid;
+         DROP TABLE stage_recipe_job_steps;
+         DROP TABLE stage_recipe_jobs;
+         ALTER TABLE stage_recipe_jobs_v7 RENAME TO stage_recipe_jobs;
+         ALTER TABLE stage_recipe_job_steps_v7 RENAME TO stage_recipe_job_steps;",
+    )?;
+    Ok(())
 }
 
 /// One attempt record per started recipe job of a pre-v6 store: started at its creation, and
@@ -507,16 +568,18 @@ pub(crate) fn durability_of(conn: &Connection) -> Result<Durability, StoreError>
 
 enum SchemaState {
     Fresh,
-    /// A valid version-1 store that must be migrated to version 6.
+    /// A valid version-1 store that must be migrated to version 7.
     V1,
-    /// A valid version-2 store that must be migrated to version 6.
+    /// A valid version-2 store that must be migrated to version 7.
     V2,
-    /// A valid version-3 store that must be migrated to version 6.
+    /// A valid version-3 store that must be migrated to version 7.
     V3,
-    /// A valid version-4 store that must be migrated to version 6.
+    /// A valid version-4 store that must be migrated to version 7.
     V4,
-    /// A valid version-5 store that must be migrated to version 6.
+    /// A valid version-5 store that must be migrated to version 7.
     V5,
+    /// A valid version-6 store that must be migrated to version 7.
+    V6,
     Current,
 }
 
@@ -570,6 +633,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
         STORE_SCHEMA_VERSION_V3 => SchemaState::V3,
         STORE_SCHEMA_VERSION_V4 => SchemaState::V4,
         STORE_SCHEMA_VERSION_V5 => SchemaState::V5,
+        STORE_SCHEMA_VERSION_V6 => SchemaState::V6,
         found => return Err(StoreError::UnsupportedStoreSchemaVersion { found }),
     };
     let missing = missing_tables(&tables, &REQUIRED_V1_TABLES);
@@ -582,6 +646,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
     | SchemaState::V3
     | SchemaState::V4
     | SchemaState::V5
+    | SchemaState::V6
     | SchemaState::Current = state
     {
         let missing = missing_tables(&tables, &WORKFLOW_TABLES);
@@ -591,7 +656,12 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
             });
         }
     }
-    if let SchemaState::V3 | SchemaState::V4 | SchemaState::V5 | SchemaState::Current = state {
+    if let SchemaState::V3
+    | SchemaState::V4
+    | SchemaState::V5
+    | SchemaState::V6
+    | SchemaState::Current = state
+    {
         let missing = missing_tables(&tables, &STAGE_TABLES);
         if !missing.is_empty() {
             return Err(StoreError::CorruptStoreSchema {
@@ -599,7 +669,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
             });
         }
     }
-    if let SchemaState::Current = state {
+    if let SchemaState::V6 | SchemaState::Current = state {
         let missing = missing_tables(&tables, &ATTEMPT_TABLES);
         if !missing.is_empty() {
             return Err(StoreError::CorruptStoreSchema {
@@ -651,16 +721,16 @@ fn is_not_a_project(error: &rusqlite::Error) -> bool {
     )
 }
 
-/// Configures `conn` and brings the database to store schema v6, or fails without altering it.
+/// Configures `conn` and brings the database to store schema v7, or fails without altering it.
 ///
 /// In `CreateOrMigrate` mode a fresh database (optionally holding only the F0.2 `artifacts`
-/// table) is initialized at v6 in one transaction; in every mode a fresh database is otherwise
-/// [`StoreError::DatabaseNotInitialized`]. A valid v1, v2, v3, v4 or v5 store is migrated to v6 in one
+/// table) is initialized at v7 in one transaction; in every mode a fresh database is otherwise
+/// [`StoreError::DatabaseNotInitialized`]. A valid v1, v2, v3, v4, v5 or v6 store is migrated to v7 in one
 /// transaction (never in `ReadOnly` mode: [`StoreError::DatabaseReadOnly`]); any failure rolls
 /// the whole migration back; existing revision, artifact and workflow rows are never rewritten
 /// (v2/v3 workflow proposals are copied unchanged into the rebuilt table, each as its own
 /// occurrence; v4 proposal rows are copied unchanged into the v5 table; v4 and v5 recipe jobs
-/// keep their rows as attempt 1); a versioned v6 store is verified and left unchanged;
+/// keep their rows as attempt 1); v6 recipe jobs and steps are copied unchanged into the v7 tables; a versioned v7 store is verified and left unchanged;
 /// anything else is rejected.
 ///
 /// The durability profile is frozen (Fable #199, `docs/operations.md`): WAL journal and
@@ -712,7 +782,7 @@ fn migrate(conn: &mut Connection, mode: StoreOpenMode) -> Result<(), StoreError>
             tx.execute_batch(CREATE_STORE_TABLES)?;
             tx.execute_batch(&create_workflow_proposals("workflow_proposals"))?;
             tx.execute_batch(CREATE_SESSION_TABLES)?;
-            tx.execute_batch(CREATE_STAGE_TABLES)?;
+            create_stage_tables(&tx)?;
             tx.execute_batch(&create_stage_job_proposals("stage_job_proposals"))?;
             migrate_attempts(&tx)?;
             tx.execute(
@@ -723,14 +793,14 @@ fn migrate(conn: &mut Connection, mode: StoreOpenMode) -> Result<(), StoreError>
         SchemaState::V1 => {
             tx.execute_batch(&create_workflow_proposals("workflow_proposals"))?;
             tx.execute_batch(CREATE_SESSION_TABLES)?;
-            tx.execute_batch(CREATE_STAGE_TABLES)?;
+            create_stage_tables(&tx)?;
             tx.execute_batch(&create_stage_job_proposals("stage_job_proposals"))?;
             migrate_attempts(&tx)?;
             set_version(&tx, STORE_SCHEMA_VERSION_V1)?;
         }
         SchemaState::V2 => {
             migrate_workflow_proposals(&tx)?;
-            tx.execute_batch(CREATE_STAGE_TABLES)?;
+            create_stage_tables(&tx)?;
             tx.execute_batch(&create_stage_job_proposals("stage_job_proposals"))?;
             migrate_attempts(&tx)?;
             require_foreign_keys(&tx)?;
@@ -740,19 +810,27 @@ fn migrate(conn: &mut Connection, mode: StoreOpenMode) -> Result<(), StoreError>
             migrate_workflow_proposals(&tx)?;
             migrate_stage_job_proposals(&tx)?;
             migrate_attempts(&tx)?;
+            migrate_directory_recipe(&tx)?;
             require_foreign_keys(&tx)?;
             set_version(&tx, STORE_SCHEMA_VERSION_V3)?;
         }
         SchemaState::V4 => {
             migrate_v4_proposal_states(&tx)?;
             migrate_attempts(&tx)?;
+            migrate_directory_recipe(&tx)?;
             require_foreign_keys(&tx)?;
             set_version(&tx, STORE_SCHEMA_VERSION_V4)?;
         }
         SchemaState::V5 => {
             migrate_attempts(&tx)?;
+            migrate_directory_recipe(&tx)?;
             require_foreign_keys(&tx)?;
             set_version(&tx, STORE_SCHEMA_VERSION_V5)?;
+        }
+        SchemaState::V6 => {
+            migrate_directory_recipe(&tx)?;
+            require_foreign_keys(&tx)?;
+            set_version(&tx, STORE_SCHEMA_VERSION_V6)?;
         }
         SchemaState::Current => {}
     }

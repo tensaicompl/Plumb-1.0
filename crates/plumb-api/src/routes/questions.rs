@@ -2,7 +2,8 @@
 //! Accepted Questions; answering builds the existing S3.3 resolution proposal and persists it as
 //! a pending workflow proposal without committing; a round targets one stakeholder through the
 //! S3.2 kernel and is a projection over `Question.round_ref`. U2.2 (Hotfix 076) returns the
-//! authoritative workflow class of the answer's pending Proposal.
+//! authoritative workflow class of the answer's pending Proposal. B2 adds `generate_questions`
+//! (the CLI `ask`, optionally composing a stakeholder round).
 
 use axum::body::Bytes;
 use axum::extract::{Path, RawQuery, State};
@@ -14,16 +15,20 @@ use plumb_core::Id;
 
 use crate::application::round_size;
 use crate::error::ApiError;
-use crate::openapi::{AnswerRequest, CreateRoundRequest, QuestionPage, QuestionStatus};
+use crate::openapi::{
+    AnswerRequest, CreateRoundRequest, GenerateQuestionsRequest, QuestionPage, QuestionStatus,
+};
 use crate::state::{
     check_if_match, paginate_projected, parse_body, parse_id, parse_wire, project, read_json,
     ApiState, PageRequest, QueryParams,
 };
+use plumb_functional::MAX_QUESTION_ROUND_SIZE;
 
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/api/questions", get(list_questions))
         .route("/api/questions/{id}/answer", post(answer_question))
+        .route("/api/questions/generate", post(generate_questions))
         .route("/api/rounds", post(create_round))
         .route("/api/rounds/{id}", get(get_round))
 }
@@ -141,4 +146,28 @@ async fn get_round(
     let loaded = state.load_head()?;
     let round = state.round(&loaded, &id)?;
     Ok(read_json(&loaded, round))
+}
+
+/// `generate_questions`: the shared `generate_questions` service (body checks before If-Match).
+/// `max` bounds the optional round (default: every eligible question, at most 1000).
+async fn generate_questions(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: GenerateQuestionsRequest = parse_body(&body)?;
+    let stakeholder = request
+        .stakeholder
+        .as_deref()
+        .map(|s| parse_id(s).ok_or_else(|| ApiError::invalid("stakeholder is not an ID")))
+        .transpose()?;
+    let size = round_size(request.max.unwrap_or(MAX_QUESTION_ROUND_SIZE as u64))?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let response = tokio::task::spawn_blocking(move || {
+        state.generate_questions(&loaded, stakeholder.as_ref(), size)
+    })
+    .await
+    .map_err(|e| ApiError::internal_cause("questions_task", &e))??;
+    Ok(Json(response).into_response())
 }

@@ -353,6 +353,11 @@ mod http_stages {
         process_scope: Option<Value>,
         f4_json: Option<Value>,
         verification_json: Option<Value>,
+        /// The configured directory and question routing in their configured JSON form.
+        directory: Option<Value>,
+        question_routing: Option<Value>,
+        /// The provider policy `config` (default `{}`).
+        policy_config: Option<Value>,
     }
 
     /// The replay mode of the test provider (R0.2: only `null` declares absence).
@@ -392,7 +397,7 @@ mod http_stages {
             },
             provider_policy: ProviderPolicy {
                 provider: "test".into(),
-                config: CanonicalJson::new(json!({})),
+                config: CanonicalJson::new(gates.policy_config.clone().unwrap_or(json!({}))),
             },
             session_turn_config: SessionTurnConfig {
                 retrieval_top_k: 3,
@@ -436,8 +441,8 @@ mod http_stages {
                 f1: gates.f1.clone(),
                 f4: configured(&gates.f4_json).or_else(|| gates.f4.clone().map(Into::into)),
             },
-            directory: None,
-            question_routing: None,
+            directory: configured(&gates.directory),
+            question_routing: configured(&gates.question_routing),
         }
     }
 
@@ -4266,5 +4271,591 @@ mod http_stages {
             }
             assert!(e["inputs"].get("selections").is_none(), "{e}");
         }
+    }
+
+    // ------------------------------------------------------------------ UI pipeline (lane B2)
+
+    /// The pipeline order of `GET /api/pipeline`.
+    const PIPELINE: [&str; 11] = [
+        "extract",
+        "consolidate",
+        "lint",
+        "directory",
+        "analyse",
+        "flows",
+        "calc",
+        "rules",
+        "scenarios",
+        "tags",
+        "run",
+    ];
+
+    async fn pipeline(app: &App) -> Value {
+        let r = get(app, "/api/pipeline").await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        r.json()
+    }
+
+    fn step<'a>(pipeline: &'a Value, recipe: &str) -> &'a Value {
+        pipeline["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["recipe"] == recipe)
+            .unwrap_or_else(|| panic!("{recipe}: {pipeline}"))
+    }
+
+    /// `get_pipeline`: every stage recipe in pipeline order, derived from the stage store (latest
+    /// job per recipe) and the workflow proposals; `next` is the first step that is not done and
+    /// whose configuration is complete.
+    #[tokio::test]
+    async fn pipeline_derives_every_step_from_the_stage_and_workflow_stores() {
+        let app = app(data_graph(&["Email", "Salary"]));
+        let r = get(&app, "/api/pipeline").await;
+        assert_eq!(r.etag.as_deref(), Some(head_tag(&app).await.as_str()));
+        let body = r.json();
+        let recipes: Vec<&str> = body["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["recipe"].as_str().unwrap())
+            .collect();
+        assert_eq!(recipes, PIPELINE);
+        for s in body["steps"].as_array().unwrap() {
+            assert_eq!(s["status"], "not_started", "{s}");
+            for field in ["job_id", "progress", "error", "updated_at"] {
+                assert_eq!(s[field], Value::Null, "{s}");
+            }
+            assert_eq!(s["pending_proposals"], 0, "{s}");
+        }
+        for (recipe, missing) in [
+            ("extract", json!([])),
+            ("lint", json!(["gates.f1"])),
+            ("directory", json!(["directory"])),
+            ("calc", json!(["calculation_scope"])),
+            ("flows", json!(["operation_scope", "process_scope"])),
+            ("scenarios", json!(["scenario_derivation"])),
+            ("run", json!(["gates.f4"])),
+            ("tags", json!([])),
+        ] {
+            assert_eq!(step(&body, recipe)["missing_config"], missing, "{recipe}");
+        }
+        assert_eq!(body["sources"], 0);
+        assert_eq!(body["open_questions"], 0);
+        assert_eq!(body["next"], "extract");
+
+        // A captured job that has not started is queued.
+        let queued = app.state.run_stage(Recipe::Extract, None, None).unwrap();
+        let body = pipeline(&app).await;
+        let extract = step(&body, "extract");
+        assert_eq!(extract["status"], "queued");
+        assert_eq!(extract["job_id"], queued.job_id.as_str());
+        assert_eq!(extract["progress"], 0.0);
+        assert_eq!(body["next"], "extract");
+        // An extract without evidence finishes without proposals: done; next moves on.
+        app.state.execute_recipe_job(&queued.job_id).unwrap();
+        let body = pipeline(&app).await;
+        let extract = step(&body, "extract");
+        assert_eq!(extract["status"], "done");
+        assert_eq!(extract["progress"], 1.0);
+        assert_eq!(extract["updated_at"], NOW);
+        assert_eq!(body["next"], "consolidate");
+
+        // A ready job with pending proposals of that job needs review.
+        let tags = run_inline(&app, Recipe::Tags, None);
+        let body = pipeline(&app).await;
+        let t = step(&body, "tags");
+        assert_eq!(t["status"], "needs_review", "{t}");
+        assert_eq!(t["job_id"], tags.as_str());
+        assert_eq!(t["pending_proposals"], 2);
+        assert_eq!(t["error"], Value::Null);
+
+        // The head moves: those proposals can no longer be accepted, so the step is stale; they
+        // are still pending (and listed) until rejected or rebuilt.
+        commit_patch(&app, |_| SemanticPatch::AddNode {
+            node: requirement("req:later", "Proposed", "A later change."),
+        });
+        let body = pipeline(&app).await;
+        let t = step(&body, "tags");
+        assert_eq!(t["status"], "stale", "{t}");
+        assert_eq!(t["pending_proposals"], 2);
+        assert_eq!(step(&body, "extract")["status"], "done");
+        let r = get(&app, "/api/pipeline").await;
+        assert_eq!(r.etag.as_deref(), Some(head_tag(&app).await.as_str()));
+
+        // A failed job reports its typed error.
+        let app = self::app(data_graph(&["Email"]));
+        *app.provider.fail.lock().unwrap() = true;
+        let failed = run_inline(&app, Recipe::Tags, None);
+        let body = pipeline(&app).await;
+        let t = step(&body, "tags");
+        assert_eq!(t["status"], "failed");
+        assert_eq!(t["job_id"], failed.as_str());
+        assert_eq!(t["error"]["code"], "E_INFERENCE_FAILED");
+        assert!(!t["error"]["message"].as_str().unwrap().is_empty(), "{t}");
+        assert_eq!(body["next"], "extract");
+    }
+
+    /// `get_pipeline` counts the imported sources.
+    #[tokio::test]
+    async fn pipeline_counts_imported_sources() {
+        let app = source_app();
+        assert_eq!(pipeline(&app).await["sources"], 1);
+    }
+
+    /// `retry_job` (H0.3 over HTTP): If-Match, then the retry service re-queues the failed job
+    /// as its next attempt and starts it like `run_stage`, with the same response.
+    #[tokio::test]
+    async fn retry_job_requeues_a_failed_job_and_starts_it() {
+        let app = app(data_graph(&["Email"]));
+        *app.provider.fail.lock().unwrap() = true;
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        assert_eq!(job(&app, &job_id)["status"], "failed");
+        let uri = format!("/api/jobs/{job_id}/retry");
+        let tag = head_tag(&app).await;
+        // If-Match is required and literal.
+        let r = post(&app, &uri, None, json!({})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
+        );
+        let semantic = head(&app).revision.semantic_hash.to_string();
+        let r = post(&app, &uri, Some(&semantic), json!({})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::PRECONDITION_FAILED, "E_PRECONDITION_FAILED")
+        );
+        // Malformed and unknown IDs; an unknown body field.
+        let r = post(&app, "/api/jobs/not-a-hash/retry", Some(&tag), json!({})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
+        );
+        let unknown = format!("/api/jobs/sha256:{}/retry", "0".repeat(64));
+        let r = post(&app, &unknown, Some(&tag), json!({})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "E_NOT_FOUND")
+        );
+        let r = post(&app, &uri, Some(&tag), json!({"x": 1})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(record(&app, &job_id).attempt, 1);
+        // The retry: the run_stage response, then the worker runs attempt 2.
+        *app.provider.fail.lock().unwrap() = false;
+        let before = head(&app).revision;
+        let r = post(&app, &uri, Some(&tag), json!({})).await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        let body = r.json();
+        assert_eq!(body["job_id"], job_id.as_str());
+        assert_eq!(body["revision"], before.id.to_string());
+        assert_eq!(body["version"], body["revision"]);
+        assert_eq!(body["semantic_hash"], before.semantic_hash.to_string());
+        assert_eq!(body["events"], json!([]));
+        let done = wait_job(&app, job_id.as_str()).await;
+        assert_eq!(done["status"], "committed", "{done}");
+        assert_eq!(record(&app, &job_id).attempt, 2);
+        // Committed work is not failed: the existing typed 409, nothing changes.
+        let tag = head_tag(&app).await;
+        let r = post(&app, &uri, Some(&tag), json!({})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_STAGE_RETRY_NOT_FAILED")
+        );
+        assert_eq!(record(&app, &job_id).attempt, 2);
+
+        // A failed job whose base moved is refused with nothing changed.
+        let app = self::app(data_graph(&["Email"]));
+        *app.provider.fail.lock().unwrap() = true;
+        let job_id = run_inline(&app, Recipe::Tags, None);
+        commit_patch(&app, |_| SemanticPatch::AddNode {
+            node: requirement("req:later", "Proposed", "A later change."),
+        });
+        let before = record(&app, &job_id);
+        let tag = head_tag(&app).await;
+        let r = post(
+            &app,
+            &format!("/api/jobs/{job_id}/retry"),
+            Some(&tag),
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_STAGE_RETRY_BASE_MOVED")
+        );
+        assert_eq!(record(&app, &job_id), before);
+    }
+
+    /// A six-family directory without grounding (CLI `directory` fixture).
+    fn directory_config() -> Value {
+        use plumb_validation::decision_table_analysis::{
+            DecisionColumn, DecisionInputCell, DecisionOutputCell, DecisionRow, DecisionTableSpec,
+            DecisionType,
+        };
+        let column = |name: &str| DecisionColumn {
+            name: name.into(),
+            ty: DecisionType::Bool,
+            domain: None,
+        };
+        let spec = DecisionTableSpec {
+            hit_policy: "UNIQUE".into(),
+            inputs: vec![column("eligible")],
+            outputs: vec![column("approve")],
+            rows: [true, false]
+                .into_iter()
+                .map(|v| DecisionRow {
+                    inputs: vec![DecisionInputCell::Bool { value: v }],
+                    outputs: vec![DecisionOutputCell::Bool { value: v }],
+                })
+                .collect(),
+            default_output: None,
+        };
+        json!({
+            "stakeholders": [{"id": "stakeholder:hr", "payload": {
+                "name": "HR", "stakeholder_kind": "internal", "organization": null,
+                "responsibilities": null, "contact_ref": null}}],
+            "actors": [{"id": "actor:clerk", "payload": {"name": "Clerk", "actor_kind": "human"}}],
+            "business_roles": [{"id": "brole:approver", "payload": {"name": "Approver"}}],
+            "calendars": [{"id": "cal:office", "calendar_ref": "cal:office",
+                           "time_zone": "Europe/Amsterdam", "region": "NL", "holiday_source": null}],
+            "rules": [{"id": "rule:balance", "payload": {"name": "Balance", "rule_kind": "business",
+                       "condition_expr": null, "action_expr": null}}],
+            "decision_tables": [{"id": "dt:approval", "name": "Approval", "spec": spec}]
+        })
+    }
+
+    /// `run_stage` `directory`: the configured directory runs as a whole-project recipe job that
+    /// persists one pending intake-origin proposal per element (nothing is committed), and the
+    /// pipeline reports it awaiting review.
+    #[tokio::test]
+    async fn directory_runs_as_a_stage_recipe_and_persists_pending_proposals() {
+        // Absent configuration is the typed missing-configuration conflict.
+        let app = app(data_graph(&[]));
+        let r = run_stage(&app, "directory", Value::Null).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_STAGE_CONFIG_MISSING")
+        );
+        assert_eq!(r.json()["details"]["missing"], json!(["directory"]));
+        assert_eq!(r.json()["details"]["recipe"], "directory");
+
+        let app = app_with(
+            data_graph(&[]),
+            &[],
+            Gates {
+                directory: Some(directory_config()),
+                ..Gates::default()
+            },
+        );
+        // The directory is whole-project.
+        let r = run_stage(&app, "directory", json!(["entity:employee"])).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, "E_STAGE_SCOPE_INVALID")
+        );
+        assert_eq!(
+            step(&pipeline(&app).await, "directory")["missing_config"],
+            json!([])
+        );
+        let before = head(&app).revision.id;
+        let r = run_stage(&app, "directory", Value::Null).await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        let body = r.json();
+        assert_eq!(body["revision"], before.to_string());
+        assert_eq!(body["events"], json!([]));
+        let job_id = body["job_id"].as_str().unwrap().to_owned();
+        let done = wait_job(&app, &job_id).await;
+        assert_eq!(done["status"], "ready", "{done}");
+        assert_eq!(done["result_version"], before.to_string());
+        assert_eq!(head(&app).revision.id, before);
+        // One pending intake-origin proposal per configured element, on the base.
+        let pending = workflow(&app).pending_proposals().unwrap();
+        assert_eq!(pending.len(), 6, "{pending:?}");
+        assert!(pending
+            .iter()
+            .all(|p| p.origin_kind.as_str() == "intake" && p.base_revision_id == before));
+        let listed = get(&app, "/api/proposals").await.json();
+        assert_eq!(listed["items"].as_array().unwrap().len(), 6, "{listed}");
+        // The pipeline: the directory step awaits review of exactly those proposals.
+        let body = pipeline(&app).await;
+        let d = step(&body, "directory");
+        assert_eq!(d["status"], "needs_review", "{d}");
+        assert_eq!(d["job_id"], job_id.as_str());
+        assert_eq!(d["pending_proposals"], 6);
+        // Re-running on the same head reuses the job; nothing is persisted twice.
+        let again = run_stage(&app, "directory", Value::Null).await;
+        assert_eq!(again.json()["job_id"], job_id.as_str());
+        assert_eq!(workflow(&app).pending_proposals().unwrap().len(), 6);
+    }
+
+    /// Accepted Stakeholder `stakeholder:hr` and an Accepted Operation without a performer (an
+    /// F2 PLUMB.F2.OPERATION.PERFORMER finding the routing sends to HR).
+    fn question_graph() -> Graph {
+        let mut nodes = agents();
+        nodes.push(node(
+            "stakeholder:hr",
+            "Accepted",
+            "Stakeholder",
+            json!({"name": "HR", "stakeholder_kind": "internal", "organization": null,
+                   "responsibilities": null, "contact_ref": null}),
+        ));
+        // The performer answer choice.
+        nodes.push(node(
+            "actor:clerk",
+            "Accepted",
+            "Actor",
+            json!({"name": "Clerk", "actor_kind": "human"}),
+        ));
+        nodes.push(node(
+            "op:submit",
+            "Accepted",
+            "Operation",
+            json!({"name": "op:submit", "operation_kind": "command", "input_schema_ref": null,
+                   "output_schema_ref": null, "preconditions": null, "postconditions": null,
+                   "idempotency": null, "transaction_semantics": null}),
+        ));
+        Graph::new(id(PROJECT), id(PROFILE), nodes, vec![]).unwrap()
+    }
+
+    fn routing_config() -> Value {
+        json!({
+            "stakeholders": [{"id": "stakeholder:hr", "name": "HR", "roles": ["analyst"]}],
+            "routing": {"default": ["stakeholder:hr"]}
+        })
+    }
+
+    fn question_app() -> App {
+        app_with(
+            question_graph(),
+            &[],
+            Gates {
+                question_routing: Some(routing_config()),
+                ..Gates::default()
+            },
+        )
+    }
+
+    /// `generate_questions` (CLI `ask` over HTTP): materializes the questions of the current gate
+    /// reports with the configured routing; `{stakeholder}` also composes that stakeholder's
+    /// round through `create_round`.
+    #[tokio::test]
+    async fn generate_questions_materializes_questions_and_an_optional_round() {
+        let uri = "/api/questions/generate";
+        // Absent routing configuration is the typed missing-configuration conflict.
+        let app = app(question_graph());
+        let tag = head_tag(&app).await;
+        let r = post(&app, uri, Some(&tag), json!({})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_STAGE_CONFIG_MISSING")
+        );
+
+        let app = question_app();
+        let before = head(&app).revision;
+        let tag = head_tag(&app).await;
+        let r = post(&app, uri, None, json!({})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
+        );
+        let r = post(&app, uri, Some(before.semantic_hash.as_ref()), json!({})).await;
+        assert_eq!(r.status, StatusCode::PRECONDITION_FAILED);
+        let r = post(&app, uri, Some(&tag), json!({"x": 1})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        // An unknown stakeholder is refused before anything is committed.
+        let r = post(
+            &app,
+            uri,
+            Some(&tag),
+            json!({"stakeholder": "stakeholder:nobody"}),
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "E_NOT_FOUND")
+        );
+        let r = post(&app, uri, Some(&tag), json!({"stakeholder": "op:submit"})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "E_ROUND_STAKEHOLDER_INVALID")
+        );
+        assert_eq!(head(&app).revision.id, before.id);
+        // The questions: one non-semantic revision.
+        let r = post(&app, uri, Some(&tag), json!({})).await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        let body = r.json();
+        let after = head(&app).revision;
+        assert_ne!(after.id, before.id);
+        assert_eq!(body["revision"], after.id.to_string());
+        assert_eq!(body["version"], body["revision"]);
+        assert_eq!(body["semantic_hash"], after.semantic_hash.to_string());
+        assert!(!body["events"].as_array().unwrap().is_empty(), "{body}");
+        assert_eq!(body["round"], Value::Null);
+        let ids: Vec<String> = body["question_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| q.as_str().unwrap().to_owned())
+            .collect();
+        assert!(!ids.is_empty(), "{body}");
+        for q in &ids {
+            assert!(head(&app).graph.node(&id(q)).is_some(), "{q}");
+        }
+        let open = pipeline(&app).await["open_questions"].as_u64().unwrap();
+        assert_eq!(open, ids.len() as u64);
+        // Nothing missing: the same questions, no revision, no event.
+        let tag = head_tag(&app).await;
+        let r = post(&app, uri, Some(&tag), json!({})).await;
+        let again = r.json();
+        assert_eq!(again["question_ids"], body["question_ids"]);
+        assert_eq!(again["revision"], after.id.to_string());
+        assert_eq!(again["events"], json!([]));
+        // With a stakeholder: its round over the eligible questions.
+        let r = post(
+            &app,
+            uri,
+            Some(&tag),
+            json!({"stakeholder": "stakeholder:hr"}),
+        )
+        .await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        let body = r.json();
+        let round = &body["round"];
+        assert_eq!(round["stakeholder"], "stakeholder:hr");
+        let members: Vec<String> = round["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| q.as_str().unwrap().to_owned())
+            .collect();
+        assert!(!members.is_empty() && members.iter().all(|m| ids.contains(m)));
+        assert_eq!(body["revision"], head(&app).revision.id.to_string());
+        assert_ne!(body["revision"], after.id.to_string());
+        let read = get(
+            &app,
+            &format!("/api/rounds/{}", round["id"].as_str().unwrap()),
+        )
+        .await;
+        assert_eq!(&read.json(), round);
+        // Every question already has a round: no new round, nothing committed.
+        let tag = head_tag(&app).await;
+        let revision = head(&app).revision.id;
+        let r = post(
+            &app,
+            uri,
+            Some(&tag),
+            json!({"stakeholder": "stakeholder:hr"}),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.json()["round"], Value::Null);
+        assert_eq!(head(&app).revision.id, revision);
+    }
+
+    /// `materialize_findings` (CLI `findings materialize` over HTTP): one non-semantic revision
+    /// adds the actionable current gate findings as Finding nodes; nothing changes the second
+    /// time.
+    #[tokio::test]
+    async fn materialize_findings_persists_actionable_findings_once() {
+        let uri = "/api/findings/materialize";
+        let app = question_app();
+        let before = head(&app).revision;
+        let r = post(&app, uri, None, json!({})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
+        );
+        let r = post(&app, uri, Some(before.semantic_hash.as_ref()), json!({})).await;
+        assert_eq!(r.status, StatusCode::PRECONDITION_FAILED);
+        let tag = head_tag(&app).await;
+        let r = post(&app, uri, Some(&tag), json!({"x": 1})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        let r = post(&app, uri, Some(&tag), json!({})).await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        let body = r.json();
+        let after = head(&app);
+        assert_ne!(after.revision.id, before.id);
+        assert_eq!(body["revision"], after.revision.id.to_string());
+        assert_eq!(body["version"], body["revision"]);
+        assert_eq!(
+            body["semantic_hash"],
+            after.revision.semantic_hash.to_string()
+        );
+        assert!(!body["events"].as_array().unwrap().is_empty(), "{body}");
+        let ids = body["finding_ids"].as_array().unwrap();
+        assert!(!ids.is_empty(), "{body}");
+        for f in ids {
+            let node = after.graph.node(&id(f.as_str().unwrap())).unwrap();
+            assert!(matches!(node.payload, NodePayload::Finding(_)), "{f}");
+        }
+        let tag = head_tag(&app).await;
+        let r = post(&app, uri, Some(&tag), json!({})).await;
+        let again = r.json();
+        assert_eq!(again["finding_ids"], json!([]));
+        assert_eq!(again["revision"], after.revision.id.to_string());
+        assert_eq!(again["events"], json!([]));
+    }
+
+    /// `get_me.inference_model`: the configured model name, only while inference is available.
+    #[tokio::test]
+    async fn me_reports_the_configured_inference_model() {
+        let model = json!({"model": "claude-test-model"});
+        let app = app_with(
+            data_graph(&[]),
+            &[],
+            Gates {
+                policy_config: Some(model.clone()),
+                ..Gates::default()
+            },
+        );
+        let me = get(&app, "/api/me").await.json();
+        assert_eq!(me["inference_available"], true);
+        assert_eq!(me["inference_model"], "claude-test-model");
+        // No configured model name.
+        let me = get(&self::app(data_graph(&[])), "/api/me").await.json();
+        assert_eq!(me["inference_model"], Value::Null);
+        // Inference off: no model, whatever the policy says.
+        let app = app_with(
+            data_graph(&[]),
+            &[],
+            Gates {
+                policy_config: Some(model),
+                null_provider: true,
+                ..Gates::default()
+            },
+        );
+        let me = get(&app, "/api/me").await.json();
+        assert_eq!(me["inference_available"], false);
+        assert_eq!(me["inference_model"], Value::Null);
     }
 }

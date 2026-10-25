@@ -8,6 +8,7 @@ pub(crate) mod acceptance;
 pub(crate) mod acquire;
 pub(crate) mod gates;
 pub(crate) mod phases;
+pub(crate) mod pipeline;
 pub mod recipe;
 pub(crate) mod scenario_execution;
 pub(crate) mod worker;
@@ -306,6 +307,26 @@ impl Run<'_> {
         let current = self.current.clone();
         let ordinal = self.step(Phase::Rules, &current.revision.id)?;
         let bytes = rules_projection(&current.graph, tables)?;
+        let hash = put_projection(self.state, &bytes)?;
+        self.state
+            .with_stage_store(|store| {
+                store.update_step(&self.job_id, ordinal, None, None, Some(&hash), None, None)
+            })?
+            .map_err(crate::stage::store_error)?;
+        Ok(())
+    }
+
+    /// The `directory` phase (B2): the configured directory service on the current revision
+    /// persists one pending intake-origin proposal per new element (nothing is committed); the
+    /// outcomes are the step's Projection intermediate `{"elements": [...]}`, so the pipeline
+    /// can tell which pending proposals this job produced.
+    fn directory_step(&mut self) -> Result<(), StepEnd> {
+        self.set_status(StageStatus::Evaluating)?;
+        let current = self.current.clone();
+        let ordinal = self.step(Phase::Directory, &current.revision.id)?;
+        let elements = self.state.persist_directory(&current)?;
+        let bytes = to_canonical_json(&json!({ "elements": elements }))
+            .map_err(|e| ApiError::internal_cause("directory_projection", &e))?;
         let hash = put_projection(self.state, &bytes)?;
         self.state
             .with_stage_store(|store| {
@@ -1021,6 +1042,7 @@ fn execute(run: &mut Run<'_>) -> Result<(), StepEnd> {
         Recipe::Intake => run.gate_step(Phase::I0, GateId::I0)?,
         Recipe::Lint => run.gate_step(Phase::F1, GateId::F1)?,
         Recipe::Rules => run.rules_step(&targets)?,
+        Recipe::Directory => run.directory_step()?,
         Recipe::Extract => {
             let output = run.child_step(stage(
                 Phase::Segmentation,
