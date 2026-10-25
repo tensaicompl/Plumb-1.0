@@ -1954,15 +1954,14 @@ mod http_core {
         let (mut nodes, edges) = fixture_parts();
         nodes.push(assumption("assumption:z", json!({"days": 1})));
         let app = app_with(graph_of(nodes, edges), &[], fixed());
+        // H0.11: reported as the item's typed health marker; the other items are returned.
         let r = get(&app, "/api/assumptions").await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.json()["health"][0]["id"], "assumption:z");
         assert_eq!(
-            (r.status, r.code().as_str()),
-            (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "E_UNREPRESENTABLE_ASSUMPTION_DEFAULT"
-            )
+            r.json()["health"][0]["code"],
+            "E_UNREPRESENTABLE_ASSUMPTION_DEFAULT"
         );
-        assert_eq!(r.json()["details"]["assumption"], "assumption:z");
     }
 
     #[tokio::test]

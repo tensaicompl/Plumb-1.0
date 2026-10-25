@@ -4,11 +4,13 @@ import type { ReactNode } from "react";
 import { apiClient, readData } from "../../api/client";
 import type { components } from "../../api/schema";
 import { t, type MessageKey } from "../../i18n";
+import { HealthMarkers } from "../../components/HealthMarkers";
 import { ReadFailure } from "../../components/ReadFailure";
 
 type Finding = components["schemas"]["Finding"];
 type FindingRuleClass = components["schemas"]["FindingRuleClass"];
 type Assumption = components["schemas"]["Assumption"];
+type AssumptionPage = components["schemas"]["AssumptionPage"];
 
 /** The Findings list query root. */
 export const findingsQueryKey = ["findings"] as const;
@@ -33,8 +35,8 @@ async function fetchFindings(): Promise<Finding[]> {
   return (await readData(apiClient.GET("/api/findings"))).items;
 }
 
-async function fetchAssumptions(): Promise<Assumption[]> {
-  return (await readData(apiClient.GET("/api/assumptions"))).items;
+function fetchAssumptions(): Promise<AssumptionPage> {
+  return readData(apiClient.GET("/api/assumptions"));
 }
 
 /** The server rule class only: never derived from the code or the family. */
@@ -173,10 +175,11 @@ export function FindingsPage() {
         <h2 className="font-semibold">{t("findings.assumptions")}</h2>
         {assumptions.isError && <ReadFailure error={assumptions.error} messageKey="findings.loadFailed" />}
         {assumptions.data === undefined && !assumptions.isError && <p>{t("findings.loading")}</p>}
-        {assumptions.data !== undefined && assumptions.data.length === 0 && <p>{t("findings.noAssumptions")}</p>}
-        {assumptions.data !== undefined && assumptions.data.length > 0 && (
+        <HealthMarkers health={assumptions.data?.health} />
+        {assumptions.data !== undefined && assumptions.data.items.length === 0 && <p>{t("findings.noAssumptions")}</p>}
+        {assumptions.data !== undefined && assumptions.data.items.length > 0 && (
           <ul className="space-y-2">
-            {assumptions.data.map((assumption) => (
+            {assumptions.data.items.map((assumption) => (
               <AssumptionItem key={assumption.id} assumption={assumption} />
             ))}
           </ul>

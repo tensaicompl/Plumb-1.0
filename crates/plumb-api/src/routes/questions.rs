@@ -16,8 +16,8 @@ use crate::application::round_size;
 use crate::error::ApiError;
 use crate::openapi::{AnswerRequest, CreateRoundRequest, QuestionPage, QuestionStatus};
 use crate::state::{
-    check_if_match, paginate, parse_body, parse_id, parse_wire, read_json, ApiState, PageRequest,
-    QueryParams,
+    check_if_match, paginate_projected, parse_body, parse_id, parse_wire, project, read_json,
+    ApiState, PageRequest, QueryParams,
 };
 
 pub(crate) fn routes() -> Router<ApiState> {
@@ -56,26 +56,36 @@ async fn list_questions(
         .transpose()?;
     let loaded = state.load_head()?;
     let mut items = Vec::new();
-    for view in state.questions(&loaded)? {
-        if stakeholder
-            .as_ref()
-            .is_some_and(|s| view.stakeholder_ref != Some(s.to_string()))
-            || round
+    for (id, view) in state.question_items(&loaded) {
+        let view = project(&id, view)?;
+        if let Ok(view) = &view {
+            if stakeholder
                 .as_ref()
-                .is_some_and(|r| view.round_ref != Some(r.to_string()))
-            || status.is_some_and(|s| s != view.status)
-        {
-            continue;
+                .is_some_and(|s| view.stakeholder_ref != Some(s.to_string()))
+                || round
+                    .as_ref()
+                    .is_some_and(|r| view.round_ref != Some(r.to_string()))
+                || status.is_some_and(|s| s != view.status)
+            {
+                continue;
+            }
         }
-        items.push((view.id.clone(), view));
+        items.push((id, view));
     }
     let request = PageRequest {
         operation_id: "list_questions",
         path: Default::default(),
         query: &query,
     };
-    let (items, next_cursor) = paginate(items, &request, &loaded)?;
-    Ok(read_json(&loaded, QuestionPage { items, next_cursor }))
+    let (items, health, next_cursor) = paginate_projected(items, &request, &loaded)?;
+    Ok(read_json(
+        &loaded,
+        QuestionPage {
+            items,
+            health,
+            next_cursor,
+        },
+    ))
 }
 
 /// `answer_question`: the S3.3 resolution proposal of one answer, persisted as a pending

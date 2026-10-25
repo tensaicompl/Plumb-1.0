@@ -57,8 +57,9 @@ use crate::openapi::{
     SemanticChangePreviewResponse, SemanticElementDiff, WriteResult,
 };
 use crate::state::{
-    check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
-    require_clean_reason, run_intake, wire, with_etag, ApiState, PageRequest, QueryParams,
+    check_if_match, health_marker, is_clean_text, paginate, paginate_projected, parse_body,
+    parse_id, parse_wire, project, read_json, require_clean_reason, run_intake, wire, with_etag,
+    ApiState, PageRequest, QueryParams,
 };
 use crate::workflow::{classify, finding_view, intake_view};
 
@@ -772,32 +773,48 @@ async fn list_assumptions(
         let NodePayload::Assumption(a) = &node.payload else {
             continue;
         };
-        let default_value = match &a.default_value {
-            None | Some(Value::Null) => None,
-            Some(Value::String(s)) => Some(ScalarValue::Text(s.clone())),
-            Some(Value::Bool(b)) => Some(ScalarValue::Boolean(*b)),
-            Some(Value::Number(n)) => match n.as_f64() {
-                Some(f) => Some(ScalarValue::Number(f)),
-                None => return Err(unrepresentable(&node.id)),
-            },
-            Some(_) => return Err(unrepresentable(&node.id)),
-        };
-        items.push((
-            node.id.to_string(),
-            Assumption {
-                id: node.id.to_string(),
-                statement: a.statement.clone(),
-                owner_ref: a.owner_ref.to_string(),
-                status: a.status.clone(),
-                finding_ref: a.finding_ref.as_ref().map(Id::to_string),
-                default_value,
-                expires_at: a.expires_at.map(|t| t.to_string()),
-                risk_ref: a.risk_ref.as_ref().map(Id::to_string),
-            },
-        ));
+        let id = node.id.to_string();
+        let view = project(&id, assumption_view(node, a))?;
+        items.push((id, view));
     }
-    let (items, next_cursor) = simple_page(items, "list_assumptions", &query, &loaded)?;
-    Ok(read_json(&loaded, AssumptionPage { items, next_cursor }))
+    let request = PageRequest {
+        operation_id: "list_assumptions",
+        path: Default::default(),
+        query: &query,
+    };
+    let (items, health, next_cursor) = paginate_projected(items, &request, &loaded)?;
+    Ok(read_json(
+        &loaded,
+        AssumptionPage {
+            items,
+            health,
+            next_cursor,
+        },
+    ))
+}
+
+/// The Assumption view; a default that is not a JSON scalar is a typed error.
+fn assumption_view(node: &Node, a: &plumb_psg::Assumption) -> Result<Assumption, ApiError> {
+    let default_value = match &a.default_value {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(ScalarValue::Text(s.clone())),
+        Some(Value::Bool(b)) => Some(ScalarValue::Boolean(*b)),
+        Some(Value::Number(n)) => match n.as_f64() {
+            Some(f) => Some(ScalarValue::Number(f)),
+            None => return Err(unrepresentable(&node.id)),
+        },
+        Some(_) => return Err(unrepresentable(&node.id)),
+    };
+    Ok(Assumption {
+        id: node.id.to_string(),
+        statement: a.statement.clone(),
+        owner_ref: a.owner_ref.to_string(),
+        status: a.status.clone(),
+        finding_ref: a.finding_ref.as_ref().map(Id::to_string),
+        default_value,
+        expires_at: a.expires_at.map(|t| t.to_string()),
+        risk_ref: a.risk_ref.as_ref().map(Id::to_string),
+    })
 }
 
 fn unrepresentable(id: &Id) -> ApiError {
@@ -1440,13 +1457,31 @@ async fn list_rules(
             let Some(node) = loaded.graph.node(id) else {
                 continue;
             };
-            if let Some(view) = rule_view(node)? {
-                items.push((node.id.to_string(), view));
+            let id = node.id.to_string();
+            match rule_view(node) {
+                Ok(None) => {}
+                Ok(Some(view)) => items.push((id, Ok(view))),
+                Err(error) => {
+                    let marker = health_marker(&id, error)?;
+                    items.push((id, Err(marker)));
+                }
             }
         }
     }
-    let (items, next_cursor) = simple_page(items, "list_rules", &query, &loaded)?;
-    Ok(read_json(&loaded, RulePage { items, next_cursor }))
+    let request = PageRequest {
+        operation_id: "list_rules",
+        path: Default::default(),
+        query: &query,
+    };
+    let (items, health, next_cursor) = paginate_projected(items, &request, &loaded)?;
+    Ok(read_json(
+        &loaded,
+        RulePage {
+            items,
+            health,
+            next_cursor,
+        },
+    ))
 }
 
 /// `get_rule`.

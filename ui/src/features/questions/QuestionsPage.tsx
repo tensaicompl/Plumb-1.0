@@ -7,6 +7,7 @@ import { modelVersionQueryKey, useVersionedMutation, WriteFailedError, writeErro
 import { ProposalReviewBar, type ProposalReviewAction } from "../../components/ProposalReviewBar";
 import { isAnswerComplete, TypedAnswerControl, type AnswerValue } from "../../components/TypedAnswerControl";
 import { t } from "../../i18n";
+import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
 import { ReadFailure } from "../../components/ReadFailure";
 
 export type Question = components["schemas"]["Question"];
@@ -32,9 +33,9 @@ export async function invalidateU22(queryClient: QueryClient): Promise<void> {
 }
 
 /** GET /api/questions with optional exact filters and no page limit (all remaining items). */
-export async function fetchQuestions(status?: Question["status"]): Promise<ReviewedItems<Question>> {
+export async function fetchQuestions(status?: Question["status"]): Promise<ReviewedItems<Question> & { readonly health?: ItemHealth[] }> {
   const page = await readReviewed(apiClient.GET("/api/questions", { params: { query: status === undefined ? {} : { status } } }));
-  return { items: (page as QuestionPage).items, etag: page.etag };
+  return { items: (page as QuestionPage).items, health: (page as Partial<QuestionPage>).health, etag: page.etag };
 }
 
 /** The server error code of a failed write, when the body carries one. */
@@ -415,6 +416,7 @@ export function QuestionsPage() {
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t("questions.title")}</h1>
       <RoundManager stakeholders={[...groups.keys()]} />
+      <HealthMarkers health={questions.data.health} />
       {questions.data.items.length === 0 && <p>{t("questions.empty")}</p>}
       {[...groups.entries()].map(([stakeholder, items]) => (
         <section key={stakeholder} aria-label={stakeholder} data-stakeholder={stakeholder} className="space-y-2">

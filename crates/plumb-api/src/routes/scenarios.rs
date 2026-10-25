@@ -29,8 +29,8 @@ use crate::stage::scenario_execution::{
     current_run, execute_scenarios, link_key, run_collision, runnable, ScenarioExecution,
 };
 use crate::state::{
-    check_if_match, paginate, parse_body, parse_id, parse_wire, read_json, wire, ApiState,
-    PageRequest, QueryParams,
+    check_if_match, paginate_projected, parse_body, parse_id, parse_wire, project, read_json, wire,
+    ApiState, PageRequest, QueryParams,
 };
 
 use super::questions::error_name;
@@ -274,21 +274,36 @@ async fn list_scenarios(
         {
             continue;
         }
-        let view = scenario_view(&state, &loaded.graph, node, scenario)?;
-        if status.is_some_and(|s| s != view.status)
-            || derived.is_some_and(|d| d != view.confirmation_status)
-        {
-            continue;
+        // Cheap filters on the stored material first; a value outside the projection never
+        // matches a filter and is reported by the projection below.
+        if let Some(wanted) = status {
+            if wire(&node.status)? != wire(&wanted)? {
+                continue;
+            }
         }
-        items.push((node.id.to_string(), view));
+        if let Some(wanted) = derived {
+            if scenario.confirmation_status.as_deref() != Some(wire(&wanted)?.as_str()) {
+                continue;
+            }
+        }
+        let id = node.id.to_string();
+        let view = project(&id, scenario_view(&state, &loaded.graph, node, scenario))?;
+        items.push((id, view));
     }
     let request = PageRequest {
         operation_id: "list_scenarios",
         path: Default::default(),
         query: &query,
     };
-    let (items, next_cursor) = paginate(items, &request, &loaded)?;
-    Ok(read_json(&loaded, ScenarioPage { items, next_cursor }))
+    let (items, health, next_cursor) = paginate_projected(items, &request, &loaded)?;
+    Ok(read_json(
+        &loaded,
+        ScenarioPage {
+            items,
+            health,
+            next_cursor,
+        },
+    ))
 }
 
 /// The Scenario node `id`, or 404.

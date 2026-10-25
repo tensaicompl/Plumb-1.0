@@ -6,6 +6,7 @@ import type { components } from "../../api/schema";
 import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../../api/useVersionedMutation";
 import { t, type MessageKey } from "../../i18n";
 import { writeErrorCode } from "../questions/QuestionsPage";
+import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
 import { ReadFailure } from "../../components/ReadFailure";
 
 type Rule = components["schemas"]["Rule"];
@@ -15,7 +16,7 @@ type WriteResult = components["schemas"]["WriteResult"];
 /** Every rule query shares this root and is refetched after a cell write. */
 export const rulesQueryKey = ["rules"] as const;
 
-function fetchRules(): Promise<ReviewedItems<Rule>> {
+function fetchRules(): Promise<ReviewedItems<Rule> & { readonly health?: ItemHealth[] }> {
   return readReviewed(apiClient.GET("/api/model/rules"));
 }
 
@@ -171,6 +172,7 @@ export function RulesPage() {
       <h1 className="text-xl font-semibold">{t("rules.title")}</h1>
       {rules.isError && <ReadFailure error={rules.error} messageKey="rules.loadFailed" />}
       {rules.data === undefined && !rules.isError && <p>{t("rules.loading")}</p>}
+      <HealthMarkers health={rules.data?.health} />
       {rules.data !== undefined && rules.data.items.length === 0 && <p>{t("rules.empty")}</p>}
       {rules.data !== undefined && rules.data.items.length > 0 && (
         <ReviewedEtag.Provider value={rules.data.etag}>

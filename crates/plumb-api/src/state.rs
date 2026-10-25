@@ -45,7 +45,7 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 
 use crate::error::{echo, ApiError};
-use crate::openapi::{DesignEvent, WriteResult};
+use crate::openapi::{DesignEvent, ItemHealth, WriteResult};
 use crate::runtime::{
     A04RuntimeConfig, CalendarConfig, DirectManagerFact, GateInputsConfig, ProviderMode,
 };
@@ -1225,6 +1225,50 @@ pub(crate) fn paginate<T>(
 ) -> Result<(Vec<T>, Option<String>), ApiError> {
     items.sort_by(|a, b| a.0.cmp(&b.0));
     paginate_ordered(items, request, loaded)
+}
+
+/// One item of a robust collection (H0.11): its projection, or the health marker of its failure.
+pub(crate) type Projected<T> = Result<T, ItemHealth>;
+
+/// The health marker of the item `id` whose own projection failed with `error`. A failure of a
+/// subsystem rather than of the item's persisted material fails the whole read.
+pub(crate) fn health_marker(id: &str, error: ApiError) -> Result<ItemHealth, ApiError> {
+    let body = error.body();
+    if matches!(body.code, "E_INTERNAL" | "E_A03_RUNTIME_UNAVAILABLE") {
+        return Err(error);
+    }
+    Ok(ItemHealth {
+        id: id.to_owned(),
+        code: body.code.to_owned(),
+        message: body.message.clone(),
+    })
+}
+
+/// The projection of item `id`, or its health marker.
+pub(crate) fn project<T>(id: &str, view: Result<T, ApiError>) -> Result<Projected<T>, ApiError> {
+    match view {
+        Ok(view) => Ok(Ok(view)),
+        Err(error) => health_marker(id, error).map(Err),
+    }
+}
+
+/// [`paginate`] over projected items: the page's healthy items and its health markers.
+#[allow(clippy::type_complexity)]
+pub(crate) fn paginate_projected<T>(
+    items: Vec<(String, Projected<T>)>,
+    request: &PageRequest<'_>,
+    loaded: &LoadedRevision,
+) -> Result<(Vec<T>, Vec<ItemHealth>, Option<String>), ApiError> {
+    let (page, next_cursor) = paginate(items, request, loaded)?;
+    let mut healthy = Vec::new();
+    let mut health = Vec::new();
+    for item in page {
+        match item {
+            Ok(view) => healthy.push(view),
+            Err(marker) => health.push(marker),
+        }
+    }
+    Ok((healthy, health, next_cursor))
 }
 
 /// A page of `items` in their given (ranked) order: continued exclusively after the cursor's

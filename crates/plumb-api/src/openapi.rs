@@ -818,6 +818,31 @@ macro_rules! page {
     };
 }
 
+/// The typed health marker of a collection item whose projection failed (H0.11): the element
+/// ID, the typed error code and message. The item's detail route fails with the same error.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ItemHealth {
+    pub id: String,
+    pub code: String,
+    pub message: String,
+}
+
+macro_rules! health_page {
+    ($name:ident, $item:ty) => {
+        /// A page of results; `next_cursor` is null on the last page. An item of the page whose
+        /// projection failed is in `health` (with its typed error) instead of `items`; corruption
+        /// is reported, never hidden, and the remaining items are still returned.
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+        #[serde(deny_unknown_fields)]
+        pub struct $name {
+            pub items: Vec<$item>,
+            pub health: Vec<ItemHealth>,
+            pub next_cursor: Option<String>,
+        }
+    };
+}
+
 // ============================================================================ meta
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1433,7 +1458,7 @@ pub struct Rule {
     #[schema(required = true)]
     pub overlaps: Option<Vec<String>>,
 }
-page!(RulePage, Rule);
+health_page!(RulePage, Rule);
 
 /// Whether a Rule view projects a scalar PSG Rule or a PSG DecisionTable (Hotfix 065).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1601,7 +1626,7 @@ pub struct Scenario {
     #[schema(required = true)]
     pub run: Option<ScenarioRun>,
 }
-page!(ScenarioPage, Scenario);
+health_page!(ScenarioPage, Scenario);
 
 /// The ElementStatus of a Scenario node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1690,7 +1715,7 @@ pub struct Assumption {
     pub expires_at: Option<String>,
     pub risk_ref: Option<String>,
 }
-page!(AssumptionPage, Assumption);
+health_page!(AssumptionPage, Assumption);
 
 // ============================================================================ questions and proposals
 
@@ -1749,7 +1774,7 @@ pub struct Question {
     pub round_ref: Option<String>,
     pub context_refs: Vec<String>,
 }
-page!(QuestionPage, Question);
+health_page!(QuestionPage, Question);
 
 /// An answer to a Question (Hotfix 065): `answer` is validated against the persisted
 /// `Question.answer_schema` (every pilot answer schema is a closed JSON object).

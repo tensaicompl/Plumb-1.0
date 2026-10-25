@@ -720,8 +720,21 @@ mod openapi {
             assert_eq!(method, "GET");
             pageable.insert(path.clone());
             let name = response.as_str().unwrap().rsplit('/').next().unwrap();
-            assert_eq!(properties(&doc, name), set(&["items", "next_cursor"]));
-            assert_eq!(schema(&doc, name)["required"], json!(["items"]));
+            // H0.11: the four robust collections also report item health markers.
+            if ["AssumptionPage", "QuestionPage", "RulePage", "ScenarioPage"].contains(&name) {
+                assert_eq!(
+                    properties(&doc, name),
+                    set(&["items", "health", "next_cursor"])
+                );
+                assert_eq!(
+                    schema(&doc, name)["properties"]["health"]["items"],
+                    component_ref("ItemHealth")
+                );
+                assert_eq!(schema(&doc, name)["required"], json!(["items", "health"]));
+            } else {
+                assert_eq!(properties(&doc, name), set(&["items", "next_cursor"]));
+                assert_eq!(schema(&doc, name)["required"], json!(["items"]));
+            }
             assert_eq!(
                 schema(&doc, name)["properties"]["next_cursor"]["type"],
                 json!(["string", "null"])

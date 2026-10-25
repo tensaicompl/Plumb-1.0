@@ -2259,11 +2259,13 @@ mod http_workflow {
     #[tokio::test]
     async fn http_workflow_rules_project_and_edit_one_cell() {
         let app = app();
-        // A malformed persisted table is a typed conflict, never skipped.
-        assert_error(
-            &get(&app, "/api/model/rules").await,
-            StatusCode::CONFLICT,
-            "E_DECISION_TABLE_ENCODING_INVALID",
+        // A malformed persisted table is reported, never skipped: a health marker in the list
+        // (H0.11) and a typed conflict on its detail route.
+        let list = get(&app, "/api/model/rules").await;
+        assert_eq!(list.status, StatusCode::OK, "{}", list.text());
+        assert_eq!(
+            list.json()["health"][0]["code"],
+            "E_DECISION_TABLE_ENCODING_INVALID"
         );
         assert_error(
             &get(&app, "/api/model/rules/dt:broken").await,
@@ -5177,6 +5179,135 @@ mod http_workflow {
         plumb_sim::scenario_run_id(&id(PROJECT), &id(scenario)).unwrap()
     }
 
+    /// H0.11 (architecture §33.12): an item whose projection fails degrades its list to a typed
+    /// health marker (code and element ID) while the other items are returned; its detail route
+    /// fails strictly with the same typed error.
+    #[tokio::test]
+    async fn corrupt_item_degrades_list_not_detail() {
+        // DecisionTables: the fixture's dt:broken has a malformed persisted encoding.
+        let app = app();
+        let r = get(&app, "/api/model/rules").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let page = r.json();
+        let ids: Vec<&str> = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"dt:eligibility") && !ids.contains(&"dt:broken"),
+            "{ids:?}"
+        );
+        assert_eq!(page["health"].as_array().unwrap().len(), 1, "{page}");
+        let marker = &page["health"][0];
+        assert_eq!(marker["id"], "dt:broken");
+        assert_eq!(marker["code"], "E_DECISION_TABLE_ENCODING_INVALID");
+        assert!(!marker["message"].as_str().unwrap().is_empty());
+        assert_error(
+            &get(&app, "/api/model/rules/dt:broken").await,
+            StatusCode::CONFLICT,
+            "E_DECISION_TABLE_ENCODING_INVALID",
+        );
+        // A marker takes its place in the paged sequence: every ID appears exactly once.
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let uri = match &cursor {
+                None => "/api/model/rules?limit=1".to_owned(),
+                Some(c) => format!("/api/model/rules?limit=1&cursor={c}"),
+            };
+            let page = get(&app, &uri).await.json();
+            for part in ["items", "health"] {
+                for item in page[part].as_array().unwrap() {
+                    seen.push(item["id"].as_str().unwrap().to_owned());
+                }
+            }
+            match page["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_owned()),
+                None => break,
+            }
+        }
+        let mut sorted = seen.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(seen, sorted);
+        assert!(seen.contains(&"dt:broken".to_owned()));
+
+        // Assumptions: a non-scalar default is reported as the item's health, not hidden.
+        direct_commit(
+            &app,
+            SemanticPatch::AddNode {
+                node: node(
+                    "assumption:bad",
+                    "Accepted",
+                    "Assumption",
+                    json!({
+                        "statement": "Leave is counted in days.", "owner_ref": "stakeholder:hr",
+                        "status": "Open", "finding_ref": null, "default_value": {"days": 1},
+                        "expires_at": null, "risk_ref": null
+                    }),
+                ),
+            },
+        );
+        let page = get(&app, "/api/assumptions").await.json();
+        assert_eq!(
+            page["health"],
+            json!([{
+                "id": "assumption:bad",
+                "code": "E_UNREPRESENTABLE_ASSUMPTION_DEFAULT",
+                "message": "an assumption default is not a JSON string, number or boolean"
+            }])
+        );
+        assert!(page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["id"] != "assumption:bad"));
+
+        // Scenarios: a run whose trace link is corrupt.
+        let app = run_app();
+        assert_eq!(
+            write(&app, "/api/scenarios/run", Some(json!({"scope": []})))
+                .await
+                .status,
+            StatusCode::OK
+        );
+        let node = head(&app).graph.node(&run_ref("scn:pass")).unwrap().clone();
+        direct_commit(
+            &app,
+            SemanticPatch::SetNodeExtension {
+                target: plumb_patch::ElementPrecondition {
+                    id: node.id.clone(),
+                    expected_hash: plumb_psg::node_element_hash(&node).unwrap(),
+                },
+                key: TRACE_LINK.parse().unwrap(),
+                value: json!(7),
+            },
+        );
+        let r = get(&app, "/api/scenarios").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let page = r.json();
+        assert_eq!(page["health"][0]["id"], "scn:pass");
+        assert_eq!(
+            page["health"][0]["code"],
+            "E_SCENARIO_RUN_TRACE_LINK_INVALID"
+        );
+        assert!(page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == "scn:fail"));
+        // A cheap filter that excludes the corrupt item never reports it.
+        let page = get(&app, "/api/scenarios?status=Rejected").await.json();
+        assert_eq!(page["health"], json!([]));
+        assert_error(
+            &get(&app, "/api/scenarios/scn:pass/run").await,
+            StatusCode::CONFLICT,
+            "E_SCENARIO_RUN_TRACE_LINK_INVALID",
+        );
+    }
+
     /// Commits `patch` directly to the store (another writer).
     fn direct_commit(app: &App, patch: SemanticPatch) {
         let mut store = SqliteRevisionStore::open(&app.path).unwrap();
@@ -5547,12 +5678,11 @@ mod http_workflow {
             StatusCode::CONFLICT,
             "E_SCENARIO_RUN_TRACE_MISMATCH",
         );
-        // The list fails the same way; nothing is fabricated.
-        assert_error(
-            &get(&app, "/api/scenarios").await,
-            StatusCode::CONFLICT,
-            "E_SCENARIO_RUN_TRACE_MISMATCH",
-        );
+        // The list reports the same typed error as the item's health marker (H0.11); nothing is
+        // fabricated.
+        let list = get(&app, "/api/scenarios").await.json();
+        assert_eq!(list["health"][0]["id"], "scn:pass");
+        assert_eq!(list["health"][0]["code"], "E_SCENARIO_RUN_TRACE_MISMATCH");
         // A re-run repairs the link through a normal governed update.
         let r = write(
             &app,

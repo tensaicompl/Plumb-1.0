@@ -1236,8 +1236,13 @@ export interface components {
             statement: string;
             status: string;
         };
-        /** @description A page of results; `next_cursor` is null on the last page. */
+        /**
+         * @description A page of results; `next_cursor` is null on the last page. An item of the page whose
+         *     projection failed is in `health` (with its typed error) instead of `items`; corruption
+         *     is reported, never hidden, and the remaining items are still returned.
+         */
         AssumptionPage: {
+            health: components["schemas"]["ItemHealth"][];
             items: components["schemas"]["Assumption"][];
             next_cursor?: string | null;
         };
@@ -1615,6 +1620,15 @@ export interface components {
             semantic_hash: string;
             version: string;
         };
+        /**
+         * @description The typed health marker of a collection item whose projection failed (H0.11): the element
+         *     ID, the typed error code and message. The item's detail route fails with the same error.
+         */
+        ItemHealth: {
+            code: string;
+            id: string;
+            message: string;
+        };
         JobResponse: {
             /** @description The branch revision the job captured. */
             base_revision: string;
@@ -1801,8 +1815,13 @@ export interface components {
          * @enum {string}
          */
         QuestionKind: "YesNo" | "PickOne" | "PickMany" | "Number" | "Text" | "Cardinality" | "Unit" | "Precision" | "Rounding" | "FormulaConfirm" | "RuleCell" | "Calendar" | "RoleAssignment" | "Permission" | "QualityThreshold" | "ArchitectureChoice" | "TechnologyChoice" | "InterfaceChoice" | "VerificationMethod";
-        /** @description A page of results; `next_cursor` is null on the last page. */
+        /**
+         * @description A page of results; `next_cursor` is null on the last page. An item of the page whose
+         *     projection failed is in `health` (with its typed error) instead of `items`; corruption
+         *     is reported, never hidden, and the remaining items are still returned.
+         */
         QuestionPage: {
+            health: components["schemas"]["ItemHealth"][];
             items: components["schemas"]["Question"][];
             next_cursor?: string | null;
         };
@@ -1930,8 +1949,13 @@ export interface components {
             outcome: string;
             reason: string;
         };
-        /** @description A page of results; `next_cursor` is null on the last page. */
+        /**
+         * @description A page of results; `next_cursor` is null on the last page. An item of the page whose
+         *     projection failed is in `health` (with its typed error) instead of `items`; corruption
+         *     is reported, never hidden, and the remaining items are still returned.
+         */
         RulePage: {
+            health: components["schemas"]["ItemHealth"][];
             items: components["schemas"]["Rule"][];
             next_cursor?: string | null;
         };
@@ -1969,8 +1993,13 @@ export interface components {
         ScenarioCorrectRequest: {
             then: string[];
         };
-        /** @description A page of results; `next_cursor` is null on the last page. */
+        /**
+         * @description A page of results; `next_cursor` is null on the last page. An item of the page whose
+         *     projection failed is in `health` (with its typed error) instead of `items`; corruption
+         *     is reported, never hidden, and the remaining items are still returned.
+         */
         ScenarioPage: {
+            health: components["schemas"]["ItemHealth"][];
             items: components["schemas"]["Scenario"][];
             next_cursor?: string | null;
         };
@@ -2231,6 +2260,13 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "health": [
+                     *         {
+                     *           "code": "example",
+                     *           "id": "example",
+                     *           "message": "example"
+                     *         }
+                     *       ],
                      *       "items": [
                      *         {
                      *           "id": "example",
@@ -3892,6 +3928,13 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "health": [
+                     *         {
+                     *           "code": "example",
+                     *           "id": "example",
+                     *           "message": "example"
+                     *         }
+                     *       ],
                      *       "items": [
                      *         {
                      *           "conditions": [
@@ -5356,6 +5399,13 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "health": [
+                     *         {
+                     *           "code": "example",
+                     *           "id": "example",
+                     *           "message": "example"
+                     *         }
+                     *       ],
                      *       "items": [
                      *         {
                      *           "answer_schema": {},
@@ -6451,6 +6501,13 @@ export interface operations {
                 content: {
                     /**
                      * @example {
+                     *       "health": [
+                     *         {
+                     *           "code": "example",
+                     *           "id": "example",
+                     *           "message": "example"
+                     *         }
+                     *       ],
                      *       "items": [
                      *         {
                      *           "confirmation_status": "Confirmed",

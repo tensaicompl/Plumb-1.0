@@ -585,5 +585,7 @@
   "write.inferenceUnavailable": "The AI model is not available: no inference provider is configured for this server.",
   "write.notLoaded": "The data for this change has not loaded yet; nothing was sent.",
   "read.failed": "The data could not be loaded:",
-  "read.transportFailed": "The server could not be reached."
+  "read.transportFailed": "The server could not be reached.",
+  "health.title": "Items that could not be shown",
+  "health.note": "The server could not project these stored items; their data needs repair. The other items are shown normally."
 }

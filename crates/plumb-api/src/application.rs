@@ -868,6 +868,17 @@ mod services {
             Ok(items)
         }
 
+        /// Every persisted Accepted Question of `loaded` by node ID with its own projection, so a
+        /// malformed Question degrades a list to a health marker instead of failing it (H0.11).
+        pub fn question_items(
+            &self,
+            loaded: &LoadedRevision,
+        ) -> Vec<(String, Result<Question, ApiError>)> {
+            accepted_questions(&loaded.graph)
+                .map(|(node, q)| (node.id.to_string(), question_view(node, q)))
+                .collect()
+        }
+
         /// The complete Question projection of `loaded`: every persisted Accepted Question, by
         /// node ID; malformed material is a typed conflict.
         pub fn questions(&self, loaded: &LoadedRevision) -> Result<Vec<Question>, ApiError> {

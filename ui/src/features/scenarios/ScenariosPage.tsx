@@ -7,6 +7,7 @@ import { useVersionedMutation, WriteFailedError, writeErrorMessage } from "../..
 import { t } from "../../i18n";
 import { writeErrorCode } from "../questions/QuestionsPage";
 import { ScenarioTrace } from "./ScenarioTrace";
+import { HealthMarkers, type ItemHealth } from "../../components/HealthMarkers";
 import { ReadFailure } from "../../components/ReadFailure";
 
 type Scenario = components["schemas"]["Scenario"];
@@ -27,7 +28,7 @@ export interface ScenarioFilters {
 
 const NO_FILTERS: ScenarioFilters = { requirement: "", status: "", derived: "" };
 
-function fetchScenarios(filters: ScenarioFilters): Promise<ReviewedItems<Scenario>> {
+function fetchScenarios(filters: ScenarioFilters): Promise<ReviewedItems<Scenario> & { readonly health?: ItemHealth[] }> {
   const query: { requirement?: string; status?: ScenarioStatus; derived?: boolean } = {};
   if (filters.requirement !== "") {
     query.requirement = filters.requirement;
@@ -443,6 +444,7 @@ export function ScenariosPage() {
 
       {scenarios.isError && <ReadFailure error={scenarios.error} messageKey="scenarios.loadFailed" />}
       {scenarios.data === undefined && !scenarios.isError && <p>{t("scenarios.loading")}</p>}
+      <HealthMarkers health={scenarios.data?.health} />
       {scenarios.data !== undefined && scenarios.data.items.length === 0 && <p>{t("scenarios.empty")}</p>}
       {scenarios.data !== undefined && scenarios.data.items.length > 0 && (
         <ReviewedEtag.Provider value={scenarios.data.etag}>

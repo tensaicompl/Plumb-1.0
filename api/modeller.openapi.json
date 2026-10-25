@@ -140,8 +140,14 @@
       },
       "AssumptionPage": {
         "additionalProperties": false,
-        "description": "A page of results; `next_cursor` is null on the last page.",
+        "description": "A page of results; `next_cursor` is null on the last page. An item of the page whose\nprojection failed is in `health` (with its typed error) instead of `items`; corruption\nis reported, never hidden, and the remaining items are still returned.",
         "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ItemHealth"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/Assumption"
@@ -156,7 +162,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "health"
         ],
         "type": "object"
       },
@@ -1607,6 +1614,27 @@
         ],
         "type": "object"
       },
+      "ItemHealth": {
+        "additionalProperties": false,
+        "description": "The typed health marker of a collection item whose projection failed (H0.11): the element\nID, the typed error code and message. The item's detail route fails with the same error.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
       "JobResponse": {
         "additionalProperties": false,
         "properties": {
@@ -2239,8 +2267,14 @@
       },
       "QuestionPage": {
         "additionalProperties": false,
-        "description": "A page of results; `next_cursor` is null on the last page.",
+        "description": "A page of results; `next_cursor` is null on the last page. An item of the page whose\nprojection failed is in `health` (with its typed error) instead of `items`; corruption\nis reported, never hidden, and the remaining items are still returned.",
         "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ItemHealth"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/Question"
@@ -2255,7 +2289,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "health"
         ],
         "type": "object"
       },
@@ -2671,8 +2706,14 @@
       },
       "RulePage": {
         "additionalProperties": false,
-        "description": "A page of results; `next_cursor` is null on the last page.",
+        "description": "A page of results; `next_cursor` is null on the last page. An item of the page whose\nprojection failed is in `health` (with its typed error) instead of `items`; corruption\nis reported, never hidden, and the remaining items are still returned.",
         "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ItemHealth"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/Rule"
@@ -2687,7 +2728,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "health"
         ],
         "type": "object"
       },
@@ -2818,8 +2860,14 @@
       },
       "ScenarioPage": {
         "additionalProperties": false,
-        "description": "A page of results; `next_cursor` is null on the last page.",
+        "description": "A page of results; `next_cursor` is null on the last page. An item of the page whose\nprojection failed is in `health` (with its typed error) instead of `items`; corruption\nis reported, never hidden, and the remaining items are still returned.",
         "properties": {
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/ItemHealth"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/Scenario"
@@ -2834,7 +2882,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "health"
         ],
         "type": "object"
       },
@@ -4078,6 +4127,13 @@
             "content": {
               "application/json": {
                 "example": {
+                  "health": [
+                    {
+                      "code": "example",
+                      "id": "example",
+                      "message": "example"
+                    }
+                  ],
                   "items": [
                     {
                       "id": "example",
@@ -6029,6 +6085,13 @@
             "content": {
               "application/json": {
                 "example": {
+                  "health": [
+                    {
+                      "code": "example",
+                      "id": "example",
+                      "message": "example"
+                    }
+                  ],
                   "items": [
                     {
                       "conditions": [
@@ -7728,6 +7791,13 @@
             "content": {
               "application/json": {
                 "example": {
+                  "health": [
+                    {
+                      "code": "example",
+                      "id": "example",
+                      "message": "example"
+                    }
+                  ],
                   "items": [
                     {
                       "answer_schema": {},
@@ -8995,6 +9065,13 @@
             "content": {
               "application/json": {
                 "example": {
+                  "health": [
+                    {
+                      "code": "example",
+                      "id": "example",
+                      "message": "example"
+                    }
+                  ],
                   "items": [
                     {
                       "confirmation_status": "Confirmed",

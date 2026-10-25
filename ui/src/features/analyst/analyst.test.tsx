@@ -200,6 +200,7 @@ const EXAMPLE: CalculationExample = { expr: "end - start + 1", rendered_example:
 
 interface Backend {
   cellFailure: Response | null;
+  rulesPage?: unknown;
 }
 
 function handlers(backend: Backend) {
@@ -213,7 +214,7 @@ function handlers(backend: Backend) {
     http.get("*/api/assumptions", () => etagJson({ items: ASSUMPTIONS, next_cursor: null })),
     http.get("*/api/model/entities", () => etagJson({ items: ENTITIES, next_cursor: null })),
     http.get("*/api/model/crud", () => etagJson(CRUD)),
-    http.get("*/api/model/rules", () => etagJson({ items: RULES, next_cursor: null })),
+    http.get("*/api/model/rules", () => etagJson((backend.rulesPage ?? { items: RULES, next_cursor: null }) as Record<string, unknown>)),
     http.get("*/api/model/calculations", () => etagJson({ items: CALCULATIONS, next_cursor: null })),
     http.get("*/api/model/calculations/:id/example", ({ params }) =>
       params["id"] === "calc:days"
@@ -369,6 +370,22 @@ describe("EntitiesPage", () => {
 
 describe("RulesPage", () => {
   const state = (ruleId: string, analysis: string) => item("data-rule-id", ruleId).querySelector("[data-analysis='" + analysis + "']") as HTMLElement;
+
+  it("lists a rule the server could not project as a typed health marker next to the others (H0.11)", async () => {
+    await renderAt("/model/rules", {
+      cellFailure: null,
+      rulesPage: {
+        items: [SCALAR],
+        health: [{ id: "dt:broken", code: "E_DECISION_TABLE_ENCODING_INVALID", message: "the persisted decision table encoding is malformed" }],
+        next_cursor: null,
+      },
+    });
+    await screen.findByText("Long leave");
+    const markers = await screen.findByTestId("health-markers");
+    const broken = markers.querySelector("[data-health-id='dt:broken']") as HTMLElement;
+    expect(within(broken).getByTestId("health-code").textContent).toBe("E_DECISION_TABLE_ENCODING_INVALID");
+    expect(broken.textContent).toContain("the persisted decision table encoding is malformed");
+  });
 
   it("separates scalar rules, decision tables and null versus empty analysis", async () => {
     const { router } = await renderAt("/model/rules");

@@ -585,5 +585,7 @@
   "write.inferenceUnavailable": "Model AI jest niedostępny: na tym serwerze nie skonfigurowano dostawcy wnioskowania.",
   "write.notLoaded": "Dane dla tej zmiany nie zostały jeszcze wczytane; nic nie wysłano.",
   "read.failed": "Nie udało się wczytać danych:",
-  "read.transportFailed": "Nie udało się połączyć z serwerem."
+  "read.transportFailed": "Nie udało się połączyć z serwerem.",
+  "health.title": "Elementy, których nie można wyświetlić",
+  "health.note": "Serwer nie mógł odczytać tych zapisanych elementów; ich dane wymagają naprawy. Pozostałe elementy są wyświetlane normalnie."
 }
