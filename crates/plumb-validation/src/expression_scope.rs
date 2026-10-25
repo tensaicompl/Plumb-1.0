@@ -191,6 +191,67 @@ fn conflict(binding: &ExpressionScopeBinding) -> ExpressionScopeIssue {
     }
 }
 
+/// The derived default expression scope of an Accepted Invariant that has no configured one
+/// (goal-approach deviation, real-model run: model-proposed invariant IDs are unknown before the
+/// run, so requiring a configured scope per invariant blocked F2): the owner Entity as root
+/// `self` and every Accepted Attribute it canonically owns with an expression type as a field
+/// whose symbol is the Attribute name lower-cased with spaces and hyphens as underscores. A
+/// symbol two Attributes share binds neither; a symbol that is not a PlumbExpr symbol is
+/// skipped. `None` when the node is not an Accepted Invariant over an Accepted Entity.
+pub fn default_invariant_bindings(
+    graph: &Graph,
+    invariant_ref: &Id,
+) -> Option<Vec<ExpressionScopeBinding>> {
+    let node = graph.node(invariant_ref)?;
+    let NodePayload::Invariant(invariant) = &node.payload else {
+        return None;
+    };
+    let owner = graph.node(&invariant.scope_ref)?;
+    if !is_accepted(node) || !is_accepted(owner) || !matches!(owner.payload, NodePayload::Entity(_))
+    {
+        return None;
+    }
+    let mut by_symbol: BTreeMap<String, Vec<&Id>> = BTreeMap::new();
+    for candidate in graph.nodes().values() {
+        let NodePayload::Attribute(attribute) = &candidate.payload else {
+            continue;
+        };
+        if !is_accepted(candidate)
+            || canonical_attribute_owner(graph, &candidate.id) != Some(&owner.id)
+            || attribute_expression_type(candidate).is_err()
+        {
+            continue;
+        }
+        let symbol: String = attribute
+            .name
+            .to_lowercase()
+            .chars()
+            .map(|c| if c == ' ' || c == '-' { '_' } else { c })
+            .collect();
+        if Symbol::new(&symbol).is_ok() {
+            by_symbol.entry(symbol).or_default().push(&candidate.id);
+        }
+    }
+    let mut bindings = vec![ExpressionScopeBinding {
+        node_ref: owner.id.clone(),
+        symbol: "self".to_owned(),
+        exposure: ExpressionBindingExposure::Root,
+    }];
+    for (symbol, attributes) in by_symbol {
+        if let [attribute] = attributes.as_slice() {
+            bindings.push(ExpressionScopeBinding {
+                node_ref: (*attribute).clone(),
+                symbol,
+                exposure: ExpressionBindingExposure::Field {
+                    owner_ref: owner.id.clone(),
+                },
+            });
+        }
+    }
+    bindings.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
+    Some(bindings)
+}
+
 /// Validates explicit bindings against the graph and builds their TypeEnv. Root bindings named
 /// by one of `reserved_roots` are rejected as reserved.
 pub fn validate_expression_bindings(

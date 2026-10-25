@@ -221,6 +221,76 @@ mod expression_scope_contract {
         }
     }
 
+    // ------------------------------------------------------------------ default invariant scope
+
+    /// Goal-approach (real-model run): an Accepted Invariant without a configured expression
+    /// scope gets a derived default: its owner Entity as root `self` and each of the owner's
+    /// Accepted, expression-typed Attributes as a field named by the lower-cased Attribute name
+    /// with spaces and hyphens as underscores. A name two Attributes share binds neither; an
+    /// owner that is not an Accepted Entity has no default.
+    #[test]
+    fn default_invariant_scope_binds_self_and_the_owner_fields() {
+        let g = graph();
+        let bindings = default_invariant_bindings(&g, &id("inv:positive")).unwrap();
+        assert_eq!(
+            bindings,
+            vec![
+                root("entity:order", "self"),
+                field("attr:amount", "entity:order", "amount"),
+                field("attr:hours", "entity:order", "hours"),
+                field("attr:kind", "entity:order", "kind"),
+            ]
+        );
+        let scope = validate_expression_bindings(&g, &bindings, &[]).unwrap();
+        let ast = plumb_expr::parse("self.amount >= 0").unwrap();
+        assert_eq!(plumb_expr::typecheck(&ast, &scope.env).unwrap(), Ty::Bool);
+
+        // Names with spaces or hyphens map to underscores; a shared mapped name binds neither.
+        let n = vec![
+            node(
+                "entity:leave",
+                Accepted,
+                NodePayload::Entity(Entity {
+                    name: "Leave request".into(),
+                    description: None,
+                    aggregate_root: None,
+                }),
+            ),
+            attribute("attr:start", "start date", "Date", None, None),
+            attribute("attr:end", "End-Date", "Date", None, None),
+            attribute("attr:end2", "end date", "Date", None, None),
+            node(
+                "inv:range",
+                Accepted,
+                NodePayload::Invariant(Invariant {
+                    scope_ref: id("entity:leave"),
+                    expression: "self.start_date <= self.start_date".into(),
+                }),
+            ),
+        ];
+        let edges = ["attr:start", "attr:end", "attr:end2"]
+            .iter()
+            .map(|a| edge(RelationKind::HasAttribute, "entity:leave", a))
+            .collect();
+        let g = Graph::new(
+            id("project:pilot"),
+            id("profile:plumb-software-2026.1"),
+            n.clone(),
+            edges,
+        )
+        .unwrap_or_else(|v| panic!("{v:?}"));
+        assert_eq!(
+            default_invariant_bindings(&g, &id("inv:range")).unwrap(),
+            vec![
+                root("entity:leave", "self"),
+                field("attr:start", "entity:leave", "start_date")
+            ]
+        );
+        // Not an Accepted Invariant: no default.
+        assert_eq!(default_invariant_bindings(&g, &id("inv:unknown")), None);
+        assert_eq!(default_invariant_bindings(&g, &id("attr:start")), None);
+    }
+
     // ------------------------------------------------------------------ adapter
 
     #[test]

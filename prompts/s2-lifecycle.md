@@ -39,6 +39,8 @@ Do not return guard or effect expressions.
 
 For invariants, return the owner scope_ref, the exact source grounding of
 the business rule and a proposed PlumbExpr expression (non-empty).
+Write an invariant expression over self, the owner Entity, naming each field by its Attribute name lower-cased with spaces and hyphens as underscores
+(so the Attribute "start date" is self.start_date).
 Do not claim that the expression parses or type-checks.
 
 ## Output shape

@@ -1981,7 +1981,7 @@
   },
   {
     "artifact": {
-      "request_hash": "sha256:b874af755e608b9ea1dd49851287e6f0a5fb0dda28e149cb277ab2e078cca86e",
+      "request_hash": "sha256:8f69f17f7599dfd9f888dec1593ab20810481d15e6dcd1dc44890743194137ae",
       "provider": "test",
       "model": "scripted-hr",
       "parameters": {},

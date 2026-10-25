@@ -2791,6 +2791,9 @@ mod http_stages {
         )
     }
 
+    /// An invariant over an Accepted Entity without a configured expression scope uses the
+    /// derived default scope (goal-approach, real-model run); only an invariant with no default
+    /// (here one scoped to an Attribute) is still a missing external input.
     #[tokio::test]
     async fn gate_inputs_missing_names_external_element() {
         let mut graph = data_graph(&["Email"]);
@@ -2802,7 +2805,7 @@ mod http_stages {
                 .values()
                 .cloned()
                 .chain([
-                    invariant("inv:b", "entity:employee"),
+                    invariant("inv:b", "attr:0"),
                     invariant("inv:a", "entity:employee"),
                 ])
                 .collect(),
@@ -2816,7 +2819,7 @@ mod http_stages {
         let details = serde_json::to_value(&body.details).unwrap();
         assert_eq!(details["gate"], "F2");
         assert_eq!(details["field"], "expression_scopes");
-        assert_eq!(details["elements"], json!(["inv:a", "inv:b"]));
+        assert_eq!(details["elements"], json!(["inv:b"]));
     }
 
     #[test]
@@ -2877,8 +2880,9 @@ mod http_stages {
             vec![("F2".to_owned(), "pass".to_owned())]
         );
 
-        // A genuine missing external input (an Accepted Invariant without explicit bindings)
-        // fails the same recipe explicitly instead of skipping F2.
+        // A genuine missing external input (an Accepted Invariant with neither explicit
+        // bindings nor a derived default: one scoped to an Attribute) fails the same recipe
+        // explicitly instead of skipping F2.
         let base = assembly_graph();
         let graph = Graph::new(
             id(PROJECT),
@@ -2893,10 +2897,16 @@ mod http_stages {
                         "Entity",
                         json!({"name": "LeaveRequest", "description": null, "aggregate_root": null}),
                     ),
-                    invariant("inv:request", "entity:request"),
+                    attribute("attr:days", "days"),
+                    invariant("inv:request", "attr:days"),
                 ])
                 .collect(),
-            vec![],
+            vec![edge(
+                "rel:days",
+                "has_attribute",
+                "entity:request",
+                "attr:days",
+            )],
         )
         .unwrap();
         let app = app_with(graph, &[], Gates::default());

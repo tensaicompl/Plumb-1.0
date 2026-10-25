@@ -880,10 +880,20 @@ fn hr_pilot_real_model() {
     step("directory", code);
     sim.accept_all();
     sim.confirm_all(&[]);
-    for recipe in ["analyse", "flows"] {
+    for recipe in ["analyse", "flows", "analyse"] {
         let code = settle(&sim, recipe);
         step(recipe, code);
     }
+    // As an analyst does after seeing what the model found: type the Attributes that exist and
+    // bind the calculation inputs only to those (never to names the model did not produce).
+    let attribute = |name: &str| -> Option<String> {
+        sim.nodes().into_iter().find_map(|n| {
+            (n["status"] == "Accepted"
+                && n["payload"]["type"] == "Attribute"
+                && n["payload"]["data"]["name"].as_str().map(norm) == Some(norm(name)))
+            .then(|| n["id"].as_str().unwrap().to_owned())
+        })
+    };
     let mut typed = Vec::new();
     for (name, value_type) in [
         ("start date", "Date"),
@@ -891,27 +901,29 @@ fn hr_pilot_real_model() {
         ("leave type", "String"),
         ("half day", "Decimal(2)"),
     ] {
-        let found = sim.nodes().into_iter().find(|n| {
-            n["payload"]["type"] == "Attribute"
-                && n["payload"]["data"]["name"].as_str().map(norm) == Some(norm(name))
-        });
-        match found {
-            Some(n) => {
-                let (code, _) = sim.cli(
-                    &[
-                        "set-attribute-type",
-                        n["id"].as_str().unwrap(),
-                        "--type",
-                        value_type,
-                    ],
-                    &[],
-                );
+        match attribute(name) {
+            Some(id) => {
+                let (code, _) = sim.cli(&["set-attribute-type", &id, "--type", value_type], &[]);
                 typed.push(json!({"attribute": name, "exit": code}));
             }
             None => typed.push(json!({"attribute": name, "missing": true})),
         }
     }
-    for recipe in ["analyse", "calc", "rules", "scenarios", "tags", "run"] {
+    let bindings: Vec<Value> = [
+        ("start date", "start_date"),
+        ("end date", "end_date"),
+        ("half day", "day_fraction"),
+    ]
+    .iter()
+    .filter_map(|(name, symbol)| {
+        attribute(name)
+            .map(|id| json!({"node_ref": id, "symbol": symbol, "exposure": {"kind": "root"}}))
+    })
+    .collect();
+    let mut scope = sim.config.borrow()["calculation_scope"].clone();
+    scope["bindings"] = json!(bindings);
+    sim.set("calculation_scope", scope);
+    for recipe in ["calc", "rules", "scenarios", "tags", "run"] {
         let code = settle(&sim, recipe);
         step(recipe, code);
     }

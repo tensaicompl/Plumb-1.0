@@ -226,6 +226,16 @@ mod prompts {
         ));
     }
 
+    /// The derived default invariant scope binds `self` and snake-cased Attribute names; the
+    /// lifecycle prompt states that convention so proposed invariants can type-check.
+    #[test]
+    fn s2_lifecycle_states_the_invariant_naming_convention() {
+        let (_, prompt, _) = PAIRS.iter().find(|(p, _, _)| *p == "s2-lifecycle").unwrap();
+        assert!(prompt.contains(
+            "Write an invariant expression over self, the owner Entity, naming each field by its Attribute name lower-cased with spaces and hyphens as underscores"
+        ));
+    }
+
     // ------------------------------------------------------------------ Fable #65
 
     fn process_with_node(node: Value) -> Value {

@@ -300,21 +300,41 @@ impl A04Runtime {
 /// The configured A0.3 entry lists resolved against one graph: an entry whose selector names
 /// no element is left out, as an explicit entry naming an absent element is ignored.
 impl A03Runtime {
-    /// The expression scopes, still unique by owner once resolved.
+    /// The expression scopes, still unique by owner once resolved, followed by the derived
+    /// default scope of every Accepted Invariant over an Accepted Entity that has no configured
+    /// entry (goal-approach deviation; a configured entry always wins). The result is a pure
+    /// function of the graph and the configuration, in owner order for the defaults.
     pub(crate) fn expression_scopes_for(
         &self,
         graph: &Graph,
     ) -> Result<Vec<ExecutionExpressionScopeInput>, ApiError> {
         const FIELD: &str = "expression_scopes";
-        let scopes = resolve_entries(FIELD, &self.expression_scopes, graph)?;
+        let mut scopes = resolve_entries(FIELD, &self.expression_scopes, graph)?;
         let mut owners = BTreeSet::new();
         for scope in &scopes {
-            if !owners.insert(&scope.owner_ref) {
+            if !owners.insert(scope.owner_ref.clone()) {
                 return Err(crate::selector::SelectorError::duplicate(
                     "owner_ref",
                     &scope.owner_ref,
                 )
                 .api_error(FIELD));
+            }
+        }
+        let mut invariants: Vec<&plumb_psg::Node> = graph
+            .nodes()
+            .values()
+            .filter(|n| matches!(n.payload, plumb_psg::NodePayload::Invariant(_)))
+            .filter(|n| !owners.contains(&n.id))
+            .collect();
+        invariants.sort_by(|a, b| a.id.cmp(&b.id));
+        for node in invariants {
+            if let Some(bindings) =
+                plumb_validation::expression_scope::default_invariant_bindings(graph, &node.id)
+            {
+                scopes.push(ExecutionExpressionScopeInput {
+                    owner_ref: node.id.clone(),
+                    bindings,
+                });
             }
         }
         Ok(scopes)
