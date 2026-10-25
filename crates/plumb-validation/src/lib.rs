@@ -23,7 +23,7 @@ pub use evaluator::{
 };
 pub use evaluator::{
     violation_state, Applicability, EvaluationError, EvaluatorFailure, EvaluatorRegistry,
-    F1RequirementValidationInput, F1ValidationInputs, F1VocabularyDependency,
+    F1LintRuleBinding, F1RequirementValidationInput, F1ValidationInputs, F1VocabularyDependency,
     F1VocabularyResolution, F2CalculationScopeOverride, F2DecisionTableInput, F2InvariantInput,
     F2ValidationInputs, F4ApplicabilityInput, F4ExecutableCoverageInput, F4ScenarioRunInput,
     F4ScenarioTypeCheckInput, F4ScenarioTypeStatus, F4ValidationInputs, GateReport, GateResult,

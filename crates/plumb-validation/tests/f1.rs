@@ -522,9 +522,11 @@ mod f1_contract {
         assert_eq!(ev[0].as_str(), "evd:57b7485b8b58db90");
         assert_eq!(i.content_hash().unwrap().as_str(), GOLDEN_INPUT_HASH);
         let report = evaluate(&g, i.clone());
-        assert_eq!(report.f1_input_hash, Some(i.content_hash().unwrap()));
+        // Fable #298: the report binds the inputs together with the effective lint registry.
+        assert_eq!(report.f1_input_hash, Some(i.binding_hash().unwrap()));
+        assert_ne!(i.binding_hash().unwrap().as_str(), GOLDEN_INPUT_HASH);
         let value = serde_json::to_value(&report).unwrap();
-        assert_eq!(value["f1_input_hash"], json!(GOLDEN_INPUT_HASH));
+        assert_eq!(value["f1_input_hash"], json!(i.binding_hash().unwrap()));
         let round: GateReport = serde_json::from_value(value).unwrap();
         assert_eq!(round, report);
         // Sensitivity: one dependency, one policy override, one analysis finding.
@@ -566,6 +568,48 @@ mod f1_contract {
         let mut tampered = serde_json::to_value(&report).unwrap();
         tampered.as_object_mut().unwrap().remove("f1_input_hash");
         assert!(serde_json::from_value::<GateReport>(tampered).is_err());
+    }
+
+    /// Fable #298: every F1 GateReport binds a hash of the effective lint rule registry (rule
+    /// IDs with default and effective severities), so a changed lint default or override
+    /// changes the report's input binding. The expected registry is built from the lint
+    /// registry itself because plumb-lint owns the defaults.
+    #[test]
+    fn f1_report_binds_the_effective_lint_registry() {
+        let ev = fragments();
+        let (mut nodes, _) = base();
+        nodes.push(req_node(A, "The operator shall retain records.", &[&ev[0]]));
+        let g = graph(nodes, vec![]);
+        let mut policy = LintPolicy::default();
+        policy
+            .severity_overrides
+            .insert(LintRuleId::VagueTerm, LintSeverity::Error);
+        let i = inputs_with(&g, BTreeMap::new(), vec![], policy.clone());
+        let registry: Vec<Value> = plumb_lint::lint_registry()
+            .iter()
+            .map(|r| {
+                json!({"rule_id": r.id, "default_severity": r.default_severity,
+                       "effective_severity": policy.effective_severity(r.id)})
+            })
+            .collect();
+        assert_eq!(registry.len(), 15);
+        let expected = Hash::content_sha256(
+            &to_canonical_json(&json!({"inputs": serde_json::to_value(&i).unwrap(),
+                                       "lint_registry": registry}))
+            .unwrap(),
+        );
+        assert_eq!(i.binding_hash().unwrap(), expected);
+        assert_eq!(
+            serde_json::to_value(i.effective_lint_registry()).unwrap()[0],
+            json!({"rule_id": "PLUMB.LINT.REQ.VAGUE_TERM", "default_severity": "warn",
+                   "effective_severity": "error"})
+        );
+        let report = evaluate(&g, i.clone());
+        assert_eq!(report.f1_input_hash, Some(expected));
+        // A different effective registry is a different binding.
+        let plain = inputs(&g);
+        assert_ne!(plain.binding_hash().unwrap(), i.binding_hash().unwrap());
+        assert_ne!(plain.binding_hash().unwrap(), plain.content_hash().unwrap());
     }
 
     #[test]
