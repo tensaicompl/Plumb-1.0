@@ -126,9 +126,42 @@ BusinessRole, Stakeholder, Calendar, Rule, DecisionTable). Not produced in the p
 Invariant, DomainRelationship, Assumption, AcceptanceCriterion, VerificationObligation instances,
 authorization elements.
 
+## Real-model run (claude-opus-5-5)
+
+`PLUMB_REAL_KEY_FILE=<key file> cargo test -p plumb-cli --features llm --test sim_hr
+hr_pilot_real_model -- --ignored --nocapture` runs the same product flow with every inference
+stage answered by the Anthropic API (effort high). The analyst steps are generic:
+- accept and confirm each stage;
+- waive the flagged duplicate;
+- type and bind only the Attributes the model produced;
+- answer the questions the product raises.
+
+Result on 2026-10-25, branch `plumb-goal-approach` (build 7286def):
+
+| Item | Result |
+|---|---|
+| Stages | every stage completed; `ready` passes I0, F1 (duplicate waived), F2, F3, F4 |
+| Requirements | 32/32 accepted, kinds 32/32; 29/32 statements byte-identical to the contract (the rest are accepted EARS rewordings) |
+| States | 6/6, names exactly the contract's |
+| Entities | 12 accepted (3 with the contract's exact names; the rest are reasonable variants such as "annual leave request") |
+| Operations / events | 7 of 13 / 2 of 6 |
+| Invariants / processes | 1 of 5 / 0 of 6 |
+| Expert questions | 1 raised and answered |
+
+The fixes this run required are listed in `docs/plan/GOAL-APPROACH-DELTA.md` (Real-model run adjudications):
+- structured outputs in authored schema order;
+- the grammar-size merge;
+- the effort setting;
+- tolerant optional intents;
+- re-asking on retry;
+- three prompt clarifications;
+- default invariant scopes.
+
+Model output is not deterministic, so these counts vary between runs.
+
 ## Not done / known limitations
 
-- No run against a real model yet (needs an Anthropic API key).
+- Real-model coverage gaps: operations, events, processes and invariants are produced only partly (see Real-model run).
 - H0.10 beyond stale answers and rejection memory (proposal occurrence identity with a store
   migration, artifact integrity checks, crash-recovery settlement, numeric/calendar integrity,
   importer Unicode normalization, and the other listed audit items) is not implemented.
