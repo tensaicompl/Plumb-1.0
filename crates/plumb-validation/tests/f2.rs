@@ -582,6 +582,21 @@ mod f2_contract {
             .unwrap_or_else(|v| panic!("{v:?}"))
         }
 
+        /// The graph violations of a fixture that graph validation itself rejects.
+        fn rejected(&self) -> Vec<plumb_psg::GraphViolation> {
+            Graph::new(
+                id("project:pilot"),
+                id("profile:plumb-software-2026.1"),
+                self.nodes.clone(),
+                self.edges.clone(),
+            )
+            .expect_err("graph validation must reject the fixture")
+        }
+
+        fn has(&self, node_id: &str) -> bool {
+            self.nodes.iter().any(|n| n.id.as_str() == node_id)
+        }
+
         fn inputs(&self) -> F2ValidationInputs {
             F2ValidationInputs::new(
                 self.findings.clone(),
@@ -784,10 +799,25 @@ mod f2_contract {
         let bad_card = Fx::clean().with(relationship("domrel:x", "entity:customer", "many", "1"));
         assert_eq!(bad_card.state(RELATION_TYPED), FAIL);
         assert_eq!(targets(&bad_card, RELATION_TYPED), ["domrel:x"]);
+        // A wrong-type or dangling endpoint is a graph-bound reference violation (architecture
+        // §33.11): graph validation rejects it before any F2 rule runs.
         let bad_endpoint = Fx::clean().with(relationship("domrel:x", "attr:amount", "1", "1"));
-        assert_eq!(bad_endpoint.state(RELATION_TYPED), FAIL);
+        assert!(bad_endpoint.rejected().contains(
+            &plumb_psg::GraphViolation::PayloadRefWrongType {
+                owner: id("domrel:x"),
+                field: "to_entity",
+                target: id("attr:amount"),
+                node_type: plumb_psg::NodeType::Attribute,
+            }
+        ));
         let dangling = Fx::clean().with(relationship("domrel:x", "entity:ghost", "1", "1"));
-        assert_eq!(dangling.state(RELATION_TYPED), FAIL);
+        assert!(dangling
+            .rejected()
+            .contains(&plumb_psg::GraphViolation::PayloadRefMissing {
+                owner: id("domrel:x"),
+                field: "to_entity",
+                target: id("entity:ghost"),
+            }));
     }
 
     #[test]
@@ -1079,8 +1109,15 @@ mod f2_contract {
         let missing = working_days(None);
         assert_eq!(missing.state(CALENDAR_DEFINED), FAIL);
         assert_eq!(targets(&missing, CALENDAR_DEFINED), ["calculation:days"]);
+        // A dangling calendar_ref is rejected by graph validation (architecture §33.11).
         let unresolved = working_days(Some("calendar:ghost"));
-        assert_eq!(unresolved.state(CALENDAR_DEFINED), FAIL);
+        assert!(unresolved
+            .rejected()
+            .contains(&plumb_psg::GraphViolation::PayloadRefMissing {
+                owner: id("calculation:days"),
+                field: "calendar_ref",
+                target: id("calendar:ghost"),
+            }));
         let blank_zone = working_days(Some("calendar:nl")).with(calendar_node("calendar:nl", " "));
         assert_eq!(blank_zone.state(CALENDAR_DEFINED), FAIL);
     }
@@ -1628,9 +1665,29 @@ mod f2_contract {
     }
 
     /// A Question about `finding` and an answering decision with `status`.
-    fn answered(fx: Fx, n: u8, finding: &str, status: ElementStatus) -> Fx {
+    fn answered(mut fx: Fx, n: u8, finding: &str, status: ElementStatus) -> Fx {
         let question = format!("q:00000000000000{n:02}");
         let decision = format!("dec:00000000000000{n:02}");
+        // Question.finding_ref and ResolutionDecision.decided_by are graph-bound (architecture
+        // §33.11): a supplemental finding is materialized as an informational stand-in node.
+        if !fx.has("agent:expert") {
+            fx = fx.with(node(
+                "agent:expert",
+                Accepted,
+                NodePayload::Agent(plumb_psg::Agent {
+                    agent_kind: plumb_psg::AgentKind::Human,
+                }),
+            ));
+        }
+        if !fx.has(finding) {
+            fx = fx.with(finding_node(
+                finding,
+                "STAND_IN",
+                "F2",
+                FindingSeverity::Info,
+                "Open",
+            ));
+        }
         fx.with(node(
             &question,
             Accepted,

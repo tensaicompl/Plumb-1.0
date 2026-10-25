@@ -245,6 +245,20 @@ mod cli {
             .unwrap();
     }
 
+    /// Commits the Accepted human Agent of the configured identity: an acceptance companion
+    /// names it as decided_by, a graph-bound reference (architecture §33.11).
+    fn commit_identity_agent(db: &Path) {
+        commit_node(
+            db,
+            json!({
+                "id": ACTOR, "revision": 1, "status": "Accepted",
+                "payload": {"type": "Agent", "data": {"agent_kind": "human"}},
+                "evidence": [], "derivations": [], "standards": [], "tags": [], "extensions": {},
+                "audit": {"created_by": ACTOR, "created_at": T0, "updated_by": null, "updated_at": null}
+            }),
+        );
+    }
+
     /// A fresh initialized database and a configuration file.
     fn env_with(config: Value) -> Env {
         let dir = tempfile::tempdir().unwrap();
@@ -1354,6 +1368,7 @@ mod cli {
     fn cli_extract_replay_then_apply_accept_and_reject() {
         let env = env();
         env.import();
+        commit_identity_agent(&env.db);
         let fixtures = record(&env, "extract");
         let f = fixtures.to_str().unwrap();
         let (code, job) = env.json(&["--provider", "replay", "--replay-fixtures", f, "extract"]);
@@ -1437,6 +1452,7 @@ mod cli {
     fn cli_accept_set_commits_sibling_stage_outputs_in_one_revision() {
         let env = env();
         env.import();
+        commit_identity_agent(&env.db);
         let fixtures = record(&env, "extract");
         let f = fixtures.to_str().unwrap();
         let (code, job) = env.json(&["--provider", "replay", "--replay-fixtures", f, "extract"]);
@@ -1850,6 +1866,7 @@ mod cli {
     fn proposals_lists_pending_with_class_origin_and_reason() {
         let env = env_with(directory_config());
         env.import();
+        commit_identity_agent(&env.db);
         // Stage-origin proposals (extract, replayed).
         let fixtures = record(&env, "extract");
         let f = fixtures.to_str().unwrap();

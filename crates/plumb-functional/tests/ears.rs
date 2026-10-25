@@ -25,7 +25,7 @@ mod ears_contract {
     };
     use plumb_psg::{
         node_element_hash, node_element_projection, Actor, ActorKind, AuditMeta, DerivationRef,
-        ElementStatus, Graph, Modality, Node, NodePayload, Requirement,
+        ElementStatus, Graph, Modality, Node, NodePayload, Requirement, Stakeholder,
     };
     use serde_json::{json, Value};
 
@@ -1446,6 +1446,21 @@ mod ears_contract {
     // ------------------------------------------------------------------ proposals and patches
 
     fn populated(graph: &Graph, req: &Id) -> Graph {
+        // The owner and stakeholder exist (graph-bound references, architecture §33.11).
+        let mut nodes: Vec<Node> = graph.nodes().values().cloned().collect();
+        nodes.push(actor("actor:owner", "Owner", ElementStatus::Accepted));
+        nodes.push(semantic_node(
+            "stakeholder:clerk",
+            NodePayload::Stakeholder(Stakeholder {
+                name: "Clerk".to_owned(),
+                stakeholder_kind: "business".to_owned(),
+                organization: None,
+                responsibilities: None,
+                contact_ref: None,
+            }),
+            ElementStatus::Accepted,
+        ));
+        let graph = &rebuild(graph, nodes);
         modify(graph, req, |n| {
             if let NodePayload::Requirement(r) = &mut n.payload {
                 r.title = Some("Pack".to_owned());

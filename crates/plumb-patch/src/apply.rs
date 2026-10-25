@@ -81,6 +81,13 @@ pub enum PatchError {
     MergeExtensionConflict { key: String },
     #[error("invalid Supersede: {0}")]
     InvalidSupersede(&'static str),
+    /// Only an Accepted, Suspect or Deprecated node can be superseded; superseding a Proposed
+    /// or Rejected node would promote it into the baseline (architecture §33.11).
+    #[error("cannot supersede {id}: it is {status:?}, not a baseline predecessor")]
+    SupersedePredecessorNotBaseline { id: Id, status: ElementStatus },
+    /// The predecessor is already Superseded.
+    #[error("{0} is already superseded")]
+    SupersedeAlreadyApplied(Id),
     #[error("evidence {evidence} is already attached to {target}")]
     DuplicateEvidenceAttachment { target: Id, evidence: Id },
     #[error("the standard mapping is already attached to {0}")]
@@ -736,6 +743,18 @@ impl Working {
         self.node_at(new)?;
         if old.id == new.id {
             return Err(PatchError::InvalidSupersede("old and new must differ"));
+        }
+        match self.nodes[&old.id].status {
+            ElementStatus::Accepted | ElementStatus::Suspect | ElementStatus::Deprecated => {}
+            ElementStatus::Superseded => {
+                return Err(PatchError::SupersedeAlreadyApplied(old.id.clone()));
+            }
+            status @ (ElementStatus::Proposed | ElementStatus::Rejected) => {
+                return Err(PatchError::SupersedePredecessorNotBaseline {
+                    id: old.id.clone(),
+                    status,
+                });
+            }
         }
         self.check_new_id(&edge.id)?;
         if edge.revision != 1 {

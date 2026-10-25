@@ -27,7 +27,7 @@ pub use hash::{
 };
 pub use node::{Node, NodeError};
 pub use payload::*;
-pub use refs::{DerivationRef, EvidenceRef};
+pub use refs::{payload_refs, DerivationRef, EvidenceRef, PayloadRef, RefStatusPolicy, RefTarget};
 pub use registry::{
     allowed_schema_roles, relation_def, validate_relation_constraints, validate_relation_shapes,
     validate_relations, Cardinality, CyclePolicy, Directionality, NodeCategory, RelationDef,

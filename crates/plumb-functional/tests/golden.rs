@@ -20,11 +20,11 @@ mod golden_contract {
 
     /// Semantic hash of `hr_graph()`, produced by plumb-psg.
     const HR_SEMANTIC_HASH: &str =
-        "psg:sha256:b1497582882784f9ee21638c289d6017ae9b28ee69a458955f02c769b5df235f";
+        "psg:sha256:8d6bcf0913afdc676b33b29adfc828b0945e89ee0576502193aa3bcdda7c7f1d";
 
     /// The hand-authored functional.yaml of `hr_graph()`.
     const GOLDEN_YAML: &str = r#"version: 2
-model_hash: psg:sha256:b1497582882784f9ee21638c289d6017ae9b28ee69a458955f02c769b5df235f
+model_hash: psg:sha256:8d6bcf0913afdc676b33b29adfc828b0945e89ee0576502193aa3bcdda7c7f1d
 glossary:
 - id: concept:working-day
   name: Working day
@@ -166,6 +166,8 @@ events:
   - attr:leave-status
 - id: evt:request-expired
   payload: []
+- id: msg:leave-submitted
+  payload: []
 requirements:
 - id: req:HR-001
   text: The system shall let a manager approve a pending leave request.
@@ -195,13 +197,13 @@ assumptions:
 - id: asm:carry-over
   finding: fnd:0123456789abcdef
   default: 5
-  owner: actor:line-manager
+  owner: stakeholder:line-manager
   expires: 2027-01-01T00:00:00.000000000Z
 "#;
 
     /// SHA-256 of `GOLDEN_YAML`, calculated outside the implementation.
     const GOLDEN_CONTENT_HASH: &str =
-        "sha256:3a4a3d756d0821ced3cfd3f9e842975247a66d5cba8ed15ec47968e34588016a";
+        "sha256:7854b62245344a3aef8dc55a43fe0de916597a003e90039b5c2eb528b7384c55";
 
     const PROFILE_HASH: &str =
         "sha256:e6dc73ec3f1847e5e7fc5d71aef64b71c15a3e93838e64c7f246f275c65af055";
@@ -611,6 +613,13 @@ assumptions:
             "Event",
             json!({"name": "RequestExpired"}),
         )
+        // The start message of the leave-approval process (ProcessNode.message_ref is a
+        // graph-bound Event reference, architecture §33.11).
+        .add(
+            "msg:leave-submitted",
+            "Event",
+            json!({"name": "LeaveSubmitted"}),
+        )
         .add(
             "schema:leave-approved",
             "DataSchema",
@@ -702,17 +711,31 @@ assumptions:
             json!({"name": "No operation", "scenario_kind": "acceptance", "given": [],
                    "when": {"actor": "actor:employee"}, "then": [], "requirement_refs": ["req:HR-001"]}),
         )
+        // Assumption owners are Agents or Stakeholders and the linked Finding exists
+        // (graph-bound payload references, architecture §33.11).
+        .add(
+            "stakeholder:line-manager",
+            "Stakeholder",
+            json!({"name": "Line manager", "stakeholder_kind": "business"}),
+        )
+        .add(
+            "fnd:0123456789abcdef",
+            "Finding",
+            json!({"code": "PLUMB.F3.ASSUMPTION.OWNER", "family": "F3", "severity": "blocker",
+                   "message": "Carry-over is unresolved.", "status": "Open",
+                   "affected_refs": ["ent:leave-request"]}),
+        )
         .add(
             "asm:carry-over",
             "Assumption",
-            json!({"statement": "Up to five days carry over.", "owner_ref": "actor:line-manager",
+            json!({"statement": "Up to five days carry over.", "owner_ref": "stakeholder:line-manager",
                    "status": "Open", "finding_ref": "fnd:0123456789abcdef", "default_value": 5,
                    "expires_at": "2027-01-01T00:00:00.000000000Z"}),
         )
         .add(
             "asm:unbounded",
             "Assumption",
-            json!({"statement": "Managers answer within a week.", "owner_ref": "actor:line-manager",
+            json!({"statement": "Managers answer within a week.", "owner_ref": "stakeholder:line-manager",
                    "status": "Open"}),
         );
         f
@@ -916,6 +939,19 @@ assumptions:
 
     fn with_view(layout: char, style: char) -> Fixture {
         let mut f = hr_fixture();
+        // The View's existence-only payload references (architecture §33.11).
+        f.add("soi:hr:leave", "SystemOfInterest", json!({"name": "Leave"}))
+            .add(
+                "ad:hr:leave",
+                "ArchitectureDescription",
+                json!({"system_of_interest_ref": "soi:hr:leave"}),
+            )
+            .add(
+                "vp:hr:functional",
+                "Viewpoint",
+                json!({"name": "Functional", "concern_refs": [], "stakeholder_refs": [],
+                       "model_kind_refs": []}),
+            );
         f.add(
             "view:leave-process",
             "View",
@@ -1482,12 +1518,14 @@ assumptions:
             ("timer", "P1D")
         );
         let mut f = Fixture::new();
-        f.add("proc:t", "Process", json!({"name": "T"})).add(
-            "pn:s",
-            "ProcessNode",
-            json!({"process_ref": "proc:t", "node_kind": "start",
+        f.add("proc:t", "Process", json!({"name": "T"}))
+            .add("msg:m", "Event", json!({"name": "M"}))
+            .add(
+                "pn:s",
+                "ProcessNode",
+                json!({"process_ref": "proc:t", "node_kind": "start",
                                               "timer_expr": "P1D", "message_ref": "msg:m"}),
-        );
+            );
         let projection = project_fixture(&f);
         assert!(projection.document.processes.is_empty());
         assert!(has_notice(
@@ -1501,6 +1539,18 @@ assumptions:
     fn scenario_requirement_and_then_rules() {
         let scenario = |refs: Value, then: Value| {
             let mut f = Fixture::new();
+            // Scenario.requirement_refs are graph-bound Requirement references.
+            for (req, text) in [
+                ("req:a", "The system shall a."),
+                ("req:b", "The system shall b."),
+            ] {
+                f.add(
+                    req,
+                    "Requirement",
+                    json!({"statement": text, "requirement_kind": "functional",
+                           "level": "system", "modality": "shall"}),
+                );
+            }
             f.add(
                 "scn:s",
                 "Scenario",

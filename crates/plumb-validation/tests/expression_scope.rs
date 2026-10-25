@@ -10,7 +10,8 @@ mod expression_scope_contract {
     use plumb_expr::{Symbol, Ty, Unit};
     use plumb_psg::{
         Attribute, AuditMeta, Calculation, DecisionTable, Edge, ElementStatus, Entity, Finding,
-        FindingSeverity, Graph, Invariant, Node, NodePayload, RelationKind, RelationProperties,
+        FindingSeverity, Graph, GraphViolation, Invariant, Node, NodePayload, RelationKind,
+        RelationProperties,
     };
     use plumb_validation::calculation_analysis::{CalculationScope, CALCULATION_ORIGIN_EXTENSION};
     use plumb_validation::decision_table_analysis::{
@@ -174,6 +175,10 @@ mod expression_scope_contract {
     }
 
     fn graph_with(extra: Vec<Node>) -> Graph {
+        try_graph_with(extra).unwrap_or_else(|v| panic!("{v:?}"))
+    }
+
+    fn try_graph_with(extra: Vec<Node>) -> Result<Graph, Vec<GraphViolation>> {
         let mut n = nodes();
         n.extend(extra);
         let edges = [
@@ -192,7 +197,6 @@ mod expression_scope_contract {
             n,
             edges,
         )
-        .unwrap_or_else(|v| panic!("{v:?}"))
     }
 
     fn graph() -> Graph {
@@ -839,8 +843,9 @@ mod expression_scope_contract {
                 )
             ));
         }
-        // Invariant.scope_ref must resolve to an Accepted node.
-        let dangling = graph_with(vec![node(
+        // Invariant.scope_ref must resolve: a dangling scope is a graph-bound reference
+        // violation that graph validation rejects (architecture §33.11).
+        let dangling = try_graph_with(vec![node(
             "inv:dangling",
             Accepted,
             NodePayload::Invariant(Invariant {
@@ -848,14 +853,14 @@ mod expression_scope_contract {
                 expression: "1 = 1".into(),
             }),
         )]);
-        assert!(context_error(
-            &dangling,
-            &with(
-                vec![legacy_override()],
-                vec![table()],
-                vec![invariant(), invariant_for("inv:dangling", vec![])]
-            )
-        ));
+        assert_eq!(
+            dangling.err(),
+            Some(vec![GraphViolation::PayloadRefMissing {
+                owner: id("inv:dangling"),
+                field: "scope_ref",
+                target: id("entity:ghost"),
+            }])
+        );
     }
 
     #[test]

@@ -785,7 +785,9 @@ fn check_acyclic(edges: &[&Edge], kind: &RelationKind, violations: &mut Vec<Rela
         let Some(&start) = component.first() else {
             continue;
         };
-        let self_loop = adjacency.get(start).is_some_and(|next| next.contains(start));
+        let self_loop = adjacency
+            .get(start)
+            .is_some_and(|next| next.contains(start));
         if component.len() == 1 && !self_loop {
             continue;
         }

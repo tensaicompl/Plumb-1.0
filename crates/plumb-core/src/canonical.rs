@@ -66,14 +66,18 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, Invalid> {
 
 fn check_unsigned(value: u128) -> Result<(), Invalid> {
     if value > u128::from(MAX_SAFE_INTEGER) {
-        return invalid(format!("integer {value} is outside the I-JSON range ±(2^53−1)"));
+        return invalid(format!(
+            "integer {value} is outside the I-JSON range ±(2^53−1)"
+        ));
     }
     Ok(())
 }
 
 fn check_signed(value: i128) -> Result<(), Invalid> {
     if value.unsigned_abs() > u128::from(MAX_SAFE_INTEGER) {
-        return invalid(format!("integer {value} is outside the I-JSON range ±(2^53−1)"));
+        return invalid(format!(
+            "integer {value} is outside the I-JSON range ±(2^53−1)"
+        ));
     }
     Ok(())
 }
@@ -173,7 +177,12 @@ impl ser::Serializer for Validator {
     fn serialize_unit_struct(self, _: &'static str) -> Result<(), Invalid> {
         Ok(())
     }
-    fn serialize_unit_variant(self, _: &'static str, _: u32, _: &'static str) -> Result<(), Invalid> {
+    fn serialize_unit_variant(
+        self,
+        _: &'static str,
+        _: u32,
+        _: &'static str,
+    ) -> Result<(), Invalid> {
         Ok(())
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(

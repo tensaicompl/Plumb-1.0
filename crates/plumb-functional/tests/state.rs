@@ -1763,9 +1763,17 @@ mod lifecycle_contract {
             }),
         );
         let g = governed(vec![], vec![], AgentKind::Human);
+        // The decider exists (decided_by is graph-bound) but is not a human Agent.
+        let nobody = node(
+            "agent:nobody",
+            Accepted,
+            NodePayload::Agent(plumb_psg::Agent {
+                agent_kind: AgentKind::SoftwareService,
+            }),
+        );
         let g = extend(
             &g,
-            vec![stale],
+            vec![nobody, stale],
             vec![resolves(
                 "rel:stale",
                 "decision:stale",

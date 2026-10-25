@@ -112,7 +112,49 @@ mod impact_contract {
         node(node_id, status, tag, data)
     }
 
-    fn graph(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+    /// The edge-less nodes the ApiOperation and View fixtures reference by payload (their
+    /// existence-only graph-bound references), added when a fixture needs them.
+    fn payload_context(nodes: &[Node]) -> Vec<Node> {
+        let has = |tag: NodeType| nodes.iter().any(|n| n.payload.node_type() == tag);
+        let mut context = Vec::new();
+        if has(NodeType::ApiOperation) {
+            context.push(node(
+                "api:hr:leave",
+                "Accepted",
+                "ApiContract",
+                json!({"name": "Leave API", "contract_kind": "http"}),
+            ));
+        }
+        if has(NodeType::View) {
+            context.extend([
+                node(
+                    "soi:hr:leave",
+                    "Accepted",
+                    "SystemOfInterest",
+                    arch("Leave"),
+                ),
+                node(
+                    "ad:hr:leave",
+                    "Accepted",
+                    "ArchitectureDescription",
+                    json!({"system_of_interest_ref": "soi:hr:leave"}),
+                ),
+                node(
+                    "vp:hr:functional",
+                    "Accepted",
+                    "Viewpoint",
+                    json!({
+                        "name": "Functional", "concern_refs": [], "stakeholder_refs": [],
+                        "model_kind_refs": []
+                    }),
+                ),
+            ]);
+        }
+        context
+    }
+
+    fn graph(mut nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+        nodes.extend(payload_context(&nodes));
         Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap_or_else(|v| panic!("{v:?}"))
     }
 

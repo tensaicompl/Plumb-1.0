@@ -282,7 +282,10 @@ fn assert_canonicalization_error<T: Serialize + ?Sized>(value: &T, what: &str) {
     }
     for kind in [HashKind::Generic, HashKind::Semantic, HashKind::Evidence] {
         assert!(
-            matches!(canonical_hash(kind, value), Err(CoreError::Canonicalization(_))),
+            matches!(
+                canonical_hash(kind, value),
+                Err(CoreError::Canonicalization(_))
+            ),
             "{what}: canonical_hash({kind:?}) must fail too"
         );
     }
@@ -315,7 +318,10 @@ fn duplicate_member_names_are_rejected() {
 fn integers_outside_the_safe_range_are_rejected() {
     // Fable #28: integers beyond 2^53 - 1 would be widened to f64 and collide.
     let max = MAX_SAFE_INTEGER;
-    assert_eq!(canonical_string(&json!([max, -max])), format!("[{max},-{max}]"));
+    assert_eq!(
+        canonical_string(&json!([max, -max])),
+        format!("[{max},-{max}]")
+    );
     assert_canonicalization_error(&(max + 1), "2^53");
     assert_canonicalization_error(&(-max - 1), "-2^53");
     assert_canonicalization_error(&u64::MAX, "u64::MAX");

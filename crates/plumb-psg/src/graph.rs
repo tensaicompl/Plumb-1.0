@@ -9,6 +9,7 @@ use crate::edge::{Edge, EdgeError};
 use crate::hash;
 use crate::node::{Node, NodeError};
 use crate::payload::{NodePayload, NodeType};
+use crate::refs::{payload_refs, RefStatusPolicy, RefTarget};
 use crate::registry::{validate_relation_constraints, validate_relation_shapes, RelationViolation};
 use crate::relations::{RelationKind, RelationProperties};
 use crate::status::ElementStatus;
@@ -118,6 +119,36 @@ pub enum GraphViolation {
     /// Question.
     #[error("resolution decision {decision} does not resolve its question {question}")]
     DecisionQuestionNotResolved { decision: Id, question: Id },
+    /// A graph-bound payload reference names no node or edge (architecture §33.11 census).
+    #[error("{owner}: {field} reference {target} does not exist")]
+    PayloadRefMissing {
+        owner: Id,
+        field: &'static str,
+        target: Id,
+    },
+    /// A graph-bound payload reference that must name a node names an edge.
+    #[error("{owner}: {field} reference {target} is an edge, not a node")]
+    PayloadRefNotANode {
+        owner: Id,
+        field: &'static str,
+        target: Id,
+    },
+    /// A graph-bound payload reference names a node of a type the census does not allow.
+    #[error("{owner}: {field} reference {target} is a {node_type:?}")]
+    PayloadRefWrongType {
+        owner: Id,
+        field: &'static str,
+        target: Id,
+        node_type: NodeType,
+    },
+    /// A graph-bound payload reference names a node whose status the owner may not reference.
+    #[error("{owner}: {field} reference {target} is {status:?}")]
+    PayloadRefForbiddenStatus {
+        owner: Id,
+        field: &'static str,
+        target: Id,
+        status: ElementStatus,
+    },
 }
 
 static NO_IDS: BTreeSet<Id> = BTreeSet::new();
@@ -547,7 +578,66 @@ impl Graph {
                 });
             }
         }
+        // (16) graph-bound payload references (architecture §33.11 census).
+        for (id, node) in &self.nodes {
+            for r in payload_refs(&node.payload) {
+                if let Some(violation) = self.payload_ref_violation(id, node.status, &r) {
+                    v.push(violation);
+                }
+            }
+        }
         v
+    }
+
+    fn payload_ref_violation(
+        &self,
+        owner: &Id,
+        owner_status: ElementStatus,
+        r: &crate::refs::PayloadRef<'_>,
+    ) -> Option<GraphViolation> {
+        let (field, target) = (r.field, r.target.clone());
+        let Some(node) = self.nodes.get(r.target) else {
+            return Some(if !self.edges.contains_key(r.target) {
+                GraphViolation::PayloadRefMissing {
+                    owner: owner.clone(),
+                    field,
+                    target,
+                }
+            } else if r.expected == RefTarget::AnyElement {
+                return None;
+            } else {
+                GraphViolation::PayloadRefNotANode {
+                    owner: owner.clone(),
+                    field,
+                    target,
+                }
+            });
+        };
+        let node_type = node.payload.node_type();
+        if !r.expected.allows(node_type) {
+            return Some(GraphViolation::PayloadRefWrongType {
+                owner: owner.clone(),
+                field,
+                target,
+                node_type,
+            });
+        }
+        // A Rejected owner is outside every view, so only existence and type bind it.
+        let allowed = owner_status == ElementStatus::Rejected
+            || match r.policy {
+                RefStatusPolicy::ExistenceOnly => true,
+                RefStatusPolicy::AcceptedOnly => node.status == ElementStatus::Accepted,
+                RefStatusPolicy::Participation => {
+                    node.status != ElementStatus::Rejected
+                        && (!is_baseline(owner_status) || is_baseline(node.status))
+                }
+            };
+        (!allowed).then(|| GraphViolation::PayloadRefForbiddenStatus {
+            owner: owner.clone(),
+            field,
+            target,
+            status: node.status,
+        })
     }
 }
 

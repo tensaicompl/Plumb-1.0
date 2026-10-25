@@ -130,6 +130,15 @@ mod job {
             vec![
                 req("req:a", Accepted, "Employees shall submit leave requests."),
                 req("req:b", Proposed, "Managers shall approve leave requests."),
+                // The human Agent acceptance companions name as decided_by (graph-bound,
+                // architecture §33.11).
+                node(
+                    "agent:analyst",
+                    Accepted,
+                    NodePayload::Agent(plumb_psg::Agent {
+                        agent_kind: plumb_psg::AgentKind::Human,
+                    }),
+                ),
             ],
             Vec::new(),
         )

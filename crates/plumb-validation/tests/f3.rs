@@ -24,9 +24,10 @@ mod f3_contract {
     use plumb_psg::{
         Actor, ActorKind, Agent, AgentKind, Assumption, Attribute, AuditMeta, Calculation,
         Calendar, DomainRelationship, Edge, ElementStatus, Entity, Event, Finding, FindingSeverity,
-        Graph, Invariant, Modality, Node, NodePayload, Operation, OperationKind, Permission,
-        Question, QuestionKind, RelationKind, RelationProperties, Requirement, RequirementKind,
-        RequirementLevel, ResolutionDecision, ResourceScope, Stakeholder, State, Transition,
+        Graph, GraphViolation, Invariant, Modality, Node, NodePayload, NodeType, Operation,
+        OperationKind, Permission, Question, QuestionKind, RelationKind, RelationProperties,
+        Requirement, RequirementKind, RequirementLevel, ResolutionDecision, ResourceScope,
+        Stakeholder, State, Transition,
     };
     use plumb_validation::evaluator::{F3DecisionArtifactInput, F3ValidationInputs};
     use plumb_validation::expression_scope::{ExpressionBindingExposure, ExpressionScopeBinding};
@@ -342,6 +343,25 @@ mod f3_contract {
         let mut edges: Vec<Edge> = graph.edges().values().cloned().collect();
         f(&mut nodes, &mut edges);
         graph_of(nodes, edges)
+    }
+
+    /// The violations graph validation reports for an edit it rejects (architecture §33.11:
+    /// dangling, wrong-type and forbidden-status graph-bound payload references).
+    fn rejected_edit(
+        graph: &Graph,
+        node_id: &str,
+        f: impl FnOnce(&mut Node),
+    ) -> Vec<GraphViolation> {
+        let mut nodes: Vec<Node> = graph.nodes().values().cloned().collect();
+        let edges: Vec<Edge> = graph.edges().values().cloned().collect();
+        f(nodes.iter_mut().find(|n| n.id == id(node_id)).unwrap());
+        Graph::new(
+            id("project:pilot"),
+            id("profile:plumb-software-2026.1"),
+            nodes,
+            edges,
+        )
+        .expect_err("graph validation must reject the edit")
     }
 
     fn edit_node(graph: &Graph, node_id: &str, f: impl FnOnce(&mut Node)) -> Graph {
@@ -1036,6 +1056,11 @@ mod f3_contract {
     // ------------------------------------------------------------------ QUESTION.NO_BLOCKING_OPEN
 
     fn question_graph(questions: Vec<(&str, &str, &str)>) -> Graph {
+        let (nodes, edges) = question_elements(questions);
+        graph_of(nodes, edges)
+    }
+
+    fn question_elements(questions: Vec<(&str, &str, &str)>) -> (Vec<Node>, Vec<Edge>) {
         // (question id, finding id, status)
         let mut nodes = base_nodes();
         nodes.push(node(
@@ -1085,7 +1110,7 @@ mod f3_contract {
                 }),
             ));
         }
-        graph_of(nodes, base_edges())
+        (nodes, base_edges())
     }
 
     fn empty_inputs() -> F3ValidationInputs {
@@ -1148,18 +1173,33 @@ mod f3_contract {
                 .code,
             "F3_QUESTION_STATUS"
         );
-        let broken = question_graph(vec![("q:00000000000000a1", "operation:approve", "Open")]);
-        assert_eq!(
-            rule(&r(&broken), NO_BLOCKING_OPEN)
-                .error
-                .as_ref()
-                .unwrap()
-                .code,
-            "F3_QUESTION_LINK"
+        // A finding_ref naming a non-Finding or no node is a graph-bound reference violation
+        // (architecture §33.11) that graph validation rejects before any F3 rule runs.
+        let rejected = |finding: &str| {
+            let (nodes, edges) = question_elements(vec![("q:00000000000000a1", finding, "Open")]);
+            Graph::new(
+                id("project:pilot"),
+                id("profile:plumb-software-2026.1"),
+                nodes,
+                edges,
+            )
+            .expect_err("graph validation must reject the question")
+        };
+        assert!(
+            rejected("operation:approve").contains(&GraphViolation::PayloadRefWrongType {
+                owner: id("q:00000000000000a1"),
+                field: "finding_ref",
+                target: id("operation:approve"),
+                node_type: NodeType::Operation,
+            })
         );
-        // A missing or inactive Finding leaves the question outside the applicable set.
-        let missing = question_graph(vec![("q:00000000000000a1", "fnd:00000000000000ff", "Open")]);
-        assert_eq!(state(&r(&missing), NO_BLOCKING_OPEN), PASS);
+        assert!(
+            rejected("fnd:00000000000000ff").contains(&GraphViolation::PayloadRefMissing {
+                owner: id("q:00000000000000a1"),
+                field: "finding_ref",
+                target: id("fnd:00000000000000ff"),
+            })
+        );
         // Determinism.
         let reversed = rebuild(&open, |nodes, edges| {
             nodes.reverse();
@@ -1389,6 +1429,18 @@ mod f3_contract {
 
     // ------------------------------------------------------------------ DECISION.EVIDENCE
 
+    fn rejected_decision_edit(
+        g: &Governed,
+        family: &str,
+        f: impl FnOnce(&mut ResolutionDecision),
+    ) -> Vec<GraphViolation> {
+        rejected_edit(&g.graph, g.decisions[family].as_str(), |n| {
+            if let NodePayload::ResolutionDecision(d) = &mut n.payload {
+                f(d);
+            }
+        })
+    }
+
     fn edit_decision(g: &Governed, family: &str, f: impl FnOnce(&mut ResolutionDecision)) -> Graph {
         edit_node(&g.graph, g.decisions[family].as_str(), |n| {
             if let NodePayload::ResolutionDecision(d) = &mut n.payload {
@@ -1413,24 +1465,34 @@ mod f3_contract {
                 "{family}"
             );
         };
-        fails(
-            edit_decision(&g, "operation_performer", |d| {
-                d.decided_by = id("agent:ghost")
-            }),
-            "operation_performer",
-        );
+        // ResolutionDecision.supersedes is a graph-bound reference: name an existing decision.
+        let older = g.decisions["operation_performer"].clone();
+        // A missing or non-Accepted decided_by Agent is a graph-bound reference violation
+        // (architecture §33.11) that graph validation rejects before any F3 rule runs.
+        let decision = &g.decisions["operation_performer"];
+        assert!(rejected_decision_edit(&g, "operation_performer", |d| {
+            d.decided_by = id("agent:ghost")
+        })
+        .contains(&GraphViolation::PayloadRefMissing {
+            owner: decision.clone(),
+            field: "decided_by",
+            target: id("agent:ghost"),
+        }));
         fails(
             edit_decision(&g, "operation_performer", |d| {
                 d.decided_by = id("agent:service")
             }),
             "operation_performer",
         );
-        fails(
-            edit_decision(&g, "operation_performer", |d| {
-                d.decided_by = id("agent:intern")
-            }),
-            "operation_performer",
-        );
+        assert!(rejected_decision_edit(&g, "operation_performer", |d| {
+            d.decided_by = id("agent:intern")
+        })
+        .contains(&GraphViolation::PayloadRefForbiddenStatus {
+            owner: decision.clone(),
+            field: "decided_by",
+            target: id("agent:intern"),
+            status: Proposed,
+        }));
         fails(
             edit_decision(&g, "domain_relationship_cardinality", |d| {
                 d.rationale = None
@@ -1449,7 +1511,7 @@ mod f3_contract {
         );
         fails(
             edit_decision(&g, "invariant_formula", |d| {
-                d.supersedes = Some(id("dec:0000000000000001"))
+                d.supersedes = Some(older.clone())
             }),
             "invariant_formula",
         );
@@ -1498,7 +1560,7 @@ mod f3_contract {
         assert!(targets(&report, DECISION_EVIDENCE).contains(&d));
         // A superseding decision with a clean rationale passes.
         let superseding = edit_decision(&g, "invariant_formula", |d| {
-            d.supersedes = Some(id("dec:0000000000000001"));
+            d.supersedes = Some(older.clone());
             d.rationale = Some("Policy changed.".into());
         });
         assert_eq!(
@@ -1532,12 +1594,42 @@ mod f3_contract {
             ),
             PASS
         );
+        // A missing or wrong-type owner is a graph-bound reference violation (architecture
+        // §33.11) that graph validation rejects before any F3 rule runs.
+        let rejected = |owner: &str| {
+            rejected_edit(&g.graph, g.assumption.as_str(), |n| {
+                if let NodePayload::Assumption(a) = &mut n.payload {
+                    a.owner_ref = owner.parse().unwrap();
+                }
+            })
+        };
+        assert!(
+            rejected("agent:ghost").contains(&GraphViolation::PayloadRefMissing {
+                owner: g.assumption.clone(),
+                field: "owner_ref",
+                target: id("agent:ghost"),
+            })
+        );
+        assert!(
+            rejected("operation:approve").contains(&GraphViolation::PayloadRefWrongType {
+                owner: g.assumption.clone(),
+                field: "owner_ref",
+                target: id("operation:approve"),
+                node_type: NodeType::Operation,
+            })
+        );
+        assert!(
+            rejected("agent:intern").contains(&GraphViolation::PayloadRefForbiddenStatus {
+                owner: g.assumption.clone(),
+                field: "owner_ref",
+                target: id("agent:intern"),
+                status: Proposed,
+            })
+        );
         for bad in [
-            edit(|a| a.owner_ref = "agent:ghost".parse().unwrap()),
-            edit(|a| a.owner_ref = "operation:approve".parse().unwrap()),
-            edit(|a| a.owner_ref = "agent:intern".parse().unwrap()),
             edit(|a| a.expires_at = None),
-            edit(|a| a.risk_ref = Some("risk:any".parse().unwrap())),
+            // risk_ref has no legal referent in the pilot; any existing node is still invalid.
+            edit(|a| a.risk_ref = Some("operation:approve".parse().unwrap())),
         ] {
             let report = evaluate(&bad, inputs());
             assert_eq!(state(&report, ASSUMPTION_OWNER), FAIL);
@@ -1664,9 +1756,15 @@ mod f3_contract {
             edit_decision(&g, "waiver", |d| d.decided_by = id("agent:service")),
             inputs.clone(),
         );
-        fails(
-            edit_decision(&g, "waiver", |d| d.decided_by = id("agent:intern")),
-            inputs.clone(),
+        assert!(
+            rejected_decision_edit(&g, "waiver", |d| d.decided_by = id("agent:intern")).contains(
+                &GraphViolation::PayloadRefForbiddenStatus {
+                    owner: w.clone(),
+                    field: "decided_by",
+                    target: id("agent:intern"),
+                    status: Proposed,
+                }
+            )
         );
         fails(
             edit_decision(&g, "waiver", |d| d.rationale = None),
