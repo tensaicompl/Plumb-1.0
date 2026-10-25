@@ -304,10 +304,10 @@ mod revisions {
     // ------------------------------------------------------------------ schema
 
     #[test]
-    fn fresh_database_initializes_exact_v6_schema() {
+    fn fresh_database_initializes_exact_v7_schema() {
         let db = Db::new();
         let store = db.store();
-        assert_eq!(STORE_SCHEMA_VERSION, 6);
+        assert_eq!(STORE_SCHEMA_VERSION, 7);
         assert_eq!(PSG_SCHEMA_VERSION, 1);
         let expected: BTreeSet<String> = [
             "artifacts",
