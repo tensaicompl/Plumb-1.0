@@ -9,13 +9,14 @@ export type StageName = components["schemas"]["StageName"];
  * The stages offered in the Run step menu, in pipeline order (the HR pilot simulation order).
  * `intake` is excluded: importing a document is a Sources action.
  */
-export const RUNNABLE_STAGES: readonly StageName[] = ["extract", "consolidate", "lint", "analyse", "flows", "calc", "rules", "scenarios", "tags", "run"];
+export const RUNNABLE_STAGES: readonly StageName[] = ["extract", "consolidate", "lint", "directory", "analyse", "flows", "calc", "rules", "scenarios", "tags", "run"];
 
 const STAGE_LABEL: Readonly<Record<StageName, MessageKey>> = {
   intake: "step.intake",
   extract: "step.extract",
   consolidate: "step.consolidate",
   lint: "step.lint",
+  directory: "step.directory",
   analyse: "step.analyse",
   flows: "step.flows",
   calc: "step.calc",

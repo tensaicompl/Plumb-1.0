@@ -729,6 +729,7 @@
   "step.intake": "Import",
   "step.extract": "Requirements",
   "step.consolidate": "Model",
+  "step.directory": "Directory",
   "step.lint": "Glossary & quality",
   "step.analyse": "Analysis",
   "step.flows": "Flows",

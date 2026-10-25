@@ -132,7 +132,7 @@ const VERSION = {
 };
 
 function proposal(n: number, stale = false): PendingProposal {
-  return { proposal_id: "prop:" + n, action: "create", origin: "stage", base_revision: VERSION.revision, discardable: false, requires_reason: false, stale };
+  return { proposal_id: "prop:" + n, action: "create", origin: "stage", base_revision: VERSION.revision, discardable: false, requires_reason: false, stale, title: "Proposal " + n, element_kind: "other", created_at: "2026-05-01T12:00:00.000000000Z", stage: null };
 }
 
 function question(n: number): Question {
@@ -371,6 +371,7 @@ describe("Toolbar", () => {
       "Requirements step",
       "Model step",
       "Glossary & quality step",
+      "Directory step",
       "Analysis step",
       "Flows step",
       "Calculations step",
