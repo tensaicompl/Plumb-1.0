@@ -2,13 +2,14 @@
 //! Hotfix 063), the 40 A0.3-owned operations (plan A0.3, Hotfix 065) and the two A0.4-owned
 //! stage and job operations (plan A0.4, Hotfix 067): all 72 operations.
 
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::{header, StatusCode};
-use axum::middleware::map_response;
+use axum::middleware::{from_fn, map_response, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 
 use crate::error::ApiError;
+use crate::server::{is_loopback_authority, is_loopback_origin};
 use crate::state::ApiState;
 
 mod gates;
@@ -49,6 +50,26 @@ fn typed_payload_too_large(limit_bytes: usize, response: Response) -> Response {
     }
 }
 
+/// Loopback-only serving (architecture §33.8): a request without a loopback `Host` is 403
+/// `E_FORBIDDEN_HOST`; a request whose `Origin` is present and not an `http` loopback origin is
+/// 403 `E_FORBIDDEN_ORIGIN`. It runs before routing, body limits and every handler.
+async fn require_loopback(request: Request, next: Next) -> Response {
+    let headers = request.headers();
+    let host_ok = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(is_loopback_authority);
+    if !host_ok {
+        return ApiError::forbidden_host().into_response();
+    }
+    if let Some(origin) = headers.get(header::ORIGIN) {
+        if !origin.to_str().ok().is_some_and(is_loopback_origin) {
+            return ApiError::forbidden_origin().into_response();
+        }
+    }
+    next.run(request).await
+}
+
 /// The pilot HTTP router over `state`. `POST /api/sources` carries its own body limit, set on
 /// its route and therefore overriding the router-wide default of [`MAX_JSON_BODY_BYTES`].
 pub fn router(state: ApiState) -> Router {
@@ -68,5 +89,6 @@ pub fn router(state: ApiState) -> Router {
         .layer(map_response(|response: Response| async move {
             typed_payload_too_large(MAX_JSON_BODY_BYTES, response)
         }))
+        .layer(from_fn(require_loopback))
         .with_state(state)
 }

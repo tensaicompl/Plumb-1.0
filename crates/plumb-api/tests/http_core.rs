@@ -654,7 +654,19 @@ mod http_core {
         }
     }
 
-    async fn send(router: &Router, request: Request<Body>) -> Reply {
+    /// Sends `request` as a loopback client does: a request without a `Host` header gets the
+    /// loopback `Host` a real HTTP/1.1 client always sends (architecture §33.8).
+    async fn send(router: &Router, mut request: Request<Body>) -> Reply {
+        if !request.headers().contains_key(header::HOST) {
+            request
+                .headers_mut()
+                .insert(header::HOST, "127.0.0.1:8080".parse().unwrap());
+        }
+        send_exact(router, request).await
+    }
+
+    /// Sends `request` with exactly its own headers.
+    async fn send_exact(router: &Router, request: Request<Body>) -> Reply {
         let response = router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let headers = response.headers().clone();
@@ -3008,6 +3020,139 @@ mod http_core {
             (r.status, r.code().as_str()),
             (StatusCode::BAD_REQUEST, "E_INVALID_REQUEST")
         );
+    }
+
+    // ------------------------------------------------------------------ H0.8 loopback-only serving
+
+    fn with_headers(uri: &str, method: Method, headers: &[(&str, &str)]) -> Request<Body> {
+        let mut request = Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request.body(Body::empty()).unwrap()
+    }
+
+    fn assert_forbidden(r: &Reply, code: &str, case: &str) {
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{case}");
+        assert_eq!(
+            r.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json",
+            "{case}"
+        );
+        assert_eq!(r.code(), code, "{case}");
+        // The rejected value is never echoed.
+        assert!(
+            !String::from_utf8_lossy(&r.bytes).contains("evil"),
+            "{case}"
+        );
+    }
+
+    /// Architecture §33.8: every request carries a loopback `Host` (`127.0.0.1`, `[::1]` or
+    /// `localhost`, any port), otherwise 403 `E_FORBIDDEN_HOST`; a present `Origin` is an `http`
+    /// origin of one of those hosts (any port), otherwise 403 `E_FORBIDDEN_ORIGIN`. The check
+    /// covers every route, including unrouted paths, before any handler runs.
+    #[tokio::test]
+    async fn loopback_host_and_origin_are_enforced() {
+        let app = app();
+        for host in [
+            "127.0.0.1",
+            "127.0.0.1:8080",
+            "localhost",
+            "localhost:5173",
+            "LocalHost:80",
+            "[::1]",
+            "[::1]:8080",
+        ] {
+            let r = send_exact(
+                &app.router,
+                with_headers("/api/findings", Method::GET, &[("host", host)]),
+            )
+            .await;
+            assert_eq!(r.status, StatusCode::OK, "{host}");
+        }
+        // No Host at all is forbidden (a real HTTP/1.1 client always sends one).
+        for uri in ["/api/findings", "/api/no-such-route", "/"] {
+            let r = send_exact(&app.router, with_headers(uri, Method::GET, &[])).await;
+            assert_forbidden(&r, "E_FORBIDDEN_HOST", uri);
+        }
+        for host in [
+            "evil.example",
+            "evil.example:8080",
+            "localhost.evil.example",
+            "127.0.0.1.evil.example",
+            "127.0.0.2",
+            "0.0.0.0:8080",
+            "[::2]",
+            "::1",
+            "[::1",
+            "localhost:",
+            "localhost:evil",
+            "localhost:8080:1",
+            "user@localhost",
+            "",
+        ] {
+            for uri in ["/api/findings", "/api/no-such-route"] {
+                let r = send_exact(
+                    &app.router,
+                    with_headers(uri, Method::GET, &[("host", host)]),
+                )
+                .await;
+                assert_forbidden(&r, "E_FORBIDDEN_HOST", &format!("{host} {uri}"));
+            }
+        }
+        // A mutation with a foreign Host is refused before its handler (and its If-Match).
+        let r = send_exact(
+            &app.router,
+            with_headers("/api/sources", Method::POST, &[("host", "evil.example")]),
+        )
+        .await;
+        assert_forbidden(&r, "E_FORBIDDEN_HOST", "POST /api/sources");
+
+        for origin in [
+            "http://localhost",
+            "http://localhost:5173",
+            "http://127.0.0.1:8080",
+            "http://[::1]:3000",
+            "HTTP://LOCALHOST:5173",
+        ] {
+            let r = send(
+                &app.router,
+                with_headers("/api/findings", Method::GET, &[("origin", origin)]),
+            )
+            .await;
+            assert_eq!(r.status, StatusCode::OK, "{origin}");
+        }
+        for origin in [
+            "https://localhost:5173",
+            "http://evil.example",
+            "http://localhost.evil.example",
+            "http://127.0.0.1.evil.example:8080",
+            "null",
+            "file://",
+            "http://user@localhost",
+            "http://localhost/evil",
+            "http://localhost:evil",
+            "ws://localhost:5173",
+            "",
+        ] {
+            let r = send(
+                &app.router,
+                with_headers("/api/findings", Method::GET, &[("origin", origin)]),
+            )
+            .await;
+            assert_forbidden(&r, "E_FORBIDDEN_ORIGIN", origin);
+        }
+        // The Host check comes first.
+        let r = send_exact(
+            &app.router,
+            with_headers(
+                "/api/findings",
+                Method::GET,
+                &[("host", "evil.example"), ("origin", "http://evil.example")],
+            ),
+        )
+        .await;
+        assert_forbidden(&r, "E_FORBIDDEN_HOST", "host and origin");
     }
 
     // ------------------------------------------------------------------ H0.1 body and expression limits

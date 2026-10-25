@@ -1,8 +1,12 @@
 //! The blocking server boundary of the pilot API (A0.4, Hotfix 067): `plumb-api` owns the Tokio
 //! runtime, the listener and `axum::serve`; the CLI calls `serve_blocking` and depends on none
 //! of them.
+//!
+//! Loopback-only serving (H0.8, architecture §33.8): the product has no user authentication, so
+//! the server refuses any non-loopback bind address, and every request must carry a loopback
+//! `Host` and, when present, an `http` loopback `Origin` (enforced by the router layer).
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use thiserror::Error;
 
@@ -12,6 +16,9 @@ use crate::state::ApiState;
 /// Why the server could not run.
 #[derive(Debug, Error)]
 pub enum ServeError {
+    /// The bind address is not a loopback address (the pilot has no user authentication).
+    #[error("refusing to listen on non-loopback address {addr}: the pilot server binds only to 127.0.0.1 or [::1]")]
+    NonLoopbackBind { addr: SocketAddr },
     #[error("the server runtime cannot start: {0}")]
     Runtime(std::io::Error),
     #[error("cannot listen on {addr}: {source}")]
@@ -23,8 +30,66 @@ pub enum ServeError {
     Serve(std::io::Error),
 }
 
-/// Serves the pilot router over `state` on `listen` until Ctrl-C, blocking the caller.
+/// Refuses a non-loopback bind address with the typed [`ServeError::NonLoopbackBind`]. Only
+/// `127.0.0.1` and `::1` are accepted (not the unspecified `0.0.0.0` / `::`, nor other
+/// `127.0.0.0/8` addresses, so the bound host is always one the Host check admits).
+pub fn require_loopback_bind(addr: SocketAddr) -> Result<(), ServeError> {
+    let loopback = match addr {
+        SocketAddr::V4(v4) => *v4.ip() == Ipv4Addr::LOCALHOST,
+        SocketAddr::V6(v6) => *v6.ip() == Ipv6Addr::LOCALHOST,
+    };
+    if loopback {
+        Ok(())
+    } else {
+        Err(ServeError::NonLoopbackBind { addr })
+    }
+}
+
+/// Whether `authority` (a `Host` header value or an origin's authority) is `127.0.0.1`,
+/// `[::1]` or `localhost` (ASCII case-insensitive), optionally followed by `:<port>`.
+pub fn is_loopback_authority(authority: &str) -> bool {
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let Some((inside, after)) = rest.split_once(']') else {
+            return false;
+        };
+        if inside.parse::<Ipv6Addr>() != Ok(Ipv6Addr::LOCALHOST) {
+            return false;
+        }
+        match after {
+            "" => return true,
+            _ => match after.strip_prefix(':') {
+                Some(port) => ("[::1]", Some(port)),
+                None => return false,
+            },
+        }
+    } else {
+        match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        }
+    };
+    let host_ok = host == "[::1]" || host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost");
+    let port_ok = port.is_none_or(|p| {
+        !p.is_empty()
+            && p.len() <= 5
+            && p.bytes().all(|b| b.is_ascii_digit())
+            && p.parse::<u16>().is_ok()
+    });
+    host_ok && port_ok
+}
+
+/// Whether `origin` (an `Origin` header value) is an `http` origin of a loopback host, any port.
+pub fn is_loopback_origin(origin: &str) -> bool {
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    scheme.eq_ignore_ascii_case("http") && is_loopback_authority(authority)
+}
+
+/// Serves the pilot router over `state` on `listen` until Ctrl-C, blocking the caller. A
+/// non-loopback `listen` is refused before any runtime or listener is created.
 pub fn serve_blocking(state: ApiState, listen: SocketAddr) -> Result<(), ServeError> {
+    require_loopback_bind(listen)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
