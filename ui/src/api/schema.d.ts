@@ -1480,6 +1480,16 @@ export interface components {
             operation?: string | null;
             to: string;
         };
+        /**
+         * @description One evidence reference of a requirement with its source (H0.11, Fable #351): `text` is the
+         *     exact text the importer extracted for that EvidenceFragment, `null` when the reference is not
+         *     an EvidenceFragment carrying extracted text.
+         */
+        EvidenceExcerpt: {
+            id: string;
+            source_ref?: string | null;
+            text?: string | null;
+        };
         /** @enum {string} */
         ExportFormat: "functional" | "report" | "decisions" | "glossary" | "scenarios" | "gate_report";
         Finding: {
@@ -1965,6 +1975,8 @@ export interface components {
              *     on the current head (R0.6); `null` when there is none. Paired with `ears_proposal_ref`.
              */
             ears_suggestion?: string | null;
+            /** @description The evidence references of `spans`, in the same order, with their source text. */
+            evidence: components["schemas"]["EvidenceExcerpt"][];
             id: string;
             linked: components["schemas"]["RequirementLinks"];
             /**
@@ -5948,6 +5960,11 @@ export interface operations {
                      *           "example"
                      *         ]
                      *       },
+                     *       "evidence": [
+                     *         {
+                     *           "id": "example"
+                     *         }
+                     *       ],
                      *       "id": "HR-001",
                      *       "linked": {
                      *         "operations": [

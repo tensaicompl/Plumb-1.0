@@ -186,6 +186,26 @@ async function chooseAndPreview() {
   return user;
 }
 
+// ------------------------------------------------------------------ lifecycle
+
+describe("Glossary merge lifecycle (Fable #356)", () => {
+  it("does not offer a non-Accepted term as a merge target, which the backend refuses", async () => {
+    server.use(...handlers([]));
+    renderGlossary();
+    const proposed = (await screen.findByText("vacation")).closest("tr");
+    const accepted = screen.getByText("leave request").closest("tr");
+    if (proposed === null || accepted === null) {
+      throw new Error("term rows expected");
+    }
+    const target = within(proposed).getByRole("button", { name: "Merge into this" }) as HTMLButtonElement;
+    expect(target.disabled).toBe(true);
+    expect(target.title).toBe("Only an Accepted term can be a merge target.");
+    expect((within(accepted).getByRole("button", { name: "Merge into this" }) as HTMLButtonElement).disabled).toBe(false);
+    // A Proposed term can still be merged into an Accepted one.
+    expect((within(proposed).getByRole("button", { name: "Merge this" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
 // ------------------------------------------------------------------ list
 
 describe("GlossaryPage", () => {

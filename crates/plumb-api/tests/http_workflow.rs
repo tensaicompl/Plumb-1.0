@@ -4712,6 +4712,40 @@ mod http_workflow {
         Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap()
     }
 
+    /// Fable #351 (H0.11 provenance rendering): the requirement detail carries, for each of its
+    /// evidence references, the exact source text the importer extracted for that fragment, so
+    /// provenance shows the source sentence and not only an ID.
+    #[tokio::test]
+    async fn requirement_detail_carries_the_source_text_of_its_evidence() {
+        let graph = ears_graph();
+        let fragment = graph
+            .nodes()
+            .values()
+            .find(|n| {
+                matches!(&n.payload, NodePayload::EvidenceFragment(e)
+                if e.extracted_text.as_deref() == Some("Always, the clerk shall pack the order."))
+            })
+            .unwrap()
+            .clone();
+        let NodePayload::EvidenceFragment(payload) = &fragment.payload else {
+            panic!("a fragment");
+        };
+        let app = app_with(graph.clone(), |_| Vec::new());
+        let detail = get(&app, "/api/requirements/req:ears").await.json();
+        assert_eq!(detail["spans"], json!([fragment.id]));
+        assert_eq!(
+            detail["evidence"],
+            json!([{
+                "id": fragment.id,
+                "source_ref": payload.source_ref,
+                "text": "Always, the clerk shall pack the order.",
+            }])
+        );
+        // A requirement without evidence has none.
+        let plain = get(&app, "/api/requirements/req:a").await.json();
+        assert_eq!(plain["evidence"], json!([]));
+    }
+
     #[tokio::test]
     async fn requirement_detail_surfaces_pending_ears_proposal() {
         let provider = Arc::new(ConsolidateProvider {

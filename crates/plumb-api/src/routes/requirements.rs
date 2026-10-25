@@ -28,9 +28,9 @@ use plumb_validation::GateReport;
 
 use crate::error::ApiError;
 use crate::openapi::{
-    AcceptEarsRequest, ClassifyRequest, MarkDuplicateRequest, ProposalKind, RequirementCoverage,
-    RequirementDetail, RequirementLinks, RequirementPage, RequirementSummary, SplitRequest,
-    WaiveRequirementFindingRequest,
+    AcceptEarsRequest, ClassifyRequest, EvidenceExcerpt, MarkDuplicateRequest, ProposalKind,
+    RequirementCoverage, RequirementDetail, RequirementLinks, RequirementPage, RequirementSummary,
+    SplitRequest, WaiveRequirementFindingRequest,
 };
 use crate::state::{
     check_if_match, is_clean_text, paginate, parse_body, parse_id, parse_wire, read_json,
@@ -254,6 +254,27 @@ async fn get_requirement(
         .map(|e| e.as_id().to_string())
         .collect();
     spans.sort();
+    // Fable #351: the exact extracted source text of each evidence reference.
+    let evidence = spans
+        .iter()
+        .map(|span| {
+            let fragment = span
+                .parse::<Id>()
+                .ok()
+                .and_then(|id| match loaded.graph.node(&id) {
+                    Some(Node {
+                        payload: NodePayload::EvidenceFragment(fragment),
+                        ..
+                    }) => Some(fragment),
+                    _ => None,
+                });
+            EvidenceExcerpt {
+                id: span.clone(),
+                source_ref: fragment.map(|f| f.source_ref.to_string()),
+                text: fragment.and_then(|f| f.extracted_text.clone()),
+            }
+        })
+        .collect();
     let body = RequirementDetail {
         id: summary.id,
         text: summary.text,
@@ -263,6 +284,7 @@ async fn get_requirement(
         coverage: summary.coverage.clone(),
         readiness: None,
         spans,
+        evidence,
         lint_findings: f1
             .as_ref()
             .map(|r| lint_findings(r, &node.id))

@@ -520,7 +520,7 @@ describe("HomePage versioned mutation", () => {
 describe("HomePage reads", () => {
   it("retries only network failures and 502/503/504, at most twice, and keeps the typed error", async () => {
     const { shouldRetryRead, ReadFailedError, readReviewed } = app.client;
-    const failure = (status: number) => new ReadFailedError(status, { code: "E_X", message: "m", details: {} });
+    const failure = (status: number) => new ReadFailedError(status, { code: "E_INTERNAL", message: "m", details: {} });
     expect(shouldRetryRead(0, new TypeError("Failed to fetch"))).toBe(true);
     for (const status of [502, 503, 504]) {
       expect(shouldRetryRead(0, failure(status))).toBe(true);

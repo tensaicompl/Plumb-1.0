@@ -1200,6 +1200,17 @@ pub struct RequirementLinks {
     pub scenarios: Vec<String>,
 }
 
+/// One evidence reference of a requirement with its source (H0.11, Fable #351): `text` is the
+/// exact text the importer extracted for that EvidenceFragment, `null` when the reference is not
+/// an EvidenceFragment carrying extracted text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceExcerpt {
+    pub id: String,
+    pub source_ref: Option<String>,
+    pub text: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RequirementDetail {
@@ -1212,6 +1223,8 @@ pub struct RequirementDetail {
     pub coverage: RequirementCoverage,
     pub readiness: Option<f64>,
     pub spans: Vec<String>,
+    /// The evidence references of `spans`, in the same order, with their source text.
+    pub evidence: Vec<EvidenceExcerpt>,
     /// IDs of the current F1 gate report's findings whose affected refs include this
     /// requirement. Always `[]` when `lint_current` is false.
     pub lint_findings: Vec<String>,

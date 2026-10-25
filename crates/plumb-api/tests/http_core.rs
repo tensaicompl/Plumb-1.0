@@ -1596,7 +1596,8 @@ mod http_core {
                 "id": "req:a", "text": "The system shall export PDF, CSV, etc.", "class": "functional",
                 "status": "Accepted", "smells": ["PLUMB.LINT.REQ.OPEN_LIST"],
                 "coverage": {"operations": ["op:submit"], "scenarios": ["scn:a"]},
-                "readiness": null, "spans": [], "lint_findings": lint, "ears_suggestion": null,
+                "readiness": null, "spans": [], "evidence": [], "lint_findings": lint,
+                "ears_suggestion": null,
                 "ears_proposal_ref": null,
                 "linked": {"operations": ["op:submit"], "processes": ["proc:leave"], "scenarios": ["scn:a"]},
                 "lint_current": true

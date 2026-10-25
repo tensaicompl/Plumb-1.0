@@ -228,7 +228,15 @@ export function GlossaryPage() {
                       <button type="button" className="rounded border px-2 text-xs" disabled={locked} data-select="source" onClick={() => setSource(term.id)}>
                         {t("glossary.merge.asSource")}
                       </button>
-                      <button type="button" className="rounded border px-2 text-xs" disabled={locked} data-select="target" onClick={() => setTarget(term.id)}>
+                      {/* Fable #356: the backend merges only into an Accepted term. */}
+                      <button
+                        type="button"
+                        className="rounded border px-2 text-xs disabled:opacity-50"
+                        disabled={locked || term.status !== "Accepted"}
+                        title={term.status === "Accepted" ? undefined : t("glossary.merge.targetAcceptedOnly")}
+                        data-select="target"
+                        onClick={() => setTarget(term.id)}
+                      >
                         {t("glossary.merge.asTarget")}
                       </button>
                     </td>

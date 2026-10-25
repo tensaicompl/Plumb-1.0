@@ -220,7 +220,7 @@ function handlers(backend: Backend) {
     http.get("*/api/model/calculations/:id/example", ({ params }) =>
       params["id"] === "calc:days"
         ? etagJson(EXAMPLE)
-        : etagJson({ code: "E_CALCULATION_INPUT_REQUIRED", message: "Root input taken is required." }, { status: 422 }),
+        : etagJson({ code: "E_INVALID_REQUEST", message: 'input "taken": a root input value is required', details: {} }, { status: 400 }),
     ),
     http.post("*/api/model/rules/:id/cells", () =>
       backend.cellFailure !== null ? backend.cellFailure : etagJson({ version: "rev:2", revision: "rev:2", semantic_hash: CURRENT, events: [] }),
@@ -499,7 +499,7 @@ describe("RulesPage", () => {
 
   it("shows a server write error once, without retry or generic proposal call", async () => {
     const { user } = await renderAt("/model/rules", {
-      cellFailure: etagJson({ code: "E_NO_CHANGE", message: "The cell already has this outcome." }, { status: 422 }),
+      cellFailure: etagJson({ code: "E_NO_CHANGE", message: "The cell already has this outcome.", details: {} }, { status: 422 }),
     });
     await screen.findByText("Bonus");
     const bonus = item("data-rule-id", "dt:bonus");
@@ -541,8 +541,8 @@ describe("CalculationsPage", () => {
     await user.click(within(balance).getByTestId("show-example"));
     const unavailable = await within(balance).findByTestId("example-unavailable");
     expect(unavailable.textContent).toContain("Worked example unavailable");
-    expect(unavailable.textContent).toContain("E_CALCULATION_INPUT_REQUIRED");
-    expect(unavailable.textContent).toContain("Root input taken is required.");
+    expect(unavailable.textContent).toContain("E_INVALID_REQUEST");
+    expect(unavailable.textContent).toContain('input "taken": a root input value is required');
     // The only control is the read-only example inputs field; nothing is ever written.
     expect(document.querySelectorAll("main input, main select, main form, main [contenteditable]")).toHaveLength(0);
     expect(within(balance).getByTestId("example-inputs")).toBeTruthy();

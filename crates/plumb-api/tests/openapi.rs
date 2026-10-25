@@ -2030,8 +2030,9 @@ mod openapi {
         // FindingRuleClass; Hotfix 082 adds GateRuleState, GateRuleApplicabilityState,
         // GateRuleApplicability, GateRuleError, GateRuleResult, GateWaiver and GateSummaryView;
         // H0.11 adds GateEvaluationState, GateStateReason, ItemHealth, RequirementClass,
-        // PreviewConfirmation, ProposalOrigin, PendingProposal and PendingProposalList.
-        assert_eq!(schemas.len(), 136);
+        // PreviewConfirmation, ProposalOrigin, PendingProposal, PendingProposalList and
+        // EvidenceExcerpt.
+        assert_eq!(schemas.len(), 137);
         for added in [
             "CalculationValue",
             "CreateRoundResponse",

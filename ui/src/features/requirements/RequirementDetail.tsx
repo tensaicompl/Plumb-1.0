@@ -386,7 +386,15 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
   const ears = detail.ears_suggestion ?? null;
   const earsProposal = detail.ears_proposal_ref ?? null;
   const readiness = detail.readiness ?? null;
-  const evidence: ProvenanceItem[] = detail.spans.map((ref) => ({ category: "evidence", ref }));
+  // Fable #351: each evidence reference with the exact source text the server returned, if any.
+  const evidence: ProvenanceItem[] = detail.spans.map((ref) => {
+    const excerpt = detail.evidence.find((e) => e.id === ref);
+    const text = excerpt?.text;
+    if (text === undefined || text === null) {
+      return { category: "evidence", ref };
+    }
+    return { category: "evidence", ref, detail: excerpt?.source_ref === null || excerpt?.source_ref === undefined ? text : excerpt.source_ref + ": " + text };
+  });
   const linked: readonly { key: "operations" | "processes" | "scenarios"; label: "requirement.linked.operations" | "requirement.linked.processes" | "requirement.linked.scenarios" }[] = [
     { key: "operations", label: "requirement.linked.operations" },
     { key: "processes", label: "requirement.linked.processes" },
@@ -562,6 +570,12 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
           <WriteError error={classify.error} />
         </form>
 
+        {detail.status !== "Accepted" ? (
+          <p className="text-sm text-slate-600" data-testid="accepted-only">
+            {t("requirement.acceptedOnly")} <span className="font-mono">{detail.status}</span>
+          </p>
+        ) : (
+        <>
         <form
           aria-label={t("requirement.waive.title")}
           className="space-y-2 rounded border p-3"
@@ -614,6 +628,8 @@ export function RequirementDetail({ requirementId }: { requirementId: string }) 
         </form>
 
         <SplitAction requirementId={detail.id} etag={detail.etag} />
+        </>
+        )}
         </RoleGate>
       </section>
     </div>

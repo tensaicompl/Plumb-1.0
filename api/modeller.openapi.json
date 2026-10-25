@@ -980,6 +980,31 @@
         ],
         "type": "object"
       },
+      "EvidenceExcerpt": {
+        "additionalProperties": false,
+        "description": "One evidence reference of a requirement with its source (H0.11, Fable #351): `text` is the\nexact text the importer extracted for that EvidenceFragment, `null` when the reference is not\nan EvidenceFragment carrying extracted text.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "ExportFormat": {
         "enum": [
           "functional",
@@ -2582,6 +2607,13 @@
               "null"
             ]
           },
+          "evidence": {
+            "description": "The evidence references of `spans`, in the same order, with their source text.",
+            "items": {
+              "$ref": "#/components/schemas/EvidenceExcerpt"
+            },
+            "type": "array"
+          },
           "id": {
             "type": "string"
           },
@@ -2633,6 +2665,7 @@
           "smells",
           "coverage",
           "spans",
+          "evidence",
           "lint_findings",
           "linked",
           "lint_current"
@@ -8554,6 +8587,11 @@
                       "example"
                     ]
                   },
+                  "evidence": [
+                    {
+                      "id": "example"
+                    }
+                  ],
                   "id": "HR-001",
                   "linked": {
                     "operations": [

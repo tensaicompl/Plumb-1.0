@@ -118,6 +118,10 @@ const DETAIL_A: RequirementDetail = {
   coverage: { operations: ["op:submit"], scenarios: [] },
   readiness: 0.42,
   spans: ["frag:requirements.docx#p12", "frag:requirements.docx#p13"],
+  evidence: [
+    { id: "frag:requirements.docx#p12", source_ref: "src:requirements", text: "Employees shall submit and cancel leave requests." },
+    { id: "frag:requirements.docx#p13", source_ref: null, text: null },
+  ],
   lint_findings: ["fnd:compound-a"],
   ears_suggestion: "When an employee submits a leave request, the system shall record it.",
   ears_proposal_ref: "prop:ears-a",
@@ -134,6 +138,7 @@ const DETAIL_B: RequirementDetail = {
   coverage: { operations: [], scenarios: [] },
   readiness: null,
   spans: [],
+  evidence: [],
   lint_findings: [],
   ears_suggestion: null,
   ears_proposal_ref: null,
@@ -391,11 +396,15 @@ describe("RequirementDetail", () => {
 
     const evidence = screen.getByRole("region", { name: "Source evidence" });
     expect(within(evidence).getAllByRole("listitem").map((li) => li.textContent)).toEqual(DETAIL_A.spans);
-    // The drawer presents the server refs as evidence, without invented source text.
+    // The drawer presents the server refs as evidence with the exact source text the server
+    // returned (Fable #351), never invented text where the server has none.
     await user.click(within(evidence).getByRole("button", { name: "Show provenance" }));
     const drawer = await screen.findByRole("dialog");
     const items = Array.from(drawer.querySelectorAll("li[data-category]"));
-    expect(items.map((li) => [li.getAttribute("data-category"), li.textContent])).toEqual(DETAIL_A.spans.map((s) => ["evidence", s]));
+    expect(items.map((li) => [li.getAttribute("data-category"), li.textContent])).toEqual([
+      ["evidence", "frag:requirements.docx#p12src:requirements: Employees shall submit and cancel leave requests."],
+      ["evidence", "frag:requirements.docx#p13"],
+    ]);
     await user.click(within(drawer).getByRole("button", { name: "Close" }));
 
     const lint = screen.getByRole("region", { name: "Lint findings" });
@@ -428,6 +437,21 @@ describe("RequirementDetail", () => {
     expect(current.getAttribute("data-lint")).toBe("current");
     expect(within(current).queryByTestId("lint-unavailable")).toBeNull();
     expect(within(current).getAllByText("None")).toHaveLength(2);
+  });
+
+  it("does not offer split, waive or duplicate marking on a requirement that is not Accepted (Fable #356)", async () => {
+    server.use(...handlers([]));
+    renderAt("/requirements/req:b");
+    await screen.findByTestId("requirement-text");
+    // The backend refuses these for a Proposed requirement, so they are not offered.
+    expect(screen.queryByTestId("split-preview")).toBeNull();
+    expect(screen.queryByTestId("waive-finding")).toBeNull();
+    expect(screen.queryByTestId("duplicate-of")).toBeNull();
+    expect(screen.getByTestId("accepted-only").textContent).toBe(
+      "Split, waiver and duplicate marking apply to Accepted requirements only. Status: Proposed",
+    );
+    // Classification stays available for a Proposed requirement.
+    expect(screen.getByRole("form", { name: "Reclassify" })).toBeTruthy();
   });
 
   it("shows a null EARS suggestion and null readiness as not calculated, with no accept action", async () => {
