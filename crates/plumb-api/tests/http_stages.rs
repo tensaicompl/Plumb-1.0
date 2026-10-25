@@ -1788,6 +1788,22 @@ mod http_stages {
         assert!(!name.is_empty(), "{err:?}");
     }
 
+    /// Fable #181: a run recipe without eligible scenarios still evaluates F4 on its base
+    /// revision; it never reports success without evaluating its gate.
+    #[tokio::test]
+    async fn run_without_eligible_targets_still_evaluates_its_gate() {
+        let app = app_with(data_graph(&["Email"]), &[], chain_gates());
+        let job_id = run_inline(&app, Recipe::Run, None);
+        assert_eq!(
+            job(&app, &job_id)["status"],
+            "ready",
+            "{}",
+            job(&app, &job_id)
+        );
+        let results = app.state.recipe_gate_results(&job_id).unwrap();
+        assert_eq!(results, vec![("F4".to_owned(), "pass".to_owned())]);
+    }
+
     #[tokio::test]
     async fn http_stages_lint_evaluates_assembled_f1_only() {
         let gates = chain_gates();
@@ -2144,9 +2160,10 @@ mod http_stages {
         let app = app(data_graph(&["Email"]));
         let before = head(&app).revision.id;
         let job_id = run_inline(&app, Recipe::Rules, None);
-        // No Accepted DecisionTable: an empty target set completes with no step.
+        // No Accepted DecisionTable: the empty target set still produces its (empty) rules
+        // projection step (Fable #181 replaces the former step-less success).
         assert_eq!(job(&app, &job_id)["status"], "ready");
-        assert!(stage_store(&app).steps(&job_id).unwrap().is_empty());
+        assert_eq!(stage_store(&app).steps(&job_id).unwrap().len(), 1);
         assert_eq!(head(&app).revision.id, before);
     }
 

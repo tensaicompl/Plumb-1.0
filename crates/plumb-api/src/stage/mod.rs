@@ -907,6 +907,13 @@ fn execute(run: &mut Run<'_>) -> Result<(), StepEnd> {
     let scope = run.capture.scope.clone();
     let targets = effective_targets(recipe, &base.graph, scope.as_deref());
     if recipe.scope_kind() != ScopeKind::Whole && targets.is_empty() {
+        // Fable #181: nothing to compile, but a recipe that owns a gate or a projection still
+        // produces it on the base revision; success never skips the evaluation.
+        match recipe {
+            Recipe::Run => run.gate_step(Phase::F4, GateId::F4)?,
+            Recipe::Rules => run.rules_step(&targets)?,
+            _ => {}
+        }
         return Ok(());
     }
     let audit_actor = a04.stage_actor_ref.clone();
