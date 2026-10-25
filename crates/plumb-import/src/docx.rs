@@ -17,8 +17,9 @@ use zip::result::ZipError;
 use zip::ZipArchive;
 
 use crate::source::{
-    build_with_parse, check_fragment_count, push_segment, FragmentKind, ImportAudit, ImportError,
-    ImportWarning, ImportWarningCode, ImportedSource, ParseMetadata, Segment, SourceKind,
+    build_with_parse, check_fragment_count, normalize_text, push_segment, FragmentKind,
+    ImportAudit, ImportError, ImportWarning, ImportWarningCode, ImportedSource, ParseMetadata,
+    Segment, SourceKind,
 };
 
 /// Largest accepted DOCX input.
@@ -50,6 +51,9 @@ const WORDPROCESSINGML: [&str; 2] = [
     "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
     "http://purl.oclc.org/ooxml/wordprocessingml/main",
 ];
+
+/// The markup-compatibility namespace of `mc:AlternateContent`.
+const MARKUP_COMPATIBILITY: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 
 /// Longest `basedOn` chain followed.
 const MAX_STYLE_DEPTH: usize = 32;
@@ -164,6 +168,8 @@ fn xml_error(part: &str, reason: impl Into<String>) -> ImportError {
 #[derive(Debug)]
 struct Element {
     word: Option<String>,
+    /// `Some(local)` in the markup-compatibility namespace.
+    compat: Option<String>,
     /// WordprocessingML attributes by local name.
     attributes: BTreeMap<String, String>,
     children: Vec<Content>,
@@ -178,6 +184,10 @@ enum Content {
 impl Element {
     fn is(&self, local: &str) -> bool {
         self.word.as_deref() == Some(local)
+    }
+
+    fn is_compat(&self, local: &str) -> bool {
+        self.compat.as_deref() == Some(local)
     }
 
     fn elements(&self) -> impl Iterator<Item = &Element> {
@@ -223,6 +233,7 @@ fn parse_xml(part: &str, xml: &str) -> Result<Element, ImportError> {
     reader.config_mut().trim_text(false);
     let mut stack: Vec<Element> = vec![Element {
         word: None,
+        compat: None,
         attributes: BTreeMap::new(),
         children: Vec::new(),
     }];
@@ -293,8 +304,10 @@ fn open_element(
     start: &quick_xml::events::BytesStart<'_>,
 ) -> Result<Element, ImportError> {
     let (namespace, _) = reader.resolver().resolve_element(start.name());
-    let word = is_wordprocessingml(&namespace)
-        .then(|| String::from_utf8_lossy(start.local_name().as_ref()).into_owned());
+    let local = || String::from_utf8_lossy(start.local_name().as_ref()).into_owned();
+    let word = is_wordprocessingml(&namespace).then(local);
+    let compat = matches!(&namespace, ResolveResult::Bound(ns) if ns.as_ref() == MARKUP_COMPATIBILITY.as_bytes())
+        .then(local);
     let mut attributes = BTreeMap::new();
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|e| xml_error(part, e.to_string()))?;
@@ -313,6 +326,7 @@ fn open_element(
     }
     Ok(Element {
         word,
+        compat,
         attributes,
         children: Vec::new(),
     })
@@ -342,7 +356,8 @@ fn push_text(stack: &mut [Element], text: &str) {
 struct Style {
     based_on: Option<String>,
     outline_level: Option<u32>,
-    numbered: bool,
+    /// The numbering its own `w:numPr` sets: `Some(false)` when it removes numbering.
+    numbered: Option<bool>,
 }
 
 type Styles = BTreeMap<String, Style>;
@@ -358,6 +373,19 @@ fn outline_level(part: &str, properties: Option<&Element>) -> Result<Option<u32>
         .parse::<u32>()
         .map(Some)
         .map_err(|_| xml_error(part, format!("invalid outlineLvl {level:?}")))
+}
+
+/// The numbering a `w:pPr` sets: `None` without `w:numPr`; otherwise numbered exactly when the
+/// `w:numPr` has a `w:numId` other than 0 (ECMA-376 §17.9.18: numId 0, or none, removes
+/// numbering, including numbering inherited from the style chain).
+fn numbering(properties: Option<&Element>) -> Option<bool> {
+    let numbering = properties?.child("numPr")?;
+    Some(
+        numbering
+            .child("numId")
+            .and_then(|n| n.attribute("val"))
+            .is_some_and(|id| id.trim() != "0"),
+    )
 }
 
 fn parse_styles(xml: &str) -> Result<Styles, ImportError> {
@@ -382,7 +410,7 @@ fn parse_styles(xml: &str) -> Result<Styles, ImportError> {
                     .and_then(|b| b.attribute("val"))
                     .map(str::to_owned),
                 outline_level: outline_level(DOCX_STYLES_PART, properties)?,
-                numbered: properties.is_some_and(|p| p.child("numPr").is_some()),
+                numbered: numbering(properties),
             },
         );
     }
@@ -438,8 +466,10 @@ fn classify(paragraph: &Element, styles: &Styles) -> Result<FragmentKind, Import
     if heading {
         return Ok(FragmentKind::Heading);
     }
-    let numbered =
-        properties.is_some_and(|p| p.child("numPr").is_some()) || chain.iter().any(|s| s.numbered);
+    // The nearest numPr decides: the paragraph's own, then the style chain's.
+    let numbered = numbering(properties)
+        .or_else(|| chain.iter().find_map(|s| s.numbered))
+        .unwrap_or(false);
     Ok(if numbered {
         FragmentKind::ListItem
     } else {
@@ -472,6 +502,17 @@ fn flatten(element: &Element, out: &mut String) {
         || element.is("instrText")
         || element.is("delText")
     {
+        return;
+    }
+    if element.is_compat("AlternateContent") {
+        // One alternative only: the first mc:Choice, or mc:Fallback when there is no Choice.
+        let alternative = element
+            .elements()
+            .find(|e| e.is_compat("Choice"))
+            .or_else(|| element.elements().find(|e| e.is_compat("Fallback")));
+        if let Some(alternative) = alternative {
+            flatten(alternative, out);
+        }
         return;
     }
     if element.is("t") {
@@ -534,6 +575,12 @@ fn paragraph_text(paragraph: &Element) -> Visible {
 
 // ============================================================================ document
 
+/// Whether record text is evidence: anything but whitespace only. Whitespace-only text stays
+/// in the extracted artifact without a fragment.
+fn yields_fragment(text: &str) -> bool {
+    !text.chars().all(char::is_whitespace)
+}
+
 /// One extracted-text record and the fragment it yields, if any.
 struct Record {
     text: String,
@@ -549,10 +596,15 @@ struct Importer<'s> {
 }
 
 impl Importer<'_> {
-    /// Appends a record, checking the fragment budget before a fragment-yielding record is
-    /// added. A record yields a fragment exactly when it has a kind and non-empty text.
-    fn push_record(&mut self, record: Record) -> Result<(), ImportError> {
-        if record.fragment.is_some() && !record.text.is_empty() {
+    /// Appends a record with its text normalised like Markdown and plain text (line endings,
+    /// NFC), checking the fragment budget before a fragment-yielding record is added. A record
+    /// yields a fragment exactly when it has a kind and text that is not only whitespace.
+    fn push_record(&mut self, mut record: Record) -> Result<(), ImportError> {
+        record.text = normalize_text(&record.text);
+        if !yields_fragment(&record.text) {
+            record.fragment = None;
+        }
+        if record.fragment.is_some() {
             check_fragment_count(self.fragments + 1)?;
             self.fragments += 1;
         }
@@ -605,6 +657,7 @@ impl Importer<'_> {
 
     fn table(&mut self, table: &Element, path: &str) -> Result<(), ImportError> {
         let mut header: Option<Vec<String>> = None;
+        let mut header_record = None;
         let mut row_number = 0;
         for (index, child) in table.elements().enumerate() {
             match child.word.as_deref() {
@@ -618,16 +671,15 @@ impl Importer<'_> {
                     match &header {
                         None => {
                             header = Some(cells);
+                            header_record = Some(self.records.len());
                             self.push_record(Record {
                                 text,
                                 fragment: None,
                             })?;
                         }
                         Some(header_cells) => {
-                            let fragment = cells
-                                .iter()
-                                .any(|c| !c.is_empty())
-                                .then(|| (FragmentKind::TableRow, Some(header_cells.clone())));
+                            let fragment =
+                                Some((FragmentKind::TableRow, Some(header_cells.clone())));
                             self.push_record(Record { text, fragment })?;
                         }
                     }
@@ -642,6 +694,17 @@ impl Importer<'_> {
                             fragment: Some((FragmentKind::Paragraph, None)),
                         })?;
                     }
+                }
+            }
+        }
+        // A table with only a header row keeps its text as a Paragraph fragment, never a
+        // silent omission.
+        if row_number == 1 {
+            if let Some(index) = header_record {
+                if yields_fragment(&self.records[index].text) {
+                    check_fragment_count(self.fragments + 1)?;
+                    self.fragments += 1;
+                    self.records[index].fragment = Some((FragmentKind::Paragraph, None));
                 }
             }
         }
@@ -673,7 +736,8 @@ impl Importer<'_> {
                 }
             }
         }
-        Ok(cells)
+        // Header cells are fragment metadata, so they carry the record normalisation too.
+        Ok(cells.iter().map(|cell| normalize_text(cell)).collect())
     }
 
     fn cell(
@@ -800,17 +864,15 @@ pub fn import_docx(
         let start = text.len();
         text.push_str(&record.text);
         if let Some((kind, header_cells)) = record.fragment {
-            if !record.text.is_empty() {
-                push_segment(
-                    &mut segments,
-                    Segment {
-                        kind,
-                        start,
-                        end: text.len(),
-                        header_cells,
-                    },
-                )?;
-            }
+            push_segment(
+                &mut segments,
+                Segment {
+                    kind,
+                    start,
+                    end: text.len(),
+                    header_cells,
+                },
+            )?;
         }
     }
     let parse = ParseMetadata::from_warnings(importer.warnings)?;

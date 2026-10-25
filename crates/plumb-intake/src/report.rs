@@ -362,7 +362,7 @@ impl IntakeReport {
             let consistent = unit_interval(s.similarity)
                 && unit_interval(s.novelty)
                 && s.novelty == 1.0 - s.similarity
-                && (s.nearest_ref.is_some() || s.similarity == 0.0);
+                && s.nearest_ref.is_some() == (s.similarity > 0.0);
             if !consistent {
                 return Err(IntakeReportError::SubjectNovelty(s.subject_ref.clone()));
             }

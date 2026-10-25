@@ -448,8 +448,117 @@ fn is_word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-fn is_clause_boundary(b: u8) -> bool {
-    matches!(b, b';' | b'.' | b'?' | b'!')
+/// The bytes that end a clause.
+const CLAUSE_BOUNDARIES: &[u8] = b";.?!";
+
+/// The bytes that end a segment before a modal: clause boundaries, commas and colons.
+const SEGMENT_BOUNDARIES: &[u8] = b",;:.?!";
+
+/// What a numeric token is (architecture §33.7 Lint).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumericKind {
+    /// A count or measure (`3`, `1.5`, `1,000`, `12,500.50`) that needs a unit.
+    Quantity,
+    /// A number joined by a hyphen to a word (`5-day`): the word is its unit.
+    HyphenUnit,
+    /// An ISO date (`2026-01-01`), `HH:MM` time (`09:30`), parenthesised list numeral (`(3)`)
+    /// or slash-joined ratio/frequency (`24/7`), which takes no unit.
+    Literal,
+}
+
+/// One numeric token with exact byte offsets.
+#[derive(Debug, Clone, Copy)]
+struct Numeric {
+    start: usize,
+    end: usize,
+    kind: NumericKind,
+}
+
+fn digits_from(bytes: &[u8], at: usize) -> usize {
+    bytes[at.min(bytes.len())..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count()
+}
+
+/// The numeric tokens of `statement`. A token starts at an ASCII digit after a non-word byte
+/// and ends before a non-word byte; a digit run glued to letters (`10MB`, `3rd`) is none.
+fn numeric_tokens(statement: &str) -> Vec<Numeric> {
+    let bytes = statement.as_bytes();
+    let at = |i: usize| bytes.get(i).copied();
+    let ends_token = |i: usize| at(i).is_none_or(|b| !is_word(b));
+    // `sep` followed by exactly `n` digits at `i`.
+    let group = |i: usize, sep: u8, n: usize| at(i) == Some(sep) && digits_from(bytes, i + 1) == n;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() || (i > 0 && is_word(bytes[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let run = digits_from(bytes, i);
+        let mut end = i + run;
+        let literal_end = if run == 4 && group(end, b'-', 2) && group(end + 3, b'-', 2) {
+            Some(end + 6)
+        } else if run <= 2 && group(end, b':', 2) {
+            Some(if group(end + 3, b':', 2) {
+                end + 6
+            } else {
+                end + 3
+            })
+        } else if at(end) == Some(b'/') && digits_from(bytes, end + 1) > 0 {
+            Some(end + 1 + digits_from(bytes, end + 1))
+        } else if start > 0 && bytes[start - 1] == b'(' && at(end) == Some(b')') {
+            Some(end)
+        } else {
+            None
+        };
+        if let Some(literal_end) = literal_end.filter(|&e| ends_token(e)) {
+            out.push(Numeric {
+                start,
+                end: literal_end,
+                kind: NumericKind::Literal,
+            });
+            i = literal_end;
+            continue;
+        }
+        if run <= 3 {
+            while group(end, b',', 3) {
+                end += 4;
+            }
+        }
+        if at(end) == Some(b'.') && digits_from(bytes, end + 1) > 0 {
+            end += 1 + digits_from(bytes, end + 1);
+        }
+        if ends_token(end) {
+            let hyphen_unit =
+                at(end) == Some(b'-') && at(end + 1).is_some_and(|b| b.is_ascii_alphabetic());
+            out.push(Numeric {
+                start,
+                end,
+                kind: if hyphen_unit {
+                    NumericKind::HyphenUnit
+                } else {
+                    NumericKind::Quantity
+                },
+            });
+        }
+        i = end;
+    }
+    out
+}
+
+/// For each byte, whether it is one of `delimiters` outside every numeric token, so the `.`
+/// of `0.5` or the `,` of `1,000` never ends a clause.
+fn boundary_mask(statement: &str, delimiters: &[u8]) -> Vec<bool> {
+    let mut mask: Vec<bool> = statement.bytes().map(|b| delimiters.contains(&b)).collect();
+    for numeric in numeric_tokens(statement) {
+        for flag in &mut mask[numeric.start..numeric.end] {
+            *flag = false;
+        }
+    }
+    mask
 }
 
 /// A maximal `[A-Za-z0-9_]` run with exact byte offsets and its ASCII-lowercase text.
@@ -523,12 +632,9 @@ fn first_modal(tokens: &[Token]) -> Option<usize> {
     tokens.iter().position(is_modal)
 }
 
-/// The clause index of each byte: the number of clause boundaries before it.
-fn clause_of(statement: &str, offset: usize) -> usize {
-    statement.as_bytes()[..offset]
-        .iter()
-        .filter(|b| is_clause_boundary(**b))
-        .count()
+/// The clause index of a byte: the number of clause boundaries of `mask` before it.
+fn clause_of(mask: &[bool], offset: usize) -> usize {
+    mask[..offset].iter().filter(|b| **b).count()
 }
 
 // ============================================================================ rules
@@ -627,6 +733,7 @@ fn is_participle(token: &Token) -> bool {
 }
 
 fn passive_no_actor(statement: &str, tokens: &[Token]) -> Vec<Hit> {
+    let mask = boundary_mask(statement, CLAUSE_BOUNDARIES);
     let mut hits = Vec::new();
     for i in 0..tokens.len() {
         if !is_modal(&tokens[i]) {
@@ -642,9 +749,9 @@ fn passive_no_actor(statement: &str, tokens: &[Token]) -> Vec<Hit> {
         if be.lower != "be" || !is_participle(participle) {
             continue;
         }
-        let clause_end = statement.as_bytes()[participle.end..]
+        let clause_end = mask[participle.end..]
             .iter()
-            .position(|b| is_clause_boundary(*b))
+            .position(|b| *b)
             .map_or(statement.len(), |p| participle.end + p);
         let by_actor = tokens
             .iter()
@@ -676,13 +783,14 @@ fn compound_modal(tokens: &[Token]) -> Vec<Hit> {
 }
 
 fn negation_stack(statement: &str, tokens: &[Token]) -> Vec<Hit> {
+    let mask = boundary_mask(statement, CLAUSE_BOUNDARIES);
     let mut seen: BTreeSet<usize> = BTreeSet::new();
     let mut hits = Vec::new();
     for t in tokens {
         if !matches!(t.lower.as_str(), "not" | "no" | "never" | "without") {
             continue;
         }
-        if !seen.insert(clause_of(statement, t.start)) {
+        if !seen.insert(clause_of(&mask, t.start)) {
             hits.push(hit(
                 t.start,
                 t.end,
@@ -812,37 +920,19 @@ fn ears_order(tokens: &[Token]) -> Vec<Hit> {
     hits
 }
 
-/// Every `[0-9]+` or `[0-9]+.[0-9]+` number with ASCII token boundaries.
-fn numbers(statement: &str) -> Vec<(usize, usize)> {
-    let bytes = statement.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i].is_ascii_digit() && (i == 0 || !is_word(bytes[i - 1])) {
-            let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
-                i += 1;
-                while i < bytes.len() && bytes[i].is_ascii_digit() {
-                    i += 1;
-                }
-            }
-            if i == bytes.len() || !is_word(bytes[i]) {
-                out.push((start, i));
-            }
-        } else {
-            i += 1;
-        }
-    }
-    out
+/// The byte ranges of the quantity tokens: numbers that need a unit or count noun.
+fn quantities(statement: &str) -> Vec<(usize, usize)> {
+    numeric_tokens(statement)
+        .into_iter()
+        .filter(|n| n.kind == NumericKind::Quantity)
+        .map(|n| (n.start, n.end))
+        .collect()
 }
 
 fn number_no_unit(statement: &str, tokens: &[Token]) -> Vec<Hit> {
     let bytes = statement.as_bytes();
     let mut hits = Vec::new();
-    for (start, end) in numbers(statement) {
+    for (start, end) in quantities(statement) {
         let after = &bytes[end..];
         let spaces = after.iter().take_while(|b| b.is_ascii_whitespace()).count();
         if after.get(spaces) == Some(&b'%') {
@@ -873,15 +963,21 @@ fn number_no_unit(statement: &str, tokens: &[Token]) -> Vec<Hit> {
     hits
 }
 
-/// Verbs whose "within N units" bounds the duration of the subject's own action.
-const DURATION_VERBS: [&str; 6] = [
+/// Verbs whose "within N units" bounds the duration of the subject's own operation
+/// (Fable #74: complete/respond within N units).
+const DURATION_VERBS: [&str; 8] = [
     "complete",
     "completes",
     "finish",
     "finishes",
     "execute",
     "executes",
+    "respond",
+    "responds",
 ];
+
+/// Optional qualifiers between the number and its time unit ("2 working days").
+const TIME_UNIT_QUALIFIERS: [&str; 3] = ["working", "business", "calendar"];
 
 const TIME_UNITS: [&str; 23] = [
     "ms",
@@ -910,7 +1006,7 @@ const TIME_UNITS: [&str; 23] = [
 ];
 
 fn relative_time_no_anchor(statement: &str, tokens: &[Token]) -> Vec<Hit> {
-    let numbers = numbers(statement);
+    let numbers = quantities(statement);
     let mut hits = Vec::new();
     for (i, t) in tokens.iter().enumerate() {
         let starter_end_index = if t.lower == "within" {
@@ -931,9 +1027,14 @@ fn relative_time_no_anchor(statement: &str, tokens: &[Token]) -> Vec<Hit> {
         let Some(&(_, number_end)) = numbers.iter().find(|(s, _)| *s == next.start) else {
             continue;
         };
-        let Some(unit_index) = tokens.iter().position(|u| u.start >= number_end) else {
+        let Some(mut unit_index) = tokens.iter().position(|u| u.start >= number_end) else {
             continue;
         };
+        if TIME_UNIT_QUALIFIERS.contains(&tokens[unit_index].lower.as_str())
+            && unit_index + 1 < tokens.len()
+        {
+            unit_index += 1;
+        }
         let unit = &tokens[unit_index];
         if !TIME_UNITS.contains(&unit.lower.as_str()) {
             continue;
@@ -962,22 +1063,58 @@ fn relative_time_no_anchor(statement: &str, tokens: &[Token]) -> Vec<Hit> {
     hits
 }
 
+/// Words that never name an actor.
+fn is_non_actor(token: &Token) -> bool {
+    matches!(
+        token.lower.as_str(),
+        "a" | "an" | "the" | "when" | "while" | "where" | "if" | "then"
+    )
+}
+
+/// Words that open a condition or circumstance rather than a subject.
+fn opens_condition(token: &Token) -> bool {
+    matches!(
+        token.lower.as_str(),
+        "when" | "while" | "where" | "if" | "unless" | "upon" | "after" | "before" | "once"
+    )
+}
+
 fn missing_actor(statement: &str, tokens: &[Token]) -> Vec<Hit> {
     let Some(m) = first_modal(tokens) else {
         return Vec::new();
     };
     let modal = &tokens[m];
-    let clause_start = statement.as_bytes()[..modal.start]
-        .iter()
-        .rposition(|b| matches!(b, b',' | b';' | b':' | b'.' | b'?' | b'!'))
-        .map_or(0, |p| p + 1);
-    let has_actor = tokens[..m].iter().any(|t| {
-        t.start >= clause_start
-            && !matches!(
-                t.lower.as_str(),
-                "a" | "an" | "the" | "when" | "while" | "where" | "if" | "then"
-            )
-    });
+    let bytes = statement.as_bytes();
+    let mask = boundary_mask(statement, SEGMENT_BOUNDARIES);
+    let segment_start = |end: usize| mask[..end].iter().rposition(|b| *b).map_or(0, |p| p + 1);
+    let segment = |start: usize, end: usize| {
+        tokens[..m]
+            .iter()
+            .filter(move |t| t.start >= start && t.end <= end)
+    };
+    let clause_start = segment_start(modal.start);
+    let mut has_actor = segment(clause_start, modal.start).any(|t| !is_non_actor(t));
+    // [Fable #73] Look back across comma-delimited parentheticals ("The system, upon
+    // approval, shall ...") to the segment before them; that segment names the actor unless
+    // it is itself a condition ("If approved, upon review, shall ...").
+    if !has_actor && clause_start > 0 && bytes[clause_start - 1] == b',' {
+        let mut end = clause_start - 1;
+        let mut skipped = false;
+        loop {
+            let start = segment_start(end);
+            if start > 0 && bytes[start - 1] == b',' {
+                skipped = true;
+                end = start - 1;
+                continue;
+            }
+            has_actor = skipped
+                && segment(start, end)
+                    .next()
+                    .is_some_and(|t| !opens_condition(t))
+                && segment(start, end).any(|t| !is_non_actor(t));
+            break;
+        }
+    }
     if has_actor {
         Vec::new()
     } else {

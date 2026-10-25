@@ -881,6 +881,124 @@ mod md_text_contract {
         check_invariants(&imported);
     }
 
+    // ------------------------------------------------------------------ H0.10 text fidelity
+
+    #[test]
+    fn markdown_indented_lines_continue_their_list_item() {
+        // [Fable #49] GFM: an indented (>= 2 spaces or tab) non-blank line right after a list
+        // item continues that item; a nested list item or an unindented line does not.
+        let imported = md("- The system shall
+  record the request.
+1. Managers shall
+	approve it
+   promptly.
+- next
+  - nested
+after
+- last
+
+  indented paragraph
+");
+        assert_eq!(
+            texts(&imported),
+            pairs(&[
+                ("list_item", "- The system shall\n  record the request."),
+                ("list_item", "1. Managers shall\n\tapprove it\n   promptly."),
+                ("list_item", "- next"),
+                ("list_item", "  - nested"),
+                ("paragraph", "after"),
+                ("list_item", "- last"),
+                ("paragraph", "  indented paragraph"),
+            ])
+        );
+        check_invariants(&imported);
+        // Plain text keeps single-line list items.
+        assert_eq!(
+            texts(&txt("- a\n  b\n")),
+            pairs(&[("list_item", "- a"), ("paragraph", "  b")])
+        );
+    }
+
+    #[test]
+    fn leading_bom_does_not_change_classification() {
+        // [Fable #51] The BOM stays in the text and the offsets; only classification ignores it.
+        for (doc, kind) in [
+            ("\u{feff}# Title\n", "heading"),
+            ("\u{feff}- item\n", "list_item"),
+            ("\u{feff}1. item\n", "list_item"),
+        ] {
+            let imported = md(doc);
+            assert_eq!(extracted(&imported).text, doc);
+            assert_eq!(
+                texts(&imported),
+                pairs(&[(kind, doc.trim_end_matches('\n'))]),
+                "{doc:?}"
+            );
+            assert_eq!(range(&imported.fragments[0]).0, 0);
+            check_invariants(&imported);
+        }
+        let table = md("\u{feff}| A | B |\n|---|---|\n| 1 | 2 |\n");
+        assert_eq!(texts(&table), pairs(&[("table_row", "| 1 | 2 |")]));
+        assert_eq!(
+            metadata(&table.fragments[0]).header_cells,
+            Some(vec!["A".to_owned(), "B".to_owned()])
+        );
+        let plain = txt("\u{feff}- item\nmore\n");
+        assert_eq!(
+            texts(&plain),
+            pairs(&[("list_item", "\u{feff}- item"), ("paragraph", "more")])
+        );
+        // Only a leading BOM is tolerated.
+        assert_eq!(
+            texts(&md("a\n\n\u{feff}# Not a heading\n")),
+            pairs(&[("paragraph", "a"), ("paragraph", "\u{feff}# Not a heading")])
+        );
+    }
+
+    #[test]
+    fn markdown_table_starts_only_at_a_matching_delimiter_row() {
+        // [Fable #52] A pipe line above the header does not join the table, and a delimiter
+        // row with a different cell count starts no table.
+        let imported = md("Note | see below\n| Type | Days |\n|---|---|\n| Annual | 26 |\n");
+        assert_eq!(
+            texts(&imported),
+            pairs(&[
+                ("paragraph", "Note | see below"),
+                ("table_row", "| Annual | 26 |"),
+            ])
+        );
+        assert_eq!(
+            metadata(&imported.fragments[1]).header_cells,
+            Some(vec!["Type".to_owned(), "Days".to_owned()])
+        );
+        check_invariants(&imported);
+        let mismatched = "| A | B | C |\n|---|---|\n| 1 | 2 | 3 |\n";
+        assert_eq!(
+            texts(&md(mismatched)),
+            pairs(&[("paragraph", mismatched.trim_end_matches('\n'))])
+        );
+    }
+
+    #[test]
+    fn text_importers_normalize_to_nfc() {
+        // [Fable #20] NFD input yields the same extracted text, fragments and offsets as NFC.
+        let nfc = "# Zażółć\n\n- wniosek urlopowy\n";
+        let nfd =
+            "# Zaz\u{307}o\u{301}ł\u{107}\n\n- wniosek urlopowy\n".replace('\u{107}', "c\u{301}");
+        assert_ne!(nfc, nfd);
+        for import in [md, txt] {
+            let a = import(nfc);
+            let b = import(&nfd);
+            assert_eq!(extracted(&b).text, nfc);
+            assert_eq!(kinds_and_texts(&a), kinds_and_texts(&b));
+            assert_eq!(
+                a.fragments.iter().map(range).collect::<Vec<_>>(),
+                b.fragments.iter().map(range).collect::<Vec<_>>()
+            );
+            check_invariants(&b);
+        }
+    }
+
     // ------------------------------------------------------------------ plain text (§55)
 
     #[test]

@@ -16,8 +16,8 @@ use thiserror::Error;
 use crate::bm25::{self, CorpusStats, TermCounts};
 
 /// The version of the corpus projection, tokenizer and BM25 behaviour; bound into
-/// `corpus_hash`.
-pub const RETRIEVAL_INDEX_VERSION: u32 = 1;
+/// `corpus_hash`. Version 2 marks the intake Scenario projection change of Fable #18.
+pub const RETRIEVAL_INDEX_VERSION: u32 = 2;
 
 /// The closed set of indexed payload families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

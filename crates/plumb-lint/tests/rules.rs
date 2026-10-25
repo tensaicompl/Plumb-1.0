@@ -355,9 +355,12 @@ fn rules_number_no_unit() {
 
 #[test]
 fn rules_relative_time_no_anchor() {
+    // [Fable #74] "respond within 2 days" bounds the response operation itself, so it is now
+    // anchored (see rules_relative_time_operation_bounds_and_qualifiers); a free-standing
+    // bound on another action is still reported.
     assert_eq!(
         hits(
-            "The system shall respond within 2 days.",
+            "Leave shall be approved within 2 days.",
             RelativeTimeNoAnchor
         ),
         ["within 2 days"]
@@ -855,20 +858,28 @@ fn rules_precision_threshold_boundary() {
     // NUMBER_NO_UNIT defaults to error.
     assert!(
         recommend_severities(&[metric(NumberNoUnit, 17, 3)], DEFAULT_PRECISION_THRESHOLD)
+            .unwrap()
             .is_empty(),
         "17/20 = 0.85 does not downgrade"
     );
-    let below = recommend_severities(&[metric(NumberNoUnit, 16, 4)], DEFAULT_PRECISION_THRESHOLD);
+    let below =
+        recommend_severities(&[metric(NumberNoUnit, 16, 4)], DEFAULT_PRECISION_THRESHOLD).unwrap();
     assert_eq!(below.len(), 1);
     assert_eq!(below[0].rule_id, NumberNoUnit);
     assert_eq!(below[0].recommended_severity, LintSeverity::Warn);
     assert!(
-        recommend_severities(&[metric(NumberNoUnit, 0, 0)], DEFAULT_PRECISION_THRESHOLD).is_empty(),
+        recommend_severities(&[metric(NumberNoUnit, 0, 0)], DEFAULT_PRECISION_THRESHOLD)
+            .unwrap()
+            .is_empty(),
         "undefined precision"
     );
     let mut not_evaluated = metric(UndefinedTerm, 0, 5);
     not_evaluated.applicability = BenchmarkApplicability::NotEvaluated;
-    assert!(recommend_severities(&[not_evaluated], DEFAULT_PRECISION_THRESHOLD).is_empty());
+    assert!(
+        recommend_severities(&[not_evaluated], DEFAULT_PRECISION_THRESHOLD)
+            .unwrap()
+            .is_empty()
+    );
     // The registry is untouched.
     assert_eq!(
         NumberNoUnit.definition().default_severity,
@@ -1079,4 +1090,306 @@ fn rules_no_corpus_directory_needed_and_no_precision_claims() {
         }
     }
     let _: BTreeMap<LintRuleId, LintSeverity> = BTreeMap::new();
+}
+
+// ---------------------------------------------------------------------------- H0.7 fidelity
+
+/// The fixture table of one rule: (statement, exact expected hit slices).
+type Fixtures<'a> = &'a [(&'a str, &'a [&'a str])];
+
+fn assert_fixtures(rule: LintRuleId, fixtures: Fixtures<'_>) {
+    for (statement, expected) in fixtures {
+        assert_eq!(hits(statement, rule), *expected, "{rule}: {statement}");
+    }
+}
+
+#[test]
+fn numeric_forms_are_not_unitless_numbers() {
+    // §33.7 Lint and [Fable #71]: each normal numeric form is one token that never produces
+    // blocker noise from its own punctuation.
+    for statement in [
+        "The system shall store up to 1,000 requests.",
+        "The fee shall not exceed 12,500.50 EUR per year.",
+        "The policy shall apply from 2026-01-01 onward.",
+        "The policy shall apply from 2026-01-01.",
+        "Employees shall receive a 5-day notice.",
+        "The report shall run at 09:30 each day.",
+        "The report shall run at 09:30.",
+        "The approver shall check condition (3) before approval.",
+        "The system shall retain 1.5 days of logs.",
+        "Support shall be available 24/7.",
+        "Support shall be available 24/7 for every employee.",
+    ] {
+        let result = lint(statement);
+        assert!(
+            result.diagnostics.iter().all(|d| d.rule_id != NumberNoUnit),
+            "{statement}: {:?}",
+            result.diagnostics
+        );
+    }
+    // A unitless number stays one token and is still reported once.
+    assert_eq!(hits("The limit shall be 1,000.", NumberNoUnit), ["1,000"]);
+    assert_eq!(
+        hits("The limit shall be 12,500.50.", NumberNoUnit),
+        ["12,500.50"]
+    );
+    assert_eq!(hits("The ratio shall be 2.5.", NumberNoUnit), ["2.5"]);
+    // A comma-separated list is not a thousands group.
+    assert_eq!(
+        hits("The codes shall be 1, 2 or 30,00.", NumberNoUnit),
+        ["1", "30", "00"]
+    );
+}
+
+#[test]
+fn clause_boundaries_ignore_numeric_tokens() {
+    // [Fable #72] A '.' or ',' inside a numeric token never ends a clause.
+    assert!(hits(
+        "The request shall be approved within 0.5 days by the system.",
+        PassiveNoActor
+    )
+    .is_empty());
+    assert_eq!(
+        hits(
+            "The manager shall not approve leave of 2.5 days without approval.",
+            NegationStack
+        ),
+        ["without"]
+    );
+    assert!(hits(
+        "The quota shall be 1,000 requests; it shall not be exceeded.",
+        NegationStack
+    )
+    .is_empty());
+    // Sentence punctuation still separates clauses.
+    assert_eq!(
+        hits(
+            "The request shall be approved in 0.5 days. It is logged by the system.",
+            PassiveNoActor
+        ),
+        ["be approved"]
+    );
+}
+
+#[test]
+fn missing_actor_looks_back_across_parentheticals() {
+    // [Fable #73]
+    assert_fixtures(
+        MissingActor,
+        &[
+            ("The system, upon approval, shall notify the employee.", &[]),
+            (
+                "The manager, or a delegate, shall approve the request.",
+                &[],
+            ),
+            (
+                "The system, upon approval, after review, shall notify the employee.",
+                &[],
+            ),
+            ("Shall store the request.", &["Shall"]),
+            ("When submitted, shall store the request.", &["shall"]),
+            (
+                "If approved, upon review, shall notify the employee.",
+                &["shall"],
+            ),
+            (
+                "The request is stored; shall notify the employee.",
+                &["shall"],
+            ),
+        ],
+    );
+}
+
+#[test]
+fn rules_relative_time_operation_bounds_and_qualifiers() {
+    // [Fable #74]
+    assert_fixtures(
+        RelativeTimeNoAnchor,
+        &[
+            (
+                "Leave shall be approved within 2 working days.",
+                &["within 2 working days"],
+            ),
+            (
+                "Leave shall be approved within 3 business days.",
+                &["within 3 business days"],
+            ),
+            (
+                "Leave shall be approved within 10 calendar days.",
+                &["within 10 calendar days"],
+            ),
+            (
+                "Leave shall be approved within 2 working days of submission.",
+                &[],
+            ),
+            (
+                "The manager shall decide within 5 business days after submission.",
+                &[],
+            ),
+            ("The system shall respond within 2 seconds.", &[]),
+            ("The service responds within 200 ms.", &[]),
+            ("The import shall complete within 2 working days.", &[]),
+        ],
+    );
+    // HR-030 is a performance bound of the submission operation and is not reported.
+    let hr_030 = include_str!("../../../fixtures/hr-leave/requirements.md")
+        .lines()
+        .filter(|l| l.contains("HR-030"))
+        .find_map(|l| l.split_once("[quality] "))
+        .map(|(_, statement)| statement)
+        .unwrap();
+    assert!(hr_030.starts_with("The leave-request submission operation"));
+    assert!(hits(hr_030, RelativeTimeNoAnchor).is_empty());
+    assert!(hits(hr_030, NumberNoUnit).is_empty());
+    assert!(hits(hr_030, MissingActor).is_empty());
+}
+
+#[test]
+fn error_rules_adversarial_fixtures() {
+    // [Fable #75] Ordinary-English negatives and true positives for each Error-severity rule.
+    assert_fixtures(
+        NumberNoUnit,
+        &[
+            ("The employee shall submit 2 requests per year.", &[]),
+            ("The balance shall not drop below 0 days.", &[]),
+            ("The approval rate shall be at least 90%.", &[]),
+            ("Section 4 shall apply to contractors.", &[]),
+            (
+                "The policy shall apply between 2026-01-01 and 2026-12-31.",
+                &[],
+            ),
+            ("The office shall open at 08:00 and close at 17:30.", &[]),
+            ("Clause (2) shall apply to every leave type.", &[]),
+            ("The system shall retry 3.", &["3"]),
+            ("The cap shall be 25; the floor shall be 5.", &["25", "5"]),
+            (
+                "The quota shall be 12,000; the ratio shall be 2.5.",
+                &["12,000", "2.5"],
+            ),
+        ],
+    );
+    assert_fixtures(
+        RelativeTimeNoAnchor,
+        &[
+            (
+                "The system shall archive requests within the retention period.",
+                &[],
+            ),
+            (
+                "The manager shall decide within 2 days of the request.",
+                &[],
+            ),
+            (
+                "The system shall notify HR no later than 3 days after approval.",
+                &[],
+            ),
+            (
+                "The employee may cancel within 24 hours following submission.",
+                &[],
+            ),
+            ("Leave shall be approved within 2 days.", &["within 2 days"]),
+            (
+                "The manager shall decide no later than 3 hours.",
+                &["no later than 3 hours"],
+            ),
+            (
+                "HR shall be notified within 1,000 seconds.",
+                &["within 1,000 seconds"],
+            ),
+        ],
+    );
+    assert_fixtures(
+        MissingActor,
+        &[
+            ("The system shall store the request.", &[]),
+            (
+                "When a request is submitted, the system shall store it.",
+                &[],
+            ),
+            ("Each employee shall have one balance.", &[]),
+            ("Approved requests shall be archived.", &[]),
+            (
+                "If the balance is 0.5 days, the system shall warn the employee.",
+                &[],
+            ),
+            ("Shall store the request.", &["Shall"]),
+            ("When submitted, shall store the request.", &["shall"]),
+            (
+                "After 1,000 requests, shall archive the oldest.",
+                &["shall"],
+            ),
+        ],
+    );
+}
+
+#[test]
+fn benchmark_error_paths_are_typed() {
+    // [Fable #75, #76, #77]
+    let corpus = parse_corpus_jsonl(&synthetic_corpus()).unwrap();
+    let invalid = [
+        Ratio {
+            numerator: 1,
+            denominator: 0,
+        },
+        Ratio {
+            numerator: 0,
+            denominator: 0,
+        },
+        Ratio {
+            numerator: 101,
+            denominator: 100,
+        },
+    ];
+    for threshold in invalid {
+        assert!(
+            matches!(
+                run_benchmark(&corpus, threshold),
+                Err(LintError::Benchmark { .. })
+            ),
+            "{threshold:?}"
+        );
+        assert!(
+            matches!(
+                recommend_severities(&[metric(NumberNoUnit, 1, 9)], threshold),
+                Err(LintError::Benchmark { .. })
+            ),
+            "{threshold:?}"
+        );
+    }
+    for threshold in [
+        Ratio {
+            numerator: 0,
+            denominator: 1,
+        },
+        Ratio {
+            numerator: 1,
+            denominator: 1,
+        },
+    ] {
+        assert!(run_benchmark(&corpus, threshold).is_ok());
+        assert!(recommend_severities(&[], threshold).unwrap().is_empty());
+    }
+
+    let report = run_benchmark(&corpus, DEFAULT_PRECISION_THRESHOLD).unwrap();
+    let baseline = report.baseline();
+    assert!(compare_to_baseline(&report, &baseline).is_ok());
+    let mut versioned = baseline.clone();
+    versioned.version += 1;
+    assert!(matches!(
+        compare_to_baseline(&report, &versioned),
+        Err(LintError::Benchmark { .. })
+    ));
+    // A changed corpus under the same corpus_id is not comparable.
+    let mut resized = baseline.clone();
+    resized.corpus_sentence_count += 1;
+    assert!(matches!(
+        compare_to_baseline(&report, &resized),
+        Err(LintError::Benchmark { .. })
+    ));
+    let mut fewer_rules = baseline;
+    fewer_rules.per_rule.pop();
+    assert!(matches!(
+        compare_to_baseline(&report, &fewer_rules),
+        Err(LintError::Benchmark { .. })
+    ));
 }
