@@ -7,7 +7,7 @@ import type { components } from "../api/schema";
 import { useEvents } from "../api/useEvents";
 import { ConflictDialog } from "../components/ConflictDialog";
 import { SessionPanel } from "../features/sessions/SessionPanel";
-import { t } from "../i18n";
+import { LOCALES, t, useLocaleStore, type Locale } from "../i18n";
 import { useMe } from "./auth";
 import { PILOT_NAVIGATION, type NavLink } from "./nav";
 import { ReadFailure } from "../components/ReadFailure";
@@ -244,6 +244,24 @@ function GlobalSearch() {
   );
 }
 
+/** The supported locale selection (English, Polish), persisted per browser. */
+function LocaleSelect() {
+  const locale = useLocaleStore((state) => state.locale);
+  const setLocale = useLocaleStore((state) => state.setLocale);
+  return (
+    <label className="text-sm">
+      {t("shell.language")}
+      <select className="ml-1 rounded border" value={locale} onChange={(event) => setLocale(event.target.value as Locale)}>
+        {LOCALES.map((option) => (
+          <option key={option} value={option}>
+            {t(option === "en" ? "shell.language.en" : "shell.language.pl")}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 /**
  * The application shell: identity header, global search, the pilot navigation, the DesignEvent
  * subscription, the single global ConflictDialog and the current route. It owns no model data.
@@ -267,6 +285,10 @@ function ProjectRoomLauncher() {
 
 export function AppShell() {
   useEvents();
+  const locale = useLocaleStore((state) => state.locale);
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
   // Hotfix 077: the only resource-scoped session view is the exact requirement-detail match; its
   // decoded route parameter is the candidate scope.
   const requirementId = useMatch({
@@ -274,14 +296,16 @@ export function AppShell() {
     shouldThrow: false,
     select: (match) => match.params.requirementId,
   });
+  // A locale change re-renders every view in the new locale (view state below the shell resets).
   return (
-    <div className="flex min-h-screen flex-col">
+    <div key={locale} className="flex min-h-screen flex-col">
       <header className="flex items-center justify-between gap-4 border-b px-4 py-2">
         <span className="text-lg font-semibold" data-testid="app-name">
           {t("app.name")}
         </span>
         <GlobalSearch />
         <ProjectRoomLauncher />
+        <LocaleSelect />
         <Identity />
       </header>
       <div className="flex flex-1">

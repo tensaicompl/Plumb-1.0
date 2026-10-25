@@ -629,6 +629,43 @@ describe("HomePage event stream lifecycle", () => {
   });
 });
 
+describe("HomePage locale selection", () => {
+  it("defaults to the browser language, switches to Polish, persists it per browser and renders routes in it", async () => {
+    const i18n = await import("../../i18n");
+    window.localStorage.removeItem(i18n.LOCALE_STORAGE_KEY);
+    expect(i18n.initialLocale()).toBe("en");
+    const language = vi.spyOn(window.navigator, "language", "get").mockReturnValue("pl-PL");
+    expect(i18n.initialLocale()).toBe("pl");
+    language.mockReturnValue("de-DE");
+    expect(i18n.initialLocale()).toBe("en");
+    language.mockRestore();
+
+    server.use(
+      ...shellHandlers(),
+      http.get("*/api/readiness", () =>
+        HttpResponse.json({ overall: null, contributing: [], sub: { clarity: null, completeness: null, confirmation: null, consistency: null, verifiability: null } }),
+      ),
+    );
+    const { router } = renderApp();
+    await screen.findByTestId("home-revision");
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Language" }), "pl");
+    expect(await screen.findByRole("heading", { level: 1, name: "Strona główna" })).toBeTruthy();
+    expect(window.localStorage.getItem(i18n.LOCALE_STORAGE_KEY)).toBe("pl");
+    expect(document.documentElement.lang).toBe("pl");
+    expect(i18n.initialLocale()).toBe("pl");
+    // Another route renders in Polish too.
+    act(() => {
+      void router.navigate({ to: "/gates" });
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: "Bramki" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Język" })).toBeTruthy();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Język" }), "en");
+    expect(await screen.findByRole("heading", { level: 1, name: "Gates" })).toBeTruthy();
+    window.localStorage.removeItem(i18n.LOCALE_STORAGE_KEY);
+  });
+});
+
 // ------------------------------------------------------------------ roles
 
 describe("HomePage role membership", () => {
