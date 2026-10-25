@@ -104,7 +104,7 @@ const GATES: GateStatus[] = [
     state: "current",
     passed: true,
     reason: null,
-    findings: ["fnd:dup", "fnd:lineage"],
+    findings: ["fnd:criteria", "fnd:dup", "fnd:lineage"],
     rules: [
       rule("ISO29148.F1.REQ.LINEAGE", "FAIL", { title: "Requirements have intent lineage", effective_severity: "error", declared_severity: "error", targets: REQ_IDS, finding_ref: "fnd:lineage" }),
       rule("PLUMB.F1.REQ.GROUNDED", "PASS", { title: "Accepted requirements are grounded in evidence or explicit human origin" }),
@@ -262,6 +262,10 @@ function handlers(backend: Backend) {
       return HttpResponse.json({ job_id: "job:1", version: "rev:9", revision: "rev:9", semantic_hash: "psg:sha256:9", events: [] });
     }),
     http.get("*/api/jobs/:id", () => HttpResponse.json({ status: "evaluating", progress: 0.5, base_revision: "rev:9", result_version: null, error: null })),
+    http.post("*/api/findings/materialize", async ({ request }) => {
+      await record(request);
+      return HttpResponse.json({ ...WRITE, finding_ids: ["fnd:lineage", "fnd:event"] });
+    }),
     http.post("*/api/findings/:id/waive", async ({ request }) => {
       await record(request);
       return HttpResponse.json(WRITE);
@@ -450,6 +454,21 @@ describe("Quality · Issues", () => {
     renderAt("/quality/issues", newBackend({ roles: ["reviewer"] }));
     await screen.findByRole("list", { name: "Issues" });
     expect(screen.queryByRole("button", { name: "Waive with reason" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Record findings" })).toBeNull();
+  });
+
+  it("waives only findings a current gate check produced, and records the gates' findings so they can be waived", async () => {
+    const { user, backend } = renderAt("/quality/issues");
+    const list = await screen.findByRole("list", { name: "Issues" });
+    // Not produced by a current gate report: the server would refuse a waiver.
+    const modality = within(list).getByText("Weak modality 'should'").closest("li") as HTMLElement;
+    expect(within(modality).queryByRole("button", { name: "Waive with reason" })).toBeNull();
+    // The F1 lineage and F2 event findings are in the gates but not recorded yet.
+    const notice = await screen.findByText("2 findings from the current gate checks are not recorded yet. Record them to waive them.");
+    await user.click(within(notice.parentElement as HTMLElement).getByRole("button", { name: "Record findings" }));
+    await waitFor(() => expect(writes(backend)).toHaveLength(1));
+    expect(writes(backend)[0]).toMatchObject({ path: "/api/findings/materialize", ifMatch: FINDINGS_ETAG, body: {} });
+    expect(await screen.findByText("Findings recorded")).toBeTruthy();
   });
 });
 

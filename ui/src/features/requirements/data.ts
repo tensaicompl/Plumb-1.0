@@ -75,6 +75,14 @@ export function waivedFindingIds(gates: readonly GateStatus[] | undefined): Read
   return ids;
 }
 
+/**
+ * The IDs of findings the current gate reports produced. Only those can be waived: the server
+ * refuses a waiver of any other finding (E_FINDING_NOT_CURRENT).
+ */
+export function currentFindingIds(gates: readonly GateStatus[] | undefined): ReadonlySet<string> {
+  return new Set((gates ?? []).filter((gate) => gate.state === "current").flatMap((gate) => gate.findings));
+}
+
 /** Whether a finding still needs attention: open, and not waived. */
 export function isOpenIssue(finding: Finding, waived: ReadonlySet<string>): boolean {
   return finding.status.toLowerCase() === "open" && (finding.waiver_ref ?? null) === null && !waived.has(finding.id);

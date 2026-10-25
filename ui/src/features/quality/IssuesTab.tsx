@@ -9,8 +9,8 @@ import { hasRole, useMe } from "../../app/auth";
 import { gatesQuery } from "../../app/work";
 import { ReadFailure } from "../../components/ReadFailure";
 import { Button, cn, EmptyState, ReasonSheet, SkeletonList, StatusPill, toast } from "../../components/ui";
-import { t, tf, type MessageKey } from "../../i18n";
-import { requirementsQuery, waivedFindingIds } from "../requirements/data";
+import { t, tc, tf, type MessageKey } from "../../i18n";
+import { currentFindingIds, requirementsQuery, waivedFindingIds } from "../requirements/data";
 import { affectedChips, decisionsQuery, requirementLabels, reviewedFindingsQuery, waiverDecision } from "./data";
 
 type Finding = components["schemas"]["Finding"];
@@ -53,6 +53,12 @@ export function IssuesTab() {
     ({ id, reason }, ifMatch) => apiClient.POST("/api/findings/{id}/waive", { params: { path: { id }, header: { "If-Match": ifMatch } }, body: { reason } }),
     findings.data?.etag,
   );
+  // Gate report findings that are not recorded yet cannot be governed: recording them
+  // (materialize_findings) makes them waivable.
+  const record = useVersionedMutation<components["schemas"]["MaterializeFindingsResponse"], null>(
+    (_, ifMatch) => apiClient.POST("/api/findings/materialize", { params: { header: { "If-Match": ifMatch } }, body: {} }),
+    findings.data?.etag,
+  );
 
   if (findings.isError) {
     return (
@@ -71,6 +77,9 @@ export function IssuesTab() {
     return <EmptyState visual="check" title={t("quality.issues.empty")} />;
   }
   const waived = waivedFindingIds(gates.data);
+  const current = currentFindingIds(gates.data);
+  const listed = new Set(findings.data.items.map((finding) => finding.id));
+  const unrecorded = [...current].filter((id) => !listed.has(id));
   const labels = requirementLabels(requirements.data?.items);
   const canWaive = hasRole(me.data, ANALYST);
   const disposition = (finding: Finding): Disposition => {
@@ -87,6 +96,32 @@ export function IssuesTab() {
 
   return (
     <>
+      {canWaive && unrecorded.length > 0 && (
+        <div className="mb-3 flex items-center gap-3 rounded-tile bg-surface px-4 py-3 text-footnote text-fg-2">
+          <Info size={16} strokeWidth={1.6} aria-hidden="true" className="shrink-0" />
+          <p className="m-0 flex-1">{tc("quality.issues.unrecorded", unrecorded.length)}</p>
+          <Button
+            variant="outline"
+            size={30}
+            pending={record.isPending}
+            onClick={() =>
+              record.mutate(null, {
+                onSuccess: () => {
+                  void queryClient.invalidateQueries();
+                  toast({ message: t("quality.issues.recorded") });
+                },
+                onError: (error) => {
+                  if (error.name !== "PreconditionFailedError") {
+                    toast({ tone: "error", message: tf("quality.writeFailed", { message: writeErrorMessage(error) ?? error.message }) });
+                  }
+                },
+              })
+            }
+          >
+            {t("quality.issues.record")}
+          </Button>
+        </div>
+      )}
       <ul aria-label={t("quality.issues.label")} className="m-0 list-none overflow-hidden rounded-card border border-line bg-card p-0">
         {rows.map((finding) => {
           const state = disposition(finding);
@@ -96,7 +131,7 @@ export function IssuesTab() {
           const affected = affectedChips(finding.affected_refs, labels).join(", ");
           return (
             <li key={finding.id} data-finding-id={finding.id} className="flex items-center gap-3.5 border-b border-line px-5 py-3.5 last:border-b-0">
-              <span className={cn("flex w-24 shrink-0 items-center gap-1.5 text-caption font-semibold", state === "waived" ? "text-fg-3" : severity.tone)}>
+              <span className={cn("flex w-24 shrink-0 items-center gap-1.5 text-caption font-semibold", state === "open" ? severity.tone : "text-fg-3")}>
                 <Icon size={14} strokeWidth={1.6} aria-hidden="true" />
                 {t(severity.label)}
               </span>
@@ -108,7 +143,7 @@ export function IssuesTab() {
                 </div>
                 {decision !== null && <div className="mt-1 text-caption text-fg-2">{tf("quality.issues.waivedBy", { who: decision.decided_by, reason: decision.rationale ?? "" })}</div>}
               </div>
-              {state === "open" && canWaive && (
+              {state === "open" && canWaive && current.has(finding.id) && (
                 <Button variant="outline" size={30} onClick={() => setWaiving(finding)}>
                   {t("quality.issues.waive")}
                 </Button>

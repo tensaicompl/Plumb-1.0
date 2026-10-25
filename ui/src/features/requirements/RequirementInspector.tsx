@@ -25,7 +25,7 @@ import {
   type MenuItem,
 } from "../../components/ui";
 import { t, tf, type MessageKey } from "../../i18n";
-import { issuesOf, readinessQuery, requirementLabel, requirementQuery, waivedFindingIds, type Finding, type RequirementDetail, type RequirementSummary } from "./data";
+import { currentFindingIds, issuesOf, readinessQuery, requirementLabel, requirementQuery, waivedFindingIds, type Finding, type RequirementDetail, type RequirementSummary } from "./data";
 import { ChangeKindSheet, DuplicateSheet, SplitSheet } from "./RequirementSheets";
 import { pillStatus } from "./status";
 
@@ -109,6 +109,7 @@ export function RequirementInspector({ id, requirements, sources }: RequirementI
   const accepted = requirement.status === "Accepted";
   const editable = accepted || requirement.status === "Proposed";
   const waived = waivedFindingIds(gates.data);
+  const current = currentFindingIds(gates.data);
   const issues = issuesOf(requirement.id, findings.data, waived);
   const pill = pillStatus(requirement.status);
   const written = (message: string) => {
@@ -191,7 +192,7 @@ export function RequirementInspector({ id, requirements, sources }: RequirementI
                 message={finding.message}
                 code={finding.code}
                 action={
-                  canEdit && accepted ? (
+                  canEdit && accepted && current.has(finding.id) ? (
                     <Button variant="outline" size={30} className="h-[26px] px-2.5 text-eyebrow" onClick={() => setSheet({ kind: "waive", finding })}>
                       {t("requirement.issues.waive")}
                     </Button>

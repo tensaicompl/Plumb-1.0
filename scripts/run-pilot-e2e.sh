@@ -39,4 +39,5 @@ for _ in $(seq 1 60); do
   fi
   sleep 0.5
 done
-npx playwright test e2e/pilot.spec.ts --reporter=list
+# Every spec in ui/e2e, one worker in file order: later specs may write (pilot.spec.ts runs first).
+npx playwright test --workers=1 --reporter=list

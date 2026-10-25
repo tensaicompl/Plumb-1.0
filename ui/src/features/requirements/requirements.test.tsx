@@ -135,7 +135,7 @@ const GATES: GateStatus[] = [
     state: "current",
     passed: true,
     reason: null,
-    findings: ["fnd:dup"],
+    findings: ["fnd:dup", "fnd:modality"],
     rules: [],
     waivers: [{ rule_id: "PLUMB.F1.REQ.NO_DUPLICATE_ACCEPTED", finding_ref: "fnd:dup", finding_key: "sha256:x", decision_ref: "dec:w" }],
     summary: { blocker_failed: 0, blocker_waived: 1, warnings: 0 },
@@ -187,6 +187,7 @@ interface Backend {
   details: Record<string, RequirementDetail>;
   listStatus: number;
   splitConflict: boolean;
+  findings: Finding[];
   calls: Call[];
 }
 
@@ -198,6 +199,7 @@ function newBackend(overrides: Partial<Backend> = {}): Backend {
     details: {},
     listStatus: 200,
     splitConflict: false,
+    findings: FINDINGS,
     calls: [],
     ...overrides,
   };
@@ -237,7 +239,7 @@ function handlers(backend: Backend) {
       const id = String(params["id"]);
       return etagJson(backend.details[id] ?? detail(id), undefined, DETAIL_ETAG);
     }),
-    http.get("*/api/findings", () => etagJson({ items: FINDINGS, next_cursor: null }, undefined, FINDINGS_ETAG)),
+    http.get("*/api/findings", () => etagJson({ items: backend.findings, next_cursor: null }, undefined, FINDINGS_ETAG)),
     http.get("*/api/gates", () => etagJson(GATES)),
     http.get("*/api/sources", () =>
       etagJson({ items: [{ id: "src:1", name: "requirements.md", hash: "sha256:1", media_type: "text/markdown", source_kind: "markdown", imported_at: "2026-05-01T12:00:00Z", spans_count: 38 }] }),
@@ -461,6 +463,14 @@ describe("Requirement inspector", () => {
       body: { finding_id: "fnd:modality", reason: "Accepted for the pilot." },
     });
     expect(await screen.findByText("Finding waived")).toBeTruthy();
+  });
+
+  it("offers no Waive for an issue no current gate check produced (the server would refuse it)", async () => {
+    const stale: Finding = { ...FINDINGS[0], id: "fnd:recorded", affected_refs: ["req:b"], message: "Recorded before the last check" } as Finding;
+    renderAt("/requirements/req:b", newBackend({ findings: [...FINDINGS, stale] }));
+    const issues = await within(await waitFor(() => inspector())).findByRole("region", { name: "Quality issues" });
+    expect(within(issues).getByText("Recorded before the last check")).toBeTruthy();
+    expect(within(issues).queryByRole("button", { name: "Waive" })).toBeNull();
   });
 
   it("accepts the wording suggestion through accept_requirement_ears", async () => {

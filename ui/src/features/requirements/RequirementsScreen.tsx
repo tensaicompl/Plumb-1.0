@@ -14,7 +14,6 @@ import {
   KindTag,
   ListRowError,
   Menu,
-  MonoId,
   ReadinessRing,
   Skeleton,
   SkeletonGroup,
@@ -355,9 +354,9 @@ function RequirementRow({ item, issues, selected, onSelect }: { item: Requiremen
           selected ? "bg-surface" : "bg-card hover:bg-subtle-row",
         )}
       >
-        <MonoId className="w-[52px] shrink-0 truncate" title={item.id}>
+        <span title={item.id} className={cn("w-[52px] shrink-0 select-text truncate whitespace-nowrap font-mono text-caption", selected ? "text-fg-3-surface" : "text-fg-3")}>
           {requirementLabel(item)}
-        </MonoId>
+        </span>
         <span className="line-clamp-2 min-w-0 flex-1 text-callout leading-[1.45] text-fg">{item.text}</span>
         <KindTag kind={item.class} withIcon={false} className="h-[22px] px-2" />
         <span className="flex w-11 shrink-0 justify-end">
@@ -380,7 +379,7 @@ function RequirementRow({ item, issues, selected, onSelect }: { item: Requiremen
           </span>
         </span>
         <span className="flex w-[60px] shrink-0 items-center justify-end gap-1.5">
-          <span aria-hidden="true" className="font-mono text-eyebrow font-medium text-fg-3">
+          <span aria-hidden="true" className={cn("font-mono text-eyebrow font-medium", selected ? "text-fg-3-surface" : "text-fg-3")}>
             {readiness === null ? NO_VALUE : String(Math.round(readiness))}
           </span>
           <ReadinessRing value={readiness} size={20} stroke={3} />

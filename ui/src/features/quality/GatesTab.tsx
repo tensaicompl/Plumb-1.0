@@ -151,7 +151,7 @@ function GateRow({
       >
         <GateDot state={state} size={12} />
         <span className="w-[150px] shrink-0">
-          <span className="text-subhead font-semibold text-fg">{gateName(name)}</span> <span className="font-mono text-eyebrow font-medium text-fg-4">{name}</span>
+          <span className="text-subhead font-semibold text-fg">{gateName(name)}</span> <span className="font-mono text-eyebrow font-medium text-fg-3">{name}</span>
         </span>
         <span className={cn("w-[110px] shrink-0 text-footnote font-semibold", STATE_TONE[state])}>{stateLabel(state)}</span>
         <span className="min-w-0 flex-1 text-footnote text-fg-2">{summaryText(gate)}</span>
@@ -221,7 +221,10 @@ function GatePanel({
                   icon={<Icon size={16} strokeWidth={1.6} aria-hidden="true" className={cn("mt-px shrink-0", group.tone)} />}
                   finding={findings.data?.find((f) => f.id === rule.finding_ref) ?? null}
                   note={ruleNote(rule, gates.data, decisions.data)}
-                  chips={affectedChips([...rule.targets, ...(rule.error?.targets ?? [])], labels)}
+                  chips={
+                    // A passing rule's targets are what it checked, not what it affects.
+                    rule.state === "PASS" || rule.state === "NOT_APPLICABLE" ? [] : affectedChips([...rule.targets, ...(rule.error?.targets ?? [])], labels)
+                  }
                 />
               ))}
             </ul>
