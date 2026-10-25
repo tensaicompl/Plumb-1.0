@@ -229,6 +229,17 @@ mod workflow {
             ));
         }
 
+        /// Rebuilds the exact store schema v4 proposal table (H0.10: occurrence keys, no
+        /// `abandoned` state); the stage links keep referencing it by name.
+        fn downgrade_to_v4(&self) {
+            self.exec(&format!(
+                "CREATE TABLE wp_v4 AS SELECT * FROM workflow_proposals; \
+                 DROP TABLE workflow_proposals; {V4_WORKFLOW_PROPOSALS} \
+                 INSERT INTO workflow_proposals SELECT * FROM wp_v4; DROP TABLE wp_v4; \
+                 UPDATE schema_meta SET version = 4;"
+            ));
+        }
+
         fn workflow(&self) -> SqliteWorkflowStore {
             SqliteWorkflowStore::open(&self.path).unwrap()
         }
@@ -332,6 +343,29 @@ mod workflow {
   FOREIGN KEY (compile_run_ref) REFERENCES artifacts(hash)
 );";
 
+    /// The exact store schema v4 definition of `workflow_proposals` (H0.10).
+    const V4_WORKFLOW_PROPOSALS: &str = "CREATE TABLE workflow_proposals (
+  proposal_id TEXT NOT NULL,
+  base_revision_id TEXT NOT NULL,
+  proposal_json TEXT NOT NULL,
+  intake_json TEXT NOT NULL,
+  proposal_kind TEXT NOT NULL
+    CHECK (proposal_kind IN ('link', 'merge', 'supersede', 'create', 'accept')),
+  state TEXT NOT NULL
+    CHECK (state IN ('prepared', 'pending', 'accepted', 'rejected', 'failed')),
+  origin_kind TEXT NOT NULL CHECK (origin_kind IN ('intake', 'question', 'session', 'stage')),
+  origin_ref TEXT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT NULL,
+  resolved_revision_id TEXT NULL,
+  occurrence_id TEXT NOT NULL UNIQUE,
+
+  PRIMARY KEY (proposal_id, base_revision_id),
+  CHECK (origin_kind <> 'stage' OR origin_ref IS NULL),
+  FOREIGN KEY (base_revision_id) REFERENCES graph_revisions(id),
+  FOREIGN KEY (resolved_revision_id) REFERENCES graph_revisions(id)
+);";
+
     const STAGE_TABLES: [&str; 5] = [
         "stage_recipe_jobs",
         "stage_jobs",
@@ -343,11 +377,11 @@ mod workflow {
     // ------------------------------------------------------------------ schema v4
 
     #[test]
-    fn workflow_fresh_database_is_created_at_v4() {
+    fn workflow_fresh_database_is_created_at_v5() {
         let db = Db::new();
         drop(db.workflow());
         assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
-        assert_eq!(STORE_SCHEMA_VERSION, 4);
+        assert_eq!(STORE_SCHEMA_VERSION, 5);
         for t in [
             "workflow_proposals",
             "workflow_sessions",
@@ -358,12 +392,12 @@ mod workflow {
         {
             assert!(db.tables().contains(t), "{t}");
         }
-        // A v4 store is verified and reopened unchanged.
+        // A v5 store is verified and reopened unchanged.
         let before = db.schema();
         drop(db.workflow());
         drop(SqliteRevisionStore::open(&db.path).unwrap());
         assert_eq!(db.schema(), before);
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
     }
 
     #[test]
@@ -410,7 +444,7 @@ mod workflow {
             .is_some());
         let rows = db.graph_rows();
         drop(SqliteRevisionStore::open(&db.path).unwrap());
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
         assert_eq!(db.graph_rows(), rows);
         assert_eq!(db.rows(&v3_rows), proposals_before);
         // Every migrated row is its own occurrence.
@@ -464,7 +498,7 @@ mod workflow {
         assert_eq!(db.graph_rows(), rows);
         db.exec("DROP TABLE gate_reports;");
         drop(db.workflow());
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
     }
 
     #[test]
@@ -504,7 +538,7 @@ mod workflow {
         assert_eq!(db.version(), vec![3]);
         let graph = db.graph_rows();
         let wf = db.workflow();
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
         assert_eq!(db.rows(&v3_rows), before);
         assert_eq!(db.graph_rows(), graph);
         for (proposal, base) in [
@@ -536,7 +570,7 @@ mod workflow {
         let rows = db.graph_rows();
         // Opening through either store migrates transactionally.
         let store = SqliteRevisionStore::open(&db.path).unwrap();
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
         assert!(db.tables().contains("workflow_session_turns"));
         for t in STAGE_TABLES {
             assert!(db.tables().contains(t), "{t}");
@@ -555,6 +589,156 @@ mod workflow {
             .unwrap(),
             WorkflowInsert::Inserted(_)
         ));
+    }
+
+    /// H0.11 (architecture §33.12): store schema v5 admits the terminal `abandoned` proposal
+    /// state. A valid v4 store is migrated in place: every row, revision and stage link is kept
+    /// unchanged and the rebuilt schema is exactly the fresh one.
+    #[test]
+    fn workflow_valid_v4_store_migrates_to_v5_admitting_abandoned() {
+        let db = Db::new();
+        let (r1, r2) = db.with_revisions();
+        {
+            let mut wf = db.workflow();
+            for (proposal, base) in [
+                ("prop:0000000000000001", &r1),
+                ("prop:0000000000000002", &r1),
+                ("prop:0000000000000001", &r2),
+            ] {
+                wf.insert_proposal(
+                    &new_proposal(proposal, base, WorkflowOrigin::Intake),
+                    WorkflowProposalState::Pending,
+                )
+                .unwrap();
+            }
+            wf.resolve_proposal(
+                &id("prop:0000000000000002"),
+                &r1,
+                WorkflowProposalState::Rejected,
+                &r2,
+                ts(T2),
+            )
+            .unwrap();
+        }
+        let all = "SELECT * FROM workflow_proposals ORDER BY proposal_id, base_revision_id";
+        let before = db.rows(all);
+        db.downgrade_to_v4();
+        assert_eq!(db.version(), vec![4]);
+        // The v4 table refuses the new state.
+        assert!(db
+            .exec_err(
+                "UPDATE workflow_proposals SET state = 'abandoned' \
+                 WHERE proposal_id = 'prop:0000000000000001'"
+            )
+            .is_some());
+        let graph = db.graph_rows();
+        let mut wf = db.workflow();
+        assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
+        assert_eq!(db.rows(all), before);
+        assert_eq!(db.graph_rows(), graph);
+        let fresh = Db::new();
+        drop(fresh.workflow());
+        let unquoted = |rows: Vec<String>| -> Vec<String> {
+            rows.into_iter().map(|r| r.replace('"', "")).collect()
+        };
+        assert_eq!(unquoted(db.schema()), unquoted(fresh.schema()));
+        // The stage links still reference the rebuilt proposal table.
+        let parents = db.rows(
+            "SELECT \"table\" FROM pragma_foreign_key_list('stage_job_proposals') \
+             WHERE \"from\" = 'proposal_id'",
+        );
+        assert_eq!(parents, ["workflow_proposals"]);
+        let abandoned = wf
+            .resolve_proposal(
+                &id("prop:0000000000000001"),
+                &r1,
+                WorkflowProposalState::Abandoned,
+                &r2,
+                ts(T2),
+            )
+            .unwrap();
+        assert_eq!(abandoned.state, WorkflowProposalState::Abandoned);
+    }
+
+    #[test]
+    fn workflow_failed_v4_migration_rolls_back_completely() {
+        let db = Db::new();
+        db.with_revisions();
+        db.downgrade_to_v4();
+        // A conflicting object makes the rebuild fail.
+        db.exec("CREATE TABLE workflow_proposals_v5 (x INTEGER);");
+        let before = db.schema();
+        let rows = db.graph_rows();
+        assert!(SqliteWorkflowStore::open(&db.path).is_err());
+        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.schema(), before);
+        assert_eq!(db.graph_rows(), rows);
+        db.exec("DROP TABLE workflow_proposals_v5;");
+        drop(db.workflow());
+        assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
+    }
+
+    /// H0.11: a discard moves exactly the pending occurrence to the terminal state `abandoned`,
+    /// recorded on the given revision (no descent requirement: nothing is committed). The record
+    /// is kept, is no longer pending, is not rejection memory and is never resolved again.
+    #[test]
+    fn workflow_pending_occurrence_is_abandoned_and_kept() {
+        let db = Db::new();
+        let (r1, r2) = db.with_revisions();
+        let mut wf = db.workflow();
+        for base in [&r1, &r2] {
+            wf.insert_proposal(
+                &new_proposal("prop:0000000000000001", base, WorkflowOrigin::Question),
+                WorkflowProposalState::Pending,
+            )
+            .unwrap();
+        }
+        // Recorded on the base revision itself: an abandonment needs no newer revision.
+        let abandoned = wf
+            .resolve_proposal(
+                &id("prop:0000000000000001"),
+                &r2,
+                WorkflowProposalState::Abandoned,
+                &r2,
+                ts(T2),
+            )
+            .unwrap();
+        assert_eq!(abandoned.state, WorkflowProposalState::Abandoned);
+        assert_eq!(abandoned.state.as_str(), "abandoned");
+        assert_eq!(abandoned.resolved_revision_id, Some(r2.clone()));
+        assert_eq!(abandoned.resolved_at, Some(ts(T2)));
+        // Only that occurrence moved; the history is kept.
+        assert_eq!(
+            wf.proposal(&id("prop:0000000000000001"), &r1)
+                .unwrap()
+                .unwrap()
+                .state,
+            WorkflowProposalState::Pending
+        );
+        assert_eq!(
+            wf.proposal(&id("prop:0000000000000001"), &r2).unwrap(),
+            Some(abandoned)
+        );
+        let pending = wf.pending_proposals().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].base_revision_id, r1);
+        assert!(wf
+            .rejected_proposals(WorkflowOrigin::Question)
+            .unwrap()
+            .is_empty());
+        for to in [
+            WorkflowProposalState::Accepted,
+            WorkflowProposalState::Rejected,
+            WorkflowProposalState::Abandoned,
+        ] {
+            assert!(matches!(
+                wf.resolve_proposal(&id("prop:0000000000000001"), &r2, to, &r2, ts(T2)),
+                Err(StoreError::WorkflowStateConflict { .. })
+            ));
+        }
+        drop(wf);
+        let wf = db.workflow();
+        assert_eq!(wf.proposal_occurrences(&id("prop:0000000000000001")).unwrap().len(), 2);
     }
 
     /// R0.6: the pending-proposal enumeration returns every and only pending record, complete,
@@ -692,19 +876,19 @@ mod workflow {
         // Removing the conflict lets the migration complete.
         db.exec("DROP TABLE workflow_session_turns;");
         drop(db.workflow());
-        assert_eq!(db.version(), vec![4]);
+        assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
     }
 
     #[test]
     fn workflow_unknown_versions_and_unversioned_tables_are_rejected() {
         let db = Db::new();
         drop(db.workflow());
-        db.exec("UPDATE schema_meta SET version = 5;");
+        db.exec("UPDATE schema_meta SET version = 6;");
         assert!(matches!(
             SqliteWorkflowStore::open(&db.path).unwrap_err(),
-            StoreError::UnsupportedStoreSchemaVersion { found: 5 }
+            StoreError::UnsupportedStoreSchemaVersion { found: 6 }
         ));
-        assert_eq!(db.version(), vec![5]);
+        assert_eq!(db.version(), vec![6]);
 
         let db = Db::new();
         db.exec("CREATE TABLE workflow_proposals (proposal_id TEXT PRIMARY KEY);");

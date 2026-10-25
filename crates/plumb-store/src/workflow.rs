@@ -57,13 +57,15 @@ macro_rules! workflow_vocabulary {
 }
 
 workflow_vocabulary!(
-    /// The lifecycle state of a workflow proposal.
+    /// The lifecycle state of a workflow proposal. `abandoned` (H0.11, store schema v5) is the
+    /// terminal state of a pending proposal the user explicitly discarded; it is kept as history.
     WorkflowProposalState {
         Prepared => "prepared",
         Pending => "pending",
         Accepted => "accepted",
         Rejected => "rejected",
         Failed => "failed",
+        Abandoned => "abandoned",
     }
 );
 
@@ -364,8 +366,8 @@ impl SqliteWorkflowStore {
         Ok(proposals)
     }
 
-    /// Moves the `pending` occurrence of proposal `id` on `base_revision_id` to `accepted` or
-    /// `rejected` with its resolution revision and time. Any other current state is
+    /// Moves the `pending` occurrence of proposal `id` on `base_revision_id` to `accepted`,
+    /// `rejected` or (H0.11) `abandoned` with its resolution revision and time. Any other current state is
     /// [`StoreError::WorkflowStateConflict`]. An acceptance must resolve to a revision that
     /// descends from the base on its branch lineage, with a greater version (Fable #1):
     /// otherwise [`StoreError::WorkflowResolutionNotDescendant`] and nothing changes.
@@ -379,7 +381,9 @@ impl SqliteWorkflowStore {
     ) -> Result<WorkflowProposal, StoreError> {
         if !matches!(
             to,
-            WorkflowProposalState::Accepted | WorkflowProposalState::Rejected
+            WorkflowProposalState::Accepted
+                | WorkflowProposalState::Rejected
+                | WorkflowProposalState::Abandoned
         ) {
             return Err(StoreError::WorkflowInvalidTransition {
                 kind: "proposal",
