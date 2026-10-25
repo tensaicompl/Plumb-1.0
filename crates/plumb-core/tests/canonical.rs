@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use plumb_core::{canonical_hash, to_canonical_json, HashKind};
+use plumb_core::{canonical_hash, to_canonical_json, CoreError, HashKind};
 use proptest::prelude::*;
 use serde::ser::{SerializeMap, Serializer};
 use serde::Serialize;
@@ -176,11 +176,15 @@ fn repeated_canonicalization_is_byte_identical() {
     assert_eq!(to_canonical_json(&reparsed).unwrap(), first);
 }
 
+/// 2^53 - 1, the largest integer every I-JSON consumer represents exactly.
+const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
+
 fn leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         Just(Value::Null),
         any::<bool>().prop_map(Value::from),
-        any::<i64>().prop_map(Value::from),
+        // Only the I-JSON safe range canonicalizes (Fable #28/#29).
+        (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).prop_map(Value::from),
         "[ -~]{0,12}".prop_map(Value::from),
     ]
 }
@@ -219,6 +223,9 @@ proptest! {
         let b = flat(shuffled);
         let bytes_a = to_canonical_json(&a).unwrap();
         prop_assert_eq!(&bytes_a, &to_canonical_json(&b).unwrap());
+        // Canonical bytes parse back to exactly the supplied value (no precision loss).
+        let reparsed: Value = serde_json::from_slice(&bytes_a).unwrap();
+        prop_assert_eq!(reparsed, serde_json::to_value(&a).unwrap());
         prop_assert_eq!(&bytes_a, &to_canonical_json(&a).unwrap());
         for kind in [HashKind::Generic, HashKind::Semantic, HashKind::Evidence] {
             prop_assert_eq!(canonical_hash(kind, &a).unwrap(), canonical_hash(kind, &b).unwrap());
@@ -241,4 +248,120 @@ proptest! {
             canonical_hash(HashKind::Semantic, &shuffled).unwrap()
         );
     }
+}
+
+/// A map that emits exactly the given (key, value) entries, duplicates included.
+struct RawEntries<K, V>(Vec<(K, V)>);
+
+impl<K: Serialize, V: Serialize> Serialize for RawEntries<K, V> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in &self.0 {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+/// Emits the integer key `1` and the string key `"1"`: both are the member name "1".
+struct StringifiedKeyCollision;
+
+impl Serialize for StringifiedKeyCollision {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry(&1_u32, "integer key")?;
+        map.serialize_entry("1", "string key")?;
+        map.end()
+    }
+}
+
+fn assert_canonicalization_error<T: Serialize + ?Sized>(value: &T, what: &str) {
+    match to_canonical_json(value) {
+        Err(CoreError::Canonicalization(_)) => {}
+        other => panic!("{what}: expected CoreError::Canonicalization, got {other:?}"),
+    }
+    for kind in [HashKind::Generic, HashKind::Semantic, HashKind::Evidence] {
+        assert!(
+            matches!(canonical_hash(kind, value), Err(CoreError::Canonicalization(_))),
+            "{what}: canonical_hash({kind:?}) must fail too"
+        );
+    }
+}
+
+#[test]
+fn duplicate_member_names_are_rejected() {
+    // Fable #27: keeping the first of two members would hash distinct inputs identically.
+    let duplicate = InsertionOrdered(vec![
+        ("a".into(), Node::Leaf(json!(1))),
+        ("a".into(), Node::Leaf(json!(2))),
+    ]);
+    assert_canonicalization_error(&duplicate, "duplicate top-level member");
+    let nested = json!({"outer": [1, 2]});
+    let nested = InsertionOrdered(vec![
+        ("x".into(), Node::Leaf(nested)),
+        (
+            "y".into(),
+            Node::Object(InsertionOrdered(vec![
+                ("k".into(), Node::Leaf(json!(null))),
+                ("k".into(), Node::Leaf(json!(null))),
+            ])),
+        ),
+    ]);
+    assert_canonicalization_error(&nested, "duplicate nested member");
+    assert_canonicalization_error(&StringifiedKeyCollision, "stringified key collision");
+}
+
+#[test]
+fn integers_outside_the_safe_range_are_rejected() {
+    // Fable #28: integers beyond 2^53 - 1 would be widened to f64 and collide.
+    let max = MAX_SAFE_INTEGER;
+    assert_eq!(canonical_string(&json!([max, -max])), format!("[{max},-{max}]"));
+    assert_canonicalization_error(&(max + 1), "2^53");
+    assert_canonicalization_error(&(-max - 1), "-2^53");
+    assert_canonicalization_error(&u64::MAX, "u64::MAX");
+    assert_canonicalization_error(&i64::MIN, "i64::MIN");
+    assert_canonicalization_error(&(u128::from(u64::MAX) + 1), "u128");
+    assert_canonicalization_error(&i128::MIN, "i128::MIN");
+    assert_canonicalization_error(&json!({"n": [1, u64::MAX]}), "nested u64::MAX");
+    // Distinct out-of-range values must never canonicalize at all, let alone identically.
+    assert_canonicalization_error(&9_007_199_254_740_993_u64, "2^53 + 1");
+}
+
+#[test]
+fn integer_map_keys_outside_the_safe_range_are_rejected() {
+    let max = MAX_SAFE_INTEGER;
+    let ok: BTreeMap<i64, bool> = [(max, true), (-max, false)].into();
+    assert_eq!(
+        canonical_string(&ok),
+        format!(r#"{{"-{max}":false,"{max}":true}}"#)
+    );
+    let over: BTreeMap<u64, bool> = [(1 << 53, true)].into();
+    assert_canonicalization_error(&over, "integer key 2^53");
+    let under: BTreeMap<i64, bool> = [(-max - 1, true)].into();
+    assert_canonicalization_error(&under, "integer key -2^53");
+}
+
+#[test]
+fn non_finite_numbers_are_rejected() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_canonicalization_error(&value, "non-finite f64");
+        assert_canonicalization_error(&vec![1.0, value], "non-finite f64 in an array");
+    }
+    assert_canonicalization_error(&f32::NAN, "f32 NaN");
+}
+
+#[test]
+fn raw_values_are_rejected() {
+    let raw = serde_json::value::RawValue::from_string(r#"{"b":1,"a":2}"#.to_owned()).unwrap();
+    assert_canonicalization_error(&raw, "RawValue");
+    assert_canonicalization_error(&RawEntries(vec![("raw", &*raw)]), "nested RawValue");
+}
+
+#[test]
+fn non_string_keys_are_rejected() {
+    assert_canonicalization_error(&RawEntries(vec![((1, 2), 0)]), "tuple key");
+    assert_canonicalization_error(&RawEntries(vec![(true, 0)]), "bool key");
+    assert_canonicalization_error(&RawEntries(vec![(1.5_f64, 0)]), "float key");
+    assert_canonicalization_error(&RawEntries(vec![(vec!["a"], 0)]), "sequence key");
+    assert_canonicalization_error(&RawEntries(vec![((), 0)]), "unit key");
 }
