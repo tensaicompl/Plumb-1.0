@@ -61,6 +61,9 @@ your feature folder.
   spinner. Empty uses `EmptyState` (one sentence, one action). A list `health` entry renders a
   `ListRowError` while the rest of the list works. Read failures use `ReadFailure` plus a Retry button calling the query's `refetch` (reads already
   retry 502–504 twice and refresh on reconnect).
+- Keys: the shell owns ⌘K, ⌘1–7 and Esc for its overlays; sheets confirm with ⌘↩. Screens add
+  their own (Inbox J/K/A/R/E, ⌘. to close the inspector by clearing the selection) and ignore keys
+  typed into inputs.
 - Never show a control the role cannot use (`useMe()` and `hasRole` in `src/app/auth.ts`).
 - Status is never colour-only: pills, gate lights and verdicts carry text and an icon.
 

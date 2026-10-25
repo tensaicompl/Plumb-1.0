@@ -862,5 +862,6 @@
   "next.uncheckedGate.title": "The {gate} check has not run yet",
   "next.uncheckedGate.short": "Check {gate}",
   "shell.run.stepLabel": "{step} step",
-  "shell.skip": "Skip to content"
+  "shell.skip": "Skip to content",
+  "palette.results": "Results"
 }

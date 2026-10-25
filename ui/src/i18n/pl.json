@@ -862,5 +862,6 @@
   "next.uncheckedGate.title": "Sprawdzenie {gate} jeszcze się nie odbyło",
   "next.uncheckedGate.short": "Sprawdź: {gate}",
   "shell.run.stepLabel": "Krok {step}",
-  "shell.skip": "Przejdź do treści"
+  "shell.skip": "Przejdź do treści",
+  "palette.results": "Wyniki"
 }

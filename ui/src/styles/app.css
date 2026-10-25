@@ -240,6 +240,72 @@
   }
 }
 
+/*
+ * Interim bridge: the old pages rendered inside the new routes use a few raw Tailwind colours.
+ * In the dark appearance they map to the token roles so those pages stay readable until each
+ * screen lane replaces them (then delete this block). New code never uses raw colours.
+ */
+@layer utilities {
+  :root[data-appearance="dark"] {
+    & .text-slate-500,
+    & .text-slate-600 {
+      color: var(--fg-3);
+    }
+    & .text-slate-700 {
+      color: var(--fg-2);
+    }
+    & .text-red-700,
+    & .text-red-800 {
+      color: var(--blocked-fg);
+    }
+    & .text-green-800 {
+      color: var(--pass-fg);
+    }
+    & .text-amber-800 {
+      color: var(--attention-fg);
+    }
+    & .text-purple-800 {
+      color: var(--running-fg);
+    }
+    & .bg-slate-100 {
+      background-color: var(--bg-surface);
+    }
+    & .bg-white {
+      background-color: var(--bg-card);
+    }
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-appearance="light"]) {
+      & .text-slate-500,
+      & .text-slate-600 {
+        color: var(--fg-3);
+      }
+      & .text-slate-700 {
+        color: var(--fg-2);
+      }
+      & .text-red-700,
+      & .text-red-800 {
+        color: var(--blocked-fg);
+      }
+      & .text-green-800 {
+        color: var(--pass-fg);
+      }
+      & .text-amber-800 {
+        color: var(--attention-fg);
+      }
+      & .text-purple-800 {
+        color: var(--running-fg);
+      }
+      & .bg-slate-100 {
+        background-color: var(--bg-surface);
+      }
+      & .bg-white {
+        background-color: var(--bg-card);
+      }
+    }
+  }
+}
+
 /* Reduced motion: no animation or transition anywhere. */
 @media (prefers-reduced-motion: reduce) {
   *,

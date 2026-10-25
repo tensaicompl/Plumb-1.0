@@ -152,14 +152,14 @@ export function Sidebar() {
       <div aria-hidden="true" className="mx-4 my-1 h-px shrink-0 bg-line" />
       <div className="flex flex-col gap-0.5 p-2">
         <SideButton
-          icon={<MessageSquare size={18} strokeWidth={1.6} aria-hidden="true" className="shrink-0" />}
+          icon={<MessageSquare size={16} strokeWidth={1.6} aria-hidden="true" className="shrink-0" />}
           label={t("nav.assistant")}
           collapsed={collapsed}
           pressed={assistantOpen}
           onClick={() => setAssistantOpen(!assistantOpen)}
         />
         <SideButton
-          icon={<SlidersVertical size={18} strokeWidth={1.6} aria-hidden="true" className="shrink-0" />}
+          icon={<SlidersVertical size={16} strokeWidth={1.6} aria-hidden="true" className="shrink-0" />}
           label={t("nav.settings")}
           collapsed={collapsed}
           onClick={() => openOverlay("settings")}

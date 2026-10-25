@@ -250,6 +250,12 @@ function PaletteBody({ close }: { close: () => void }) {
   const nothing = trimmed !== "" && !searching && flat.length === 0 && !search.isError;
   const activeIndex = Math.min(active, Math.max(0, flat.length - 1));
   const optionId = (index: number) => listId + "-option-" + String(index);
+  const activeId = flat.length > 0 ? optionId(activeIndex) : null;
+  useEffect(() => {
+    if (activeId !== null) {
+      document.getElementById(activeId)?.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeId]);
 
   const execute = (option: PaletteOption | undefined) => {
     if (option !== undefined && option.disabled !== true) {
@@ -295,7 +301,10 @@ function PaletteBody({ close }: { close: () => void }) {
         />
         <Kbd>{t("palette.esc")}</Kbd>
       </div>
-      <div className="min-h-0 overflow-y-auto p-2">
+      {/* The results scroll by keyboard too (WCAG 2.1.1, axe scrollable-region-focusable); arrow keys
+          in the input also move the active option into view. */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable region must be focusable */}
+      <div tabIndex={0} role="region" aria-label={t("palette.results")} className="min-h-0 overflow-y-auto p-2">
         <div id={listId} role="listbox" aria-label={t("palette.label")}>
           {groups.map((group) => (
             <div key={group.key} role="group" aria-labelledby={listId + "-" + group.key}>
