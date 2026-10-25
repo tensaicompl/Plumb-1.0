@@ -2114,6 +2114,11 @@ pub enum ExportFormat {
     Report,
     Decisions,
     Glossary,
+    /// `scenarios.yaml` (Fable #307: every `report --out` artifact is exportable).
+    Scenarios,
+    /// `gate-report.json`.
+    #[serde(rename = "gate_report")]
+    GateReport,
 }
 
 /// Stable element IDs changed between two revisions.

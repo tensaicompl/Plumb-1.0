@@ -985,7 +985,9 @@
           "functional",
           "report",
           "decisions",
-          "glossary"
+          "glossary",
+          "scenarios",
+          "gate_report"
         ],
         "type": "string"
       },

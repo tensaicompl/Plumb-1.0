@@ -518,7 +518,14 @@ mod openapi {
         // Export formats and stage names.
         assert_eq!(
             schema(&doc, "ExportFormat")["enum"],
-            json!(["functional", "report", "decisions", "glossary"])
+            json!([
+                "functional",
+                "report",
+                "decisions",
+                "glossary",
+                "scenarios",
+                "gate_report"
+            ])
         );
         assert_eq!(
             schema(&doc, "StageName")["enum"],

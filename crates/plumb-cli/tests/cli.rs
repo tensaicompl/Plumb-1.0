@@ -2055,6 +2055,9 @@ mod cli {
             ("report", "model-report.md"),
             ("decisions", "decisions.jsonl"),
             ("glossary", "glossary.md"),
+            // Fable #307: every report --out artifact is exportable.
+            ("scenarios", "scenarios.yaml"),
+            ("gate_report", "gate-report.json"),
         ] {
             let exported = env
                 .cmd()

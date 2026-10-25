@@ -1975,6 +1975,9 @@ mod http_core {
             ("report", &outputs.model_report_md.bytes),
             ("decisions", &outputs.decisions_jsonl.bytes),
             ("glossary", &outputs.glossary_md.bytes),
+            // Fable #307: every artifact `report --out` writes is exportable.
+            ("scenarios", &outputs.scenarios_yaml.bytes),
+            ("gate_report", &outputs.gate_report_json.bytes),
         ] {
             let r = get(&app, &format!("/api/model/export?format={format}")).await;
             assert_eq!(r.status, StatusCode::OK);

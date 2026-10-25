@@ -422,6 +422,8 @@ mod services {
             ExportFormat::Report => outputs.model_report_md,
             ExportFormat::Decisions => outputs.decisions_jsonl,
             ExportFormat::Glossary => outputs.glossary_md,
+            ExportFormat::Scenarios => outputs.scenarios_yaml,
+            ExportFormat::GateReport => outputs.gate_report_json,
         }
     }
 

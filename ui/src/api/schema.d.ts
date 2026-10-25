@@ -1449,7 +1449,7 @@ export interface components {
             to: string;
         };
         /** @enum {string} */
-        ExportFormat: "functional" | "report" | "decisions" | "glossary";
+        ExportFormat: "functional" | "report" | "decisions" | "glossary" | "scenarios" | "gate_report";
         Finding: {
             affected_refs: string[];
             code: string;

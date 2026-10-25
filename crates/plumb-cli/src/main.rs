@@ -166,7 +166,8 @@ enum Command {
     Tags(Scope),
     /// Evaluate I0, F1, F2, F3 and F4 on the head.
     Ready,
-    /// Export one artifact of the pilot projection.
+    /// Export one artifact of the pilot projection: functional, report, decisions, glossary,
+    /// scenarios or gate_report (each artifact `report --out` writes).
     Export {
         #[arg(long)]
         format: String,
