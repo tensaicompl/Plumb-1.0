@@ -3723,6 +3723,105 @@ mod http_stages {
         assert_eq!(after.decision_refs.len(), 4);
     }
 
+    /// B1 Inbox: a stage proposal names the recipe that produced it; other origins name none.
+    #[tokio::test]
+    async fn inbox_items_name_the_producing_stage() {
+        let f = set_fixture().await;
+        let items = get(&f.app, "/api/proposals").await.json()["items"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(items.len(), 4);
+        let row = |p: &Proposal| {
+            items
+                .iter()
+                .find(|i| i["proposal_id"] == p.id.as_str())
+                .unwrap()
+                .clone()
+        };
+        for p in &f.tags {
+            assert_eq!(row(p)["stage"], "tags", "{}", row(p));
+        }
+        let scenario = row(&f.scenarios[0]);
+        assert_eq!(scenario["stage"], "scenarios");
+        assert_eq!(scenario["element_kind"], "scenario");
+        assert!(
+            scenario["title"]
+                .as_str()
+                .unwrap()
+                .starts_with("Add scenario "),
+            "{scenario}"
+        );
+        assert_eq!(row(&f.manual)["stage"], Value::Null);
+        // The detail carries the same stage.
+        let detail = get(&f.app, &format!("/api/proposals/{}", f.scenarios[0].id))
+            .await
+            .json();
+        assert_eq!(detail["stage"], "scenarios");
+    }
+
+    /// B1: the Inbox set acceptance over stage and non-stage members is the R0.3 batch (every
+    /// stage child recorded on the one acceptance revision), then the created elements are
+    /// confirmed.
+    #[tokio::test]
+    async fn accept_set_endpoint_records_stage_children_then_confirms() {
+        let f = set_fixture().await;
+        let before = head(&f.app).revision;
+        let ids: Vec<String> = f.all().iter().map(|p| p.id.to_string()).collect();
+        let tag = head_tag(&f.app).await;
+        let r = post(
+            &f.app,
+            "/api/proposals/accept-set",
+            Some(&tag),
+            json!({"proposal_ids": ids, "reason": "Reviewed in the Inbox."}),
+        )
+        .await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&r.bytes)
+        );
+        let reply = r.json();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(reply["accepted"], json!(sorted));
+        let accepted_at = workflow(&f.app)
+            .latest_proposal(&f.manual.id)
+            .unwrap()
+            .unwrap()
+            .resolved_revision_id
+            .unwrap();
+        let acceptance = SqliteRevisionStore::open(&f.app.path)
+            .unwrap()
+            .load_revision(&accepted_at)
+            .unwrap();
+        assert_eq!(acceptance.revision.version, before.version + 1);
+        f.assert_finalised(&accepted_at);
+        let confirmed: Vec<&str> = reply["confirmed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_str().unwrap())
+            .collect();
+        assert!(confirmed.contains(&"req:manual"), "{reply}");
+        let after = head(&f.app);
+        assert_eq!(reply["revision"], after.revision.id.to_string());
+        for element in &confirmed {
+            let element = id(element);
+            let status = after
+                .graph
+                .node(&element)
+                .map(|n| n.status)
+                .or_else(|| after.graph.edge(&element).map(|e| e.status));
+            assert_eq!(
+                status,
+                Some(plumb_psg::ElementStatus::Accepted),
+                "{element}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn accept_proposal_set_failure_leaves_stage_jobs_untouched() {
         let f = set_fixture().await;

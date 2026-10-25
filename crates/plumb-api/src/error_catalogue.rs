@@ -306,6 +306,12 @@ pub const ERROR_CATALOGUE: &[CatalogueEntry] = &[
         409,
         "The resolution revision does not descend from the proposal's base.",
     ),
+    // B1 Inbox.
+    entry(
+        "E_PROPOSAL_SET_CONFIRMATION_FAILED",
+        409,
+        "The proposal set was accepted, but confirming the elements it created failed.",
+    ),
     entry(
         "E_PROPOSAL_SET_CONFLICT",
         409,

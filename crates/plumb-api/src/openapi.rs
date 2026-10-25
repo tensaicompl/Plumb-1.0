@@ -1,6 +1,7 @@
 //! The pilot HTTP API contract (plan A0.1, Hotfix 062): compatibility DTOs, contract-only
-//! utoipa operation stubs for the 76 NOW operations (the 72 of Hotfix 062, the two U2.1
-//! semantic change previews of Hotfix 073 and the two H0.11 proposal-governance operations),
+//! utoipa operation stubs for the 79 NOW operations (the 72 of Hotfix 062, the two U2.1
+//! semantic change previews of Hotfix 073, the two H0.11 proposal-governance operations and
+//! the three B1 Inbox operations),
 //! deterministic compatibility patches,
 //! HR-fixture-seeded and schema-fallback examples, and the rendered OpenAPI document and API
 //! reference.
@@ -83,10 +84,11 @@ const fn op(
     }
 }
 
-/// The 76 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
-/// accept (01-72, Hotfix 062), the two U2.1 semantic change previews (73-74, Hotfix 073), then
-/// proposal discovery and discard (75-76, H0.11, architecture §33.12).
-pub const OPERATIONS: [OperationSpec; 76] = [
+/// The 79 NOW operations in their frozen order: the v2 P and P-R operations plus proposal
+/// accept (01-72, Hotfix 062), the two U2.1 semantic change previews (73-74, Hotfix 073),
+/// proposal discovery and discard (75-76, H0.11, architecture §33.12), then the B1 Inbox
+/// proposal detail, set acceptance and governed confirmation (77-79).
+pub const OPERATIONS: [OperationSpec; 79] = [
     op(1, "GET", "/api/me", "get_me", "meta", false, "A0.2"),
     op(
         2,
@@ -754,6 +756,34 @@ pub const OPERATIONS: [OperationSpec; 76] = [
         "proposals",
         false,
         "H0.11",
+    ),
+    // B1 (UI Inbox, UI-SPEC §5.2): proposal detail, atomic set acceptance and confirmation.
+    op(
+        77,
+        "GET",
+        "/api/proposals/{id}",
+        "get_proposal",
+        "proposals",
+        false,
+        "B1",
+    ),
+    op(
+        78,
+        "POST",
+        "/api/proposals/accept-set",
+        "accept_proposal_set",
+        "proposals",
+        false,
+        "B1",
+    ),
+    op(
+        79,
+        "POST",
+        "/api/model/confirm",
+        "confirm_elements",
+        "proposals",
+        false,
+        "B1",
     ),
 ];
 
@@ -2065,6 +2095,171 @@ pub struct PendingProposal {
     pub stale: bool,
     /// Whether `POST /api/proposals/{id}/discard` applies (an answer or intake proposal).
     pub discardable: bool,
+    /// B1 Inbox: a plain-language summary derived deterministically from the stored patch and
+    /// the graph (never a model), e.g. "Add operation Submit leave request".
+    pub title: String,
+    pub element_kind: ProposalElementKind,
+    /// When the pending occurrence was persisted (RFC 3339, UTC).
+    pub created_at: String,
+    /// The stage recipe that produced a stage-origin proposal (e.g. `flows`); null for
+    /// question, session and intake origins.
+    pub stage: Option<String>,
+}
+
+// ---------------------------------------------------------------------------- B1 Inbox
+
+/// What a pending proposal is about, for the Inbox (B1): the kind of its primary model element
+/// for an add or a lifecycle change, or `link`, `merge`, `supersede`, `answer` (an answer to a
+/// Question) and `directory_element` (a Stakeholder, Actor, BusinessRole or Calendar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalElementKind {
+    Operation,
+    Event,
+    Outcome,
+    Requirement,
+    GlossaryTerm,
+    Entity,
+    Attribute,
+    State,
+    Transition,
+    Invariant,
+    Calculation,
+    Scenario,
+    Rule,
+    DecisionTable,
+    Process,
+    Link,
+    Merge,
+    Supersede,
+    Answer,
+    DirectoryElement,
+    Other,
+}
+
+/// One plain-language fact of a pending proposal ("Performed by" / "Employee").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProposalFact {
+    pub label: String,
+    pub value: String,
+}
+
+/// One evidence passage of a pending proposal: an [`EvidenceExcerpt`] with the requirement
+/// source identifier and the highlighted range. `highlight_start` and `highlight_end` are UTF-8
+/// byte offsets into `text` (start inclusive, end exclusive, on character boundaries); both are
+/// null exactly when `text` is null. `id` is the Requirement ID when the passage is a grounded
+/// byte range of that Requirement's statement (`text` is the statement), otherwise the
+/// EvidenceFragment ID (`text` is its extracted text, highlighted whole unless the proposal
+/// grounds a narrower range of it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProposalEvidence {
+    pub id: String,
+    pub source_ref: Option<String>,
+    pub text: Option<String>,
+    /// The `source_identifier` of the Requirement the passage belongs to (e.g. "HR-008").
+    pub source_identifier: Option<String>,
+    /// The UTF-8 byte offset into `text` where the highlight starts (inclusive).
+    pub highlight_start: Option<u64>,
+    /// The UTF-8 byte offset into `text` where the highlight ends (exclusive).
+    pub highlight_end: Option<u64>,
+}
+
+/// One model element a pending proposal adds, modifies or removes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiffItem {
+    pub id: String,
+    /// The lower snake_case node type (e.g. `operation`, `term`) or, for a relation, its
+    /// relation kind (e.g. `performed_by`).
+    pub kind: String,
+    /// A plain-language label (the element name; a relation is "<from> <relation> <to>").
+    pub label: String,
+}
+
+/// "What changes in the model" (B1): the element effect of dry-applying the pending patch to
+/// the head (to its own base revision when it no longer applies to the head). Unlike
+/// [`SemanticElementDiff`], it lists model elements whatever their lifecycle status (a create
+/// proposal adds Proposed elements), excluding governance, provenance and proof material
+/// (acceptance decisions, evidence, findings, questions). Each list is sorted by ID.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProposalModelDiff {
+    pub added: Vec<DiffItem>,
+    pub modified: Vec<DiffItem>,
+    pub removed: Vec<DiffItem>,
+}
+
+/// One pending proposal as the Inbox inspector shows it (B1): every [`PendingProposal`] field
+/// plus its facts, evidence passages and model change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PendingProposalDetail {
+    pub proposal_id: String,
+    pub action: ProposalKind,
+    pub origin: ProposalOrigin,
+    pub origin_ref: Option<String>,
+    pub recipe_job_id: Option<String>,
+    pub stage_job_id: Option<String>,
+    pub base_revision: String,
+    pub requires_reason: bool,
+    pub stale: bool,
+    pub discardable: bool,
+    pub title: String,
+    pub element_kind: ProposalElementKind,
+    pub created_at: String,
+    pub stage: Option<String>,
+    /// For an operation: its performers, reads, writes, produced and consumed events (by target
+    /// name); otherwise the key payload fields in plain words.
+    pub facts: Vec<ProposalFact>,
+    pub evidence: Vec<ProposalEvidence>,
+    pub diff: ProposalModelDiff,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Accepts pending proposals together (B1, the Inbox multi-select "Accept N").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptProposalSetRequest {
+    /// The pending proposals on the head; each is committed with the action of its stored
+    /// class.
+    pub proposal_ids: Vec<String>,
+    /// One reason for every member (required when any member's intake requires one).
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Also promote the Proposed elements the members created to Accepted through the
+    /// governed confirmation (`confirm_elements`). Default true.
+    #[serde(default = "default_true")]
+    #[schema(default = true)]
+    pub confirm: bool,
+}
+
+/// The result of `accept_proposal_set`: the write fields of the last revision, the accepted
+/// proposals and the confirmed elements (both sorted). `events` holds the acceptance event and
+/// then one event per confirmation revision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptProposalSetResponse {
+    pub version: String,
+    pub revision: String,
+    pub semantic_hash: String,
+    pub events: Vec<DesignEvent>,
+    pub accepted: Vec<String>,
+    pub confirmed: Vec<String>,
+}
+
+/// The governed confirmation of explicitly listed Proposed elements (B1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConfirmElementsRequest {
+    pub element_ids: Vec<String>,
+    /// The rationale of the generic confirmation.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// Every pending workflow proposal, sorted by proposal ID then base revision. Not paged: the
@@ -2651,9 +2846,24 @@ mod stubs {
         request_body(content = ProposalActionRequest),
         responses((status = 200, description = "The pending answer or intake proposal is abandoned; nothing is committed", body = WriteResult)))]
     pub fn discard_proposal() {}
+
+    #[utoipa::path(get, path = "/api/proposals/{id}", operation_id = "get_proposal", tag = "proposals",
+        params(("id" = String, Path, description = "Proposal ID")),
+        responses((status = 200, description = "The pending occurrence on the head with its facts, evidence and model change (404 E_NOT_FOUND when unknown, 409 E_PROPOSAL_NOT_PENDING when resolved)", body = PendingProposalDetail)))]
+    pub fn get_proposal() {}
+
+    #[utoipa::path(post, path = "/api/proposals/accept-set", operation_id = "accept_proposal_set", tag = "proposals",
+        request_body(content = AcceptProposalSetRequest),
+        responses((status = 200, description = "Every member accepted atomically in one revision, then (confirm) the Proposed elements they created confirmed; a stale, unknown or non-pending member applies nothing", body = AcceptProposalSetResponse)))]
+    pub fn accept_proposal_set() {}
+
+    #[utoipa::path(post, path = "/api/model/confirm", operation_id = "confirm_elements", tag = "proposals",
+        request_body(content = ConfirmElementsRequest),
+        responses((status = 200, description = "The listed Proposed elements are Accepted: Terms, Calculations and Scenarios through their dedicated confirmations (one revision each), every other element through one generic governed confirmation", body = WriteResult)))]
+    pub fn confirm_elements() {}
 }
 
-/// The utoipa base contract of the 76 operations.
+/// The utoipa base contract of the 79 operations.
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Plumb Modeller API"),
@@ -2681,6 +2891,7 @@ mod stubs {
         stubs::list_decisions, stubs::get_requirement_readiness, stubs::get_readiness,
         stubs::export_model, stubs::get_model_diff, stubs::preview_requirement_split,
         stubs::preview_glossary_merge, stubs::list_proposals, stubs::discard_proposal,
+        stubs::get_proposal, stubs::accept_proposal_set, stubs::confirm_elements,
     ),
     components(schemas(
         DesignEvent, PreconditionFailedResponse, CursorConflictResponse, CursorErrorCode, StageName,
@@ -3205,7 +3416,7 @@ fn check_inventory(doc: &Value) -> Result<(), OpenApiContractError> {
     expected.sort();
     if found != expected {
         return Err(invariant(
-            "operations differ from the frozen 76-operation inventory",
+            "operations differ from the frozen 79-operation inventory",
         ));
     }
     Ok(())
@@ -3450,7 +3661,7 @@ pub fn openapi_document() -> Result<Value, OpenApiContractError> {
     let mut api = ApiDoc::openapi();
     api.info.version = env!("CARGO_PKG_VERSION").to_owned();
     api.info.description = Some(
-        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74) and H0.11 (proposal discovery and discard, operations 75-76)."
+        "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) and B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79)."
             .to_owned(),
     );
     api.info.license = None;
@@ -3491,7 +3702,7 @@ The machine-readable contract is `api/modeller.openapi.json`, the source of the 
         OPERATIONS.len()
     ));
     out.push_str(
-        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74 and H0.11 those of operations 75-76. \
+        "A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 and B1 those of operations 77-79. \
 An operation listed here is not operational until its handler task is done.\n\n",
     );
     out.push_str("## Conventions\n\n");
@@ -3529,7 +3740,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
             .count()
     };
     out.push_str("\n## Implementation ownership\n\n");
-    for owner in ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11"] {
+    for owner in ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1"] {
         out.push_str(&format!(
             "- {owner}: {} operations ({} POST, {} GET).\n",
             owned(owner, ""),
@@ -3543,6 +3754,7 @@ An operation listed here is not operational until its handler task is done.\n\n"
         "Hotfix 073 appends operations 73 and 74, the U2.1 semantic change previews: the server builds the exact domain Proposal and returns its semantic element diff without committing; `candidate_semantic_hash` is not a prediction of the committed `semantic_hash`.",
         "H0.11 (architecture §33.12): a preview never persists a pending proposal. It returns the previewed `proposal_id` and `built_at`; confirmation is the direct write (split or merge) with the same request plus `preview: {proposal_id, built_at}` and the baseline revision as If-Match, which commits only exactly the previewed proposal (409 `E_PREVIEW_MISMATCH` otherwise).",
         "H0.11 appends operations 75 and 76: `GET /api/proposals` lists every pending workflow proposal (not paged), and `POST /api/proposals/{id}/discard` moves a pending answer or intake proposal to the terminal state `abandoned` without a revision. Accepted, rejected and abandoned proposals are kept as history.",
+        "B1 (UI Inbox, UI-SPEC §5.2) appends operations 77 to 79: `GET /api/proposals/{id}` is one pending proposal with its facts, evidence passages (UTF-8 byte highlight offsets) and model change; `POST /api/proposals/accept-set` accepts pending proposals atomically in one revision through the R0.3 set acceptance and, unless `confirm` is false, then confirms the Proposed elements they created; `POST /api/model/confirm` is the governed confirmation of the CLI `confirm`. List items gain `title`, `element_kind`, `created_at` and `stage`.",
     ] {
         out.push_str(&format!("- {line}\n"));
     }

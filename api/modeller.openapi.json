@@ -14,6 +14,77 @@
         ],
         "type": "object"
       },
+      "AcceptProposalSetRequest": {
+        "additionalProperties": false,
+        "description": "Accepts pending proposals together (B1, the Inbox multi-select \"Accept N\").",
+        "properties": {
+          "confirm": {
+            "default": true,
+            "description": "Also promote the Proposed elements the members created to Accepted through the\ngoverned confirmation (`confirm_elements`). Default true.",
+            "type": "boolean"
+          },
+          "proposal_ids": {
+            "description": "The pending proposals on the head; each is committed with the action of its stored\nclass.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "description": "One reason for every member (required when any member's intake requires one).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "proposal_ids"
+        ],
+        "type": "object"
+      },
+      "AcceptProposalSetResponse": {
+        "additionalProperties": false,
+        "description": "The result of `accept_proposal_set`: the write fields of the last revision, the accepted\nproposals and the confirmed elements (both sorted). `events` holds the acceptance event and\nthen one event per confirmation revision.",
+        "properties": {
+          "accepted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "confirmed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DesignEvent"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "semantic_hash": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "semantic_hash",
+          "events",
+          "accepted",
+          "confirmed"
+        ],
+        "type": "object"
+      },
       "AnswerRequest": {
         "additionalProperties": false,
         "description": "An answer to a Question (Hotfix 065): `answer` is validated against the persisted\n`Question.answer_schema` (every pilot answer schema is a closed JSON object).",
@@ -483,6 +554,29 @@
         ],
         "type": "object"
       },
+      "ConfirmElementsRequest": {
+        "additionalProperties": false,
+        "description": "The governed confirmation of explicitly listed Proposed elements (B1).",
+        "properties": {
+          "element_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "description": "The rationale of the generic confirmation.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "element_ids"
+        ],
+        "type": "object"
+      },
       "ConflictView": {
         "additionalProperties": false,
         "properties": {
@@ -798,6 +892,29 @@
           "kind",
           "ids",
           "version"
+        ],
+        "type": "object"
+      },
+      "DiffItem": {
+        "additionalProperties": false,
+        "description": "One model element a pending proposal adds, modifies or removes.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "description": "The lower snake_case node type (e.g. `operation`, `term`) or, for a relation, its\nrelation kind (e.g. `performed_by`).",
+            "type": "string"
+          },
+          "label": {
+            "description": "A plain-language label (the element name; a relation is \"<from> <relation> <to>\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label"
         ],
         "type": "object"
       },
@@ -1847,9 +1964,16 @@
             "description": "The revision it was built on.",
             "type": "string"
           },
+          "created_at": {
+            "description": "When the pending occurrence was persisted (RFC 3339, UTC).",
+            "type": "string"
+          },
           "discardable": {
             "description": "Whether `POST /api/proposals/{id}/discard` applies (an answer or intake proposal).",
             "type": "boolean"
+          },
+          "element_kind": {
+            "$ref": "#/components/schemas/ProposalElementKind"
           },
           "origin": {
             "$ref": "#/components/schemas/ProposalOrigin"
@@ -1875,6 +1999,13 @@
             "description": "Whether its stored intake requires a reason for a positive action.",
             "type": "boolean"
           },
+          "stage": {
+            "description": "The stage recipe that produced a stage-origin proposal (e.g. `flows`); null for\nquestion, session and intake origins.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "stage_job_id": {
             "type": [
               "string",
@@ -1884,6 +2015,10 @@
           "stale": {
             "description": "Built on another revision than the head: it is never rebased; only reject (and, when\ndiscardable, discard) still apply.",
             "type": "boolean"
+          },
+          "title": {
+            "description": "B1 Inbox: a plain-language summary derived deterministically from the stored patch and\nthe graph (never a model), e.g. \"Add operation Submit leave request\".",
+            "type": "string"
           }
         },
         "required": [
@@ -1893,7 +2028,102 @@
           "base_revision",
           "requires_reason",
           "stale",
-          "discardable"
+          "discardable",
+          "title",
+          "element_kind",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "PendingProposalDetail": {
+        "additionalProperties": false,
+        "description": "One pending proposal as the Inbox inspector shows it (B1): every [`PendingProposal`] field\nplus its facts, evidence passages and model change.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ProposalKind"
+          },
+          "base_revision": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "diff": {
+            "$ref": "#/components/schemas/ProposalModelDiff"
+          },
+          "discardable": {
+            "type": "boolean"
+          },
+          "element_kind": {
+            "$ref": "#/components/schemas/ProposalElementKind"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/ProposalEvidence"
+            },
+            "type": "array"
+          },
+          "facts": {
+            "description": "For an operation: its performers, reads, writes, produced and consumed events (by target\nname); otherwise the key payload fields in plain words.",
+            "items": {
+              "$ref": "#/components/schemas/ProposalFact"
+            },
+            "type": "array"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/ProposalOrigin"
+          },
+          "origin_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "recipe_job_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires_reason": {
+            "type": "boolean"
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage_job_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "action",
+          "origin",
+          "base_revision",
+          "requires_reason",
+          "stale",
+          "discardable",
+          "title",
+          "element_kind",
+          "created_at",
+          "facts",
+          "evidence",
+          "diff"
         ],
         "type": "object"
       },
@@ -2303,6 +2533,100 @@
         },
         "type": "object"
       },
+      "ProposalElementKind": {
+        "description": "What a pending proposal is about, for the Inbox (B1): the kind of its primary model element\nfor an add or a lifecycle change, or `link`, `merge`, `supersede`, `answer` (an answer to a\nQuestion) and `directory_element` (a Stakeholder, Actor, BusinessRole or Calendar).",
+        "enum": [
+          "operation",
+          "event",
+          "outcome",
+          "requirement",
+          "glossary_term",
+          "entity",
+          "attribute",
+          "state",
+          "transition",
+          "invariant",
+          "calculation",
+          "scenario",
+          "rule",
+          "decision_table",
+          "process",
+          "link",
+          "merge",
+          "supersede",
+          "answer",
+          "directory_element",
+          "other"
+        ],
+        "type": "string"
+      },
+      "ProposalEvidence": {
+        "additionalProperties": false,
+        "description": "One evidence passage of a pending proposal: an [`EvidenceExcerpt`] with the requirement\nsource identifier and the highlighted range. `highlight_start` and `highlight_end` are UTF-8\nbyte offsets into `text` (start inclusive, end exclusive, on character boundaries); both are\nnull exactly when `text` is null. `id` is the Requirement ID when the passage is a grounded\nbyte range of that Requirement's statement (`text` is the statement), otherwise the\nEvidenceFragment ID (`text` is its extracted text, highlighted whole unless the proposal\ngrounds a narrower range of it).",
+        "properties": {
+          "highlight_end": {
+            "description": "The UTF-8 byte offset into `text` where the highlight ends (exclusive).",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "highlight_start": {
+            "description": "The UTF-8 byte offset into `text` where the highlight starts (inclusive).",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "source_identifier": {
+            "description": "The `source_identifier` of the Requirement the passage belongs to (e.g. \"HR-008\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "ProposalFact": {
+        "additionalProperties": false,
+        "description": "One plain-language fact of a pending proposal (\"Performed by\" / \"Employee\").",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "type": "object"
+      },
       "ProposalKind": {
         "description": "The closed workflow action classification of a Proposal (Hotfix 065); it does not change\nmateriality or acceptance policy.",
         "enum": [
@@ -2313,6 +2637,36 @@
           "accept"
         ],
         "type": "string"
+      },
+      "ProposalModelDiff": {
+        "additionalProperties": false,
+        "description": "\"What changes in the model\" (B1): the element effect of dry-applying the pending patch to\nthe head (to its own base revision when it no longer applies to the head). Unlike\n[`SemanticElementDiff`], it lists model elements whatever their lifecycle status (a create\nproposal adds Proposed elements), excluding governance, provenance and proof material\n(acceptance decisions, evidence, findings, questions). Each list is sorted by ID.",
+        "properties": {
+          "added": {
+            "items": {
+              "$ref": "#/components/schemas/DiffItem"
+            },
+            "type": "array"
+          },
+          "modified": {
+            "items": {
+              "$ref": "#/components/schemas/DiffItem"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "items": {
+              "$ref": "#/components/schemas/DiffItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "added",
+          "modified",
+          "removed"
+        ],
+        "type": "object"
       },
       "ProposalOrigin": {
         "description": "Where a pending workflow proposal came from.",
@@ -3855,7 +4209,7 @@
     }
   },
   "info": {
-    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74) and H0.11 (proposal discovery and discard, operations 75-76).",
+    "description": "Plumb pilot HTTP API contract (A0.1): a task-oriented compatibility projection over the PSG. Runtime handlers are provided by A0.2, A0.3 and A0.4 (operations 1-72), U2.1 (the two semantic change previews, operations 73-74), H0.11 (proposal discovery and discard, operations 75-76) and B1 (the Inbox proposal detail, set acceptance and confirmation, operations 77-79).",
     "title": "Plumb Modeller API",
     "version": "0.1.0",
     "x-plumb-error-codes": [
@@ -4147,6 +4501,11 @@
       {
         "code": "E_PROPOSAL_RESOLUTION_INVALID",
         "meaning": "The resolution revision does not descend from the proposal's base.",
+        "status": 409
+      },
+      {
+        "code": "E_PROPOSAL_SET_CONFIRMATION_FAILED",
+        "meaning": "The proposal set was accepted, but confirming the elements it created failed.",
         "status": 409
       },
       {
@@ -6011,6 +6370,84 @@
         ]
       }
     },
+    "/api/model/confirm": {
+      "post": {
+        "operationId": "confirm_elements",
+        "parameters": [
+          {
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
+            "example": "example",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "element_ids": [
+                  "example"
+                ]
+              },
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmElementsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "events": [
+                    {
+                      "ids": [
+                        "example"
+                      ],
+                      "kind": "example",
+                      "version": "example"
+                    }
+                  ],
+                  "revision": "example",
+                  "semantic_hash": "example",
+                  "version": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/WriteResult"
+                }
+              }
+            },
+            "description": "The listed Proposed elements are Accepted: Terms, Calculations and Scenarios through their dedicated confirmations (one revision each), every other element through one generic governed confirmation"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "example",
+                  "details": {},
+                  "message": "example",
+                  "revision": "example",
+                  "semantic_hash": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PreconditionFailedResponse"
+                }
+              }
+            },
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
+          }
+        },
+        "tags": [
+          "proposals"
+        ]
+      }
+    },
     "/api/model/crud": {
       "get": {
         "operationId": "get_crud_matrix",
@@ -7396,11 +7833,14 @@
                     {
                       "action": "accept",
                       "base_revision": "example",
+                      "created_at": "example",
                       "discardable": true,
+                      "element_kind": "answer",
                       "origin": "intake",
                       "proposal_id": "example",
                       "requires_reason": true,
-                      "stale": true
+                      "stale": true,
+                      "title": "example"
                     }
                   ]
                 },
@@ -7419,6 +7859,90 @@
                 }
               }
             }
+          }
+        },
+        "tags": [
+          "proposals"
+        ]
+      }
+    },
+    "/api/proposals/accept-set": {
+      "post": {
+        "operationId": "accept_proposal_set",
+        "parameters": [
+          {
+            "description": "The current branch-head revision ID, as the strong entity-tag from ETag (\"rev:...\") or bare (rev:...). A weak validator, * or a semantic hash is 412.",
+            "example": "example",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "proposal_ids": [
+                  "example"
+                ]
+              },
+              "schema": {
+                "$ref": "#/components/schemas/AcceptProposalSetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "accepted": [
+                    "example"
+                  ],
+                  "confirmed": [
+                    "example"
+                  ],
+                  "events": [
+                    {
+                      "ids": [
+                        "example"
+                      ],
+                      "kind": "example",
+                      "version": "example"
+                    }
+                  ],
+                  "revision": "example",
+                  "semantic_hash": "example",
+                  "version": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptProposalSetResponse"
+                }
+              }
+            },
+            "description": "Every member accepted atomically in one revision, then (confirm) the Proposed elements they created confirmed; a stale, unknown or non-pending member applies nothing"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "example",
+                  "details": {},
+                  "message": "example",
+                  "revision": "example",
+                  "semantic_hash": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PreconditionFailedResponse"
+                }
+              }
+            },
+            "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
           }
         },
         "tags": [
@@ -7545,6 +8069,93 @@
               }
             },
             "description": "Precondition Failed: If-Match does not name the current branch-head revision ID; revision and semantic_hash are the current branch-head values."
+          }
+        },
+        "tags": [
+          "proposals"
+        ]
+      }
+    },
+    "/api/proposals/{id}": {
+      "get": {
+        "operationId": "get_proposal",
+        "parameters": [
+          {
+            "description": "Proposal ID",
+            "example": "example",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "action": "accept",
+                  "base_revision": "example",
+                  "created_at": "example",
+                  "diff": {
+                    "added": [
+                      {
+                        "id": "example",
+                        "kind": "example",
+                        "label": "example"
+                      }
+                    ],
+                    "modified": [
+                      {
+                        "id": "example",
+                        "kind": "example",
+                        "label": "example"
+                      }
+                    ],
+                    "removed": [
+                      {
+                        "id": "example",
+                        "kind": "example",
+                        "label": "example"
+                      }
+                    ]
+                  },
+                  "discardable": true,
+                  "element_kind": "answer",
+                  "evidence": [
+                    {
+                      "id": "example"
+                    }
+                  ],
+                  "facts": [
+                    {
+                      "label": "example",
+                      "value": "example"
+                    }
+                  ],
+                  "origin": "intake",
+                  "proposal_id": "example",
+                  "requires_reason": true,
+                  "stale": true,
+                  "title": "example"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PendingProposalDetail"
+                }
+              }
+            },
+            "description": "The pending occurrence on the head with its facts, evidence and model change (404 E_NOT_FOUND when unknown, 409 E_PROPOSAL_NOT_PENDING when resolved)",
+            "headers": {
+              "ETag": {
+                "description": "The strong entity-tag of the loaded branch-head revision ID (the quoted revision ID).",
+                "example": "example",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "tags": [

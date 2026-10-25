@@ -443,6 +443,11 @@ mod http_workflow {
             .collect();
         let graph =
             Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap_or_else(|v| panic!("{v:?}"));
+        with_performer_questions(graph)
+    }
+
+    /// `graph` with the real S3.1 Questions of the performer finding.
+    fn with_performer_questions(graph: Graph) -> Graph {
         let generated = generate_questions(
             &graph,
             &QuestionGenerationInput {
@@ -3362,6 +3367,11 @@ mod http_workflow {
                 "requires_reason": true,
                 "stale": false,
                 "discardable": true,
+                // B1: the Inbox item fields.
+                "title": "Apply the answer to: Who performs operation op:approve?",
+                "element_kind": "answer",
+                "created_at": NOW,
+                "stage": null,
             })
         );
         let uri = format!("/api/proposals/{proposal_id}/discard");
@@ -7624,5 +7634,677 @@ mod http_workflow {
             "E_PROPOSAL_BASELINE_CHANGED",
         );
         assert_eq!(state_of(&app, &b), WorkflowProposalState::Pending);
+    }
+
+    // ------------------------------------------------------------------ B1 Inbox endpoints
+
+    /// The HR-008 statement of the Inbox pilot shape.
+    const HR008: &str = "Employees shall submit a leave request to their manager.";
+
+    /// The fixture graph plus an imported HR-008 requirement grounded in its source fragment and
+    /// the Employee actor (the HR pilot shape of the Inbox), with the performer Questions.
+    /// Returns the graph, the fragment ID and the source artifact ID.
+    fn inbox_graph() -> (Graph, Id, Id) {
+        let (mut nodes, edges) = base_parts();
+        let source = plumb_import::import_markdown(
+            "requirements.md",
+            format!("{HR008}\n").as_bytes(),
+            &plumb_import::ImportAudit {
+                created_by: id(ACTOR),
+                created_at: ts(T0),
+            },
+        )
+        .unwrap();
+        let fragment = source
+            .fragments
+            .iter()
+            .find(|f| {
+                matches!(&f.payload, NodePayload::EvidenceFragment(e)
+                    if e.extracted_text.as_deref() == Some(HR008))
+            })
+            .unwrap()
+            .clone();
+        let mut value = serde_json::to_value(requirement("req:hr008", "Accepted", HR008)).unwrap();
+        value["payload"]["data"]["source_identifier"] = json!("HR-008");
+        value["evidence"] = json!([fragment.id]);
+        nodes.push(source.source.clone());
+        nodes.extend(source.fragments.clone());
+        nodes.push(serde_json::from_value(value).unwrap());
+        nodes.push(node(
+            "actor:employee",
+            "Accepted",
+            "Actor",
+            json!({"name": "Employee", "actor_kind": "human"}),
+        ));
+        let graph = Graph::new(id(PROJECT), id(PROFILE), nodes, edges).unwrap();
+        (
+            with_performer_questions(graph),
+            fragment.id.clone(),
+            source.source.id.clone(),
+        )
+    }
+
+    fn proposed_node(node_id: &str, tag: &str, data: Value) -> Node {
+        node(node_id, "Proposed", tag, data)
+    }
+
+    fn proposed_edge(edge_id: &str, kind: &str, from: &str, to: &str) -> Edge {
+        let mut e = edge(edge_id, kind, from, to);
+        e.status = ElementStatus::Proposed;
+        e
+    }
+
+    /// The flows-step shape of "Submit leave request": the Operation grounded in a byte range of
+    /// HR-008, its new Event and Transition, and its performer, read, write, produce, transition
+    /// and trace relations.
+    fn submit_operation_patch(fragment: &Id) -> SemanticPatch {
+        let mut operation = proposed_node(
+            "op:submit-request",
+            "Operation",
+            json!({
+                "name": "Submit leave request", "operation_kind": "command",
+                "input_schema_ref": null, "output_schema_ref": null, "preconditions": null,
+                "postconditions": null, "idempotency": null, "transaction_semantics": null
+            }),
+        );
+        operation.evidence = vec![EvidenceRef::from(fragment.clone())];
+        operation.extensions.insert(
+            plumb_psg::ExtensionKey::from_str("plumb_functional:operation_origin").unwrap(),
+            json!({"evidence": [{"requirement_ref": "req:hr008", "start": 16, "end": 38}]}),
+        );
+        let mut patches = vec![
+            SemanticPatch::AddNode { node: operation },
+            SemanticPatch::AddNode {
+                node: proposed_node(
+                    "event:submitted",
+                    "Event",
+                    json!({"name": "Leave request submitted", "payload_schema_ref": null, "semantic_type": null}),
+                ),
+            },
+            SemanticPatch::AddNode {
+                node: proposed_node(
+                    "trans:submit-request",
+                    "Transition",
+                    json!({
+                        "stateful_ref": "entity:request", "from_state": "state:draft",
+                        "to_state": "state:submitted", "guard_expr": null, "effect_refs": null
+                    }),
+                ),
+            },
+        ];
+        for (edge_id, kind, from, to) in [
+            (
+                "rel:sr-performer",
+                "performed_by",
+                "op:submit-request",
+                "actor:employee",
+            ),
+            (
+                "rel:sr-reads",
+                "reads",
+                "op:submit-request",
+                "entity:request",
+            ),
+            (
+                "rel:sr-writes",
+                "writes",
+                "op:submit-request",
+                "entity:request",
+            ),
+            (
+                "rel:sr-produces",
+                "produces",
+                "op:submit-request",
+                "event:submitted",
+            ),
+            (
+                "rel:sr-via",
+                "transitions_via",
+                "trans:submit-request",
+                "op:submit-request",
+            ),
+            (
+                "rel:sr-spec",
+                "specified_by",
+                "req:hr008",
+                "op:submit-request",
+            ),
+        ] {
+            patches.push(SemanticPatch::AddEdge {
+                edge: proposed_edge(edge_id, kind, from, to),
+            });
+        }
+        SemanticPatch::Compound { patches }
+    }
+
+    /// Registers `proposal` pending on the head through intake, with its own evidence.
+    async fn pending_with_evidence(app: &App, kind: &str, proposal: Proposal) -> Proposal {
+        let evidence: Vec<&str> = proposal.evidence_refs.iter().map(|e| e.as_str()).collect();
+        let r = write(
+            app,
+            "/api/proposals/intake",
+            Some(json!({"kind": kind, "payload": proposal, "evidence": evidence})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        proposal
+    }
+
+    /// The Inbox app with the pending "Submit leave request" operation proposal.
+    async fn inbox_app() -> (App, Proposal, Id, Id) {
+        let (graph, fragment, source) = inbox_graph();
+        let app = app_with(graph, |_| Vec::new());
+        let p = Proposal::new(
+            plumb_core::StageId::S2,
+            PatchSet {
+                base_semantic_hash: semantic(&app).await.parse().unwrap(),
+                patch: submit_operation_patch(&fragment),
+            },
+            vec![EvidenceRef::from(fragment.clone())],
+            vec![],
+            ProposalMateriality::Semantic,
+            AcceptancePolicy::HumanConfirm,
+            None,
+        )
+        .unwrap();
+        let p = pending_with_evidence(&app, "create", p).await;
+        (app, p, fragment, source)
+    }
+
+    /// B1 (UI spec §5.2): every pending proposal is listed as a human-readable Inbox item with
+    /// its title, element kind, creation instant and producing stage, derived deterministically
+    /// from the stored patch and the graph.
+    #[tokio::test]
+    async fn inbox_list_describes_each_pending_proposal() {
+        let (app, operation, _, _) = inbox_app().await;
+        let base = revision(&app).await;
+        let requirement = create(&app, "req:n1", "Payroll shall export leave totals.").await;
+        let link = pending_on_head(
+            &app,
+            "link",
+            typed(
+                &app,
+                SemanticPatch::AddEdge {
+                    edge: edge("rel:refines-hr008", "refines", "req:hr008", "req:a"),
+                },
+                ProposalMateriality::Semantic,
+                AcceptancePolicy::HumanConfirm,
+            )
+            .await,
+        )
+        .await;
+        let merge = pending_on_head(&app, "merge", merge_proposal(&head(&app).graph)).await;
+        let question = question_about(&head(&app).graph, "op:approve");
+        let r = answer(&app, &question, json!({"performer_ref": "actor:clerk"})).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let answered = r.json()["proposal_id"].as_str().unwrap().to_owned();
+        let prompt = match &head(&app).graph.node(&question).unwrap().payload {
+            NodePayload::Question(q) => q.prompt.clone(),
+            other => panic!("not a question: {other:?}"),
+        };
+        let items = listed(&app).await;
+        assert_eq!(items.len(), 5);
+        let row = |id: &str| {
+            items
+                .iter()
+                .find(|p| p["proposal_id"] == id)
+                .unwrap_or_else(|| panic!("{id} not listed"))
+                .clone()
+        };
+        // The complete item of the operation proposal.
+        let item = row(operation.id.as_str());
+        assert_eq!(
+            item,
+            json!({
+                "proposal_id": operation.id,
+                "action": "create",
+                "origin": "intake",
+                "origin_ref": null,
+                "recipe_job_id": null,
+                "stage_job_id": null,
+                "base_revision": base,
+                "requires_reason": item["requires_reason"],
+                "stale": false,
+                "discardable": true,
+                "title": "Add operation Submit leave request",
+                "element_kind": "operation",
+                "created_at": NOW,
+                "stage": null,
+            })
+        );
+        let summary = |id: &str| {
+            let r = row(id);
+            (
+                r["title"].as_str().unwrap().to_owned(),
+                r["element_kind"].as_str().unwrap().to_owned(),
+                r["stage"].clone(),
+            )
+        };
+        assert_eq!(
+            summary(requirement.id.as_str()),
+            (
+                "Add requirement Payroll shall export leave totals.".to_owned(),
+                "requirement".to_owned(),
+                Value::Null
+            )
+        );
+        assert_eq!(
+            summary(link.id.as_str()),
+            (
+                "Link HR-008 to Employees shall submit leave requests.".to_owned(),
+                "link".to_owned(),
+                Value::Null
+            )
+        );
+        assert_eq!(
+            summary(merge.id.as_str()),
+            (
+                "Merge term 'vacation' into 'leave request'".to_owned(),
+                "merge".to_owned(),
+                Value::Null
+            )
+        );
+        assert_eq!(
+            summary(&answered),
+            (
+                format!("Apply the answer to: {prompt}"),
+                "answer".to_owned(),
+                Value::Null
+            )
+        );
+        // Deterministic: the same store reads the same items.
+        assert_eq!(listed(&app).await, items);
+    }
+
+    /// B1: the detail of one pending proposal adds its facts, its evidence passages with the
+    /// exact highlighted range, and the model change of dry-applying it to the head.
+    #[tokio::test]
+    async fn inbox_detail_has_facts_evidence_and_model_diff() {
+        let (app, operation, _, source) = inbox_app().await;
+        let before = version(&app).await;
+        let r = get(&app, &format!("/api/proposals/{}", operation.id)).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_eq!(
+            r.headers["etag"].to_str().unwrap(),
+            format!("\"{}\"", head(&app).revision.id)
+        );
+        let detail = r.json();
+        let listed_item = listed(&app).await[0].clone();
+        for (key, value) in listed_item.as_object().unwrap() {
+            assert_eq!(&detail[key], value, "{key}");
+        }
+        assert_eq!(
+            detail["facts"],
+            json!([
+                {"label": "Performed by", "value": "Employee"},
+                {"label": "Reads", "value": "Leave request"},
+                {"label": "Writes", "value": "Leave request → Submitted"},
+                {"label": "Produces", "value": "Leave request submitted"},
+            ])
+        );
+        assert_eq!(&HR008[16..38], "submit a leave request");
+        assert_eq!(
+            detail["evidence"],
+            json!([{
+                "id": "req:hr008",
+                "source_ref": source,
+                "text": HR008,
+                "source_identifier": "HR-008",
+                "highlight_start": 16,
+                "highlight_end": 38,
+            }])
+        );
+        assert_eq!(
+            detail["diff"],
+            json!({
+                "added": [
+                    {"id": "event:submitted", "kind": "event", "label": "Leave request submitted"},
+                    {"id": "op:submit-request", "kind": "operation", "label": "Submit leave request"},
+                    {"id": "rel:sr-performer", "kind": "performed_by", "label": "Submit leave request performed by Employee"},
+                    {"id": "rel:sr-produces", "kind": "produces", "label": "Submit leave request produces Leave request submitted"},
+                    {"id": "rel:sr-reads", "kind": "reads", "label": "Submit leave request reads Leave request"},
+                    {"id": "rel:sr-spec", "kind": "specified_by", "label": "HR-008 specified by Submit leave request"},
+                    {"id": "rel:sr-via", "kind": "transitions_via", "label": "Draft → Submitted transitions via Submit leave request"},
+                    {"id": "rel:sr-writes", "kind": "writes", "label": "Submit leave request writes Leave request"},
+                    {"id": "trans:submit-request", "kind": "transition", "label": "Draft → Submitted"},
+                ],
+                "modified": [],
+                "removed": [],
+            })
+        );
+        // A read: nothing is committed.
+        assert_eq!(version(&app).await, before);
+    }
+
+    /// B1: a fragment-only evidence reference is the whole extracted passage, a lifecycle change
+    /// is a modification, and a merge names both terms.
+    #[tokio::test]
+    async fn inbox_detail_of_merge_and_accept_proposals() {
+        let (app, _, fragment, source) = inbox_app().await;
+        let graph = head(&app).graph;
+        let template = typed(
+            &app,
+            SemanticPatch::SetStatus {
+                target: pre(&graph, "req:p"),
+                from: ElementStatus::Proposed,
+                to: ElementStatus::Accepted,
+            },
+            ProposalMateriality::Semantic,
+            AcceptancePolicy::HumanConfirm,
+        )
+        .await;
+        let accept = Proposal::new(
+            template.stage,
+            template.patch_set,
+            vec![EvidenceRef::from(fragment.clone())],
+            vec![],
+            template.materiality,
+            template.acceptance_policy,
+            None,
+        )
+        .unwrap();
+        let accept = pending_with_evidence(&app, "accept", accept).await;
+        let detail = get(&app, &format!("/api/proposals/{}", accept.id))
+            .await
+            .json();
+        assert_eq!(
+            detail["title"],
+            "Accept requirement Employees shall cancel leave requests."
+        );
+        assert_eq!(detail["element_kind"], "requirement");
+        assert_eq!(
+            detail["facts"],
+            json!([
+                {"label": "Statement", "value": "Employees shall cancel leave requests."},
+                {"label": "Kind", "value": "functional"},
+            ])
+        );
+        assert_eq!(
+            detail["evidence"],
+            json!([{
+                "id": fragment,
+                "source_ref": source,
+                "text": HR008,
+                "source_identifier": "HR-008",
+                "highlight_start": 0,
+                "highlight_end": HR008.len(),
+            }])
+        );
+        assert_eq!(
+            detail["diff"],
+            json!({
+                "added": [],
+                "modified": [{"id": "req:p", "kind": "requirement", "label": "Employees shall cancel leave requests."}],
+                "removed": [],
+            })
+        );
+        let merge = pending_on_head(&app, "merge", merge_proposal(&graph)).await;
+        let detail = get(&app, &format!("/api/proposals/{}", merge.id))
+            .await
+            .json();
+        assert_eq!(detail["element_kind"], "merge");
+        assert_eq!(
+            detail["facts"],
+            json!([
+                {"label": "Keep", "value": "leave request"},
+                {"label": "Merge", "value": "vacation"},
+            ])
+        );
+        let diff = &detail["diff"];
+        let ids = |list: &str| -> Vec<String> {
+            diff[list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert!(
+            ids("removed").contains(&"term:vacation".to_owned())
+                || ids("modified").contains(&"term:vacation".to_owned()),
+            "{diff}"
+        );
+    }
+
+    /// B1: an unknown, malformed or no longer pending proposal is a typed error.
+    #[tokio::test]
+    async fn inbox_detail_of_unknown_or_resolved_proposal_is_typed() {
+        let (app, operation, _, _) = inbox_app().await;
+        for uri in [
+            "/api/proposals/prop:0000000000000000",
+            "/api/proposals/not%20an%20id",
+        ] {
+            assert_error(&get(&app, uri).await, StatusCode::NOT_FOUND, "E_NOT_FOUND");
+        }
+        let r = write(
+            &app,
+            &format!("/api/proposals/{}/reject", operation.id),
+            Some(json!({"reason": "Not now."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        assert_error(
+            &get(&app, &format!("/api/proposals/{}", operation.id)).await,
+            StatusCode::CONFLICT,
+            "E_PROPOSAL_NOT_PENDING",
+        );
+    }
+
+    /// B1: the Inbox "Accept" of a set: one atomic acceptance revision through the R0.3 service,
+    /// then the generic governed confirmation of the Proposed elements the members created.
+    #[tokio::test]
+    async fn accept_set_endpoint_accepts_atomically_and_confirms_created_elements() {
+        let (app, operation, _, _) = inbox_app().await;
+        let requirement = create(&app, "req:n1", "Payroll shall export leave totals.").await;
+        let before = head(&app).revision;
+        let uri = "/api/proposals/accept-set";
+        let body = json!({"proposal_ids": [requirement.id, operation.id], "reason": "Reviewed in the Inbox."});
+        // Transport: If-Match is required and must name the head.
+        assert_error(
+            &post(&app, uri, None, Some(body.clone())).await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        assert_error(
+            &post(&app, uri, Some("\"rev:stale\""), Some(body.clone())).await,
+            StatusCode::PRECONDITION_FAILED,
+            "E_PRECONDITION_FAILED",
+        );
+        for bad in [
+            json!({"proposal_ids": []}),
+            json!({"proposal_ids": [operation.id], "reason": " padded "}),
+            json!({"proposal_ids": [operation.id], "unknown": true}),
+        ] {
+            assert_error(
+                &write(&app, uri, Some(bad)).await,
+                StatusCode::BAD_REQUEST,
+                "E_INVALID_REQUEST",
+            );
+        }
+        assert_error(
+            &write(
+                &app,
+                uri,
+                Some(json!({"proposal_ids": [operation.id, "prop:0000000000000000"]})),
+            )
+            .await,
+            StatusCode::NOT_FOUND,
+            "E_NOT_FOUND",
+        );
+        assert_eq!(head(&app).revision.id, before.id);
+        let r = write(&app, uri, Some(body)).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let reply = r.json();
+        let after = head(&app);
+        // One acceptance revision, then one confirmation revision.
+        assert_eq!(after.revision.version, before.version + 2);
+        assert_eq!(reply["revision"], after.revision.id.to_string());
+        assert_eq!(reply["version"], reply["revision"]);
+        assert_eq!(
+            reply["semantic_hash"],
+            after.revision.semantic_hash.to_string()
+        );
+        let mut accepted = vec![operation.id.to_string(), requirement.id.to_string()];
+        accepted.sort();
+        assert_eq!(reply["accepted"], json!(accepted));
+        let kinds: Vec<&str> = reply["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["accept_proposal_set", "confirm_elements"]);
+        let confirmed = json!([
+            "event:submitted",
+            "op:submit-request",
+            "rel:sr-performer",
+            "rel:sr-produces",
+            "rel:sr-reads",
+            "rel:sr-spec",
+            "rel:sr-via",
+            "rel:sr-writes",
+            "req:n1",
+            "trans:submit-request",
+        ]);
+        assert_eq!(reply["confirmed"], confirmed);
+        for element in confirmed.as_array().unwrap() {
+            let element = id(element.as_str().unwrap());
+            let status = after
+                .graph
+                .node(&element)
+                .map(|n| n.status)
+                .or_else(|| after.graph.edge(&element).map(|e| e.status));
+            assert_eq!(status, Some(ElementStatus::Accepted), "{element}");
+        }
+        for p in [&operation, &requirement] {
+            assert_eq!(state_of(&app, p), WorkflowProposalState::Accepted);
+        }
+        assert_eq!(listed(&app).await, Vec::<Value>::new());
+    }
+
+    /// B1: `confirm: false` only accepts; a stale or non-pending member applies nothing and the
+    /// typed 409 names it.
+    #[tokio::test]
+    async fn accept_set_endpoint_without_confirmation_and_with_a_bad_member() {
+        let (app, operation, _, _) = inbox_app().await;
+        let stale = create(&app, "req:n1", "Payroll shall export leave totals.").await;
+        direct_commit(
+            &app,
+            SemanticPatch::AddNode {
+                node: requirement("req:other", "Proposed", "Another writer added this."),
+            },
+        );
+        let fresh = create(&app, "req:n2", "HR shall audit leave.").await;
+        let before = head(&app).revision;
+        let uri = "/api/proposals/accept-set";
+        let r = write(
+            &app,
+            uri,
+            Some(json!({"proposal_ids": [fresh.id, stale.id]})),
+        )
+        .await;
+        assert_error(&r, StatusCode::CONFLICT, "E_PROPOSAL_BASELINE_CHANGED");
+        assert_eq!(r.json()["details"]["proposal_ref"], json!(stale.id));
+        assert_eq!(head(&app).revision.id, before.id);
+        assert_eq!(state_of(&app, &fresh), WorkflowProposalState::Pending);
+        let r = write(
+            &app,
+            &format!("/api/proposals/{}/reject", operation.id),
+            Some(json!({"reason": "Out of date."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let r = write(
+            &app,
+            uri,
+            Some(json!({"proposal_ids": [fresh.id, operation.id]})),
+        )
+        .await;
+        assert_error(&r, StatusCode::CONFLICT, "E_PROPOSAL_NOT_PENDING");
+        assert_eq!(r.json()["details"]["proposal"], json!(operation.id));
+        assert_eq!(head(&app).revision.id, before.id);
+        // Without confirmation the created element stays Proposed, in one revision.
+        let r = write(
+            &app,
+            uri,
+            Some(json!({"proposal_ids": [fresh.id], "confirm": false})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let reply = r.json();
+        let after = head(&app);
+        assert_eq!(after.revision.version, before.version + 1);
+        assert_eq!(reply["accepted"], json!([fresh.id]));
+        assert_eq!(reply["confirmed"], json!([]));
+        assert_eq!(reply["events"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            after.graph.node(&id("req:n2")).unwrap().status,
+            ElementStatus::Proposed
+        );
+    }
+
+    /// B1: `POST /api/model/confirm` is the governed confirmation the CLI `confirm` uses: Terms,
+    /// Calculations and Scenarios go to their dedicated confirmations, every other element to
+    /// the generic one.
+    #[tokio::test]
+    async fn confirm_endpoint_dispatches_dedicated_and_generic_confirmations() {
+        let app = app_with(confirmation_graph(), |_| Vec::new());
+        let before = head(&app).revision;
+        let uri = "/api/model/confirm";
+        assert_error(
+            &post(&app, uri, None, Some(json!({"element_ids": ["req:p"]}))).await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        assert_error(
+            &write(&app, uri, Some(json!({"element_ids": []}))).await,
+            StatusCode::BAD_REQUEST,
+            "E_INVALID_REQUEST",
+        );
+        // An unknown element anywhere in the list applies nothing, not even a dedicated one.
+        assert_error(
+            &write(
+                &app,
+                uri,
+                Some(json!({"element_ids": ["term:vacation", "actor:missing"]})),
+            )
+            .await,
+            StatusCode::NOT_FOUND,
+            "E_NOT_FOUND",
+        );
+        assert_eq!(head(&app).revision.id, before.id);
+        let r = write(
+            &app,
+            uri,
+            Some(json!({"element_ids": ["actor:new", "term:vacation"], "reason": "Confirmed."})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let reply = r.json();
+        let after = head(&app);
+        assert_eq!(after.revision.version, before.version + 2);
+        assert_eq!(reply["revision"], after.revision.id.to_string());
+        let kinds: Vec<&str> = reply["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["confirm_glossary", "confirm_elements"]);
+        for element in ["actor:new", "term:vacation"] {
+            assert_eq!(
+                after.graph.node(&id(element)).unwrap().status,
+                ElementStatus::Accepted,
+                "{element}"
+            );
+        }
+        // A refused element is the typed refusal of the generic confirmation.
+        let r = write(
+            &app,
+            uri,
+            Some(json!({"element_ids": ["assumption:active"]})),
+        )
+        .await;
+        assert_error(&r, StatusCode::UNPROCESSABLE_ENTITY, "E_SEMANTIC_INVARIANT");
     }
 }

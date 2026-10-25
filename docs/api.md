@@ -2,9 +2,9 @@
 
 > Generated from the Rust OpenAPI contract. Do not edit by hand.
 
-Contract version 3, API version 0.1.0, 76 operations. The machine-readable contract is `api/modeller.openapi.json`, the source of the UI client.
+Contract version 3, API version 0.1.0, 79 operations. The machine-readable contract is `api/modeller.openapi.json`, the source of the UI client.
 
-A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74 and H0.11 those of operations 75-76. An operation listed here is not operational until its handler task is done.
+A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime handlers of operations 1-72, U2.1 those of operations 73-74, H0.11 those of operations 75-76 and B1 those of operations 77-79. An operation listed here is not operational until its handler task is done.
 
 ## Conventions
 
@@ -37,11 +37,13 @@ A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime ha
 - A0.4: 2 operations (1 POST, 1 GET).
 - U2.1: 2 operations (2 POST, 0 GET).
 - H0.11: 2 operations (1 POST, 1 GET).
+- B1: 3 operations (2 POST, 1 GET).
 - Hotfix 065 froze the deferred A0.3 compatibility semantics (contract version 3).
 - A0.4 owns `run_stage` and `get_job` and must not start before its separate stage-orchestration contract freeze.
 - Hotfix 073 appends operations 73 and 74, the U2.1 semantic change previews: the server builds the exact domain Proposal and returns its semantic element diff without committing; `candidate_semantic_hash` is not a prediction of the committed `semantic_hash`.
 - H0.11 (architecture §33.12): a preview never persists a pending proposal. It returns the previewed `proposal_id` and `built_at`; confirmation is the direct write (split or merge) with the same request plus `preview: {proposal_id, built_at}` and the baseline revision as If-Match, which commits only exactly the previewed proposal (409 `E_PREVIEW_MISMATCH` otherwise).
 - H0.11 appends operations 75 and 76: `GET /api/proposals` lists every pending workflow proposal (not paged), and `POST /api/proposals/{id}/discard` moves a pending answer or intake proposal to the terminal state `abandoned` without a revision. Accepted, rejected and abandoned proposals are kept as history.
+- B1 (UI Inbox, UI-SPEC §5.2) appends operations 77 to 79: `GET /api/proposals/{id}` is one pending proposal with its facts, evidence passages (UTF-8 byte highlight offsets) and model change; `POST /api/proposals/accept-set` accepts pending proposals atomically in one revision through the R0.3 set acceptance and, unless `confirm` is false, then confirms the Proposed elements they created; `POST /api/model/confirm` is the governed confirmation of the CLI `confirm`. List items gain `title`, `element_kind`, `created_at` and `stage`.
 
 ## Operations
 
@@ -123,3 +125,6 @@ A0.1 defines the pilot contract only; A0.2, A0.3 and A0.4 provide the runtime ha
 | 74 | POST | `/api/glossary/{id}/merge/preview` | `preview_glossary_merge` | glossary | U2.1 |
 | 75 | GET | `/api/proposals` | `list_proposals` | proposals | H0.11 |
 | 76 | POST | `/api/proposals/{id}/discard` | `discard_proposal` | proposals | H0.11 |
+| 77 | GET | `/api/proposals/{id}` | `get_proposal` | proposals | B1 |
+| 78 | POST | `/api/proposals/accept-set` | `accept_proposal_set` | proposals | B1 |
+| 79 | POST | `/api/model/confirm` | `confirm_elements` | proposals | B1 |

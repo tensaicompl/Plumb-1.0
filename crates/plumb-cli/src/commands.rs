@@ -457,21 +457,10 @@ pub fn confirm(
     reason: Option<String>,
 ) -> Result<Done, CliError> {
     // Terms, Calculations and Scenarios have dedicated confirmations (one revision each);
-    // every other element goes through the generic governed confirmation in one revision.
-    let mut generic = Vec::new();
-    let mut last = None;
-    for element in elements {
-        let loaded = state.head()?;
-        match state.confirm_dedicated(&loaded, element)? {
-            Some(result) => last = Some(result),
-            None => generic.push(element.clone()),
-        }
-    }
-    if !generic.is_empty() {
-        let loaded = state.head()?;
-        last = Some(state.confirm_elements(&loaded, &generic, reason)?);
-    }
-    let result = last.expect("confirm needs at least one element");
+    // every other element goes through the generic governed confirmation in one revision. The
+    // shared service is also `POST /api/model/confirm` (B1).
+    let loaded = state.head()?;
+    let result = state.confirm_any(&loaded, elements, reason)?;
     let text = format!(
         "confirmed {}: revision {}",
         elements.join(" "),

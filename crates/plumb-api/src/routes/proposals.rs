@@ -20,14 +20,14 @@ use plumb_store::{
 };
 
 pub(super) use crate::application::workflow_error;
-use crate::application::{baseline_changed, is_discardable, not_pending, ProposalAction};
+use crate::application::{baseline_changed, not_pending, ProposalAction};
 use crate::error::ApiError;
 use crate::openapi::{
-    IntakeRequest, IntakeResponse, PendingProposal, PendingProposalList, ProposalActionRequest,
-    ProposalKind, ProposalOrigin,
+    AcceptProposalSetRequest, ConfirmElementsRequest, IntakeRequest, IntakeResponse,
+    PendingProposalList, ProposalActionRequest,
 };
 use crate::state::{
-    check_if_match, parse_body, parse_wire, read_json, require_clean_reason, run_intake, ApiState,
+    check_if_match, parse_body, read_json, require_clean_reason, run_intake, ApiState,
 };
 use crate::workflow::{
     classify, decode_proposal, intake_view, require_kind, store_kind, stored_json, StoredProposal,
@@ -44,6 +44,10 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/proposals/{id}/reject", post(reject_proposal))
         .route("/api/proposals", get(list_proposals))
         .route("/api/proposals/{id}/discard", post(discard_proposal))
+        // B1 Inbox.
+        .route("/api/proposals/{id}", get(get_proposal))
+        .route("/api/proposals/accept-set", post(accept_proposal_set))
+        .route("/api/model/confirm", post(confirm_elements))
 }
 
 /// The store vocabulary of a workflow origin.
@@ -237,34 +241,68 @@ async fn discard_proposal(
     act(state, id, headers, body, ProposalAction::Discard).await
 }
 
-/// `list_proposals` (H0.11 proposal discovery): every pending workflow proposal through the
-/// application service the CLI `proposals` command uses, judged against the read head.
+/// `list_proposals` (H0.11 proposal discovery, B1 Inbox items): every pending workflow
+/// proposal through the application service the CLI `proposals` command uses, judged against
+/// the read head, with its deterministic title, element kind, creation instant and stage.
 async fn list_proposals(State(state): State<ApiState>) -> Result<Response, ApiError> {
     state.runtime("workflow_store")?;
     let loaded = state.load_head()?;
-    let mut items = Vec::new();
-    for view in state.pending_proposals_on(&loaded)? {
-        let corrupt = || ApiError::workflow_corrupt(&format!("proposal {}", view.proposal_id));
-        let action: ProposalKind = parse_wire(&view.action, "action").map_err(|_| corrupt())?;
-        let origin: ProposalOrigin = parse_wire(&view.origin, "origin").map_err(|_| corrupt())?;
-        let store_origin: WorkflowOrigin = view.origin.parse().map_err(|_| corrupt())?;
-        items.push(PendingProposal {
-            proposal_id: view.proposal_id,
-            action,
-            origin,
-            origin_ref: view.origin_ref,
-            recipe_job_id: view.recipe_job_id,
-            stage_job_id: view.stage_job_id,
-            base_revision: view.base_revision,
-            requires_reason: view.requires_reason,
-            stale: view.stale,
-            discardable: is_discardable(store_origin),
-        });
-    }
-    items.sort_by(|a, b| {
-        (&a.proposal_id, &a.base_revision).cmp(&(&b.proposal_id, &b.base_revision))
-    });
+    let items = state.proposal_items(&loaded)?;
     Ok(read_json(&loaded, PendingProposalList { items }))
+}
+
+// ---------------------------------------------------------------------------- B1 Inbox
+
+/// `get_proposal` (B1): the pending occurrence on the head with its facts, evidence passages
+/// and model change. Read-only.
+async fn get_proposal(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    state.runtime("workflow_store")?;
+    let loaded = state.load_head()?;
+    let detail = state.proposal_detail(&loaded, &id)?;
+    Ok(read_json(&loaded, detail))
+}
+
+/// `accept_proposal_set` (B1): the shared R0.3 atomic set acceptance, then (unless `confirm`
+/// is false) the governed confirmation of the Proposed elements the members created. The
+/// reason is validated before the runtime and If-Match checks.
+async fn accept_proposal_set(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: AcceptProposalSetRequest = parse_body(&body)?;
+    if let Some(reason) = &request.reason {
+        require_clean_reason(reason)?;
+    }
+    state.runtime("workflow_store")?;
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let result = state.accept_and_confirm(
+        &loaded,
+        &request.proposal_ids,
+        request.reason,
+        request.confirm,
+    )?;
+    Ok(Json(result).into_response())
+}
+
+/// `confirm_elements` (B1): the governed confirmation the CLI `confirm` uses.
+async fn confirm_elements(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: ConfirmElementsRequest = parse_body(&body)?;
+    if let Some(reason) = &request.reason {
+        require_clean_reason(reason)?;
+    }
+    let loaded = state.load_head()?;
+    check_if_match(&headers, &loaded)?;
+    let write = state.confirm_any(&loaded, &request.element_ids, request.reason)?;
+    Ok(Json(write).into_response())
 }
 
 /// `reject_proposal`: pending -> rejected without changing the PSG.

@@ -1028,7 +1028,7 @@ mod http_core {
                     || (reply.status == StatusCode::METHOD_NOT_ALLOWED
                         && !allow.split(',').any(|m| m.trim() == spec.method)));
             assert!(
-                ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11"].contains(&spec.owner),
+                ["A0.2", "A0.3", "A0.4", "U2.1", "H0.11", "B1"].contains(&spec.owner),
                 "{}",
                 spec.operation_id
             );
@@ -1087,7 +1087,7 @@ mod http_core {
             ),
             (2, 2, 0)
         );
-        // H0.11 routes the proposal list and discard: all 76 operations.
+        // H0.11 routes the proposal list and discard.
         assert_eq!(
             (
                 count(&routed, "H0.11", None),
@@ -1096,7 +1096,16 @@ mod http_core {
             ),
             (2, 1, 1)
         );
-        assert_eq!(routed.len(), 76);
+        // B1 routes the Inbox proposal detail, set acceptance and confirmation: all 79.
+        assert_eq!(
+            (
+                count(&routed, "B1", None),
+                count(&routed, "B1", Some("POST")),
+                count(&routed, "B1", Some("GET"))
+            ),
+            (3, 2, 1)
+        );
+        assert_eq!(routed.len(), 79);
         // An unregistered path is the typed 404 (H0.11 replaces the former empty body).
         let r = get(&app, "/api/nowhere").await;
         assert_eq!(

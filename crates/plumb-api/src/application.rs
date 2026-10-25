@@ -1740,6 +1740,215 @@ mod services {
             Ok(write)
         }
 
+        // ==================================================================== B1 Inbox services
+
+        /// The Inbox "Accept" of pending proposals (B1, UI-SPEC §5.2): every member is committed
+        /// with the action of its stored class, atomically in one revision, through
+        /// [`Self::accept_proposal_set`] on `loaded` (an unknown member is 404; a stale or
+        /// non-pending one is that service's typed 409 and nothing is applied). When `confirm`
+        /// is true, the Proposed elements the members created are then promoted to Accepted
+        /// through [`Self::confirm_any`] on the new head with the same reason: every added node
+        /// a confirmation can take, and every added relation whose endpoints are (or become)
+        /// baseline-participating model elements. A confirmation failure after the committed
+        /// acceptance is 409 `E_PROPOSAL_SET_CONFIRMATION_FAILED` naming the acceptance
+        /// revision; the acceptance is never undone.
+        pub fn accept_and_confirm(
+            &self,
+            loaded: &LoadedRevision,
+            proposal_ids: &[String],
+            reason: Option<String>,
+            confirm: bool,
+        ) -> Result<crate::openapi::AcceptProposalSetResponse, ApiError> {
+            if let Some(reason) = &reason {
+                require_clean_reason(reason)?;
+            }
+            self.runtime("workflow_store")?;
+            let mut members = Vec::with_capacity(proposal_ids.len());
+            let mut proposals = Vec::with_capacity(proposal_ids.len());
+            for text in proposal_ids {
+                let missing = || ApiError::not_found(format!("proposal {} not found", echo(text)));
+                let id = parse_id(text).ok_or_else(missing)?;
+                let record = self
+                    .with_workflow_store(|store| store.current_proposal(&id, &loaded.revision.id))?
+                    .map_err(workflow_error)?
+                    .ok_or_else(missing)?;
+                let action = match record.proposal_kind.as_str() {
+                    "accept" => ProposalAction::Accept,
+                    "create" => ProposalAction::Create,
+                    "link" => ProposalAction::Link,
+                    "merge" => ProposalAction::Merge,
+                    "supersede" => ProposalAction::Supersede,
+                    _ => return Err(ApiError::workflow_corrupt(&format!("proposal {id}"))),
+                };
+                proposals.push(decode_proposal(record)?.proposal);
+                members.push((text.clone(), action));
+            }
+            let accepted_write = self.accept_proposal_set(loaded, &members, reason.clone())?;
+            let mut accepted: Vec<String> = proposals.iter().map(|p| p.id.to_string()).collect();
+            accepted.sort();
+            let respond =
+                |write: WriteResult, events, confirmed| crate::openapi::AcceptProposalSetResponse {
+                    version: write.version,
+                    revision: write.revision,
+                    semantic_hash: write.semantic_hash,
+                    events,
+                    accepted: accepted.clone(),
+                    confirmed,
+                };
+            if !confirm {
+                let events = accepted_write.events.clone();
+                return Ok(respond(accepted_write, events, Vec::new()));
+            }
+            let committed = self.head()?;
+            let graph = &committed.graph;
+            let mut nodes = std::collections::BTreeSet::new();
+            let mut edges = Vec::new();
+            for proposal in &proposals {
+                let (added_nodes, added_edges) = crate::inbox::added_elements(proposal);
+                for node in added_nodes {
+                    let eligible = graph.node(&node.id).is_some_and(|n| {
+                        n.status == ElementStatus::Proposed
+                            && matches!(
+                                confirmation_refusal(n.payload.node_type()),
+                                None | Some(DEDICATED)
+                            )
+                    });
+                    if eligible {
+                        nodes.insert(node.id.clone());
+                    }
+                }
+                edges.extend(added_edges.into_iter().map(|e| e.id.clone()));
+            }
+            let mut listed: Vec<Id> = nodes.iter().cloned().collect();
+            for edge_id in edges {
+                let Some(edge) = graph.edge(&edge_id) else {
+                    continue;
+                };
+                let endpoints_ok = [&edge.from, &edge.to].iter().all(|end| {
+                    graph.node(end).is_some_and(|n| {
+                        (is_baseline(n.status) || nodes.contains(*end))
+                            && !matches!(
+                                confirmation_refusal(n.payload.node_type()),
+                                Some(GOVERNANCE) | Some(PROVENANCE_OR_PROOF)
+                            )
+                    })
+                });
+                if edge.status == ElementStatus::Proposed
+                    && edge.kind != plumb_psg::RelationKind::Resolves
+                    && endpoints_ok
+                    && !listed.contains(&edge.id)
+                {
+                    listed.push(edge.id.clone());
+                }
+            }
+            if listed.is_empty() {
+                let events = accepted_write.events.clone();
+                return Ok(respond(accepted_write, events, Vec::new()));
+            }
+            let ids: Vec<String> = listed.iter().map(Id::to_string).collect();
+            let confirmed_write = self
+                .confirm_any(&committed, &ids, reason)
+                .map_err(|cause| {
+                    let body = cause.body();
+                    ApiError::conflict(
+                        "E_PROPOSAL_SET_CONFIRMATION_FAILED",
+                        "the proposals were accepted, but confirming their elements failed",
+                    )
+                    .with_details(json!({
+                        "revision": accepted_write.revision,
+                        "accepted": accepted,
+                        "cause": {"code": body.code, "message": body.message, "details": body.details},
+                    }))
+                })?;
+            // Every element the members added that the confirmation moved to Accepted
+            // (including relations the generic confirmation brings along).
+            let after = self.head()?;
+            let mut confirmed: Vec<String> = proposals
+                .iter()
+                .flat_map(|p| {
+                    let (n, e) = crate::inbox::added_elements(p);
+                    n.into_iter()
+                        .map(|n| n.id.clone())
+                        .chain(e.into_iter().map(|e| e.id.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|id| {
+                    let status = |g: &Graph| {
+                        g.node(id)
+                            .map(|n| n.status)
+                            .or_else(|| g.edge(id).map(|e| e.status))
+                    };
+                    status(graph) == Some(ElementStatus::Proposed)
+                        && status(&after.graph) == Some(ElementStatus::Accepted)
+                })
+                .map(|id| id.to_string())
+                .collect();
+            confirmed.sort();
+            confirmed.dedup();
+            let mut events = accepted_write.events.clone();
+            events.extend(confirmed_write.events.iter().cloned());
+            Ok(respond(confirmed_write, events, confirmed))
+        }
+
+        /// The governed confirmation of listed Proposed elements that the CLI `confirm` and
+        /// `POST /api/model/confirm` share (B1): Terms, Calculations and Scenarios go, in list
+        /// order, to their dedicated confirmations ([`Self::confirm_dedicated`], one revision
+        /// each, without the reason), then every other element to one generic governed
+        /// confirmation ([`Self::confirm_elements`]) on the head they leave. Before any write the
+        /// list must be non-empty and duplicate-free and name existing elements of `loaded`.
+        /// The result is the last revision with every revision's events in order.
+        pub fn confirm_any(
+            &self,
+            loaded: &LoadedRevision,
+            element_ids: &[String],
+            reason: Option<String>,
+        ) -> Result<WriteResult, ApiError> {
+            if let Some(reason) = &reason {
+                require_clean_reason(reason)?;
+            }
+            if element_ids.is_empty() {
+                return Err(ApiError::invalid(
+                    "confirmation needs at least one element ID",
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            let mut dedicated = Vec::new();
+            let mut generic = Vec::new();
+            for text in element_ids {
+                let id = parse_id(text)
+                    .ok_or_else(|| ApiError::invalid(format!("{} is not an ID", echo(text))))?;
+                if !seen.insert(id.clone()) {
+                    return Err(ApiError::invalid("an element is listed twice")
+                        .with_details(json!({ "element": id })));
+                }
+                match loaded.graph.node(&id).map(|n| n.payload.node_type()) {
+                    Some(NodeType::Term | NodeType::Calculation | NodeType::Scenario) => {
+                        dedicated.push(text.clone())
+                    }
+                    Some(_) => generic.push(text.clone()),
+                    None if loaded.graph.edge(&id).is_some() => generic.push(text.clone()),
+                    None => return Err(ApiError::not_found(format!("element {id} not found"))),
+                }
+            }
+            let mut writes = Vec::new();
+            let mut current = loaded.clone();
+            for element in &dedicated {
+                match self.confirm_dedicated(&current, element)? {
+                    Some(write) => writes.push(write),
+                    None => return Err(ApiError::internal("confirm_dedicated")),
+                }
+                current = self.head()?;
+            }
+            if !generic.is_empty() {
+                writes.push(self.confirm_elements(&current, &generic, reason)?);
+            }
+            let events = writes.iter().flat_map(|w| w.events.clone()).collect();
+            let last = writes
+                .pop()
+                .ok_or_else(|| ApiError::internal("confirm_any"))?;
+            Ok(WriteResult { events, ..last })
+        }
+
         // ==================================================================== R0.6 services
 
         /// The S3.3 answer service (R0.6): resolves `question_id` with `answer` on exactly
@@ -2507,49 +2716,73 @@ mod services {
             &self,
             loaded: &LoadedRevision,
         ) -> Result<Vec<PendingProposalView>, ApiError> {
+            Ok(self
+                .pending_entries_on(loaded)?
+                .into_iter()
+                .map(|(view, _)| view)
+                .collect())
+        }
+
+        /// Every pending occurrence with its discovery view judged against `loaded`, sorted by
+        /// proposal ID (the material of [`Self::pending_proposals_on`] and the B1 Inbox).
+        pub(crate) fn pending_entries_on(
+            &self,
+            loaded: &LoadedRevision,
+        ) -> Result<Vec<(PendingProposalView, StoredProposal)>, ApiError> {
             self.runtime("workflow_store")?;
-            let head = loaded.revision.id.clone();
             let records = self
                 .with_workflow_store(|store| store.pending_proposals())?
                 .map_err(workflow_error)?;
-            let mut views = Vec::with_capacity(records.len());
+            let mut entries = Vec::with_capacity(records.len());
             for record in records {
                 let stored = decode_proposal(record)?;
-                let record = &stored.record;
-                let (recipe_job_id, stage_job_id) = match record.origin_kind {
-                    WorkflowOrigin::Stage => {
-                        let link = stage_acceptance::link_of(
-                            self,
-                            &record.proposal_id,
-                            &record.base_revision_id,
-                        )?
-                        .ok_or_else(|| {
-                            ApiError::workflow_corrupt(&format!(
-                                "stage link of proposal {}",
-                                record.proposal_id
-                            ))
-                        })?;
-                        (
-                            Some(link.recipe_job_id.to_string()),
-                            Some(link.stage_job_id.to_string()),
-                        )
-                    }
-                    _ => (None, None),
-                };
-                views.push(PendingProposalView {
-                    proposal_id: record.proposal_id.to_string(),
-                    action: record.proposal_kind.as_str().to_owned(),
-                    origin: record.origin_kind.as_str().to_owned(),
-                    origin_ref: record.origin_ref.as_ref().map(Id::to_string),
-                    recipe_job_id,
-                    stage_job_id,
-                    base_revision: record.base_revision_id.to_string(),
-                    requires_reason: stored.intake.requires_reason,
-                    stale: record.base_revision_id != head,
-                });
+                let view = self.pending_view(&stored, &loaded.revision.id)?;
+                entries.push((view, stored));
             }
-            views.sort_by(|a, b| a.proposal_id.cmp(&b.proposal_id));
-            Ok(views)
+            entries.sort_by(|a, b| a.0.proposal_id.cmp(&b.0.proposal_id));
+            Ok(entries)
+        }
+
+        /// The discovery view of one stored occurrence judged against `head`: a stage-origin
+        /// proposal carries its recipe and stage job from its durable stage link; a missing link
+        /// is corrupt state.
+        pub(crate) fn pending_view(
+            &self,
+            stored: &StoredProposal,
+            head: &plumb_store::RevisionId,
+        ) -> Result<PendingProposalView, ApiError> {
+            let record = &stored.record;
+            let (recipe_job_id, stage_job_id) = match record.origin_kind {
+                WorkflowOrigin::Stage => {
+                    let link = stage_acceptance::link_of(
+                        self,
+                        &record.proposal_id,
+                        &record.base_revision_id,
+                    )?
+                    .ok_or_else(|| {
+                        ApiError::workflow_corrupt(&format!(
+                            "stage link of proposal {}",
+                            record.proposal_id
+                        ))
+                    })?;
+                    (
+                        Some(link.recipe_job_id.to_string()),
+                        Some(link.stage_job_id.to_string()),
+                    )
+                }
+                _ => (None, None),
+            };
+            Ok(PendingProposalView {
+                proposal_id: record.proposal_id.to_string(),
+                action: record.proposal_kind.as_str().to_owned(),
+                origin: record.origin_kind.as_str().to_owned(),
+                origin_ref: record.origin_ref.as_ref().map(Id::to_string),
+                recipe_job_id,
+                stage_job_id,
+                base_revision: record.base_revision_id.to_string(),
+                requires_reason: stored.intake.requires_reason,
+                stale: &record.base_revision_id != head,
+            })
         }
 
         /// Re-submits every stale pending answer proposal (a Question answer built on another
