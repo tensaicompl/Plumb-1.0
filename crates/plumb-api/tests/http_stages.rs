@@ -1693,7 +1693,7 @@ mod http_stages {
             "lint_policy": {"severity_overrides": {}}
         }))
         .unwrap();
-        let expected = Hash::content_sha256(&to_canonical_json(&assembled).unwrap());
+        let expected = assembled.binding_hash().unwrap(); // Fable #298: inputs + lint registry
         assert_eq!(report.supplemental_input_hash, Some(expected));
     }
 
@@ -1773,7 +1773,7 @@ mod http_stages {
             "lint_policy": {"severity_overrides": {}}
         }))
         .unwrap();
-        Hash::content_sha256(&to_canonical_json(&inputs).unwrap())
+        inputs.binding_hash().unwrap() // Fable #298: inputs + effective lint registry
     }
 
     /// The F1 report of the lint job `job_id`.

@@ -119,13 +119,13 @@ pub struct NodeShapeViolation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessShapeRule {
-    /// `BPMN.F2.PROCESS.START_END`.
+    /// The process start/end rule.
     StartEnd,
-    /// `PLUMB.F2.PROCESS.GATEWAY_BALANCED`.
+    /// The parallel gateway rule.
     GatewayBalanced,
-    /// `PLUMB.F2.PROCESS.TASK_RESOLVES`.
+    /// The task resolution rule.
     TaskResolves,
-    /// `BPMN.F2.PROCESS.REACHABLE`.
+    /// The process reachability rule.
     Reachable,
 }
 
