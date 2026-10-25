@@ -873,11 +873,12 @@ mod question_contract {
                 RouteDisposition::Configured {
                     routing_key: "calendar".into(),
                 },
+                // H0.4 (plan v3.2 hotfix): only recordable answers are offered.
                 json!({"type": "object", "additionalProperties": false,
-                       "required": ["calendar_ref", "holiday_consumes_working_day"],
+                       "required": ["holiday_consumes_working_day", "calendar_ref"],
                        "properties": {
-                           "calendar_ref": {"type": "string", "enum": ["calendar:nl"]},
-                           "holiday_consumes_working_day": {"type": "boolean"}}}),
+                           "holiday_consumes_working_day": {"const": false},
+                           "calendar_ref": {"type": "string", "enum": ["calendar:nl"]}}}),
             ),
         ];
         for (finding, template_id, kind, route, schema) in expected {
@@ -928,6 +929,54 @@ mod question_contract {
             template(CALCULATION_INCLUSIVE_END_TEMPLATE).condition,
             ConditionMatch::Prefix(CALCULATION_INCLUSIVE_END_CONDITION_PREFIX)
         );
+    }
+
+    #[test]
+    fn holiday_policy_offers_only_recordable_answers() {
+        // H0.4 (architecture §33.4, plan v3.2 hotfix): the schema offers exactly the answers the
+        // resolver can record, its calendar choices are the sorted Accepted Calendars and the
+        // prompt states the fixed holiday policy.
+        let fx = Fx::new()
+            .with(calendar("calendar:at", Accepted))
+            .with(calendar("calendar:zz", Proposed));
+        let holiday = gf(
+            CALENDAR_DEFINED,
+            &format!("{CALCULATION_HOLIDAY_POLICY_CONDITION_PREFIX}calculation:days"),
+            &["calculation:days"],
+            FindingSeverity::Blocker,
+        );
+        let result = run(&fx, vec![holiday]);
+        let q = only(&result);
+        let schema = q.payload.answer_schema.clone().unwrap();
+        assert_eq!(
+            schema,
+            json!({
+                "type": "object", "additionalProperties": false,
+                "required": ["holiday_consumes_working_day", "calendar_ref"],
+                "properties": {
+                    "holiday_consumes_working_day": {"const": false},
+                    "calendar_ref": {"type": "string", "enum": ["calendar:at", "calendar:nl"]}}})
+        );
+        let compiled = jsonschema::JSONSchema::compile(&schema).unwrap();
+        // The immutable HR expert answer shape stays valid; unrecordable answers are refused.
+        assert!(compiled.is_valid(
+            &json!({"calendar_ref": "calendar:nl", "holiday_consumes_working_day": false})
+        ));
+        for refused in [
+            json!({"calendar_ref": "calendar:nl", "holiday_consumes_working_day": true}),
+            json!({"calendar_ref": "calendar:zz", "holiday_consumes_working_day": false}),
+            json!({"calendar_ref": "calendar:nl"}),
+            json!({"holiday_consumes_working_day": false}),
+        ] {
+            assert!(!compiled.is_valid(&refused), "{refused}");
+        }
+        let prompt = &q.payload.prompt;
+        assert!(
+            prompt.contains("a configured holiday never consumes a working day"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Which Accepted Calendar applies"), "{prompt}");
+        assert!(prompt.contains("calculation:days"), "{prompt}");
     }
 
     #[test]

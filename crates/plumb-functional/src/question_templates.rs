@@ -308,7 +308,7 @@ impl QuestionTemplate {
                 "Does the working-day period of calculation {subject} include its end date?"
             ),
             CALCULATION_HOLIDAY_POLICY_TEMPLATE => format!(
-                "Does a configured holiday inside the period of calculation {subject} consume a working day, and which accepted calendar applies?"
+                "In calculation {subject} a configured holiday never consumes a working day. Which Accepted Calendar applies?"
             ),
             other => unreachable!("closed template registry has no {other}"),
         }
@@ -357,10 +357,12 @@ impl QuestionTemplate {
             CALCULATION_INCLUSIVE_END_TEMPLATE => {
                 object_schema(vec![("inclusive_end", json!({"type": "boolean"}))])
             }
+            // Only recordable answers (architecture §33.4): the resolver binds the Accepted
+            // Calendar and refuses a consuming holiday, so `true` is never offered.
             CALCULATION_HOLIDAY_POLICY_TEMPLATE => match choices {
                 Choices::Single(ids) => object_schema(vec![
+                    ("holiday_consumes_working_day", json!({"const": false})),
                     ("calendar_ref", enum_property(ids)),
-                    ("holiday_consumes_working_day", json!({"type": "boolean"})),
                 ]),
                 _ => unreachable!("the holiday policy has a calendar choice list"),
             },

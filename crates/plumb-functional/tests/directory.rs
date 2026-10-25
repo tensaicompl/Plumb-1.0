@@ -522,4 +522,192 @@ mod directory_contract {
             assert_eq!(added(x).1.payload, added(y).1.payload);
         }
     }
+
+    // ------------------------------------------------------------------ outcome selections
+
+    /// The directory graph plus an Accepted Operation and Outcomes of every kind.
+    fn outcome_graph() -> Graph {
+        let g = graph();
+        let mut nodes: Vec<Node> = g.nodes().values().cloned().collect();
+        let operation = |node_id: &str, status: ElementStatus| {
+            node(
+                node_id,
+                status,
+                NodePayload::Operation(
+                    serde_json::from_value(json!({
+                        "name": node_id, "operation_kind": "command", "input_schema_ref": null,
+                        "output_schema_ref": null, "preconditions": null, "postconditions": null,
+                        "idempotency": null, "transaction_semantics": null
+                    }))
+                    .unwrap(),
+                ),
+            )
+        };
+        let outcome = |node_id: &str, kind: &str, status: ElementStatus| {
+            node(
+                node_id,
+                status,
+                NodePayload::Outcome(
+                    serde_json::from_value(json!({"name": node_id, "outcome_kind": kind}))
+                        .unwrap(),
+                ),
+            )
+        };
+        nodes.extend([
+            operation("op:approve", Accepted),
+            operation("op:submit", Accepted),
+            operation("op:draft", Proposed),
+            outcome("outcome:ok", "success", Accepted),
+            outcome("outcome:partial", "partial", Accepted),
+            outcome("outcome:low-balance", "business_failure", Accepted),
+            outcome("outcome:crash", "technical_failure", Accepted),
+            outcome("outcome:proposed", "success", Proposed),
+        ]);
+        Graph::new(id(PROJECT), id(PROFILE), nodes, vec![]).unwrap()
+    }
+
+    fn selection_draft(selections: Value) -> DirectoryDraft {
+        let mut j = draft_json();
+        for family in [
+            "stakeholders",
+            "actors",
+            "business_roles",
+            "calendars",
+            "rules",
+            "decision_tables",
+        ] {
+            j[family] = json!([]);
+        }
+        j["outcome_selections"] = selections;
+        serde_json::from_value(j).unwrap()
+    }
+
+    fn extension_patch(outcome: &DirectoryOutcome) -> (&plumb_patch::Proposal, &Value) {
+        let DirectoryDisposition::Proposed { proposal } = &outcome.disposition else {
+            panic!("{} is not proposed", outcome.element_ref);
+        };
+        let SemanticPatch::SetNodeExtension { target, key, value } = &proposal.patch_set.patch
+        else {
+            panic!("not exactly one SetNodeExtension");
+        };
+        assert_eq!(target.id, outcome.element_ref);
+        assert_eq!(key.as_str(), "plumb_sim:outcome_selection");
+        (proposal, value)
+    }
+
+    #[test]
+    fn outcome_selections_become_human_confirm_extension_proposals() {
+        let g = outcome_graph();
+        let d = selection_draft(json!([
+            {"outcome_ref": "outcome:low-balance", "operation_ref": "op:submit",
+             "on_failures": ["precondition_rejected", "authorization_denied"]},
+            {"outcome_ref": "outcome:ok", "operation_ref": "op:submit", "when": "true"},
+            {"outcome_ref": "outcome:ok", "operation_ref": "op:approve", "when": "1 > 0"},
+        ]));
+        let result = produce(&g, &d).unwrap();
+        let ids: Vec<String> = result
+            .outcomes
+            .iter()
+            .map(|o| o.element_ref.to_string())
+            .collect();
+        assert_eq!(ids, ["outcome:low-balance", "outcome:ok"]);
+        let mut applied = g.clone();
+        for outcome in &result.outcomes {
+            assert_eq!(outcome.node_type, NodeType::Outcome);
+            let (proposal, value) = extension_patch(outcome);
+            assert_eq!(proposal.materiality, ProposalMateriality::Semantic);
+            assert_eq!(proposal.acceptance_policy, AcceptancePolicy::HumanConfirm);
+            assert_eq!(proposal.stage, StageId::S2);
+            let expected = match outcome.element_ref.as_str() {
+                "outcome:ok" => json!({"version": 1, "selections": [
+                    {"operation_ref": "op:approve", "when": "1 > 0"},
+                    {"operation_ref": "op:submit", "when": "true"}]}),
+                _ => json!({"version": 1, "selections": [
+                    {"operation_ref": "op:submit",
+                     "on_failures": ["authorization_denied", "precondition_rejected"]}]}),
+            };
+            assert_eq!(value, &expected);
+            // The material reaches the graph only through the governed patch.
+            let mut patch_set = proposal.patch_set.clone();
+            patch_set.base_semantic_hash = applied.semantic_hash().unwrap();
+            applied = apply_patch(&applied, &patch_set).unwrap().graph;
+            let selection = plumb_functional::OutcomeSelection::from_value(
+                &outcome.element_ref,
+                &applied.node(&outcome.element_ref).unwrap().extensions
+                    [&"plumb_sim:outcome_selection".parse().unwrap()],
+            )
+            .unwrap();
+            selection.validate(&applied, &outcome.element_ref).unwrap();
+        }
+        // Re-producing on the applied graph proposes nothing.
+        let again = produce(&applied, &d).unwrap();
+        assert!(again
+            .outcomes
+            .iter()
+            .all(|o| o.disposition == DirectoryDisposition::Existing));
+        // Configuration order never matters.
+        let reversed = selection_draft(json!([
+            {"outcome_ref": "outcome:ok", "operation_ref": "op:approve", "when": "1 > 0"},
+            {"outcome_ref": "outcome:ok", "operation_ref": "op:submit", "when": "true"},
+            {"outcome_ref": "outcome:low-balance", "operation_ref": "op:submit",
+             "on_failures": ["authorization_denied", "precondition_rejected"]},
+        ]));
+        assert_eq!(produce(&g, &reversed).unwrap(), result);
+        // A directory without the family is still a valid configuration.
+        let mut j = draft_json();
+        j.as_object_mut().unwrap().remove("outcome_selections");
+        assert!(serde_json::from_value::<DirectoryDraft>(j).is_ok());
+    }
+
+    #[test]
+    fn invalid_outcome_selections_are_rejected() {
+        let g = outcome_graph();
+        let cases = [
+            // when only on success or partial Outcomes.
+            json!([{"outcome_ref": "outcome:low-balance", "operation_ref": "op:submit", "when": "true"}]),
+            // on_failures only on business_failure Outcomes.
+            json!([{"outcome_ref": "outcome:partial", "operation_ref": "op:submit",
+                    "on_failures": ["precondition_rejected"]}]),
+            // technical_failure Outcomes are never selected.
+            json!([{"outcome_ref": "outcome:crash", "operation_ref": "op:submit", "when": "true"}]),
+            // Existing Accepted Outcomes and Operations only.
+            json!([{"outcome_ref": "outcome:proposed", "operation_ref": "op:submit", "when": "true"}]),
+            json!([{"outcome_ref": "outcome:none", "operation_ref": "op:submit", "when": "true"}]),
+            json!([{"outcome_ref": "outcome:ok", "operation_ref": "op:draft", "when": "true"}]),
+            // Exactly one of when and on_failures.
+            json!([{"outcome_ref": "outcome:ok", "operation_ref": "op:submit"}]),
+            json!([{"outcome_ref": "outcome:low-balance", "operation_ref": "op:submit",
+                    "when": "true", "on_failures": ["precondition_rejected"]}]),
+            // One entry per Operation and Outcome; unique, non-empty failure kinds.
+            json!([{"outcome_ref": "outcome:ok", "operation_ref": "op:submit", "when": "true"},
+                   {"outcome_ref": "outcome:ok", "operation_ref": "op:submit", "when": "false"}]),
+            json!([{"outcome_ref": "outcome:low-balance", "operation_ref": "op:submit",
+                    "on_failures": ["precondition_rejected", "precondition_rejected"]}]),
+            json!([{"outcome_ref": "outcome:low-balance", "operation_ref": "op:submit",
+                    "on_failures": []}]),
+            // when is PlumbExpr source.
+            json!([{"outcome_ref": "outcome:ok", "operation_ref": "op:submit", "when": "((("}]),
+        ];
+        for case in cases {
+            let d = selection_draft(case.clone());
+            assert!(
+                matches!(
+                    produce(&g, &d),
+                    Err(DirectoryError::InvalidOutcomeSelection { .. })
+                ),
+                "{case}"
+            );
+        }
+        // Unknown failure kinds and unknown keys are wire errors.
+        for case in [
+            json!([{"outcome_ref": "outcome:low-balance", "operation_ref": "op:submit",
+                    "on_failures": ["postcondition_violation"]}]),
+            json!([{"outcome_ref": "outcome:ok", "operation_ref": "op:submit", "when": "true",
+                    "extra": 1}]),
+        ] {
+            let mut j = draft_json();
+            j["outcome_selections"] = case.clone();
+            assert!(serde_json::from_value::<DirectoryDraft>(j).is_err(), "{case}");
+        }
+    }
 }

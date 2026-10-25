@@ -14,6 +14,9 @@
 //!   [`encode_decision_table`].
 //! - The proposal stage is the stage whose gate is the element type's earliest gate
 //!   (architecture §2 stage table: S1 -> F1, S2 -> F2; [`earliest_gate`]).
+//! - Outcome selection drafts (H0.4, architecture §33.4) group by Outcome into one
+//!   [`OUTCOME_SELECTION_EXTENSION`] value set on the existing Accepted Outcome by its own
+//!   `SetNodeExtension` proposal.
 //!
 //! No clock, configuration file or global is read: the caller supplies the draft, the calendar
 //! bindings and the audit.
@@ -34,6 +37,10 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::decision_table::{encode_decision_table, DecisionTableSpec};
+use crate::outcome_selection::{
+    BusinessFailureKind, OutcomeSelection, OutcomeSelectionEntry, OUTCOME_SELECTION_EXTENSION,
+    OUTCOME_SELECTION_VERSION,
+};
 
 // ============================================================================ draft
 
@@ -77,7 +84,22 @@ pub struct DirectoryDecisionTableDraft {
     pub grounding_refs: Vec<Id>,
 }
 
-/// The typed directory draft. Every family is a required key (possibly empty).
+/// One outcome selection draft (H0.4): the Accepted Outcome, the Accepted Operation and exactly
+/// one of a `when` PlumbExpr source (success / partial Outcomes) or the business failure kinds
+/// it is selected on (business_failure Outcomes).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryOutcomeSelectionDraft {
+    pub outcome_ref: Id,
+    pub operation_ref: Id,
+    #[serde(default)]
+    pub when: Option<String>,
+    #[serde(default)]
+    pub on_failures: Option<Vec<BusinessFailureKind>>,
+}
+
+/// The typed directory draft. Every node family is a required key (possibly empty); the
+/// outcome selection family (H0.4) may be absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DirectoryDraft {
@@ -87,6 +109,8 @@ pub struct DirectoryDraft {
     pub calendars: Vec<DirectoryCalendarDraft>,
     pub rules: Vec<DirectoryElement<Rule>>,
     pub decision_tables: Vec<DirectoryDecisionTableDraft>,
+    #[serde(default)]
+    pub outcome_selections: Vec<DirectoryOutcomeSelectionDraft>,
 }
 
 /// A required key whose value may be `null` (a missing key is an error, never `None`).
@@ -127,7 +151,8 @@ pub struct DirectoryOutcome {
     pub disposition: DirectoryDisposition,
 }
 
-/// Every element's outcome, in element-ID order.
+/// Every element's outcome, in element-ID order, then every outcome selection in Outcome-ID
+/// order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectoryResult {
     pub outcomes: Vec<DirectoryOutcome>,
@@ -152,6 +177,8 @@ pub enum DirectoryError {
     InvalidElement { element: Id, reason: String },
     #[error("directory element {element} conflicts with the persisted element: {reason}")]
     ElementConflict { element: Id, reason: String },
+    #[error("directory outcome selection of {outcome}: {reason}")]
+    InvalidOutcomeSelection { outcome: Id, reason: String },
     #[error("invalid audit: {0}")]
     InvalidAudit(String),
     #[error(transparent)]
@@ -390,5 +417,121 @@ pub fn produce_directory(
             },
         });
     }
+    outcomes.extend(produce_outcome_selections(
+        graph,
+        &draft.outcome_selections,
+        &base_semantic_hash,
+    )?);
     Ok(DirectoryResult { outcomes })
+}
+
+// ============================================================================ outcome selections
+
+/// One `SetNodeExtension` proposal per Outcome named by the drafts, in Outcome-ID order. The
+/// drafts of one Outcome form its complete selection value; an Outcome already holding exactly
+/// that value is `Existing`.
+fn produce_outcome_selections(
+    graph: &Graph,
+    drafts: &[DirectoryOutcomeSelectionDraft],
+    base_semantic_hash: &plumb_core::Hash,
+) -> Result<Vec<DirectoryOutcome>, DirectoryError> {
+    let mut by_outcome: BTreeMap<&Id, Vec<OutcomeSelectionEntry>> = BTreeMap::new();
+    for d in drafts {
+        let invalid = |reason: String| DirectoryError::InvalidOutcomeSelection {
+            outcome: d.outcome_ref.clone(),
+            reason,
+        };
+        let on_failures = match &d.on_failures {
+            Some(kinds) => {
+                let unique: BTreeSet<BusinessFailureKind> = kinds.iter().copied().collect();
+                if unique.len() != kinds.len() {
+                    return Err(invalid(format!(
+                        "on_failures of {} lists a failure kind twice",
+                        d.operation_ref
+                    )));
+                }
+                Some(unique.into_iter().collect())
+            }
+            None => None,
+        };
+        let entries = by_outcome.entry(&d.outcome_ref).or_default();
+        if entries.iter().any(|e| e.operation_ref == d.operation_ref) {
+            return Err(invalid(format!(
+                "{} is selected more than once",
+                d.operation_ref
+            )));
+        }
+        entries.push(OutcomeSelectionEntry {
+            operation_ref: d.operation_ref.clone(),
+            when: d.when.clone(),
+            on_failures,
+        });
+    }
+    let key: plumb_psg::ExtensionKey =
+        OUTCOME_SELECTION_EXTENSION
+            .parse()
+            .map_err(|e: plumb_psg::InvalidExtensionKey| DirectoryError::InvalidElement {
+                element: graph.project_id().clone(),
+                reason: e.to_string(),
+            })?;
+    let mut outcomes = Vec::new();
+    for (outcome_ref, mut selections) in by_outcome {
+        let invalid = |reason: String| DirectoryError::InvalidOutcomeSelection {
+            outcome: outcome_ref.clone(),
+            reason,
+        };
+        selections.sort_by(|a, b| a.operation_ref.cmp(&b.operation_ref));
+        let selection = OutcomeSelection {
+            version: OUTCOME_SELECTION_VERSION,
+            selections,
+        };
+        let node = graph
+            .node(outcome_ref)
+            .filter(|n| {
+                n.status == ElementStatus::Accepted && n.payload.node_type() == NodeType::Outcome
+            })
+            .ok_or_else(|| invalid("the target is not an Accepted Outcome".into()))?;
+        selection
+            .validate(graph, outcome_ref)
+            .map_err(|e| invalid(e.to_string()))?;
+        let value = selection.to_value();
+        if node.extensions.get(&key) == Some(&value) {
+            outcomes.push(DirectoryOutcome {
+                element_ref: outcome_ref.clone(),
+                node_type: NodeType::Outcome,
+                disposition: DirectoryDisposition::Existing,
+            });
+            continue;
+        }
+        let proposal = Proposal::new(
+            directory_stage(NodeType::Outcome),
+            PatchSet {
+                base_semantic_hash: base_semantic_hash.clone(),
+                patch: SemanticPatch::SetNodeExtension {
+                    target: plumb_patch::ElementPrecondition {
+                        id: outcome_ref.clone(),
+                        expected_hash: plumb_psg::node_element_hash(node)?,
+                    },
+                    key: key.clone(),
+                    value,
+                },
+            },
+            Vec::new(),
+            Vec::new(),
+            ProposalMateriality::Semantic,
+            AcceptancePolicy::HumanConfirm,
+            None,
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+        apply_patch(graph, &proposal.patch_set)
+            .map_err(|e| invalid(format!("proposal does not apply: {e}")))?;
+        outcomes.push(DirectoryOutcome {
+            element_ref: outcome_ref.clone(),
+            node_type: NodeType::Outcome,
+            disposition: DirectoryDisposition::Proposed {
+                proposal: Box::new(proposal),
+            },
+        });
+    }
+    Ok(outcomes)
 }

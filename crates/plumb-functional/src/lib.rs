@@ -51,6 +51,7 @@ mod intent;
 pub mod invariant;
 pub mod model;
 pub mod operation;
+pub mod outcome_selection;
 pub mod process;
 pub mod project;
 pub mod projections;
@@ -119,7 +120,12 @@ pub use decision_table::{
 pub use directory::{
     produce_directory, DirectoryAudit, DirectoryCalendarBinding, DirectoryCalendarDraft,
     DirectoryDecisionTableDraft, DirectoryDisposition, DirectoryDraft, DirectoryElement,
+    DirectoryOutcomeSelectionDraft,
     DirectoryError, DirectoryOutcome, DirectoryResult,
+};
+pub use outcome_selection::{
+    BusinessFailureKind, OutcomeSelection, OutcomeSelectionEntry, OutcomeSelectionError,
+    OUTCOME_SELECTION_EXTENSION, OUTCOME_SELECTION_VERSION,
 };
 pub use domain::{
     analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,

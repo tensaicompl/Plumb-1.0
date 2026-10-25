@@ -1281,18 +1281,25 @@ mod calculation_contract {
             run(&g, &hr_scope(), vec![half_day(), half_day()]),
             Err(CalculationError::DuplicateCandidate { .. })
         ));
-        // A blank grounded name is ineligible, never repaired.
-        let mut blank = half_day();
+        // H0.10 [Fable #109]: a blank or padded grounded name is rejected exactly like the
+        // state and domain producers, never trimmed into a different identity.
         let space = R1.find(' ').unwrap();
-        blank["name_range"] =
-            json!({"requirement_ref": "req:r1", "start": space, "end": space + 1});
-        let c = one(&g, &hr_scope(), blank);
-        assert!(c
-            .qualification
-            .issues
-            .iter()
-            .any(|i| matches!(i, CalculationIssue::InvalidName { .. })));
-        assert_eq!(c.disposition, CalculationDisposition::Ineligible);
+        let name_len = "Requested Working Days".len();
+        for (start, end) in [
+            (space, space + 1),
+            (0, name_len + 1),
+            (space, space + " Working".len()),
+        ] {
+            let mut padded = half_day();
+            padded["name_range"] = json!({"requirement_ref": "req:r1", "start": start, "end": end});
+            assert!(
+                matches!(
+                    run(&g, &hr_scope(), vec![padded]),
+                    Err(CalculationError::InvalidGrounding { .. })
+                ),
+                "{start}..{end}"
+            );
+        }
         // A stale graph is rejected.
         let changed = set_status(&g, "attr:start-date", Rejected);
         assert!(analyze_calculations(&changed, &r, None, &audit()).is_err());
