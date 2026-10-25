@@ -2338,4 +2338,97 @@ mod compare_contract {
             matched: true,
         }));
     }
+
+    // ------------------------------------------------------------------ E0.4 mutation gaps
+
+    fn table_node(node_id: &str) -> Node {
+        node(
+            node_id,
+            Accepted,
+            NodePayload::DecisionTable(DecisionTable {
+                name: node_id.into(),
+                hit_policy: "FIRST".into(),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                rows: Vec::new(),
+            }),
+        )
+    }
+
+    /// Submit governed by `tables`, with a Then asserting decision output 0.
+    fn governed_world(tables: &[&str]) -> World {
+        let mut w = submit_world(&[], &[], None);
+        for table in tables {
+            w.add(table_node(table))
+                .link(RelationKind::GovernedBy, SUBMIT, table);
+        }
+        let mut t = then();
+        t.decision_outputs.insert(0, lit(int(7)));
+        let g = given_states(&[(AMOUNT, lit(int(20)))], &[DRAFT]);
+        w.scenario_then(g, ScenarioWhen::Operation(id(SUBMIT)), t);
+        w
+    }
+
+    /// The amount scope and the output_inputs spec for every table.
+    fn governed_inputs(tables: &[&str]) -> ExecutionInputs {
+        // Input-free tables: nothing to route, so the run executes every governing table.
+        let mut spec = output_inputs().decision_tables[0].spec.clone();
+        spec.inputs.clear();
+        spec.rows[0].inputs.clear();
+        ExecutionInputs {
+            decision_tables: tables
+                .iter()
+                .map(|t| ScenarioDecisionTableInput {
+                    decision_table_ref: id(t),
+                    spec: spec.clone(),
+                })
+                .collect(),
+            ..scopes(vec![amount_scope(SUBMIT)])
+        }
+    }
+
+    #[test]
+    fn operation_decision_outputs_need_exactly_one_governing_table() {
+        assert!(matches!(
+            compare_err(&governed_world(&[]), governed_inputs(&[])),
+            ComparisonError::InvalidExpectedValue { semantic_ref, reason }
+                if semantic_ref == id(SUBMIT) && reason.contains("no governing DecisionTable")
+        ));
+        let other = "decision-table:other";
+        match compare_err(
+            &governed_world(&[TABLE, other]),
+            governed_inputs(&[TABLE, other]),
+        ) {
+            ComparisonError::AmbiguousComparisonSource {
+                decision_table_refs,
+                ..
+            } => assert_eq!(decision_table_refs, [id(TABLE), id(other)]),
+            e => panic!("{e:?}"),
+        }
+        // One governing table is the source: its output 0 is compared.
+        let c = compare(&governed_world(&[TABLE]), governed_inputs(&[TABLE]));
+        assert_eq!(c.result, ScenarioVerdict::Pass, "{c:?}");
+    }
+
+    #[test]
+    fn enum_decision_outputs_accept_only_declared_members() {
+        let mut inputs = output_inputs();
+        let spec = &mut inputs.decision_tables[0].spec;
+        spec.outputs = vec![DecisionColumn {
+            name: "kind".into(),
+            ty: DecisionType::Enum {
+                members: vec!["Annual".into(), "Sick".into()],
+            },
+            domain: None,
+        }];
+        spec.rows[0].outputs = vec![DecisionOutputCell::Enum {
+            member: "Annual".into(),
+        }];
+        let c = compare(&output_world(&[(0, enumeration("Annual"))]), inputs.clone());
+        assert_eq!(c.result, ScenarioVerdict::Pass);
+        assert!(matches!(
+            compare_err(&output_world(&[(0, enumeration("Parental"))]), inputs),
+            ComparisonError::InvalidExpectedValue { .. }
+        ));
+    }
 }

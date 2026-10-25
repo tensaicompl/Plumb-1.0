@@ -789,6 +789,26 @@ mod f4_contract {
         assert_eq!(report.result, GateResult::Pass);
     }
 
+    /// E0.4 mutation gap: only an Accepted verified_by edge verifies.
+    #[test]
+    fn non_accepted_verification_links_do_not_verify() {
+        let o = obligation_ref(R_QUALITY, VerificationKind::Analysis);
+        let mut proposed_edge = world();
+        for e in &mut proposed_edge.edges {
+            if e.kind == RelationKind::VerifiedBy && e.to == o {
+                e.status = ElementStatus::Proposed;
+            }
+        }
+        // (An Accepted edge to a Proposed obligation is rejected by graph validation itself.)
+        let report = evaluate(&proposed_edge, &setup());
+        assert_violation(
+            &report,
+            VERIFICATION_LINK,
+            &[R_QUALITY],
+            "implementation_scoped_source_unverified",
+        );
+    }
+
     #[test]
     fn unverified_source_violates_verification_link() {
         let mut w = world();

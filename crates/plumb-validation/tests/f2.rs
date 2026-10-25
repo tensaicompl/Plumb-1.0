@@ -980,6 +980,110 @@ mod f2_contract {
         assert_eq!(targets(&proposed, REACHABILITY), ["state:closed"]);
     }
 
+    // ------------------------------------------------------------------ E0.4 mutation gaps
+
+    #[test]
+    fn f2_transition_owner_must_be_an_accepted_state_owner() {
+        // A second transition of a non-Accepted (Suspect) state owner.
+        let mut ghost = entity("entity:ghost");
+        ghost.status = Suspect;
+        let fx = lifecycle(Some("operation:approve"))
+            .with(ghost)
+            .with(node(
+                "transition:ghost",
+                Accepted,
+                NodePayload::Transition(Transition {
+                    stateful_ref: id("entity:ghost"),
+                    from_state: id("state:open"),
+                    to_state: id("state:closed"),
+                    guard_expr: None,
+                    effect_refs: None,
+                }),
+            ))
+            .rel(
+                RelationKind::TransitionsVia,
+                "transition:ghost",
+                "operation:approve",
+            );
+        assert_eq!(fx.state(TRANSITION_COMPLETE), FAIL);
+        assert_eq!(targets(&fx, TRANSITION_COMPLETE), ["transition:ghost"]);
+        assert_eq!(
+            rule(&fx.report(), TRANSITION_COMPLETE).evidence,
+            ["owner:transition:ghost"]
+        );
+    }
+
+    #[test]
+    fn f2_state_reachability_uses_only_the_owners_transitions() {
+        const KEY: &str = "plumb_functional:state_disposition";
+        let limbo = node(
+            "state:limbo",
+            Accepted,
+            NodePayload::State(State {
+                name: "limbo".into(),
+            }),
+        );
+        let base = disposed(
+            lifecycle(Some("operation:approve")),
+            "state:open",
+            KEY,
+            state_disposition(true, false, false),
+        )
+        .with(limbo)
+        .rel(RelationKind::HasState, "entity:order", "state:limbo");
+        assert_eq!(base.state(REACHABILITY), FAIL);
+        // A transition into limbo owned by another entity, or one leaving a state outside this
+        // machine, does not make limbo reachable in the order machine.
+        for (owner, from) in [
+            ("entity:customer", "state:open"),
+            ("entity:order", "state:elsewhere"),
+        ] {
+            let fx = base
+                .clone()
+                .with(node(
+                    "state:elsewhere",
+                    Accepted,
+                    NodePayload::State(State {
+                        name: "elsewhere".into(),
+                    }),
+                ))
+                .with(node(
+                    "transition:enter",
+                    Accepted,
+                    NodePayload::Transition(Transition {
+                        stateful_ref: id(owner),
+                        from_state: id(from),
+                        to_state: id("state:limbo"),
+                        guard_expr: None,
+                        effect_refs: None,
+                    }),
+                ))
+                .rel(
+                    RelationKind::TransitionsVia,
+                    "transition:enter",
+                    "operation:approve",
+                );
+            assert_eq!(fx.state(REACHABILITY), FAIL, "{owner} {from}");
+            assert!(targets(&fx, REACHABILITY).contains(&"state:limbo".to_owned()));
+        }
+    }
+
+    #[test]
+    fn f2_calculation_type_failures_name_their_issue() {
+        let fx = Fx::clean().with(calculation(
+            "calculation:text",
+            "amount",
+            "Bool",
+            None,
+            None,
+            Some(vec![binding("attr:amount", "amount")]),
+        ));
+        assert_eq!(
+            rule(&fx.report(), CALC_TYPECHECK).evidence,
+            ["result_type_mismatch:calculation:text"]
+        );
+    }
+
     // ------------------------------------------------------------------ operations
 
     #[test]
@@ -1415,6 +1519,41 @@ mod f2_contract {
         assert_eq!(no_end.state(PROCESS_START_END), FAIL);
         let no_start = process().without("pn:start");
         assert_eq!(no_start.state(PROCESS_START_END), FAIL);
+    }
+
+    /// E0.4 mutation gap: a cross-process `next` touching this process's start or end is a
+    /// boundary violation of it, even when the other endpoint lies outside it.
+    #[test]
+    fn f2_process_start_end_boundary_with_one_endpoint_inside() {
+        let q_node = |key: &str, kind: K, operation: Option<&str>| {
+            let mut n = process_node(key, kind, operation);
+            if let NodePayload::ProcessNode(pn) = &mut n.payload {
+                pn.process_ref = id("process:q");
+            }
+            n
+        };
+        let fx = process()
+            .with(node(
+                "process:q",
+                Accepted,
+                NodePayload::Process(Process {
+                    name: "Q".into(),
+                    description: None,
+                    process_kind: None,
+                }),
+            ))
+            .with(q_node("qs", K::Start, None))
+            .with(q_node("qt", K::ServiceTask, Some("operation:approve")))
+            .with(q_node("qe", K::End, None));
+        let fx = next(next(fx, "qs", "qt"), "qt", "qe");
+        assert_eq!(fx.state(PROCESS_START_END), PASS);
+        let cross = next(fx, "qt", "end");
+        assert_eq!(cross.state(PROCESS_START_END), FAIL);
+        let evidence = rule(&cross.report(), PROCESS_START_END).evidence.clone();
+        assert!(
+            evidence.iter().any(|e| e.starts_with("boundary:")),
+            "{evidence:?}"
+        );
     }
 
     #[test]

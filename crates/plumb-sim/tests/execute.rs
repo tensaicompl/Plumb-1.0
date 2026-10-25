@@ -3051,4 +3051,116 @@ mod execute_contract {
                 || PRODUCTION[1].contains("analyze_calculation_cycles(")
         );
     }
+
+    // ------------------------------------------------------------------ E0.4 mutation gaps
+
+    #[test]
+    fn decision_table_exclusive_upper_bound_excludes_the_bound() {
+        let rows = vec![
+            (
+                row_inputs(
+                    false,
+                    &["Annual"],
+                    interval(Some(("0", true)), Some(("10", false))),
+                    DecisionInputCell::Any,
+                ),
+                1,
+            ),
+            (
+                row_inputs(
+                    false,
+                    &["Annual"],
+                    interval(Some(("10", true)), Some(("30", true))),
+                    DecisionInputCell::Any,
+                ),
+                2,
+            ),
+        ];
+        for (days, code) in [(0, 1), (9, 1), (10, 2), (30, 2)] {
+            let w = table_world("FIRST", &standard_inputs(days, "0.50"));
+            let result = execute(&w, table_inputs(table_spec("FIRST", rows.clone())));
+            assert_eq!(table_output(&result).0, code, "{days}");
+        }
+    }
+
+    #[test]
+    fn a_single_success_candidate_with_selection_material_needs_a_true_when() {
+        let mut w = submit_world(&[], &[], None);
+        w.add(outcome_of(
+            "outcome:large",
+            OutcomeKind::Success,
+            Some(when(&[(SUBMIT, "amount > 100")])),
+        ))
+        .link(RelationKind::Produces, SUBMIT, "outcome:large");
+        submit_scenario(&mut w, &[(AMOUNT, lit(int(50)))]);
+        let inputs = || scopes(vec![amount_scope(SUBMIT)]);
+        // Its `when` is false: never selected by default, Undecidable OUTCOME_SELECTION.
+        assert_eq!(
+            missing_of(&execute(&w, inputs())),
+            pairs(&[(SUBMIT, "outcome_selection")])
+        );
+        // True: selected.
+        submit_scenario(&mut w, &[(AMOUNT, lit(int(500)))]);
+        assert_eq!(executed(&execute(&w, inputs())).1, &[id("outcome:large")]);
+    }
+
+    #[test]
+    fn calculation_examples_follow_the_strict_v1_contract() {
+        let cal = calendars(&[]);
+        let rt = runtime(&cal, &NO_MANAGERS, None, Vec::new());
+        let condition = |example: Value| {
+            let mut w = hr_world(HR_EXPRESSION, Some(vec![example]));
+            w.scenario(
+                given(&[(FRACTION, sem(CALC, HALF_DAY))]),
+                ScenarioWhen::Calculation(id(CALC)),
+            );
+            conditions_of(&try_run(&w, ExecutionInputs::default(), &rt).unwrap().result)
+        };
+        let rejected = pairs(&[(CALC, "calculation_example")]);
+        let end_date =
+            json!({"symbol": "end_date", "value": {"kind": "date", "value": "2026-01-09"}});
+        let fraction = half_day_example("0.5")["inputs"][0].clone();
+        for (what, example) in [
+            ("an empty key", {
+                let mut e = half_day_example("0.5");
+                e["key"] = json!("");
+                e
+            }),
+            ("an untrimmed key", {
+                let mut e = half_day_example("0.5");
+                e["key"] = json!(" half_day_fraction");
+                e
+            }),
+            ("a key with a control character", {
+                let mut e = half_day_example("0.5");
+                e["key"] = json!("half_day\u{7}fraction");
+                e
+            }),
+            ("another version", {
+                let mut e = half_day_example("0.5");
+                e["version"] = json!(2);
+                e
+            }),
+            ("no inputs", {
+                let mut e = half_day_example("0.5");
+                e["inputs"] = json!([]);
+                e
+            }),
+            ("unsorted inputs", {
+                let mut e = half_day_example("0.5");
+                e["inputs"] = json!([end_date, fraction]);
+                e
+            }),
+            (
+                "a value above the declared scale",
+                half_day_example("0.505"),
+            ),
+        ] {
+            assert_eq!(condition(example), rejected, "{what}");
+        }
+        // Sorted, unique, typed inputs are accepted: the example answers the key.
+        let mut sorted = half_day_example("0.5");
+        sorted["inputs"] = json!([fraction, end_date]);
+        assert_eq!(condition(sorted), pairs(&[]));
+    }
 }
