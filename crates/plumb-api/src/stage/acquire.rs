@@ -14,9 +14,10 @@ use std::collections::BTreeSet;
 use plumb_artifacts::ArtifactKind;
 use plumb_compiler::{ArtifactInput, ArtifactSet, InferenceAbsencePolicy, StagePlan};
 use plumb_core::{to_canonical_json, Hash, Timestamp};
+use plumb_inference::provider::ProviderFailure;
 use plumb_inference::{
     materialize_derivation_record_from_artifact, persist_inference_bundle, InferenceArtifact,
-    InferenceRequest, PersistedInferenceRefs, JSON_MEDIA_TYPE,
+    InferenceRequest, PersistedInferenceRefs, ProviderError, JSON_MEDIA_TYPE,
 };
 use plumb_psg::DerivationRef;
 use serde_json::json;
@@ -27,9 +28,90 @@ use crate::stage::recipe::{Phase, Recipe};
 use crate::stage::scenario_execution::error_name;
 use crate::state::ApiState;
 
-/// 502-class recipe failure `E_INFERENCE_FAILED` naming the provider or bundle error.
-fn inference_failed<E: std::fmt::Debug>(error: &E) -> ApiError {
-    ApiError::inference_failed(&error_name(error))
+/// The most schema-validation errors a failure detail keeps, and the bound of each.
+const MAX_SCHEMA_ERRORS: usize = 16;
+const MAX_DETAIL_TEXT: usize = 200;
+
+/// `text` cut to at most [`MAX_DETAIL_TEXT`] bytes on a character boundary.
+fn bounded_text(text: &str) -> String {
+    let mut end = text.len().min(MAX_DETAIL_TEXT);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// 502-class recipe failure `E_INFERENCE_FAILED` with the bounded typed detail of a failed
+/// acquisition of `request` (Fable #253): the provider or bundle error class, the request ID
+/// and task kind, the HTTP status and provider request ID of a remote error, the sorted
+/// schema-validation errors of a schema-invalid answer and, when stored, `response_ref`, the
+/// InferenceResponse artifact of the rejected raw answer.
+fn inference_failed<E: std::fmt::Debug>(
+    error: &E,
+    request: &InferenceRequest,
+    provider_error: Option<&ProviderError>,
+    response_ref: Option<&Hash>,
+) -> ApiError {
+    let mut details = json!({
+        "error": error_name(error),
+        "request_id": request.id,
+        "task_kind": request.task_kind,
+    });
+    match provider_error {
+        Some(ProviderError::Remote {
+            status, request_id, ..
+        }) => {
+            details["http_status"] = json!(status);
+            if let Some(id) = request_id {
+                details["provider_request_id"] = json!(bounded_text(id));
+            }
+        }
+        Some(ProviderError::SchemaInvalidOutput { errors }) => {
+            let mut sorted: Vec<String> = errors.iter().map(|e| bounded_text(e)).collect();
+            sorted.sort();
+            sorted.truncate(MAX_SCHEMA_ERRORS);
+            details["schema_errors"] = json!(sorted);
+        }
+        _ => {}
+    }
+    if let Some(hash) = response_ref {
+        details["response_ref"] = json!(hash);
+    }
+    ApiError::inference_failed(&error_name(error)).with_details(details)
+}
+
+/// The failure of one provider call, with its rejected raw answer stored by content hash.
+fn provider_failed(
+    state: &ApiState,
+    request: &InferenceRequest,
+    failure: ProviderFailure,
+    created_at: Timestamp,
+) -> ApiError {
+    let response_ref = failure.rejected_response.and_then(|rejected| {
+        let stored = state.with_artifact_store(|store| {
+            plumb_artifacts::ArtifactStore::put(
+                store,
+                ArtifactKind::InferenceResponse,
+                &rejected.media_type,
+                &rejected.bytes,
+                created_at,
+            )
+        });
+        match stored {
+            Ok(Ok(hash)) => Some(hash),
+            _ => {
+                tracing::error!(target: "plumb_api::stage", request_id = %request.id,
+                    "storing a rejected provider answer failed");
+                None
+            }
+        }
+    });
+    inference_failed(
+        &failure.error,
+        request,
+        Some(&failure.error),
+        response_ref.as_ref(),
+    )
 }
 
 /// Acquires every artifact of `plan`: deterministic planned artifacts are stored by content
@@ -37,12 +119,27 @@ fn inference_failed<E: std::fmt::Debug>(error: &E) -> ApiError {
 /// store lock and persisted as one verified bundle. A non-empty external validation list is
 /// `E_EXTERNAL_VALIDATOR_UNAVAILABLE` (the pilot has no validator transport). Under the `null`
 /// provider mode the declared absence policies apply first (R0.2).
+#[cfg(test)]
 pub(crate) fn acquire(
     state: &ApiState,
     plan: &StagePlan,
     recipe: Recipe,
     phase: Phase,
     created_at: Timestamp,
+) -> Result<ArtifactSet, ApiError> {
+    acquire_with(state, plan, recipe, phase, created_at, false)
+}
+
+/// [`acquire`] for a retried attempt when `reuse` (H0.3, Fable #62): a planned request whose
+/// validated inference an earlier attempt already persisted is reused instead of calling the
+/// provider again, so a retry never re-bills or re-generates a completed request.
+pub(crate) fn acquire_with(
+    state: &ApiState,
+    plan: &StagePlan,
+    recipe: Recipe,
+    phase: Phase,
+    created_at: Timestamp,
+    reuse: bool,
 ) -> Result<ArtifactSet, ApiError> {
     if !plan.external_validation_requests.is_empty() {
         return Err(ApiError::conflict(
@@ -107,15 +204,22 @@ pub(crate) fn acquire(
         .clone();
     let mut inference = Vec::with_capacity(plan.inference_requests.len());
     for planned in &plan.inference_requests {
+        // Fable #62: a request completed by an earlier attempt is reused, never re-billed.
+        if reuse {
+            if let Some(input) = persisted_inference(state, &planned.request)? {
+                inference.push(input);
+                continue;
+            }
+        }
         // No lock is held here: the provider may perform network I/O.
         let execution = provider
-            .execute(&planned.request, &planned.material)
-            .map_err(|e| inference_failed(&e))?;
+            .execute_detailed(&planned.request, &planned.material)
+            .map_err(|failure| provider_failed(state, &planned.request, failure, created_at))?;
         let refs = state
             .with_artifact_store(|store| {
                 persist_inference_bundle(store, &planned.request, &execution, created_at)
             })?
-            .map_err(|e| inference_failed(&e))?;
+            .map_err(|e| inference_failed(&e, &planned.request, None, None))?;
         let bytes = to_canonical_json(&execution.artifact)
             .map_err(|e| ApiError::internal_cause("inference_artifact", &e))?;
         inference.push(ArtifactInput {
@@ -124,9 +228,60 @@ pub(crate) fn acquire(
             media_type: JSON_MEDIA_TYPE.to_owned(),
             bytes,
         });
+        // H0.3: after a provider call returned and its bundle is persisted is a safe step
+        // boundary; a shutting-down process stops here (a retry reuses the bundle).
+        if state.stage_stop_requested() {
+            return Err(crate::stage::worker::interrupted("after_provider_call"));
+        }
     }
     ArtifactSet::new(deterministic, inference, Vec::new())
         .map_err(|e| ApiError::internal_cause("artifact_set", &e))
+}
+
+/// The persisted, verified validated-inference artifact of `request`, if an earlier attempt
+/// completed it: the stored bytes hash to their ref, decode strictly to canonical JSON, belong to
+/// `request`, and their request and raw-response artifacts are stored too.
+fn persisted_inference(
+    state: &ApiState,
+    request: &InferenceRequest,
+) -> Result<Option<ArtifactInput>, ApiError> {
+    let refs = state
+        .with_stage_store(|store| store.validated_inference_refs(&request.id))?
+        .map_err(crate::stage::store_error)?;
+    let request_ref = Hash::content_sha256(
+        &to_canonical_json(request)
+            .map_err(|e| ApiError::internal_cause("inference_request", &e))?,
+    );
+    for hash in refs {
+        let Ok(artifact) = state.get_artifact(&hash)? else {
+            continue;
+        };
+        let Ok(decoded) = serde_json::from_slice::<InferenceArtifact>(&artifact.bytes) else {
+            continue;
+        };
+        let canonical = to_canonical_json(&decoded).ok();
+        let exists = |h: &Hash| {
+            state
+                .with_artifact_store(|store| plumb_artifacts::ArtifactStore::exists(store, h))
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(false)
+        };
+        if canonical.as_deref() == Some(artifact.bytes.as_slice())
+            && artifact.media_type == JSON_MEDIA_TYPE
+            && decoded.validate_for(request).is_ok()
+            && exists(&request_ref)
+            && exists(&decoded.raw_response_hash)
+        {
+            return Ok(Some(ArtifactInput {
+                hash,
+                kind: ArtifactKind::ValidatedInference,
+                media_type: JSON_MEDIA_TYPE.to_owned(),
+                bytes: artifact.bytes,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// The validated-inference artifact of `request` among `artifacts` with its input hash.
@@ -355,7 +510,12 @@ mod tests {
         let error = acquire(&miss, &p, Recipe::Extract, Phase::Segmentation, at()).unwrap_err();
         assert_eq!(error.body().status.as_u16(), 502);
         assert_eq!(error.body().code, "E_INFERENCE_FAILED");
-        assert_eq!(error.body().details, json!({"error": "FixtureNotFound"}));
+        // Fable #253: the typed detail names the request and its task kind.
+        let detail = |error: &str| {
+            json!({"error": error, "request_id": fallback.request.id,
+                "task_kind": "requirement_segmentation"})
+        };
+        assert_eq!(error.body().details, detail("FixtureNotFound"));
         // Even ProviderDisabled is a failure when the configured mode is not null.
         for mode in [replay(), ProviderMode::Anthropic] {
             let dir = tempfile::tempdir().unwrap();
@@ -365,7 +525,7 @@ mod tests {
             let error =
                 acquire(&state, &p, Recipe::Extract, Phase::Segmentation, at()).unwrap_err();
             assert_eq!(error.body().code, "E_INFERENCE_FAILED");
-            assert_eq!(error.body().details, json!({"error": "ProviderDisabled"}));
+            assert_eq!(error.body().details, detail("ProviderDisabled"));
             assert_eq!(
                 provider.calls.lock().unwrap().len(),
                 1,

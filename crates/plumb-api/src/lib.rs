@@ -27,5 +27,8 @@ pub use runtime::{
     F4GateConfig, GateInputsConfig, ProviderMode, RuntimeConfigError,
 };
 pub use server::{serve_blocking, ServeError};
-pub use stage::{ReadyGate, ReadyOutcome, ReadyRule, Recipe, StageRun};
+pub use stage::{
+    ReadyGate, ReadyOutcome, ReadyRule, Recipe, StageRetry, StageRun, STAGE_HEARTBEAT_SECONDS,
+    STAGE_LEASE_SECONDS, STAGE_SHUTDOWN_GRACE_SECONDS,
+};
 pub use state::{A03RuntimeConfig, ApiIdentity, ApiState, ApiStateError, OpenMode};

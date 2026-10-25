@@ -14,7 +14,7 @@
 //! mutates a graph in place.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{mpsc, Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
@@ -142,8 +142,8 @@ pub(crate) struct A04Runtime {
     pub(crate) gates: GateInputsConfig,
     pub(crate) directory: Option<plumb_functional::DirectoryDraft>,
     pub(crate) question_routing: Option<plumb_functional::StakeholderRoutingConfig>,
-    /// The FIFO queue of the recipe worker of this instance.
-    queue: Mutex<Option<mpsc::Sender<Hash>>>,
+    /// The recipe worker, its queue, the lease heartbeat and the owner identity (H0.3).
+    pub(crate) lifecycle: crate::stage::worker::Lifecycle,
     /// The shared `<db>.jobs.lock` held while this instance is open (see `stage::start`).
     jobs_lock: Mutex<Option<std::fs::File>>,
 }
@@ -171,7 +171,7 @@ impl A04Runtime {
             gates: config.gates,
             directory: config.directory,
             question_routing: config.question_routing,
-            queue: Mutex::new(None),
+            lifecycle: crate::stage::worker::Lifecycle::default(),
             jobs_lock: Mutex::new(None),
         })
     }
@@ -181,27 +181,6 @@ impl A04Runtime {
         if let Ok(mut held) = self.jobs_lock.lock() {
             *held = Some(file);
         }
-    }
-
-    /// Installs the worker queue of this instance.
-    pub(crate) fn set_queue(&self, sender: mpsc::Sender<Hash>) -> Result<(), ApiError> {
-        *self
-            .queue
-            .lock()
-            .map_err(|e| ApiError::internal_cause("stage_queue", &e))? = Some(sender);
-        Ok(())
-    }
-
-    /// Enqueues a recipe job for the worker; false when no worker runs.
-    pub(crate) fn enqueue(&self, id: &Hash) -> Result<bool, ApiError> {
-        let queue = self
-            .queue
-            .lock()
-            .map_err(|e| ApiError::internal_cause("stage_queue", &e))?;
-        Ok(match queue.as_ref() {
-            Some(sender) => sender.send(id.clone()).is_ok(),
-            None => false,
-        })
     }
 }
 

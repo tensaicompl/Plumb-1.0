@@ -480,6 +480,11 @@ pub const ERROR_CATALOGUE: &[CatalogueEntry] = &[
     ),
     entry("E_STAGE_SCOPE_INVALID", 422, "The recipe scope is invalid."),
     entry(
+        "E_STAGE_WORKER_UNAVAILABLE",
+        503,
+        "The stage worker of this process is not running or is shutting down.",
+    ),
+    entry(
         "E_STORE_CORRUPT",
         500,
         "Persisted store or artifact content failed an integrity check.",

@@ -129,6 +129,7 @@ mod stages {
                 branch: BranchName::main(),
                 base_revision_id: self.r1.clone(),
                 created_at: ts(T1),
+                lease: None,
             }
         }
 
@@ -346,6 +347,306 @@ mod stages {
             assert_eq!(store.recipe_job(&generic(job)).unwrap(), before);
         }
         assert!(store.retry_recipe_job(&generic("9"), ts(T3)).is_err());
+    }
+
+    // ------------------------------------------------------------------ attempts and leases
+
+    fn lease(owner: &str, at: &str) -> StageLease {
+        StageLease {
+            owner_id: owner.to_owned(),
+            expires_at: ts(at),
+        }
+    }
+
+    /// H0.3 (§33.3): a v5 store records every attempt of a recipe job under its unchanged ID,
+    /// with the owner that claimed it and how it ended; a claim leases the job to its owner.
+    #[test]
+    fn stages_attempts_are_durable_and_leased() {
+        let db = Db::new();
+        let mut store = db.store();
+        assert_eq!(STORE_SCHEMA_VERSION, 6);
+        let mut job = db.recipe("1");
+        job.lease = Some(lease("own:aaaaaaaaaaaaaaaa", T2));
+        let queued = inserted(store.insert_recipe_job(&job).unwrap());
+        assert_eq!(queued.attempt, 1);
+        assert_eq!(queued.owner_id.as_deref(), Some("own:aaaaaaaaaaaaaaaa"));
+        assert_eq!(queued.lease_expires_at, Some(ts(T2)));
+        assert!(store.recipe_job_attempts(&generic("1")).unwrap().is_empty());
+        // A claim leases the job to its claimer and starts attempt 1.
+        assert!(store
+            .claim_recipe_job_leased(&generic("1"), &lease("own:bbbbbbbbbbbbbbbb", T3), ts(T1))
+            .unwrap());
+        let claimed = store.recipe_job(&generic("1")).unwrap().unwrap();
+        assert_eq!(claimed.owner_id.as_deref(), Some("own:bbbbbbbbbbbbbbbb"));
+        assert_eq!(claimed.lease_expires_at, Some(ts(T3)));
+        // Renewal touches only the owner's in-flight jobs.
+        assert_eq!(
+            store.renew_leases("own:cccccccccccccccc", ts(T3)).unwrap(),
+            0
+        );
+        let renewed = "2026-09-29T11:00:00.000000000Z";
+        assert_eq!(
+            store
+                .renew_leases("own:bbbbbbbbbbbbbbbb", ts(renewed))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .recipe_job(&generic("1"))
+                .unwrap()
+                .unwrap()
+                .lease_expires_at,
+            Some(ts(renewed))
+        );
+        let failed = store
+            .transition_recipe_job(
+                &generic("1"),
+                &[StageStatus::Acquiring],
+                StageStatus::Failed,
+                None,
+                Some(("E_INFERENCE_FAILED", "provider down")),
+                ts(T2),
+            )
+            .unwrap();
+        // A terminal job holds no lease; its last owner stays recorded.
+        assert_eq!(failed.lease_expires_at, None);
+        assert_eq!(failed.owner_id.as_deref(), Some("own:bbbbbbbbbbbbbbbb"));
+        assert_eq!(
+            store
+                .renew_leases("own:bbbbbbbbbbbbbbbb", ts(renewed))
+                .unwrap(),
+            0
+        );
+        let first = StageAttemptRecord {
+            recipe_job_id: generic("1"),
+            attempt: 1,
+            owner_id: Some("own:bbbbbbbbbbbbbbbb".to_owned()),
+            started_at: ts(T1),
+            ended_at: Some(ts(T2)),
+            outcome: Some(StageStatus::Failed),
+            error: Some(r#"{"code":"E_INFERENCE_FAILED","message":"provider down"}"#.to_owned()),
+        };
+        assert_eq!(
+            store.recipe_job_attempts(&generic("1")).unwrap(),
+            vec![first.clone()]
+        );
+        // A retry is attempt 2 under the same ID; attempt 1 is kept.
+        let retried = store
+            .retry_recipe_job_leased(
+                &generic("1"),
+                Some(&lease("own:dddddddddddddddd", T3)),
+                ts(T2),
+            )
+            .unwrap();
+        assert_eq!(retried.attempt, 2);
+        assert_eq!(retried.owner_id.as_deref(), Some("own:dddddddddddddddd"));
+        assert!(store
+            .claim_recipe_job_leased(&generic("1"), &lease("own:dddddddddddddddd", T3), ts(T3))
+            .unwrap());
+        store
+            .transition_recipe_job(
+                &generic("1"),
+                &[StageStatus::Acquiring],
+                StageStatus::Ready,
+                Some(&db.r1),
+                None,
+                ts(T3),
+            )
+            .unwrap();
+        // Later transitions of a settled job do not rewrite its attempt.
+        store
+            .transition_recipe_job(
+                &generic("1"),
+                &[StageStatus::Ready],
+                StageStatus::Committed,
+                Some(&db.r2),
+                None,
+                ts(T3),
+            )
+            .unwrap();
+        drop(store);
+        let attempts = db.store().recipe_job_attempts(&generic("1")).unwrap();
+        assert_eq!(
+            attempts,
+            vec![
+                first,
+                StageAttemptRecord {
+                    recipe_job_id: generic("1"),
+                    attempt: 2,
+                    owner_id: Some("own:dddddddddddddddd".to_owned()),
+                    started_at: ts(T3),
+                    ended_at: Some(ts(T3)),
+                    outcome: Some(StageStatus::Ready),
+                    error: None,
+                }
+            ]
+        );
+        // Raw CHECKs: attempts start at 1; an attempt that ended has an outcome.
+        assert!(db.exec_err("UPDATE stage_recipe_jobs SET attempt = 0"));
+        assert!(db.exec_err("UPDATE stage_recipe_job_attempts SET outcome = NULL"));
+        assert!(db.exec_err("UPDATE stage_recipe_job_attempts SET outcome = 'queued'"));
+    }
+
+    /// H0.3 (§33.3): startup recovery may interrupt only in-flight jobs whose lease expired or
+    /// that have no owner; an interruption ends the job's current attempt.
+    #[test]
+    fn stages_only_expired_or_ownerless_jobs_are_abandoned() {
+        let db = Db::new();
+        let mut store = db.store();
+        for (job, owner) in [
+            ("1", None),
+            ("2", Some(lease("own:aaaaaaaaaaaaaaaa", T1))),
+            ("3", Some(lease("own:aaaaaaaaaaaaaaaa", T3))),
+            ("4", Some(lease("own:aaaaaaaaaaaaaaaa", T1))),
+        ] {
+            let mut new = db.recipe(job);
+            new.lease = owner;
+            inserted(store.insert_recipe_job(&new).unwrap());
+        }
+        assert!(store
+            .claim_recipe_job_leased(&generic("4"), &lease("own:aaaaaaaaaaaaaaaa", T1), ts(T1))
+            .unwrap());
+        // A terminal job is never abandoned, whatever its lease.
+        inserted(store.insert_recipe_job(&db.recipe("5")).unwrap());
+        store
+            .interrupt_recipe_job(&generic("5"), "E_X", "x", ts(T1))
+            .unwrap();
+        assert_eq!(
+            store.abandoned_recipe_jobs(ts(T2)).unwrap(),
+            vec![generic("1"), generic("2"), generic("4")]
+        );
+        // Interrupting is conditional on the job still being in flight.
+        assert!(store
+            .interrupt_recipe_job(&generic("4"), "E_JOB_INTERRUPTED", "lease expired", ts(T2))
+            .unwrap());
+        assert!(!store
+            .interrupt_recipe_job(&generic("4"), "E_JOB_INTERRUPTED", "again", ts(T3))
+            .unwrap());
+        let record = store.recipe_job(&generic("4")).unwrap().unwrap();
+        assert_eq!(record.status, StageStatus::Failed);
+        assert_eq!(record.failure_code.as_deref(), Some("E_JOB_INTERRUPTED"));
+        let attempts = store.recipe_job_attempts(&generic("4")).unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].started_at, ts(T1));
+        assert_eq!(attempts[0].ended_at, Some(ts(T2)));
+        assert_eq!(attempts[0].outcome, Some(StageStatus::Failed));
+        // A queued job that never started still records its interrupted attempt.
+        store
+            .interrupt_recipe_job(&generic("1"), "E_JOB_INTERRUPTED", "no owner", ts(T2))
+            .unwrap();
+        let attempts = store.recipe_job_attempts(&generic("1")).unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            (attempts[0].started_at, attempts[0].ended_at),
+            (ts(T2), Some(ts(T2)))
+        );
+        assert_eq!(
+            store.abandoned_recipe_jobs(ts(T2)).unwrap(),
+            vec![generic("2")]
+        );
+        // An unreadable lease counts as expired (per-row fault tolerance).
+        db.raw()
+            .execute(
+                "UPDATE stage_recipe_jobs SET lease_expires_at = 'garbage' \
+                 WHERE recipe_job_id = ?1",
+                [generic("3").as_str()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.abandoned_recipe_jobs(ts(T2)).unwrap(),
+            vec![generic("2"), generic("3")]
+        );
+    }
+
+    /// H0.3 (§33.3): a v4 store (pre H0.11) and a v5 store (H0.11 `abandoned`, pre H0.3)
+    /// migrate in place to v6; every recipe job keeps its row as attempt 1 and each started
+    /// job gets its attempt record.
+    #[test]
+    fn stages_v4_and_v5_stores_migrate_to_v6_attempts() {
+        for from in [4, 5] {
+            let db = Db::new();
+            let mut store = db.store();
+            for job in ["1", "2", "3"] {
+                inserted(store.insert_recipe_job(&db.recipe(job)).unwrap());
+            }
+            assert!(store.claim_recipe_job(&generic("2"), ts(T2)).unwrap());
+            assert!(store.claim_recipe_job(&generic("3"), ts(T2)).unwrap());
+            store
+                .transition_recipe_job(
+                    &generic("3"),
+                    &[StageStatus::Acquiring],
+                    StageStatus::Failed,
+                    None,
+                    Some(("E_INFERENCE_FAILED", "provider \"down\"")),
+                    ts(T3),
+                )
+                .unwrap();
+            drop(store);
+            // Rebuild the exact v4/v5 shape: no attempt table, no attempt or lease columns (a
+            // fresh store already carries the v5 `abandoned` proposal state; a v4 store is rebuilt
+            // by the v4 step either way).
+            db.raw()
+                .execute_batch(&format!(
+                    "DROP TABLE stage_recipe_job_attempts; \
+                     ALTER TABLE stage_recipe_jobs DROP COLUMN lease_expires_at; \
+                     ALTER TABLE stage_recipe_jobs DROP COLUMN owner_id; \
+                     ALTER TABLE stage_recipe_jobs DROP COLUMN attempt; \
+                     UPDATE schema_meta SET version = {from};",
+                ))
+                .unwrap();
+            let before: Vec<(String, String, String)> = {
+                let conn = db.raw();
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT recipe_job_id, status, updated_at FROM stage_recipe_jobs \
+                         ORDER BY recipe_job_id",
+                    )
+                    .unwrap();
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                rows
+            };
+            let store = db.store();
+            let version: i64 = db
+                .raw()
+                .query_row("SELECT version FROM schema_meta", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(version, STORE_SCHEMA_VERSION);
+            let jobs = store.recipe_jobs().unwrap();
+            assert_eq!(
+                jobs.iter()
+                    .map(|j| (
+                        j.recipe_job_id.to_string(),
+                        j.status.as_str().to_owned(),
+                        j.updated_at.to_string()
+                    ))
+                    .collect::<Vec<_>>(),
+                before
+            );
+            assert!(jobs
+                .iter()
+                .all(|j| j.attempt == 1 && j.owner_id.is_none() && j.lease_expires_at.is_none()));
+            assert!(store.recipe_job_attempts(&generic("1")).unwrap().is_empty());
+            let running = store.recipe_job_attempts(&generic("2")).unwrap();
+            assert_eq!(running.len(), 1);
+            assert_eq!((running[0].ended_at, running[0].outcome), (None, None));
+            let failed = store.recipe_job_attempts(&generic("3")).unwrap();
+            assert_eq!(failed[0].outcome, Some(StageStatus::Failed));
+            assert_eq!(failed[0].ended_at, Some(ts(T3)));
+            assert_eq!(
+                failed[0].error.as_deref(),
+                Some(r#"{"code":"E_INFERENCE_FAILED","message":"provider \"down\""}"#)
+            );
+            // Pre-H0.3 rows are ownerless: recovery may interrupt every in-flight one.
+            assert_eq!(
+                store.abandoned_recipe_jobs(ts(T1)).unwrap(),
+                vec![generic("1"), generic("2")]
+            );
+        }
     }
 
     // ------------------------------------------------------------------ stage jobs and steps
@@ -640,7 +941,11 @@ mod stages {
                     state, origin_kind, origin_ref, created_at, resolved_at, resolved_revision_id";
         db.raw()
             .execute_batch(&format!(
-                "CREATE TABLE sl AS SELECT proposal_id, recipe_job_id, stage_job_id, \
+                "DROP TABLE stage_recipe_job_attempts; \
+                 ALTER TABLE stage_recipe_jobs DROP COLUMN lease_expires_at; \
+                 ALTER TABLE stage_recipe_jobs DROP COLUMN owner_id; \
+                 ALTER TABLE stage_recipe_jobs DROP COLUMN attempt; \
+                 CREATE TABLE sl AS SELECT proposal_id, recipe_job_id, stage_job_id, \
                    compile_run_ref FROM stage_job_proposals; DROP TABLE stage_job_proposals; \
                  CREATE TABLE wp AS SELECT {cols} FROM workflow_proposals; \
                  DROP TABLE workflow_proposals; \

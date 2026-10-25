@@ -597,6 +597,55 @@ pub fn answer(
 }
 
 /// `proposals` (R0.6): every pending proposal sorted by ID, read-only.
+/// `retry <JOB_ID>` (H0.3, architecture §33.3): re-queues a Failed recipe job as its next
+/// attempt under the same ID (its Failed children too) and executes it in-process. A moved head
+/// is `E_STAGE_RETRY_BASE_MOVED`, any other status `E_STAGE_RETRY_NOT_FAILED`; nothing changes
+/// then. The job is reported like its recipe command, with its attempt.
+pub fn retry(state: &ApiState, job: &str) -> Result<Done, CliError> {
+    let retry = state.retry_job(job)?;
+    state.execute_recipe_job(&retry.job_id)?;
+    let (response, _) = state.get_job(retry.job_id.as_str())?;
+    let attempt = state.recipe_job_attempt(&retry.job_id)?;
+    let gates = state.recipe_gate_details(&retry.job_id)?;
+    let mut value = serde_json::to_value(&response).map_err(|e| CliError::Io(e.to_string()))?;
+    value["job_id"] = Value::String(retry.job_id.to_string());
+    value["attempt"] = json!(attempt);
+    let status = serde_json::to_value(response.status)
+        .ok()
+        .and_then(|s| s.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let mut text = format!(
+        "job {}: {status} (attempt {attempt}, base {}, result {})",
+        retry.job_id,
+        response.base_revision,
+        response.result_version.as_deref().unwrap_or("-")
+    );
+    for (gate, result, failed) in &gates {
+        text.push_str(&format!("\n{gate}: {result}"));
+        push_failed_rules(&mut text, failed);
+    }
+    if let Some(error) = &response.error {
+        text.push_str(&format!("\nerror: {error}"));
+    }
+    let done = Done {
+        json: value,
+        text,
+        raw: None,
+        gate_failed: gates.iter().any(|(_, result, _)| result == "fail"),
+    };
+    let ended = match response.status {
+        JobStatus::Ready | JobStatus::Committed => return Ok(done),
+        JobStatus::Failed => "failed",
+        JobStatus::Stale => "stale",
+        _ => "incomplete",
+    };
+    Err(CliError::Recipe {
+        recipe: retry.recipe.as_str(),
+        status: ended,
+        done: Box::new(done),
+    })
+}
+
 pub fn proposals(state: &ApiState, refresh: bool) -> Result<Done, CliError> {
     let mut refreshed = Vec::new();
     if refresh {

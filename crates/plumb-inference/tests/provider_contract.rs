@@ -377,8 +377,10 @@ mod provider_contract {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex};
         use std::thread;
+        use std::time::{Duration, Instant};
 
         use plumb_core::{to_canonical_json, CanonicalJson, Hash};
+        use plumb_inference::anthropic::RetryPolicy;
         use plumb_inference::anthropic::{
             default_request_timeout_ms, ANTHROPIC_DEFAULT_CONNECT_TIMEOUT_MS,
             ANTHROPIC_MAX_REQUEST_TIMEOUT_MS, ANTHROPIC_MAX_TOKENS_LIMIT,
@@ -411,11 +413,11 @@ mod provider_contract {
 
         /// A minimal local HTTP/1.1 responder answering every connection with one fixed reply.
         fn serve(status: &str, extra_headers: &[(&str, &str)], body: &[u8]) -> Server {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = listener.local_addr().unwrap().port();
-            let connections = Arc::new(AtomicUsize::new(0));
-            let captured = Arc::new(Mutex::new(Vec::new()));
-            let (c, cap) = (connections.clone(), captured.clone());
+            serve_sequence(&[(status, extra_headers, body)])
+        }
+
+        /// One HTTP/1.1 reply.
+        fn reply_bytes(status: &str, extra_headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
             let mut reply = format!(
                 "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n",
                 body.len()
@@ -426,10 +428,29 @@ mod provider_contract {
             }
             reply.extend(b"\r\n");
             reply.extend(body);
+            reply
+        }
+
+        /// One scripted reply: status line, extra headers, body.
+        type Reply<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [u8]);
+
+        /// A local responder answering the n-th connection with the n-th reply (the last one
+        /// repeats).
+        fn serve_sequence(replies: &[Reply<'_>]) -> Server {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let connections = Arc::new(AtomicUsize::new(0));
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let (c, cap) = (connections.clone(), captured.clone());
+            let replies: Vec<Vec<u8>> = replies
+                .iter()
+                .map(|(s, h, b)| reply_bytes(s, h, b))
+                .collect();
             thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(mut stream) = stream else { continue };
-                    c.fetch_add(1, Ordering::SeqCst);
+                    let n = c.fetch_add(1, Ordering::SeqCst);
+                    let reply = &replies[n.min(replies.len() - 1)];
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     let mut request_line = String::new();
                     reader.read_line(&mut request_line).unwrap();
@@ -454,7 +475,7 @@ mod provider_contract {
                         headers,
                         body,
                     });
-                    stream.write_all(&reply).unwrap();
+                    stream.write_all(reply).unwrap();
                     stream.flush().unwrap();
                 }
             });
@@ -501,6 +522,15 @@ mod provider_contract {
 
         fn provider(server: &Server) -> AnthropicProvider {
             AnthropicProvider::with_endpoint(KEY, &server.endpoint).unwrap()
+        }
+
+        /// The provider of `server` retrying transient statuses without waiting.
+        fn eager(server: &Server) -> AnthropicProvider {
+            provider(server).with_retry_policy(RetryPolicy {
+                base_delay: Duration::ZERO,
+                max_delay: Duration::ZERO,
+                ..RetryPolicy::default()
+            })
         }
 
         fn run_with(
@@ -907,16 +937,19 @@ mod provider_contract {
             );
         }
 
+        /// H0.3 (Fable #62): 429, 529 and other 5xx statuses are retried with bounded backoff;
+        /// every other status is final at once. The last answer stays a typed remote error.
         #[test]
-        fn remote_statuses_are_typed_and_not_retried() {
-            for status in [
-                "400 Bad Request",
-                "401 Unauthorized",
-                "403 Forbidden",
-                "404 Not Found",
-                "429 Too Many Requests",
-                "500 Internal Server Error",
-                "529 Overloaded",
+        fn remote_statuses_are_typed_and_only_transient_ones_retried() {
+            assert_eq!(RetryPolicy::default().max_attempts, 3);
+            for (status, attempts) in [
+                ("400 Bad Request", 1),
+                ("401 Unauthorized", 1),
+                ("403 Forbidden", 1),
+                ("404 Not Found", 1),
+                ("429 Too Many Requests", 3),
+                ("500 Internal Server Error", 3),
+                ("529 Overloaded", 3),
             ] {
                 let code: u16 = status[..3].parse().unwrap();
                 let body = serde_json::to_vec(&json!({
@@ -927,7 +960,7 @@ mod provider_contract {
                 .unwrap();
                 let server = serve(status, &[("request-id", "req_header_1")], &body);
                 let (request, material) = standard("anthropic");
-                let err = provider(&server).execute(&request, &material).unwrap_err();
+                let err = eager(&server).execute(&request, &material).unwrap_err();
                 match &err {
                     ProviderError::Remote {
                         status,
@@ -945,7 +978,7 @@ mod provider_contract {
                 assert!(!format!("{err} {err:?}").contains(KEY));
                 assert_eq!(
                     server.connections.load(std::sync::atomic::Ordering::SeqCst),
-                    1,
+                    attempts,
                     "{status}"
                 );
             }
@@ -956,12 +989,79 @@ mod provider_contract {
                 b"upstream exploded",
             );
             let (request, material) = standard("anthropic");
-            let err = provider(&server).execute(&request, &material).unwrap_err();
+            let err = eager(&server).execute(&request, &material).unwrap_err();
             assert!(matches!(
                 &err,
                 ProviderError::Remote { status: 500, error_type: None, message: None, request_id: Some(r) } if r == "req_header_2"
             ));
             assert!(!format!("{err}").contains("upstream exploded"));
+        }
+
+        /// H0.3 (Fable #62): a transient status is retried after the provider's `retry-after`
+        /// and the later success is the execution, unchanged (no output repair); a
+        /// `retry-after` beyond the bound is not waited for.
+        #[test]
+        fn transient_status_is_retried_honoring_retry_after() {
+            let body = message("m", "end_turn", json!([text(r#"{"answer":"yes"}"#)]));
+            let overloaded =
+                br#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+            let server = serve_sequence(&[
+                ("529 Overloaded", &[("retry-after", "1")], overloaded),
+                ("200 OK", &[("content-type", "application/json")], &body),
+            ]);
+            let (request, material) = standard("anthropic");
+            let started = Instant::now();
+            let execution = provider(&server).execute(&request, &material).unwrap();
+            assert!(started.elapsed() >= Duration::from_secs(1));
+            assert_eq!(execution.raw_response, body);
+            assert_eq!(
+                server.connections.load(std::sync::atomic::Ordering::SeqCst),
+                2
+            );
+            // The same request body is sent on every attempt.
+            let sent = server.captured.lock().unwrap().clone();
+            assert_eq!(sent[0].body, sent[1].body);
+
+            let server = serve("429 Too Many Requests", &[("retry-after", "3600")], b"{}");
+            let started = Instant::now();
+            let err = provider(&server).execute(&request, &material).unwrap_err();
+            assert!(matches!(err, ProviderError::Remote { status: 429, .. }));
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert_eq!(
+                server.connections.load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+        }
+
+        /// H0.3 (Fable #253): an answer the adapter rejects keeps its exact raw bytes for the
+        /// caller to store; `execute` keeps returning the same typed error.
+        #[test]
+        fn rejected_answers_carry_their_raw_response() {
+            let body = message("m", "end_turn", json!([text(r#"{"answer":1}"#)]));
+            let server = serve("200 OK", &[("content-type", "application/json")], &body);
+            let (request, material) = standard("anthropic");
+            let failure = provider(&server)
+                .execute_detailed(&request, &material)
+                .unwrap_err();
+            assert!(matches!(
+                failure.error,
+                ProviderError::SchemaInvalidOutput { .. }
+            ));
+            let rejected = failure.rejected_response.unwrap();
+            assert_eq!(rejected.bytes, body);
+            assert_eq!(rejected.media_type, "application/json");
+            let err = provider(&server).execute(&request, &material).unwrap_err();
+            assert!(matches!(err, ProviderError::SchemaInvalidOutput { .. }));
+            // A non-success status is a typed remote error without a stored answer.
+            let server = serve("400 Bad Request", &[], b"{}");
+            let failure = provider(&server)
+                .execute_detailed(&request, &material)
+                .unwrap_err();
+            assert!(matches!(
+                failure.error,
+                ProviderError::Remote { status: 400, .. }
+            ));
+            assert!(failure.rejected_response.is_none());
         }
 
         #[test]

@@ -34,7 +34,7 @@ mod cli {
         b"# Leave\n\nEmployees shall submit leave requests.\n\nManagers shall approve leave requests.\n";
 
     /// The 22 commands with their minimal required arguments.
-    const COMMANDS: [&[&str]; 29] = [
+    const COMMANDS: [&[&str]; 30] = [
         &["init", "--project", "project:pilot"],
         &[
             "import",
@@ -83,6 +83,11 @@ mod cli {
         &["ask"],
         &["answer", "q:0000000000000001", "--answer", "{}"],
         &["proposals"],
+        // H0.3.
+        &[
+            "retry",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ],
         &["report", "--out", "out"],
         &["serve", "--listen", "127.0.0.1:0"],
         &[
@@ -486,7 +491,7 @@ mod cli {
     // ------------------------------------------------------------------ parsing
 
     #[test]
-    fn cli_parses_all_twenty_nine_commands() {
+    fn cli_parses_all_thirty_commands() {
         // Without --config every parsed command stops at configuration: exit 1, not a clap
         // error, so each argument tree parses.
         for args in COMMANDS {
@@ -535,6 +540,7 @@ mod cli {
                 "ask",
                 "answer",
                 "proposals",
+                "retry",
                 "log-effort"
             ]
         );
@@ -1647,6 +1653,47 @@ mod cli {
         assert!(err.contains("E_STAGE_CONFIG_MISSING"), "{err}");
     }
 
+    /// H0.3 (§33.3): `retry <JOB_ID>` re-runs a Failed recipe job as its next attempt under the
+    /// same ID and reports it like the recipe command; any other job is refused unchanged.
+    #[test]
+    fn cli_retry_reruns_a_failed_job_as_its_next_attempt() {
+        let env = env();
+        env.import();
+        // extract fails under the null provider (E_INFERENCE_REQUIRED): an operational failure.
+        let (code, out, _) = env.run(&["extract", "--json"]);
+        assert_eq!(code, 1);
+        let failed: Value = serde_json::from_str(&out).unwrap();
+        let job_id = failed["job_id"].as_str().unwrap().to_owned();
+        let (code, out, err) = env.run(&["retry", &job_id, "--json"]);
+        assert_eq!(code, 1, "{err}");
+        let retried: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(retried["job_id"], job_id);
+        assert_eq!(retried["attempt"], 2);
+        assert_eq!(retried["status"], "failed");
+        assert!(err.contains("the extract recipe ended failed"), "{err}");
+        let (_, text, _) = env.run(&["retry", &job_id]);
+        assert!(text.contains("attempt 3"), "{text}");
+        // A Ready job is never retried; nothing changes.
+        let (code, lint) = env.json(&["lint"]);
+        assert_eq!(code, 0, "{lint}");
+        let lint_id = lint["job_id"].as_str().unwrap();
+        let (code, _, err) = env.run(&["retry", lint_id]);
+        assert_eq!(code, 1);
+        assert!(err.contains("E_STAGE_RETRY_NOT_FAILED"), "{err}");
+        let (_, again) = env.json(&["lint"]);
+        assert_eq!(again["status"], "ready");
+        // An unknown or malformed job ID is refused.
+        let (code, _, err) = env.run(&[
+            "retry",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ]);
+        assert_eq!(code, 1);
+        assert!(err.contains("E_NOT_FOUND"), "{err}");
+        let (code, _, err) = env.run(&["retry", "job-1"]);
+        assert_eq!(code, 1);
+        assert!(err.contains("E_INVALID"), "{err}");
+    }
+
     #[test]
     fn cli_gate_failure_is_exit_two() {
         // R0.4: F2 fails on genuine graph content (an Accepted Operation without a performer
@@ -2260,6 +2307,67 @@ mod cli {
         perms.set_readonly(true);
         std::fs::set_permissions(path, perms).unwrap();
         original
+    }
+
+    /// H0.3 (§33.3): a read-only command performs no interruption, recovery or reconciliation
+    /// write, even with an abandoned in-flight job present; the next interactive command
+    /// recovers it.
+    #[test]
+    fn read_only_commands_write_nothing() {
+        let env = env();
+        env.import();
+        let (code, lint) = env.json(&["lint"]);
+        assert_eq!(code, 0, "{lint}");
+        let job = lint["job_id"].as_str().unwrap().to_owned();
+        // An abandoned, ownerless in-flight job (as a crashed pre-H0.3 process leaves it).
+        rusqlite::Connection::open(&env.db)
+            .unwrap()
+            .execute(
+                "UPDATE stage_recipe_jobs SET status = 'evaluating', result_revision_id = NULL, \
+                 owner_id = NULL, lease_expires_at = NULL WHERE recipe_job_id = ?1",
+                [job.as_str()],
+            )
+            .unwrap();
+        let status = |db: &Path| -> String {
+            rusqlite::Connection::open(db)
+                .unwrap()
+                .query_row(
+                    "SELECT status FROM stage_recipe_jobs WHERE recipe_job_id = ?1",
+                    [job.as_str()],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let files = |db: &Path| -> Vec<(String, Vec<u8>)> {
+            let dir = db.parent().unwrap();
+            let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.to_string_lossy().starts_with(&*db.to_string_lossy()))
+                .filter(|p| !p.to_string_lossy().ends_with("-shm"))
+                .map(|p| (p.to_string_lossy().into_owned(), std::fs::read(&p).unwrap()))
+                .collect();
+            files.sort();
+            files
+        };
+        let before = files(&env.db);
+        let out = env.path("report");
+        for args in [
+            vec!["vocab"],
+            vec!["questions"],
+            vec!["rounds", "show", "round:missing"],
+            vec!["export", "--format", "functional"],
+            vec!["report", "--out", out.to_str().unwrap()],
+            vec!["proposals"],
+            vec!["findings", "list"],
+        ] {
+            env.run(&args);
+            assert_eq!(status(&env.db), "evaluating", "{args:?}");
+        }
+        assert_eq!(files(&env.db), before);
+        // An interactive command recovers the abandoned job.
+        env.run(&["ready"]);
+        assert_eq!(status(&env.db), "failed");
     }
 
     #[test]

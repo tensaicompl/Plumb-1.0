@@ -546,16 +546,37 @@ pub(crate) fn reconcile(
 }
 
 /// The startup reconciliation of every pending stage proposal: an acceptance already in the
-/// graph resolves the workflow row and records the child, exactly as on first access.
+/// graph resolves the workflow row and records the child, exactly as on first access. It is
+/// per-row fault tolerant (Fable #183): a link that cannot be reconciled is logged and the
+/// others are still processed.
 pub(crate) fn reconcile_pending(state: &ApiState) -> Result<(), ApiError> {
     let loaded = state.load_head()?;
     let links = state
         .with_stage_store(|store| store.pending_proposal_links())?
         .map_err(crate::stage::store_error)?;
     for link in links {
+        if let Err(error) = reconcile_link(state, &loaded, &link) {
+            tracing::error!(
+                target: "plumb_api::stage",
+                proposal_ref = %link.proposal_id,
+                code = error.body().code,
+                "a pending stage proposal could not be reconciled"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Reconciles one pending stage proposal link.
+fn reconcile_link(
+    state: &ApiState,
+    loaded: &LoadedRevision,
+    link: &StageProposalLink,
+) -> Result<(), ApiError> {
+    {
         // An acceptance always moves the head: an occurrence on the head has none to reconcile.
         if link.base_revision_id == loaded.revision.id {
-            continue;
+            return Ok(());
         }
         let decisions = acceptance_decisions(&loaded.graph, &link.proposal_id);
         if let [(decision_ref, decided_at)] = decisions.as_slice() {
@@ -575,24 +596,25 @@ pub(crate) fn reconcile_pending(state: &ApiState) -> Result<(), ApiError> {
                     })?
                     .map_err(|_| internal("workflow_store"))?;
             }
-            reconcile(state, &loaded, &link)?;
+            reconcile(state, loaded, link)?;
         }
     }
     Ok(())
 }
 
-/// Plain stage commit reconciliation (H0.10, §33.11), run on startup before any in-flight job
-/// is interrupted: every Ready child of an in-flight recipe job whose plain (automatic or
-/// derivation) output was already committed is settled to that revision — found by walking the
-/// branch from the head to the revision whose parent is the child base and whose
-/// `accepted_patch_ref` is the output PatchSet — and its parent becomes Committed with the
-/// last settled revision. Nothing is committed again; committed work is never failed.
-pub(crate) fn settle_plain_commits(state: &ApiState) -> Result<(), ApiError> {
-    let head = state.load_head()?;
-    let parents = state
-        .with_stage_store(|store| store.recipe_jobs())?
-        .map_err(crate::stage::store_error)?;
-    for parent in parents.into_iter().filter(|r| r.status.is_in_flight()) {
+/// Plain stage commit reconciliation (H0.10, §33.11), run on recovery of an abandoned job before
+/// it is interrupted: every Ready child of the in-flight recipe job `parent` whose plain
+/// (automatic or derivation) output was already committed is settled to that revision — found by
+/// walking the branch from the head to the revision whose parent is the child base and whose
+/// `accepted_patch_ref` is the output PatchSet — and the parent becomes Committed with the last
+/// settled revision. Nothing is committed again; committed work is never failed. Returns whether
+/// the parent was settled.
+pub(crate) fn settle_plain_parent(
+    state: &ApiState,
+    head: &LoadedRevision,
+    parent: &plumb_store::StageRecipeJobRecord,
+) -> Result<bool, ApiError> {
+    {
         let steps = state
             .with_stage_store(|store| store.steps(&parent.recipe_job_id))?
             .map_err(crate::stage::store_error)?;
@@ -601,7 +623,7 @@ pub(crate) fn settle_plain_commits(state: &ApiState) -> Result<(), ApiError> {
             let Some(child_id) = &step.stage_job_id else {
                 continue;
             };
-            if let Some(revision) = settle_plain_child(state, &head, child_id)? {
+            if let Some(revision) = settle_plain_child(state, head, child_id)? {
                 state
                     .with_stage_store(|store| {
                         store.update_step(
@@ -635,9 +657,60 @@ pub(crate) fn settle_plain_commits(state: &ApiState) -> Result<(), ApiError> {
                     )
                 })?
                 .map_err(crate::stage::store_error)?;
+            return Ok(true);
         }
     }
-    Ok(())
+    Ok(false)
+}
+
+/// Fable #188: an abandoned in-flight recipe job whose Ready child already persisted pending
+/// proposals is settled Ready over them (its result is the revision they were built on), so a
+/// pending stage proposal is never left linked to a Failed parent that cannot reflect its
+/// acceptance. Returns whether the parent was settled.
+pub(crate) fn settle_over_pending(
+    state: &ApiState,
+    parent: &plumb_store::StageRecipeJobRecord,
+) -> Result<bool, ApiError> {
+    let id = &parent.recipe_job_id;
+    let links: Vec<StageProposalLink> = state
+        .with_stage_store(|store| store.pending_proposal_links())?
+        .map_err(crate::stage::store_error)?
+        .into_iter()
+        .filter(|l| &l.recipe_job_id == id)
+        .collect();
+    if links.is_empty() {
+        return Ok(false);
+    }
+    let steps = state
+        .with_stage_store(|store| store.steps(id))?
+        .map_err(crate::stage::store_error)?;
+    // The proposals of the latest step whose child produced any.
+    let Some(link) = steps.iter().rev().find_map(|step| {
+        let child = step.stage_job_id.as_ref()?;
+        links.iter().find(|l| &l.stage_job_id == child)
+    }) else {
+        return Ok(false);
+    };
+    if load_child(state, &link.stage_job_id)?.status() != StageJobStatus::Ready {
+        return Ok(false);
+    }
+    state
+        .with_stage_store(|store| {
+            store.transition_recipe_job(
+                id,
+                &[
+                    StageStatus::Queued,
+                    StageStatus::Acquiring,
+                    StageStatus::Evaluating,
+                ],
+                StageStatus::Ready,
+                Some(&link.base_revision_id),
+                None,
+                state.now(),
+            )
+        })?
+        .map_err(crate::stage::store_error)?;
+    Ok(true)
 }
 
 /// Settles one Ready child whose plain output is already committed on the branch; returns the

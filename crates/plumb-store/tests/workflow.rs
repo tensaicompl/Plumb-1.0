@@ -189,7 +189,8 @@ mod workflow {
         /// Drops the store schema v3 stage tables.
         fn drop_stage_tables(&self) {
             self.exec(
-                "DROP TABLE stage_job_proposals; DROP TABLE stage_recipe_job_steps; \
+                "DROP TABLE stage_recipe_job_attempts; DROP TABLE stage_job_proposals; \
+                 DROP TABLE stage_recipe_job_steps; \
                  DROP TABLE gate_reports; DROP TABLE stage_jobs; DROP TABLE stage_recipe_jobs;",
             );
         }
@@ -218,7 +219,7 @@ mod workflow {
         /// occurrence key); the stage links are rebuilt in their v3 form too.
         fn downgrade_to_v3(&self) {
             self.exec(&format!(
-                "CREATE TABLE sl_v3 AS SELECT proposal_id, recipe_job_id, stage_job_id, \
+                "{V6_ADDITIONS} CREATE TABLE sl_v3 AS SELECT proposal_id, recipe_job_id, stage_job_id, \
                    compile_run_ref FROM stage_job_proposals; DROP TABLE stage_job_proposals; \
                  CREATE TABLE wp_v3 AS SELECT {V3_COLUMNS} FROM workflow_proposals; \
                  DROP TABLE workflow_proposals; {V3_WORKFLOW_PROPOSALS} \
@@ -233,7 +234,8 @@ mod workflow {
         /// `abandoned` state); the stage links keep referencing it by name.
         fn downgrade_to_v4(&self) {
             self.exec(&format!(
-                "CREATE TABLE wp_v4 AS SELECT * FROM workflow_proposals; \
+                "{V6_ADDITIONS} \
+                 CREATE TABLE wp_v4 AS SELECT * FROM workflow_proposals; \
                  DROP TABLE workflow_proposals; {V4_WORKFLOW_PROPOSALS} \
                  INSERT INTO workflow_proposals SELECT * FROM wp_v4; DROP TABLE wp_v4; \
                  UPDATE schema_meta SET version = 4;"
@@ -304,6 +306,12 @@ mod workflow {
   FOREIGN KEY (base_revision_id) REFERENCES graph_revisions(id),
   FOREIGN KEY (resolved_revision_id) REFERENCES graph_revisions(id)
 );";
+
+    /// Removes what store schema v6 (H0.3) added, giving the v4/v5 stage tables.
+    const V6_ADDITIONS: &str = "DROP TABLE stage_recipe_job_attempts; \
+        ALTER TABLE stage_recipe_jobs DROP COLUMN lease_expires_at; \
+        ALTER TABLE stage_recipe_jobs DROP COLUMN owner_id; \
+        ALTER TABLE stage_recipe_jobs DROP COLUMN attempt;";
 
     /// The columns of a store schema v2/v3 workflow proposal row.
     const V3_COLUMNS: &str = "proposal_id, base_revision_id, proposal_json, intake_json, \
@@ -377,11 +385,11 @@ mod workflow {
     // ------------------------------------------------------------------ schema v4
 
     #[test]
-    fn workflow_fresh_database_is_created_at_v5() {
+    fn workflow_fresh_database_is_created_at_v6() {
         let db = Db::new();
         drop(db.workflow());
         assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
-        assert_eq!(STORE_SCHEMA_VERSION, 5);
+        assert_eq!(STORE_SCHEMA_VERSION, 6);
         for t in [
             "workflow_proposals",
             "workflow_sessions",
@@ -591,11 +599,11 @@ mod workflow {
         ));
     }
 
-    /// H0.11 (architecture §33.12): store schema v5 admits the terminal `abandoned` proposal
+    /// H0.11 (architecture §33.12): store schema v5 (and so v6) admits the terminal `abandoned` proposal
     /// state. A valid v4 store is migrated in place: every row, revision and stage link is kept
     /// unchanged and the rebuilt schema is exactly the fresh one.
     #[test]
-    fn workflow_valid_v4_store_migrates_to_v5_admitting_abandoned() {
+    fn workflow_valid_v4_store_migrates_to_v6_admitting_abandoned() {
         let db = Db::new();
         let (r1, r2) = db.with_revisions();
         {
@@ -888,12 +896,12 @@ mod workflow {
     fn workflow_unknown_versions_and_unversioned_tables_are_rejected() {
         let db = Db::new();
         drop(db.workflow());
-        db.exec("UPDATE schema_meta SET version = 6;");
+        db.exec("UPDATE schema_meta SET version = 7;");
         assert!(matches!(
             SqliteWorkflowStore::open(&db.path).unwrap_err(),
-            StoreError::UnsupportedStoreSchemaVersion { found: 6 }
+            StoreError::UnsupportedStoreSchemaVersion { found: 7 }
         ));
-        assert_eq!(db.version(), vec![6]);
+        assert_eq!(db.version(), vec![7]);
 
         let db = Db::new();
         db.exec("CREATE TABLE workflow_proposals (proposal_id TEXT PRIMARY KEY);");

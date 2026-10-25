@@ -224,6 +224,11 @@ enum Command {
         #[arg(long)]
         refresh: bool,
     },
+    /// Re-run a failed recipe job as its next attempt under the same job ID (H0.3).
+    Retry {
+        /// The job ID (`sha256:<64 hex>`).
+        job: String,
+    },
     /// Append one pilot effort record.
     LogEffort {
         #[arg(long)]
@@ -422,6 +427,7 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
             rationale,
         } => commands::answer(&state, &question, &answer, rationale),
         Command::Proposals { refresh } => commands::proposals(&state, refresh),
+        Command::Retry { job } => commands::retry(&state, &job),
         _ => Err(CliError::Usage("unsupported command".into())),
     }
 }

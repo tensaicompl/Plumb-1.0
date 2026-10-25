@@ -304,10 +304,10 @@ mod revisions {
     // ------------------------------------------------------------------ schema
 
     #[test]
-    fn fresh_database_initializes_exact_v5_schema() {
+    fn fresh_database_initializes_exact_v6_schema() {
         let db = Db::new();
         let store = db.store();
-        assert_eq!(STORE_SCHEMA_VERSION, 5);
+        assert_eq!(STORE_SCHEMA_VERSION, 6);
         assert_eq!(PSG_SCHEMA_VERSION, 1);
         let expected: BTreeSet<String> = [
             "artifacts",
@@ -320,6 +320,7 @@ mod revisions {
             "schema_meta",
             "sqlite_sequence",
             "stage_job_proposals",
+            "stage_recipe_job_attempts",
             "stage_jobs",
             "stage_recipe_job_steps",
             "stage_recipe_jobs",
