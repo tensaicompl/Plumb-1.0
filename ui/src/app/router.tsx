@@ -8,13 +8,14 @@ import { FindingsPage } from "../features/findings/FindingsPage";
 import { GatesPage } from "../features/gates/GatesPage";
 import { GlossaryPage } from "../features/glossary/GlossaryPage";
 import { OverviewScreen } from "../features/overview/OverviewScreen";
+import { SourcesScreen } from "../features/sources/SourcesScreen";
 import { ProcessesPage } from "../features/processes/ProcessesPage";
 import { RequirementDetail } from "../features/requirements/RequirementDetail";
 import { RequirementsPage } from "../features/requirements/RequirementsPage";
 import { RulesPage } from "../features/rules/RulesPage";
 import { ScenariosPage } from "../features/scenarios/ScenariosPage";
 import { AppShell } from "./AppShell";
-import { InboxInterim, Legacy, ModelInterim, parseInboxFilter, QualityInterim, SourceInterim, SourcesInterim } from "./routes/interim";
+import { InboxInterim, Legacy, ModelInterim, parseInboxFilter, QualityInterim } from "./routes/interim";
 import { NotFoundPage, RouteErrorPage } from "./RouteStatus";
 
 // The explicit route tree: the spec §3 URL structure, every URL deep-linkable. Screen lanes
@@ -165,14 +166,14 @@ const qualityIssuesRoute = createRoute({ getParentRoute: () => qualityRoute, pat
 
 // ------------------------------------------------------------------ Sources
 
-const sourcesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sources", component: SourcesInterim });
+const sourcesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sources", component: () => <SourcesScreen /> });
 
 const sourceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/sources/$id",
   component: function SourceRoute() {
     const { id } = sourceRoute.useParams();
-    return <SourceInterim key={id} id={id} />;
+    return <SourcesScreen id={id} />;
   },
 });
 

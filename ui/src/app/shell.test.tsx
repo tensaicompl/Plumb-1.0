@@ -656,7 +656,7 @@ describe("Global keys and the Assistant panel", () => {
     await user.click(within(bar).getByRole("button", { name: "Assistant" }));
     const panel = await screen.findByRole("complementary", { name: "Assistant" });
     expect(within(panel).getByText("Scope · Project")).toBeTruthy();
-    expect(within(panel).getByTestId("session-panel").getAttribute("data-session-mode")).toBe("project");
+    expect(within(panel).getByTestId("assistant-conversation").getAttribute("data-scope")).toBe("project");
     expect(within(bar).getByRole("button", { name: "Assistant" }).getAttribute("aria-pressed")).toBe("true");
     await user.click(within(panel).getByRole("button", { name: "Close the Assistant" }));
     expect(screen.queryByRole("complementary", { name: "Assistant" })).toBeNull();
@@ -666,7 +666,7 @@ describe("Global keys and the Assistant panel", () => {
     renderAt("/requirements/req:7");
     const scoped = await screen.findByRole("complementary", { name: "Assistant" });
     expect(within(scoped).getByText("Scope · req:7")).toBeTruthy();
-    expect(within(scoped).getByTestId("session-panel").getAttribute("data-session-mode")).toBe("requirement");
+    expect(within(scoped).getByTestId("assistant-conversation").getAttribute("data-scope")).toBe("requirement");
   });
 });
 

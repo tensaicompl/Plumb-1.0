@@ -26,23 +26,38 @@ export function relativeTime(value: string, now: Date, locale: Locale): string {
   return format.format(0, "second");
 }
 
-function sameDay(a: Date, b: Date): boolean {
+/** The date-formatting locale of a UI locale (English dates read "21 Oct", day first). */
+export function dateLocale(locale: Locale): string {
+  return locale === "pl" ? "pl-PL" : "en-GB";
+}
+
+export function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+/** Whether `date` falls on the day before `now` (local time). */
+export function isYesterday(date: Date, now: Date): boolean {
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  return sameDay(date, yesterday);
+}
+
+/** "21 Oct" in `locale`. */
+export function shortDate(date: Date, locale: Locale): string {
+  return date.toLocaleDateString(dateLocale(locale), { day: "numeric", month: "short" });
 }
 
 /** "Today, 10:42", "Yesterday, 16:30" or "21 Oct, 15:48" (local time). */
 export function decisionTime(value: string, now: Date, locale: Locale): string {
   const date = parseTimestamp(value);
-  const time = date.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", hour12: false });
+  const time = date.toLocaleTimeString(dateLocale(locale), { hour: "2-digit", minute: "2-digit", hour12: false });
   if (sameDay(date, now)) {
     return tf("overview.time.today", { time }, locale);
   }
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (sameDay(date, yesterday)) {
+  if (isYesterday(date, now)) {
     return tf("overview.time.yesterday", { time }, locale);
   }
-  return tf("overview.time.date", { date: date.toLocaleDateString(locale, { day: "numeric", month: "short" }), time }, locale);
+  return tf("overview.time.date", { date: shortDate(date, locale), time }, locale);
 }
 
 /** The readable name of an actor reference ("agent:marta-nowak" → "marta-nowak"). */
