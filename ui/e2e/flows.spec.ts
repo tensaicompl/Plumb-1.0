@@ -404,4 +404,52 @@ test.describe.serial("Questions, gates and scenarios @questions-db", () => {
     }
     expect(errors).toEqual([]);
   });
+
+  test("flow 6: a failing scenario is traced, its expected outcome corrected, and it passes when run again", async ({ page }) => {
+    test.setTimeout(120_000);
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.goto("/scenarios");
+    const list = page.getByRole("list", { name: "Scenarios" });
+    const details = page.getByRole("complementary", { name: "Scenario details" });
+    const correct = async (then: "Yes" | "No") => {
+      await details.getByRole("button", { name: "Correct expected outcome" }).click();
+      const sheet = page.getByRole("dialog", { name: "Correct the expected outcome" });
+      await sheet.getByRole("radiogroup", { name: "Then eligible" }).getByRole("radio", { name: then }).click();
+      await noSeriousA11yViolations(page);
+      await page.keyboard.press("ControlOrMeta+Enter");
+      await expect(toast(page).filter({ hasText: "Expected outcome corrected" })).toBeVisible();
+      await expect(sheet).toHaveCount(0);
+    };
+
+    // A contractor is not eligible for annual leave; someone recorded the opposite expectation.
+    await list.getByRole("button", { name: /^Annual leave eligibility: Contractor → No/ }).click();
+    await expect(details.getByText(/^Pass · /)).toBeVisible();
+    await correct("Yes");
+    await expect(details.getByRole("row", { name: "Then eligible is Yes" })).toBeVisible();
+    await details.getByRole("button", { name: "Run this one" }).click();
+    await expect(page.getByText(/^1 scenario ran · 0 pass$/)).toBeVisible({ timeout: 30_000 });
+
+    // Filter Fail: the trace shows where the run diverged from the expectation.
+    await page.getByRole("group", { name: "Filter scenarios" }).getByRole("button", { name: /^Fail 1$/ }).click();
+    await expect(list.getByRole("button")).toHaveCount(1);
+    await list.getByRole("button").first().click();
+    await expect(details.getByText(/^Fail · /)).toBeVisible();
+    const trace = details.getByRole("list", { name: "Trace" });
+    const diverging = trace.locator("[data-diverging='true']");
+    await expect(diverging).toHaveCount(1);
+    await expect(diverging).toContainText("First difference");
+    await expect(diverging).toContainText("Expected Yes, got No");
+    // The rule it was derived from is one click away.
+    await expect(details.getByRole("link", { name: "Decision table Annual leave eligibility" })).toHaveAttribute("href", /^\/model\/rules\/dt:/);
+    await noSeriousA11yViolations(page);
+
+    // The rule is right, the expectation was wrong: correct it back and run again.
+    await correct("No");
+    await details.getByRole("button", { name: "Run this one" }).click();
+    await expect(page.getByText(/^1 scenario ran · 1 pass$/)).toBeVisible({ timeout: 30_000 });
+    await expect(details.getByText(/^Pass · /)).toBeVisible();
+    await expect(trace.getByText("Compared the outcome")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
 });
