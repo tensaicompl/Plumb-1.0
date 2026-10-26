@@ -224,6 +224,8 @@ test.describe.serial("Inbox triage and conflicts @triage-db", () => {
     // The out-of-date items are rejected from the keyboard, each through the reason sheet.
     await rows(page).first().click();
     for (let left = 60; left > 0; left--) {
+      // R decides once the queue has reloaded after the last decision (Reject is enabled again).
+      await expect(inspector(page).getByRole("button", { name: "Reject" })).toBeEnabled();
       await page.keyboard.press("r");
       await expect(sheet).toBeVisible();
       await page.keyboard.press("ControlOrMeta+Enter");
