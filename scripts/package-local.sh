@@ -23,6 +23,7 @@ cp "$root/packaging/start.sh" "$out/start.sh"
 cp "$root/packaging/plumb.sh" "$out/plumb.sh"
 cp "$root/packaging/README.md" "$out/README.md"
 cp "$root/packaging/examples/hr-pilot.json" "$out/examples/hr-pilot.json"
+cp "$root/packaging/examples/blank.json" "$out/examples/blank.json"
 cp "$root/fixtures/hr-leave/requirements.md" "$out/examples/hr-leave-requirements.md"
 chmod +x "$out/start.sh" "$out/plumb.sh" "$out/bin/plumb"
 

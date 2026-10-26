@@ -16,6 +16,10 @@ For every range return one segment with fragment_ref copied exactly, start, end 
 - requirement_candidate — the range expresses a requirement-like statement
 - non_requirement — the range does not express a requirement-like statement
 
+A requirement-like statement says what the system, a person or the business must, may or must not do, or states a rule the system has to follow: a capability, a business rule, a policy, a permission or prohibition, a limit, a price, discount or other calculation, a deadline or validity period, a status change, a notification, or a quality expectation. It needs no modal verb: "Vehicles with zero emissions get a 50% discount on the fee." and "A permit becomes expired at the end of its validity period." are requirement-like, exactly like "The system shall reject a late request.". Headings, document metadata (owner, status, version), background or purpose text that states no rule, and notes about the document itself are non_requirement.
+
+A list marker or item number that starts a list item ("- ", "* ", "1) ", "4. ") is its own non_requirement range; the requirement_candidate range starts after it.
+
 Rules:
 1. Never combine text from different EvidenceFragments.
 2. `start` and `end` are zero-based UTF-8 byte offsets within that fragment's exact `text`; `end` is exclusive and greater than `start`.

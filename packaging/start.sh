@@ -4,7 +4,8 @@
 #   ./start.sh <project-folder> [config.json]
 #
 # The project folder holds the project database (plumb.sqlite) and, unless a configuration is
-# given, its configuration (plumb.json, copied from examples/hr-pilot.json on first start).
+# given, its configuration (plumb.json, copied on first start from examples/blank.json, or from
+# examples/hr-pilot.json when PLUMB_EXAMPLE=hr-pilot).
 # The Anthropic API key is read from PLUMB_ANTHROPIC_KEY_FILE, default
 # ~/.config/plumb/anthropic-key; without it Plumb runs, but inference stages cannot.
 # PLUMB_PORT sets the local port (default 8080); PLUMB_NO_BROWSER=1 skips opening the browser.
@@ -22,8 +23,9 @@ db="$project/plumb.sqlite"
 plumb="$here/bin/plumb"
 
 if [[ ! -f "$config" ]]; then
-  cp "$here/examples/hr-pilot.json" "$config"
-  echo "Created $config from the HR pilot example; edit its directory for your own project."
+  example="${PLUMB_EXAMPLE:-blank}"
+  cp "$here/examples/$example.json" "$config"
+  echo "Created $config from examples/$example.json."
 fi
 if [[ ! -f "$db" ]]; then
   name="$(basename "$project" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-')"

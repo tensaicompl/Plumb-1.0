@@ -653,10 +653,23 @@ fn validated_suggestions(
 
 // ============================================================================ grounding and rendering
 
+/// `text` with each run of ASCII whitespace strictly inside it replaced by one space.
+fn collapse_inner_whitespace(text: &str) -> String {
+    let body = text.trim_matches(|c: char| c.is_ascii_whitespace());
+    let start = text.len()
+        - text
+            .trim_start_matches(|c: char| c.is_ascii_whitespace())
+            .len();
+    let inner = body.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{}{inner}{}", &text[..start], &text[start + body.len()..])
+}
+
 const PUNCTUATION: [char; 6] = [',', ';', ':', '.', '?', '!'];
 const TERMINATORS: [char; 3] = ['.', '?', '!'];
 
-/// The exact text a grounding names, without any transformation.
+/// The text a grounding names. A source range is the exact source text with each inner run of
+/// ASCII whitespace (a wrapped line and its indentation) read as one space; outer whitespace is
+/// kept so that the component check still rejects it.
 fn resolve_grounding(
     requirement: &EarsRequirementContext,
     catalog: &[EarsAcceptedSemantic],
@@ -683,7 +696,7 @@ fn resolve_grounding(
                     "range {start}..{end} is not a valid UTF-8 range of the source statement"
                 )));
             }
-            Ok(source[s..e].to_owned())
+            Ok(collapse_inner_whitespace(&source[s..e]))
         }
         EarsGrounding::AcceptedSemantic { semantic_ref, text } => {
             let entry = catalog
@@ -831,9 +844,21 @@ fn render_suggestion(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "issue", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EarsIssue {
-    InferenceUnavailable { requirement_ref: Id },
-    NoSuggestion { requirement_ref: Id },
-    AlreadyNormalized { requirement_ref: Id },
+    InferenceUnavailable {
+        requirement_ref: Id,
+    },
+    NoSuggestion {
+        requirement_ref: Id,
+    },
+    AlreadyNormalized {
+        requirement_ref: Id,
+    },
+    /// The suggestion's pattern, a grounding or a resolved component is invalid; the
+    /// requirement keeps its statement and the other targets are still normalized.
+    SuggestionDropped {
+        requirement_ref: Id,
+        reason: String,
+    },
 }
 
 impl EarsIssue {
@@ -842,7 +867,10 @@ impl EarsIssue {
         match self {
             EarsIssue::InferenceUnavailable { requirement_ref }
             | EarsIssue::NoSuggestion { requirement_ref }
-            | EarsIssue::AlreadyNormalized { requirement_ref } => requirement_ref,
+            | EarsIssue::AlreadyNormalized { requirement_ref }
+            | EarsIssue::SuggestionDropped {
+                requirement_ref, ..
+            } => requirement_ref,
         }
     }
 
@@ -852,6 +880,7 @@ impl EarsIssue {
             EarsIssue::InferenceUnavailable { .. } => "inference_unavailable",
             EarsIssue::NoSuggestion { .. } => "no_suggestion",
             EarsIssue::AlreadyNormalized { .. } => "already_normalized",
+            EarsIssue::SuggestionDropped { .. } => "suggestion_dropped",
         }
     }
 }
@@ -940,11 +969,6 @@ pub fn evaluate_ears_normalization(
         return Ok(EarsNormalizationResult { proposals, issues });
     };
     let suggestions = validated_suggestions(ears_request, inference.artifact)?;
-    for (requirement_ref, suggestion) in &suggestions {
-        if let Some(suggestion) = suggestion {
-            pattern_lead(requirement_ref, suggestion)?;
-        }
-    }
     let mut rendered = Vec::new();
     for requirement in &context.requirements {
         let requirement_ref = requirement.requirement_ref.clone();
@@ -952,7 +976,21 @@ pub fn evaluate_ears_normalization(
             None => issues.push(EarsIssue::NoSuggestion { requirement_ref }),
             Some(suggestion) => {
                 let statement =
-                    render_suggestion(requirement, &context.accepted_semantics, suggestion)?;
+                    match render_suggestion(requirement, &context.accepted_semantics, suggestion) {
+                        Ok(statement) => statement,
+                        Err(
+                            e @ (EarsError::InvalidPattern { .. }
+                            | EarsError::InvalidGrounding { .. }
+                            | EarsError::InvalidComponent { .. }),
+                        ) => {
+                            issues.push(EarsIssue::SuggestionDropped {
+                                requirement_ref,
+                                reason: e.to_string(),
+                            });
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
                 if statement == requirement.current_statement {
                     issues.push(EarsIssue::AlreadyNormalized { requirement_ref });
                 } else {

@@ -339,13 +339,49 @@ mod ears_contract {
     }
 
     /// Normalizes the single requirement of `text` with `suggestion` and returns the statement.
-    fn normalize(text: &str, make: impl Fn(&str) -> Value) -> Result<String, EarsError> {
+    /// The rendered statement, or the reason the single suggestion was dropped.
+    fn normalize(text: &str, make: impl Fn(&str) -> Value) -> Result<String, String> {
         let (graph, req) = single(text);
         let ears = request(&graph, std::slice::from_ref(&req));
         let source = ears.context.requirements[0].source_statement.clone();
-        let result = evaluate(&graph, &ears, output(vec![entry(&req, make(&source))]))?;
+        let result = evaluate(&graph, &ears, output(vec![entry(&req, make(&source))]))
+            .map_err(|e| e.to_string())?;
+        if let Some(reason) = dropped_reason(&result) {
+            return Err(reason);
+        }
         assert_eq!(result.proposals.len(), 1, "{:?}", result.issues);
         Ok(replaced(&result.proposals[0]).statement.clone())
+    }
+
+    fn dropped_reason(result: &EarsNormalizationResult) -> Option<String> {
+        result.issues.iter().find_map(|issue| match issue {
+            EarsIssue::SuggestionDropped { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+    }
+
+    /// An outcome whose suggestion was dropped (never a phase error).
+    trait Dropped {
+        fn reason(&self) -> Option<String>;
+    }
+
+    impl Dropped for Result<String, String> {
+        fn reason(&self) -> Option<String> {
+            self.as_ref().err().cloned()
+        }
+    }
+
+    impl Dropped for Result<EarsNormalizationResult, EarsError> {
+        fn reason(&self) -> Option<String> {
+            self.as_ref().ok().and_then(dropped_reason)
+        }
+    }
+
+    /// Whether the suggestion was dropped for a reason containing `needle`.
+    fn dropped(outcome: impl Dropped, needle: &str) -> bool {
+        outcome
+            .reason()
+            .is_some_and(|reason| reason.contains(needle))
     }
 
     fn replaced(proposal: &Proposal) -> &Requirement {
@@ -969,13 +1005,7 @@ mod ears_contract {
                 range(25, 30),
             )
         });
-        assert!(matches!(
-            cut,
-            Err(EarsError::InvalidGrounding {
-                component: "actor",
-                ..
-            })
-        ));
+        assert!(dropped(cut, "invalid actor grounding"));
         let ok = normalize(text, |s| {
             ubiquitous(s, "Zażółć pracownik", "złożyć żądanie")
         });
@@ -989,13 +1019,79 @@ mod ears_contract {
                 range(10, s.chars().count() + 20),
             )
         });
-        assert!(matches!(
-            beyond,
-            Err(EarsError::InvalidGrounding {
-                component: "response",
-                ..
-            })
-        ));
+        assert!(dropped(beyond, "invalid response grounding"));
+    }
+
+    #[test]
+    fn ears_wrapped_source_lines_read_as_one_space() {
+        let text =
+            "The desk shall reject an application whose address is outside the\n  requested zone.";
+        let rendered = normalize(text, |s| {
+            suggestion(
+                "unwanted_behavior",
+                find(s, "The desk"),
+                Value::Null,
+                find(
+                    s,
+                    "an application whose address is outside the\n  requested zone",
+                ),
+                find(s, "reject"),
+            )
+        });
+        assert_eq!(
+            rendered.unwrap(),
+            "If an application whose address is outside the requested zone, then The desk shall reject."
+        );
+    }
+
+    #[test]
+    fn ears_invalid_suggestion_is_dropped_not_fatal() {
+        let (graph, ids) = pipeline(
+            &[
+                "The clerk shall pack the order.",
+                "Now the system shall export the report.",
+            ],
+            Vec::new(),
+        );
+        let ears = request(&graph, &ids);
+        let first = ears.context.requirements[0].source_statement.clone();
+        let second = ears.context.requirements[1].source_statement.clone();
+        let (good, bad) = if first.starts_with("Now") {
+            (&second, &first)
+        } else {
+            (&first, &second)
+        };
+        let req_of = |source: &String| {
+            ears.context
+                .requirements
+                .iter()
+                .find(|r| &r.source_statement == source)
+                .unwrap()
+                .requirement_ref
+                .clone()
+        };
+        let out = output(vec![
+            entry(
+                &req_of(good),
+                ubiquitous(good, "The clerk", "pack the order"),
+            ),
+            entry(
+                &req_of(bad),
+                ubiquitous(bad, "the system", "export the report."),
+            ),
+        ]);
+        let result = evaluate(&graph, &ears, out).unwrap();
+        assert!(result.proposals.is_empty() || result.proposals.len() == 1);
+        assert!(result.issues.iter().any(|issue| matches!(
+            issue,
+            EarsIssue::SuggestionDropped { requirement_ref, reason }
+                if requirement_ref == &req_of(bad) && reason.contains("invalid response component")
+        )));
+        assert!(!result
+            .issues
+            .iter()
+            .any(|issue| issue.requirement_ref() == &req_of(good)
+                && issue.as_str() == "suggestion_dropped"));
     }
 
     #[test]
@@ -1004,35 +1100,17 @@ mod ears_contract {
         let with_period = normalize(text, |s| {
             ubiquitous(s, "the system", "export the report, daily.")
         });
-        assert!(matches!(
-            with_period,
-            Err(EarsError::InvalidComponent {
-                component: "response",
-                ..
-            })
-        ));
+        assert!(dropped(with_period, "invalid response component"));
         let fixed = normalize(text, |s| {
             ubiquitous(s, "the system", "export the report, daily")
         });
         assert_eq!(fixed.unwrap(), "the system shall export the report, daily.");
         let spaced = normalize(text, |s| ubiquitous(s, "the system ", "export the report"));
-        assert!(matches!(
-            spaced,
-            Err(EarsError::InvalidComponent {
-                component: "actor",
-                ..
-            })
-        ));
+        assert!(dropped(spaced, "invalid actor component"));
         let actor_comma = normalize("Daily, the clerk shall pack.", |s| {
             ubiquitous(s, "Daily,", "pack")
         });
-        assert!(matches!(
-            actor_comma,
-            Err(EarsError::InvalidComponent {
-                component: "actor",
-                ..
-            })
-        ));
+        assert!(dropped(actor_comma, "invalid actor component"));
         let condition_comma = normalize("Daily, the clerk shall pack.", |s| {
             suggestion(
                 "state_driven",
@@ -1042,13 +1120,7 @@ mod ears_contract {
                 find(s, "pack"),
             )
         });
-        assert!(matches!(
-            condition_comma,
-            Err(EarsError::InvalidComponent {
-                component: "condition",
-                ..
-            })
-        ));
+        assert!(dropped(condition_comma, "invalid condition component"));
         let trigger_comma = normalize("Daily, the clerk shall pack.", |s| {
             suggestion(
                 "event_driven",
@@ -1058,13 +1130,7 @@ mod ears_contract {
                 find(s, "pack"),
             )
         });
-        assert!(matches!(
-            trigger_comma,
-            Err(EarsError::InvalidComponent {
-                component: "trigger",
-                ..
-            })
-        ));
+        assert!(dropped(trigger_comma, "invalid trigger component"));
     }
 
     #[test]
@@ -1106,12 +1172,9 @@ mod ears_contract {
                 accepted("actor:sla", "respond within 2 seconds"),
             ),
         )]);
-        assert!(matches!(
+        assert!(dropped(
             evaluate(&graph, &ears, invented),
-            Err(EarsError::InvalidGrounding {
-                component: "response",
-                ..
-            })
+            "invalid response grounding"
         ));
         let free_text = output(vec![json!({"requirement_ref": ids[0], "suggestion": null,
             "normalized_statement": "The system shall respond within 2 seconds."})]);
@@ -1185,13 +1248,7 @@ mod ears_contract {
             )
         };
         let invented = run(vec![], accepted("actor:admin", "Administrator"));
-        assert!(matches!(
-            invented,
-            Err(EarsError::InvalidGrounding {
-                component: "actor",
-                ..
-            })
-        ));
+        assert!(dropped(invented, "invalid actor grounding"));
         let proposed = run(
             vec![actor(
                 "actor:admin",
@@ -1200,7 +1257,7 @@ mod ears_contract {
             )],
             accepted("actor:admin", "Administrator"),
         );
-        assert!(matches!(proposed, Err(EarsError::InvalidGrounding { .. })));
+        assert!(dropped(proposed, " grounding for "));
         let suspect = run(
             vec![actor(
                 "actor:admin",
@@ -1209,12 +1266,12 @@ mod ears_contract {
             )],
             accepted("actor:admin", "Administrator"),
         );
-        assert!(matches!(suspect, Err(EarsError::InvalidGrounding { .. })));
+        assert!(dropped(suspect, " grounding for "));
         let fuzzy = run(
             vec![actor("actor:admin", "Employee", ElementStatus::Accepted)],
             accepted("actor:admin", "employee"),
         );
-        assert!(matches!(fuzzy, Err(EarsError::InvalidGrounding { .. })));
+        assert!(dropped(fuzzy, " grounding for "));
         // H0.10 [Fable #139]: payload type tags, enum wire strings and IDs are never wording.
         for not_text in ["Actor", "human", "actor:admin"] {
             let tag = run(
@@ -1225,10 +1282,7 @@ mod ears_contract {
                 )],
                 accepted("actor:admin", not_text),
             );
-            assert!(
-                matches!(tag, Err(EarsError::InvalidGrounding { .. })),
-                "{not_text}"
-            );
+            assert!(dropped(tag, " grounding for "), "{not_text}");
         }
         let grounded = run(
             vec![actor(
@@ -1290,7 +1344,10 @@ mod ears_contract {
                 suggestion(pattern, find(&s, "the clerk"), trigger, condition, response),
             )]);
             assert!(
-                matches!(evaluate(&graph, &ears, out), Err(EarsError::InvalidGrounding { component: c, .. }) if c == component),
+                dropped(
+                    evaluate(&graph, &ears, out),
+                    &format!("invalid {component} grounding")
+                ),
                 "{component}"
             );
         }

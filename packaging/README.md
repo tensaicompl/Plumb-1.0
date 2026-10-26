@@ -20,16 +20,20 @@ only accepts connections from this computer (127.0.0.1).
 ## 1. Start Plumb for a project
 
 ```bash
-./start.sh ~/plumb-projects/hr-leave
+./start.sh ~/plumb-projects/my-project
 ```
 
 The first start creates the folder, its configuration (`plumb.json`, a copy of
-`examples/hr-pilot.json`) and its database (`plumb.sqlite`), then opens
+`examples/blank.json`) and its database (`plumb.sqlite`), then opens
 http://127.0.0.1:8080. Stop it with Ctrl+C. Each folder is one independent project.
 
-The example configuration describes the HR leave pilot: its actors, roles, calendar and
-expert-question routing. For another document, edit the `directory`, `calendars` and
-`question_routing` sections first.
+The blank configuration knows nothing about your domain: one calendar (weekends off, no
+holidays) and one expert, the Product Owner, who receives every question. The Directory,
+Calculations and Scenarios steps stay unavailable until their sections (`directory`,
+`calculation_scope`, `scenario_derivation`) are filled in; the Overview names what is missing.
+To try the HR leave pilot instead, start with
+`PLUMB_EXAMPLE=hr-pilot ./start.sh ~/plumb-projects/hr-leave`, which copies
+`examples/hr-pilot.json` with its actors, roles, calendar and expert routing.
 
 ## 2. Import a document and run the steps (in the browser)
 
@@ -49,10 +53,10 @@ offers **Export**.
 The same steps also run from a terminal, with `start.sh` still running in another window:
 
 ```bash
-./plumb.sh ~/plumb-projects/hr-leave import examples/hr-leave-requirements.md
-./plumb.sh ~/plumb-projects/hr-leave extract
-./plumb.sh ~/plumb-projects/hr-leave proposals        # list pending proposals
-./plumb.sh ~/plumb-projects/hr-leave accept-set <proposal-id>=<action> ... --reason "Reviewed"
+./plumb.sh ~/plumb-projects/my-project import examples/hr-leave-requirements.md
+./plumb.sh ~/plumb-projects/my-project extract
+./plumb.sh ~/plumb-projects/my-project proposals        # list pending proposals
+./plumb.sh ~/plumb-projects/my-project accept-set <proposal-id>=<action> ... --reason "Reviewed"
 ```
 
 The step order is `extract`, `consolidate`, `lint`, `directory`, `analyse`, `flows`, then
