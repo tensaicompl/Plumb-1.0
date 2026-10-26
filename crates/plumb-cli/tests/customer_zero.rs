@@ -745,6 +745,255 @@ fn oracle(sim: &Sim, questions: &Value) {
     assert!(passing >= expected["scenarios"]["passing_at_least"].as_u64().unwrap());
 }
 
+// ---------------------------------------------------------------------- blank configuration
+
+/// The customer-zero configuration without any domain authoring (any-domain run): no directory,
+/// calculation scope or scenario derivation. Only what a new project states about itself stays:
+/// its calendar, its experts and the generic selector scopes.
+fn blank_config() -> Value {
+    let mut config = config();
+    let object = config.as_object_mut().unwrap();
+    object.remove("directory");
+    object.insert("calculation_scope".into(), Value::Null);
+    object.insert("scenario_derivation".into(), Value::Null);
+    config
+}
+
+/// The ID of the context requirement whose statement contains `needle`.
+fn requirement_with(context: &Value, needle: &str) -> Value {
+    requirements(context)
+        .iter()
+        .find(|r| r["statement"].as_str().unwrap().contains(needle))
+        .map(|r| r["requirement_ref"].clone())
+        .unwrap_or_else(|| panic!("no requirement contains {needle:?}"))
+}
+
+/// The scripted directory draft: the actors, role, rule and eligibility table CZ-01, CZ-03,
+/// CZ-04 and CZ-09 state (what config.json authors by hand for the configured flow).
+fn directory_draft(context: &Value) -> Value {
+    let student = requirement_with(context, "A student shall be able to reserve");
+    let desk = requirement_with(context, "The desk shall reject");
+    let visitor = requirement_with(context, "A visitor shall not be eligible");
+    let technician = requirement_with(context, "A technician shall be allowed");
+    let column = |name: &str, ty: &str, members: &[&str]| json!({"name": name, "type": ty, "members": members, "scale": null});
+    let row = |category: &str, eligible: bool| {
+        json!({"inputs": [{"cell": "enum_set", "value": null, "members": [category]}],
+               "outputs": [{"cell": "bool", "value": eligible.to_string()}]})
+    };
+    json!({
+        "version": 1,
+        "actors": [
+            {"name": "Student", "actor_kind": "human", "grounding_refs": [student]},
+            {"name": "Technician", "actor_kind": "human", "grounding_refs": [technician]},
+            {"name": "Loan Desk", "actor_kind": "organization", "grounding_refs": [desk]},
+        ],
+        "business_roles": [{"name": "Borrower", "grounding_refs": [student, visitor]}],
+        "rules": [{"name": "BorrowerEligibility", "rule_kind": "business",
+                   "grounding_refs": [visitor]}],
+        "decision_tables": [{
+            "name": "BorrowerEligibility", "grounding_refs": [student, visitor],
+            "hit_policy": "UNIQUE",
+            "inputs": [column("borrower_category", "enum", &["Student", "Visitor"])],
+            "outputs": [column("eligible", "bool", &[])],
+            "rows": [row("Student", true), row("Visitor", false)],
+        }],
+    })
+}
+
+/// The customer-zero model for a blank configuration: it also drafts the directory, types the
+/// Attributes it proposes, and names the half-day input by its derived symbol `half_day`.
+fn cz_blank_model(task_kind: &str, context: &Value) -> Option<Value> {
+    match task_kind {
+        "directory_draft" => Some(directory_draft(context)),
+        "domain_extraction" => {
+            let mut out = domain(context);
+            let concepts = context["concepts"].as_array().unwrap();
+            for attribute in out["attributes"].as_array_mut().unwrap() {
+                let name = concepts
+                    .iter()
+                    .find(|c| c["concept_ref"] == attribute["concept_ref"])
+                    .and_then(|c| c["name"].as_str())
+                    .unwrap();
+                let (ty, scale) = if name == "half day" {
+                    ("Decimal", json!(2))
+                } else {
+                    ("Date", Value::Null)
+                };
+                attribute["primitive_type"] =
+                    json!({"type": ty, "scale": scale, "enum_values": [], "unit": null});
+            }
+            Some(out)
+        }
+        "calculation_analysis" => {
+            let mut out = calculation(context);
+            let expression = out["calculations"][0]["expression"].as_str().unwrap();
+            out["calculations"][0]["expression"] =
+                json!(expression.replace("day_fraction", "half_day"));
+            Some(out)
+        }
+        _ => cz_model(task_kind, context),
+    }
+}
+
+/// Any-domain run: the customer-zero document reaches a passing ready check and an export from
+/// a configuration that authors no domain material. The directory is drafted, the Attributes are
+/// typed by the domain stage and the calculation and scenario inputs are derived from the graph;
+/// every element still passes through human acceptance.
+#[test]
+fn customer_zero_flow_from_a_blank_configuration() {
+    let sim = Sim::new(blank_config(), cz_blank_model);
+    assert_eq!(
+        sim.cli(&["init", "--project", "project:loan-desk"], &[]).0,
+        0
+    );
+    let source = fixture("source.md");
+    let (code, _) = sim.cli(
+        &[
+            "import",
+            source.to_str().unwrap(),
+            "--media-type",
+            "text/markdown",
+            "--name",
+            "source.md",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0);
+    for recipe in ["extract", "consolidate"] {
+        sim.settle(recipe);
+    }
+    sim.cli(&["lint"], &[]);
+    sim.cli(&["findings", "materialize"], &[]);
+    for finding in sim.json(&["findings", "list"]).as_array().unwrap() {
+        if finding["disposition"] == "waivable" {
+            let reason = "The desk accepts this finding for the pilot.";
+            sim.cli(
+                &[
+                    "findings",
+                    "waive",
+                    finding["id"].as_str().unwrap(),
+                    "--reason",
+                    reason,
+                ],
+                &[],
+            );
+        }
+    }
+    assert_eq!(sim.cli(&["lint"], &[]).0, 0, "F1 passes once waived");
+    // The inferred directory: drafted elements plus the configured calendar and experts.
+    sim.settle("directory");
+    for (kind, name) in [
+        ("Actor", "Student"),
+        ("Actor", "Loan Desk"),
+        ("BusinessRole", "Borrower"),
+        ("Rule", "BorrowerEligibility"),
+        ("DecisionTable", "BorrowerEligibility"),
+        ("Stakeholder", "Desk Manager"),
+    ] {
+        assert!(
+            sim.accepted(kind).iter().any(|id| sim
+                .nodes()
+                .iter()
+                .any(|n| n["id"] == *id && n["payload"]["data"]["name"] == name)),
+            "{kind} {name} is Accepted"
+        );
+    }
+    assert_eq!(sim.accepted("Calendar").len(), 1);
+    // The passes the pipeline offers: Model twice (attributes need Accepted Entities), flows,
+    // Model again (transition triggers need Accepted Operations); no attribute is typed by hand
+    // and no scope is configured.
+    for recipe in [
+        "analyse",
+        "analyse",
+        "flows",
+        "analyse",
+        "calc",
+        "rules",
+        "scenarios",
+        "tags",
+        "run",
+    ] {
+        sim.settle(recipe);
+    }
+    let typed: Vec<String> = sim
+        .nodes()
+        .iter()
+        .filter(|n| n["status"] == "Accepted" && n["payload"]["type"] == "Attribute")
+        .map(|n| {
+            n["payload"]["data"]["value_type"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert!(typed.iter().any(|t| t == "Date"), "{typed:?}");
+    assert_eq!(
+        sim.accepted("Calculation").len(),
+        1,
+        "the loan length is calculated from derived inputs"
+    );
+    // The questions the product raises, answered by the configured expert.
+    assert_eq!(sim.cli(&["ask"], &[]).0, 0);
+    let questions = sim.json(&["questions"]);
+    let calendar = sim.accepted("Calendar")[0].clone();
+    for q in questions.as_array().unwrap() {
+        let props = &q["answer_schema"]["properties"];
+        let answer = if props.get("inclusive_end").is_some() {
+            json!({"inclusive_end": false})
+        } else if props.get("holiday_consumes_working_day").is_some() {
+            json!({"calendar_ref": calendar, "holiday_consumes_working_day": false})
+        } else if props.get("decimal").is_some() {
+            json!({"decimal": "0.5", "unit": "working_day"})
+        } else {
+            panic!("unexpected question {q}");
+        };
+        let answer = answer.to_string();
+        let id = q["id"].as_str().unwrap();
+        let args = [
+            "answer",
+            id,
+            "--answer",
+            &answer,
+            "--rationale",
+            "Expert answer.",
+        ];
+        assert_eq!(sim.cli(&args, &[]).0, 0);
+    }
+    for _ in 0..questions.as_array().unwrap().len() {
+        sim.cli(&["proposals", "--refresh"], &[]);
+        let pending = sim.json(&["proposals"]);
+        let Some(next) = pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["stale"] == false)
+        else {
+            break;
+        };
+        let id = next["proposal_id"].as_str().unwrap();
+        let args = [
+            "apply",
+            id,
+            "--action",
+            "accept",
+            "--reason",
+            "Expert answer.",
+        ];
+        assert_eq!(sim.cli(&args, &[]).0, 0);
+    }
+    for recipe in ["analyse", "scenarios", "run"] {
+        sim.settle(recipe);
+    }
+    let (code, gates) = sim.cli(&["ready"], &[]);
+    assert_eq!(code, 0, "{gates}");
+    let out = sim.dir.join("report");
+    assert_eq!(
+        sim.cli(&["report", "--out", out.to_str().unwrap()], &[]).0,
+        0
+    );
+    assert_eq!(sim.cli(&["export", "--format", "functional"], &[]).0, 0);
+}
+
 /// R0.7: the whole flow replays the committed executions (no model, no network) and two runs
 /// under different clocks reach the identical final semantic_hash.
 #[test]

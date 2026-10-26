@@ -75,12 +75,13 @@ fn status_of(
     }
 }
 
-/// The Accepted element types a recipe builds on that its own proposals can add: the domain
-/// analysis derives attributes and lifecycles only for Accepted Entities, flows derives
-/// processes only from Accepted Operations, Events and Outcomes.
+/// The Accepted element types a recipe builds on that a step can add: the domain analysis
+/// derives attributes and lifecycles only for Accepted Entities and transition triggers only
+/// from Accepted Operations and Events; flows derives processes only from Accepted Operations,
+/// Events and Outcomes.
 fn grown_input_types(recipe: Recipe) -> &'static [NodeType] {
     match recipe {
-        Recipe::Analyse => &[NodeType::Entity],
+        Recipe::Analyse => &[NodeType::Entity, NodeType::Operation, NodeType::Event],
         Recipe::Flows => &[NodeType::Operation, NodeType::Event, NodeType::Outcome],
         _ => &[],
     }

@@ -1897,11 +1897,14 @@ mod cli {
         }
         // Absent configuration is a clear typed error, never an empty success.
         let plain = env();
-        for command in ["directory", "ask"] {
-            let (code, _, err) = plain.run(&[command, "--json"]);
-            assert_eq!(code, 1, "{command}: {err}");
-            assert!(err.contains("E_STAGE_CONFIG_MISSING"), "{command}: {err}");
-        }
+        let (code, _, err) = plain.run(&["ask", "--json"]);
+        assert_eq!(code, 1, "ask: {err}");
+        assert!(err.contains("E_STAGE_CONFIG_MISSING"), "ask: {err}");
+        // An absent directory is inferred instead (any-domain run): `directory` runs the
+        // directory recipe.
+        let (code, out, err) = plain.run(&["directory", "--json"]);
+        assert_eq!(code, 0, "directory: {err}");
+        assert!(out.contains("\"status\":\"ready\""), "{out}");
     }
 
     #[test]

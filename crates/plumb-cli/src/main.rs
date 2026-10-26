@@ -188,7 +188,8 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         ui_dir: Option<std::path::PathBuf>,
     },
-    /// Persist the configured directory proposals (pending; nothing is committed).
+    /// Persist the configured directory proposals, or, without a configured directory, run
+    /// the directory recipe that drafts it (pending; nothing is committed).
     Directory,
     /// Promote Proposed elements to Accepted through the generic governed confirmation.
     Confirm {
@@ -393,6 +394,11 @@ fn execute(cli: Cli) -> Result<Done, CliError> {
     let state = commands::open(db, &cli.branch, &config, provider, cli.command.open_mode())?;
     if let Some((recipe, scope)) = cli.command.recipe() {
         return commands::stage(&state, recipe, scope.to_vec());
+    }
+    // Without a configured directory, `directory` is the directory recipe: the drafted
+    // directory plus the configuration-supplied elements (any-domain run).
+    if matches!(cli.command, Command::Directory) && config.directory.is_none() {
+        return commands::stage(&state, Recipe::Directory, Vec::new());
     }
     match cli.command {
         Command::Import {
