@@ -731,6 +731,18 @@ describe("Item cards", () => {
     expect(rowFor("Apply the answer to: Does the requested").textContent).toContain("Answer to confirm · From a question");
   });
 
+  it("answering in the Questions view opens the answer under From questions, in the inspector", async () => {
+    const { user, router } = renderAt("/inbox/q:duration?filter=questions");
+    await ready();
+    await user.click(within(inspector()).getByRole("radio", { name: "Yes" }));
+    await user.click(within(inspector()).getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/inbox/prop:answered"));
+    // The Questions view lists no answers: the answer opens where it is listed.
+    expect(router.state.location.search).toEqual({ filter: "fromq" });
+    expect(await within(inspector()).findByRole("heading", { level: 2, name: "Apply the answer to: Does the requested duration include the end date?" })).toBeTruthy();
+    expect(within(inspector()).getByRole("button", { name: "Accept" })).toBeTruthy();
+  });
+
   it("skips a question for now without a write", async () => {
     const { user, backend, router } = renderAt("/inbox/q:duration");
     await ready();

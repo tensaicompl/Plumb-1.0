@@ -527,7 +527,8 @@ export function InboxScreen({ filter = "all", selectedId }: { filter?: InboxFilt
           setDrafts((prev) => ({ ...prev, [question.id]: EMPTY_DRAFT }));
           toast({ message: t("inbox.toast.answered") });
           refetchAll();
-          go(itemHref(response.proposal_id));
+          // The answer is a proposal from a question: the Questions view does not list it.
+          go(buildHref("/inbox/$id", { id: response.proposal_id }, filterSearch(filter === "questions" ? "fromq" : filter)));
         },
         onError: failure,
       },
