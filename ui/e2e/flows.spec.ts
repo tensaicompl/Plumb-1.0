@@ -240,3 +240,62 @@ test.describe.serial("Inbox triage and conflicts @triage-db", () => {
     expect(errors).toEqual([]);
   });
 });
+
+test.describe.serial("Questions, gates and scenarios @questions-db", () => {
+  test("flow 3: the expert answers a question; the answer becomes a proposal, is accepted and is in History", async ({ page }) => {
+    test.setTimeout(120_000);
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    // Before the answer the calculation leaves the end date open.
+    await page.goto("/model/calculations");
+    await expect(main(page).getByText("working_days([start_date, end_date], calendar, inclusive_end) * day_fraction")).toBeVisible();
+    await page.goto("/overview");
+    await main(page).getByRole("region", { name: "Next action" }).getByRole("button", { name: "Open questions" }).click();
+    await expect(page).toHaveURL(/\/inbox\?filter=questions/);
+    const questions = page.getByRole("list", { name: "Questions" });
+    await expect(questions.getByRole("button")).toHaveCount(4);
+    await questions.getByRole("button", { name: /include its end date\?/ }).click();
+    await expect(inspector(page).getByRole("heading", { level: 2, name: /include its end date\?/ })).toBeVisible();
+    const answerButton = inspector(page).getByRole("button", { name: "Answer" });
+    await expect(answerButton).toBeDisabled();
+    await inspector(page).getByRole("radio", { name: "Yes" }).check();
+    await inspector(page).getByRole("textbox", { name: /Rationale/ }).fill("Both start date and end date are included.");
+    await noSeriousA11yViolations(page);
+    await answerButton.click();
+    await expect(toast(page).filter({ hasText: "Answer recorded · it now needs your confirmation" })).toBeVisible();
+    // The answer is now a proposal from questions, open in the inspector with its model change.
+    await expect(page).toHaveURL(/\/inbox\/prop:/);
+    await expect(inspector(page).getByText("Answer to confirm · From a question")).toBeVisible();
+    await expect(inspector(page).getByRole("list", { name: "Facts" })).toContainText("inclusive end: yes");
+    await expect(inspector(page).getByRole("list", { name: "Model change" })).toContainText("calculation requested leave duration (changed)");
+    await noSeriousA11yViolations(page);
+    // Accepting an answer is governed: the reason is recorded with the decision.
+    await inspector(page).getByRole("button", { name: "Accept" }).click();
+    const reason = page.getByRole("dialog", { name: "Accept proposal" });
+    await reason.getByRole("textbox", { name: "Reason (required)" }).fill("Confirmed with HR: the end date is a leave day.");
+    await noSeriousA11yViolations(page);
+    await page.keyboard.press("ControlOrMeta+Enter");
+    await expect(toast(page).filter({ hasText: "Model updated" })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Questions" })).toHaveCount(0);
+    await page.getByRole("navigation", { name: "Inbox filters" }).getByRole("link", { name: /^Questions/ }).click();
+    await expect(page.getByRole("list", { name: "Questions" }).getByRole("button")).toHaveCount(3);
+    await expect(page.getByRole("list", { name: "Questions" }).getByRole("button", { name: /include its end date\?/ })).toHaveCount(0);
+
+    // The calculation now counts the end date (its expression shows the inclusive period).
+    await toast(page).getByRole("button", { name: "View in Model" }).click();
+    await expect(page).toHaveURL(/\/model\/calculations/);
+    await expect(main(page).getByText("working_days([start_date, end_date], calendar, true) * day_fraction")).toBeVisible();
+    await expect(main(page).getByText("working_days([start_date, end_date], calendar, inclusive_end) * day_fraction")).toHaveCount(0);
+
+    // History shows the decision: the answer, who gave it and its rationale.
+    await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Quality" }).click();
+    await page.getByRole("navigation", { name: "Quality views" }).getByRole("link", { name: "History" }).click();
+    await expect(page).toHaveURL(/\/quality\/history$/);
+    await page.getByRole("searchbox", { name: "Search decisions" }).fill("end date");
+    const history = page.getByRole("table", { name: "Decision history" });
+    await expect(history.getByText("Answered a question").first()).toBeVisible();
+    await expect(history.getByText(/Both start date and end date are included\./).first()).toBeVisible();
+    await noSeriousA11yViolations(page);
+    expect(errors).toEqual([]);
+  });
+});
