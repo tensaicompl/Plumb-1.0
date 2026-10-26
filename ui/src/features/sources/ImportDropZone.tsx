@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Upload } from "lucide-react";
 import { useState, type DragEvent } from "react";
 
-import type { ApiResponse } from "../../api/client";
+import { revisionEtag, type ApiResponse } from "../../api/client";
 import type { components } from "../../api/schema";
 import { useModelVersion, useVersionedMutation, WriteFailedError } from "../../api/useVersionedMutation";
 import { useRunStage } from "../../app/run";
@@ -137,7 +137,7 @@ export function useImportSource() {
           void queryClient.invalidateQueries();
           toast({
             message: tf("sources.import.done", { count: data.spans_count, name: file.name }),
-            action: { label: t("sources.import.runRequirements"), onAction: () => run("extract") },
+            action: { label: t("sources.import.runRequirements"), onAction: () => run("extract", revisionEtag(data.revision)) },
           });
         },
         onError: (error) => {

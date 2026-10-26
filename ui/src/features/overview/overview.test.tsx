@@ -349,18 +349,25 @@ describe("Overview first run", () => {
     expect(within(main()).getByText("New project")).toBeTruthy();
     expect(await axeViolations(main())).toEqual([]);
     const input = within(main()).getByLabelText("Drop a file here, or choose one");
+    // The import is a write: it moves the model to a new revision.
+    const IMPORTED = { ...VERSION, version: "rev:43:bbbbbbbbbbbbbbbb", revision: "rev:43:bbbbbbbbbbbbbbbb" };
+    server.use(http.get("*/api/model/version", () => (b.uploads.length > 0 ? etagJson(IMPORTED, undefined, '"rev:43:bbbbbbbbbbbbbbbb"') : etagJson(VERSION, undefined, VERSION_ETAG))));
     b.upload = () => {
       // The import made a source: the pipeline now reports it.
       b.pipeline = { ...EMPTY, sources: 1 };
-      return etagJson({ id: "src:2", hash: "sha256:2", spans_count: 38, events: [], revision: VERSION.revision, semantic_hash: VERSION.semantic_hash, version: VERSION.version });
+      return etagJson({ id: "src:2", hash: "sha256:2", spans_count: 38, events: [], revision: IMPORTED.revision, semantic_hash: IMPORTED.semantic_hash, version: IMPORTED.version });
     };
     await user.upload(input, new File(["# Leave\n\nAn employee shall request leave.\n"], "requirements.md"));
     await waitFor(() => expect(b.uploads).toEqual([{ name: "requirements.md", type: "text/markdown", ifMatch: VERSION_ETAG }]));
     expect(await screen.findByText("38 passages imported from requirements.md")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Run Requirements step" }));
-    await waitFor(() => expect(b.runs).toEqual(["extract"]));
     // The project now has a source: the dashboard replaces the hero.
     expect(await within(main()).findByRole("heading", { level: 1, name: "HR leave" })).toBeTruthy();
+    // The toast's Run runs against the revision the import produced, and the started job is
+    // tracked although the hero that imported the file is gone.
+    await user.click(screen.getByRole("button", { name: "Run Requirements step" }));
+    await waitFor(() => expect(b.runs).toEqual(["extract"]));
+    expect(calls.find((c) => c.method === "POST" && c.path === "/api/stages/extract/run")?.ifMatch).toBe('"rev:43:bbbbbbbbbbbbbbbb"');
+    await waitFor(() => expect(app().run.useRunStore.getState().job?.id).toBe("job:run-1"));
   });
 
   it("explains a rejected document in plain language", async () => {

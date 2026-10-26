@@ -124,27 +124,30 @@ export function useRetryJob() {
 }
 
 /**
- * Starts a stage (`run_stage`) against the model version the user sees (its ETag is If-Match),
- * then tracks its job. A 412 opens the conflict sheet; other failures are toasted.
+ * Starts a stage (`run_stage`) against the model version the user sees (its ETag is If-Match), or
+ * against `reviewed`, the entity-tag of a revision a write just returned (the import toast runs the
+ * Requirements step on the revision its import produced). The started job is tracked even when the
+ * component that started it has unmounted. A 412 opens the conflict sheet; other failures are
+ * toasted.
  */
 export function useRunStage() {
   const version = useModelVersion();
   const start = useRunStore((state) => state.start);
   const mutation = useVersionedMutation(
-    (stage: StageName, ifMatch: string) =>
+    ({ stage }: { stage: StageName; reviewed?: string }, ifMatch: string) =>
       apiClient.POST("/api/stages/{stage}/run", { params: { path: { stage }, header: { "If-Match": ifMatch } }, body: {} }),
-    version.data?.etag,
+    ({ reviewed }) => reviewed ?? version.data?.etag,
   );
   return {
-    run: (stage: StageName) =>
-      mutation.mutate(stage, {
-        onSuccess: (data) => start(data.job_id, stage),
-        onError: (error) => {
+    run: (stage: StageName, reviewed?: string) =>
+      void mutation.mutateAsync(reviewed === undefined ? { stage } : { stage, reviewed }).then(
+        (data) => start(data.job_id, stage),
+        (error: Error) => {
           if (error.name !== "PreconditionFailedError") {
             toast({ tone: "error", message: tf("shell.run.rejected", { message: writeErrorMessage(error) ?? error.message }) });
           }
         },
-      }),
+      ),
     starting: mutation.isPending,
   };
 }
