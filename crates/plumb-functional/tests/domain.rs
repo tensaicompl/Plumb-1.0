@@ -434,6 +434,26 @@ exactly one Employee, and an Employee may hold zero or more of them.";
         analyze_with(graph, &request, &artifact)
     }
 
+    /// The reasons of the CandidateDropped issues of an analysis that must succeed.
+    fn dropped_reasons(result: Result<DomainAnalysisResult, DomainError>) -> Vec<String> {
+        let result = result.unwrap_or_else(|e| panic!("analysis failed: {e}"));
+        result
+            .issues
+            .iter()
+            .filter_map(|i| match i {
+                DomainIssue::CandidateDropped { reason, .. } => Some(reason.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The analysis succeeds and drops exactly one candidate, for a reason naming `needle`.
+    fn assert_dropped(result: Result<DomainAnalysisResult, DomainError>, needle: &str) {
+        let reasons = dropped_reasons(result);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(reasons[0].contains(needle), "{reasons:?} lacks {needle:?}");
+    }
+
     /// Applies proposals in TEST CODE, rebasing each patch onto the current graph.
     fn apply(graph: &Graph, proposals: &[Proposal]) -> Graph {
         let mut g = graph.clone();
@@ -924,11 +944,11 @@ exactly one Employee, and an Employee may hold zero or more of them.";
         );
         assert!(result.proposals.is_empty());
         assert!(result.findings.is_empty());
-        // Any candidate must reference an Accepted Concept, so none can exist.
-        assert!(matches!(
+        // Any candidate must reference an Accepted Concept, so each one is dropped.
+        assert_dropped(
             analyze(&no_vocab, output(vec![employee_json()], vec![], vec![])),
-            Err(DomainError::UnknownConceptRef { .. })
-        ));
+            "unknown Concept reference concept:employee",
+        );
     }
 
     // ------------------------------------------------------------------ inference validation
@@ -967,34 +987,30 @@ exactly one Employee, and an Employee may hold zero or more of them.";
             run(json!({"version": 1, "entities": []})),
             Err(DomainError::SchemaInvalid { .. })
         ));
-        // Unknown and Proposed Concepts.
-        assert!(matches!(
-            run(output(vec![entity_json("concept:ghost", r1("Employee", 0))], vec![], vec![])),
-            Err(DomainError::UnknownConceptRef { concept_ref }) if concept_ref == id("concept:ghost")
-        ));
-        assert!(matches!(
+        // Unknown and Proposed Concepts: the candidate is dropped with an issue.
+        assert_dropped(
+            run(output(
+                vec![entity_json("concept:ghost", r1("Employee", 0))],
+                vec![],
+                vec![],
+            )),
+            "unknown Concept reference concept:ghost",
+        );
+        assert_dropped(
             run(output(
                 vec![entity_json("concept:draft", r1("Leave Request", 0))],
                 vec![],
-                vec![]
+                vec![],
             )),
-            Err(DomainError::ConceptNotAccepted {
-                status: Proposed,
-                ..
-            })
-        ));
+            "Concept concept:draft is Proposed, not Accepted",
+        );
         // Wrong ConceptKinds: ValueType as Entity, ObjectType as relationship, FactType as
         // value type, ValueType as owner and as relationship endpoint.
-        let wrong_kind = |v: Value, concept: &str, expected: ConceptKind| match run(v) {
-            Err(DomainError::WrongConceptKind {
-                concept_ref,
-                expected: e,
-                ..
-            }) => {
-                assert_eq!(concept_ref, id(concept));
-                assert_eq!(e, expected);
-            }
-            other => panic!("{other:?}"),
+        let wrong_kind = |v: Value, concept: &str, expected: ConceptKind| {
+            let reasons = dropped_reasons(run(v));
+            assert_eq!(reasons.len(), 1, "{reasons:?}");
+            assert!(reasons[0].starts_with(&format!("Concept {concept} is ")));
+            assert!(reasons[0].ends_with(&format!("expected {expected:?}")));
         };
         wrong_kind(
             output(vec![entity_json(DATE, r2("Date", 1))], vec![], vec![]),
@@ -1025,38 +1041,43 @@ exactly one Employee, and an Employee may hold zero or more of them.";
 
         // Grounding ranges.
         let bad_range = |grounding: Value| {
-            assert!(matches!(
+            assert_dropped(
                 run(output(
                     vec![entity_json(EMPLOYEE, grounding)],
                     vec![],
-                    vec![]
+                    vec![],
                 )),
-                Err(DomainError::InvalidGrounding { .. })
-            ));
+                "invalid grounding",
+            );
         };
         bad_range(json!({"requirement_ref": "req:r9", "start": 0, "end": 5}));
         bad_range(json!({"requirement_ref": "req:r1", "start": 6, "end": 6}));
         bad_range(json!({"requirement_ref": "req:r1", "start": 7, "end": 6}));
         bad_range(json!({"requirement_ref": "req:r1", "start": 0, "end": R1.len() + 1}));
         // A grounding naming another Concept.
-        assert!(matches!(
-            run(output(vec![entity_json(EMPLOYEE, r1("Leave Request", 0))], vec![], vec![])),
-            Err(DomainError::GroundingConceptMismatch { concept_ref, .. }) if concept_ref == id(EMPLOYEE)
-        ));
+        assert_dropped(
+            run(output(
+                vec![entity_json(EMPLOYEE, r1("Leave Request", 0))],
+                vec![],
+                vec![],
+            )),
+            "does not name Concept concept:employee",
+        );
         let mut attr = attribute_json(false);
         attr["value_type"]["grounding"] = r2("Start Date", 0);
-        assert!(matches!(
+        assert_dropped(
             run(output(vec![], vec![attr], vec![])),
-            Err(DomainError::GroundingConceptMismatch { concept_ref, .. }) if concept_ref == id(DATE)
-        ));
-        // A bad nullable or cardinality grounding is also rejected.
+            "does not name Concept concept:date",
+        );
+        // A bad nullable or cardinality grounding also drops its candidate.
         let mut attr = attribute_json(false);
         attr["nullable"]["grounding"] =
             json!({"requirement_ref": "req:r2", "start": 0, "end": 999});
-        assert!(matches!(
-            run(output(vec![], vec![attr], vec![])),
-            Err(DomainError::InvalidGrounding { .. })
-        ));
+        assert_dropped(run(output(vec![], vec![attr], vec![])), "invalid grounding");
+        let mut rel = grounded_relationship();
+        rel["cardinality_to"]["grounding"] =
+            json!({"requirement_ref": "req:r1", "start": 0, "end": 999});
+        assert_dropped(run(output(vec![], vec![], vec![rel])), "invalid grounding");
         // Normalization follows S1.5 exactly: determiner and plural are normalized.
         let plural = "Every Employee submits Leave Request records; the employees agree.";
         assert_eq!(
@@ -1127,17 +1148,17 @@ exactly one Employee, and an Employee may hold zero or more of them.";
         let r = request(&g);
         let e = accented.find('é').unwrap();
         let split = json!({"requirement_ref": "req:r1", "start": 6, "end": e + 1});
-        assert!(matches!(
+        assert_dropped(
             analyze_with(
                 &g,
                 &r,
                 &artifact_for(
                     &r.request,
-                    output(vec![entity_json(EMPLOYEE, split)], vec![], vec![])
-                )
+                    output(vec![entity_json(EMPLOYEE, split)], vec![], vec![]),
+                ),
             ),
-            Err(DomainError::InvalidGrounding { .. })
-        ));
+            "not a valid UTF-8 range",
+        );
     }
 
     // ------------------------------------------------------------------ proposals
@@ -1200,6 +1221,89 @@ exactly one Employee, and an Employee may hold zero or more of them.";
         let mut sorted = order.clone();
         sorted.sort();
         assert_eq!(order, sorted);
+    }
+
+    /// Any-domain tolerance: one candidate with an off-by-a-few grounding is dropped with an
+    /// issue, its valid siblings are still proposed, and its dependents wait instead of
+    /// failing the analysis or dangling.
+    #[test]
+    fn domain_invalid_candidate_dropped_siblings_kept() {
+        let g = base_graph();
+        let past_end = json!({"requirement_ref": "req:r1", "start": 0, "end": R1.len() + 3});
+        let result = analyze(
+            &g,
+            output(
+                vec![
+                    employee_json(),
+                    entity_json(LEAVE_REQUEST, past_end.clone()),
+                ],
+                vec![attribute_json(false)],
+                vec![],
+            ),
+        )
+        .unwrap();
+        let entities = proposal_of_type(&result, NodeType::Entity);
+        assert_eq!(entities.len(), 1);
+        assert_eq!(added(entities[0]).0.id, id(EMPLOYEE_ENTITY));
+        assert!(proposal_of_type(&result, NodeType::Attribute).is_empty());
+        assert_eq!(result.issues.len(), 2, "{:?}", result.issues);
+        assert_eq!(
+            result.issues[0],
+            DomainIssue::EntityDependencyPending {
+                candidate_ref: id(START_DATE_ATTRIBUTE),
+                concept_refs: ids(&[LEAVE_REQUEST]),
+            }
+        );
+        match &result.issues[1] {
+            DomainIssue::CandidateDropped {
+                candidate_ref,
+                reason,
+            } => {
+                assert_eq!(candidate_ref, &id(LEAVE_REQUEST_ENTITY));
+                assert!(
+                    reason.starts_with("invalid grounding req:r1 0.."),
+                    "{reason}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // A duplicate whose second copy is invalid is not a duplicate: the valid one is kept.
+        let result = analyze(
+            &g,
+            output(
+                vec![employee_json(), entity_json(EMPLOYEE, past_end)],
+                vec![],
+                vec![],
+            ),
+        )
+        .unwrap();
+        assert_eq!(proposal_of_type(&result, NodeType::Entity).len(), 1);
+        assert_eq!(dropped_reasons(Ok(result)).len(), 1);
+
+        // Deterministic: the same output gives the same result.
+        let again = |_: ()| {
+            analyze(
+                &g,
+                output(
+                    vec![
+                        entity_json(LEAVE_REQUEST, r1("Employee", 0)),
+                        entity_json("concept:ghost", r1("Employee", 0)),
+                        employee_json(),
+                    ],
+                    vec![],
+                    vec![],
+                ),
+            )
+            .unwrap()
+        };
+        let first = again(());
+        assert_eq!(first, again(()));
+        assert_eq!(proposal_of_type(&first, NodeType::Entity).len(), 1);
+        assert_eq!(first.issues.len(), 2);
+        let mut sorted = first.issues.clone();
+        sorted.sort();
+        assert_eq!(first.issues, sorted);
     }
 
     #[test]
@@ -2871,7 +2975,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
         let requirement = &r.context.requirements[0];
         let grounding =
             json!({"requirement_ref": requirement.requirement_ref, "start": 0, "end": 1});
-        assert!(matches!(
+        assert_dropped(
             analyze_with(
                 &g,
                 &r,
@@ -2880,15 +2984,12 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                     output(
                         vec![entity_json(proposed.id.as_str(), grounding)],
                         vec![],
-                        vec![]
-                    )
-                )
+                        vec![],
+                    ),
+                ),
             ),
-            Err(DomainError::ConceptNotAccepted {
-                status: Proposed,
-                ..
-            })
-        ));
+            "is Proposed, not Accepted",
+        );
         // No entity survival percentage is computed or claimed: zero Entity proposals exist.
     }
 

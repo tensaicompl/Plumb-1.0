@@ -514,6 +514,10 @@ pub enum DomainIssue {
     /// The proposed primitive type is not a valid pilot expression type, so the Attribute
     /// keeps its value_type Concept name; `reason` is diagnostic only.
     PrimitiveTypeRejected { candidate_ref: Id, reason: String },
+    /// One model-proposed candidate failed a per-item check (an unknown, non-Accepted or
+    /// wrong-kind Concept, an invalid grounding or a grounding that does not name its Concept)
+    /// and was dropped; the other candidates are still analyzed. `reason` is diagnostic only.
+    CandidateDropped { candidate_ref: Id, reason: String },
 }
 
 /// A deterministic conflict among existing domain nodes of one domain-origin identity.
@@ -782,66 +786,6 @@ struct ConceptUse<'o> {
     grounding: &'o DomainGrounding,
 }
 
-fn concept_uses(output: &DomainOutput) -> Vec<ConceptUse<'_>> {
-    let mut uses = Vec::new();
-    for e in &output.entities {
-        uses.push(ConceptUse {
-            concept_ref: &e.concept_ref,
-            kind: Some(ConceptKind::ObjectType),
-            grounding: &e.grounding,
-        });
-    }
-    for a in &output.attributes {
-        uses.push(ConceptUse {
-            concept_ref: &a.concept_ref,
-            kind: None,
-            grounding: &a.grounding,
-        });
-        uses.push(ConceptUse {
-            concept_ref: &a.owner_concept_ref,
-            kind: Some(ConceptKind::ObjectType),
-            grounding: &a.owner_grounding,
-        });
-        uses.push(ConceptUse {
-            concept_ref: &a.value_type.concept_ref,
-            kind: Some(ConceptKind::ValueType),
-            grounding: &a.value_type.grounding,
-        });
-    }
-    for r in &output.relationships {
-        uses.push(ConceptUse {
-            concept_ref: &r.concept_ref,
-            kind: Some(ConceptKind::FactType),
-            grounding: &r.grounding,
-        });
-        uses.push(ConceptUse {
-            concept_ref: &r.from_concept_ref,
-            kind: Some(ConceptKind::ObjectType),
-            grounding: &r.from_grounding,
-        });
-        uses.push(ConceptUse {
-            concept_ref: &r.to_concept_ref,
-            kind: Some(ConceptKind::ObjectType),
-            grounding: &r.to_grounding,
-        });
-    }
-    uses
-}
-
-/// Every grounding of the output, including nullable and cardinality groundings.
-fn all_groundings(output: &DomainOutput) -> Vec<&DomainGrounding> {
-    let mut groundings: Vec<&DomainGrounding> =
-        concept_uses(output).iter().map(|u| u.grounding).collect();
-    for a in &output.attributes {
-        groundings.push(&a.nullable.grounding);
-    }
-    for r in &output.relationships {
-        groundings.extend(r.cardinality_from.iter().map(|c| &c.grounding));
-        groundings.extend(r.cardinality_to.iter().map(|c| &c.grounding));
-    }
-    groundings
-}
-
 /// The `[start, end)` byte bounds of a valid UTF-8 range of `text`.
 fn bounds(text: &str, start: u64, end: u64) -> Option<(usize, usize)> {
     let (s, e) = (usize::try_from(start).ok()?, usize::try_from(end).ok()?);
@@ -867,43 +811,15 @@ fn grounded_text<'c>(
     Ok(&requirement.statement[s..e])
 }
 
-/// Steps 7-11 of the contract order over the decoded output.
-fn validate_output(
+/// The per-item checks of one candidate in contract order: its Concepts are Accepted, of the
+/// kind their role requires, every grounding is valid and each Concept grounding names it.
+fn check_candidate(
     graph: &Graph,
     context: &DomainContext,
-    output: &DomainOutput,
+    uses: &[ConceptUse<'_>],
+    extra_groundings: &[&DomainGrounding],
 ) -> Result<(), DomainError> {
-    let project = graph.project_id();
-    reject_duplicates(
-        &output.entities,
-        |e| e.concept_ref.clone(),
-        |e| entity_id(project, &e.concept_ref),
-    )?;
-    reject_duplicates(
-        &output.attributes,
-        |a| (a.owner_concept_ref.clone(), a.concept_ref.clone()),
-        |a| attribute_id(project, &a.owner_concept_ref, &a.concept_ref),
-    )?;
-    reject_duplicates(
-        &output.relationships,
-        |r| {
-            (
-                r.concept_ref.clone(),
-                r.from_concept_ref.clone(),
-                r.to_concept_ref.clone(),
-            )
-        },
-        |r| {
-            relationship_id(
-                project,
-                &r.concept_ref,
-                &r.from_concept_ref,
-                &r.to_concept_ref,
-            )
-        },
-    )?;
-    let uses = concept_uses(output);
-    for u in &uses {
+    for u in uses {
         if context.concept(u.concept_ref).is_none() {
             return Err(match graph.node(u.concept_ref) {
                 Some(node) if matches!(node.payload, NodePayload::Concept(_)) => {
@@ -918,7 +834,7 @@ fn validate_output(
             });
         }
     }
-    for u in &uses {
+    for u in uses {
         let found = context
             .concept(u.concept_ref)
             .map(|c| c.concept_kind)
@@ -933,10 +849,14 @@ fn validate_output(
             });
         }
     }
-    for g in all_groundings(output) {
+    for g in uses
+        .iter()
+        .map(|u| u.grounding)
+        .chain(extra_groundings.iter().copied())
+    {
         grounded_text(context, g)?;
     }
-    for u in &uses {
+    for u in uses {
         let text = grounded_text(context, u.grounding)?;
         let name = context
             .concept(u.concept_ref)
@@ -953,6 +873,162 @@ fn validate_output(
         }
     }
     Ok(())
+}
+
+/// Keeps a candidate that passes its per-item checks; a per-item failure becomes a
+/// CandidateDropped issue (the any-domain tolerance), every other error stays fatal.
+fn keep_candidate(
+    graph: &Graph,
+    context: &DomainContext,
+    candidate_ref: Id,
+    uses: &[ConceptUse<'_>],
+    extra_groundings: &[&DomainGrounding],
+    issues: &mut Vec<DomainIssue>,
+) -> Result<bool, DomainError> {
+    match check_candidate(graph, context, uses, extra_groundings) {
+        Ok(()) => Ok(true),
+        Err(
+            e @ (DomainError::UnknownConceptRef { .. }
+            | DomainError::ConceptNotAccepted { .. }
+            | DomainError::WrongConceptKind { .. }
+            | DomainError::InvalidGrounding { .. }
+            | DomainError::GroundingConceptMismatch { .. }),
+        ) => {
+            issues.push(DomainIssue::CandidateDropped {
+                candidate_ref,
+                reason: e.to_string(),
+            });
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Steps 7-11 of the contract order over the decoded output: each candidate failing a
+/// per-item check is dropped with an issue, then duplicates among the kept candidates are
+/// rejected. The kept lists stay in identity order.
+fn validate_output(
+    graph: &Graph,
+    context: &DomainContext,
+    output: DomainOutput,
+) -> Result<(DomainOutput, Vec<DomainIssue>), DomainError> {
+    let project = graph.project_id();
+    let mut issues = Vec::new();
+    let mut entities = Vec::new();
+    for e in output.entities {
+        let uses = [ConceptUse {
+            concept_ref: &e.concept_ref,
+            kind: Some(ConceptKind::ObjectType),
+            grounding: &e.grounding,
+        }];
+        let id = entity_id(project, &e.concept_ref)?;
+        if keep_candidate(graph, context, id, &uses, &[], &mut issues)? {
+            entities.push(e);
+        }
+    }
+    let mut attributes = Vec::new();
+    for a in output.attributes {
+        let uses = [
+            ConceptUse {
+                concept_ref: &a.concept_ref,
+                kind: None,
+                grounding: &a.grounding,
+            },
+            ConceptUse {
+                concept_ref: &a.owner_concept_ref,
+                kind: Some(ConceptKind::ObjectType),
+                grounding: &a.owner_grounding,
+            },
+            ConceptUse {
+                concept_ref: &a.value_type.concept_ref,
+                kind: Some(ConceptKind::ValueType),
+                grounding: &a.value_type.grounding,
+            },
+        ];
+        let id = attribute_id(project, &a.owner_concept_ref, &a.concept_ref)?;
+        if keep_candidate(
+            graph,
+            context,
+            id,
+            &uses,
+            &[&a.nullable.grounding],
+            &mut issues,
+        )? {
+            attributes.push(a);
+        }
+    }
+    let mut relationships = Vec::new();
+    for r in output.relationships {
+        let uses = [
+            ConceptUse {
+                concept_ref: &r.concept_ref,
+                kind: Some(ConceptKind::FactType),
+                grounding: &r.grounding,
+            },
+            ConceptUse {
+                concept_ref: &r.from_concept_ref,
+                kind: Some(ConceptKind::ObjectType),
+                grounding: &r.from_grounding,
+            },
+            ConceptUse {
+                concept_ref: &r.to_concept_ref,
+                kind: Some(ConceptKind::ObjectType),
+                grounding: &r.to_grounding,
+            },
+        ];
+        let cardinality: Vec<&DomainGrounding> = r
+            .cardinality_from
+            .iter()
+            .chain(r.cardinality_to.iter())
+            .map(|c| &c.grounding)
+            .collect();
+        let id = relationship_id(
+            project,
+            &r.concept_ref,
+            &r.from_concept_ref,
+            &r.to_concept_ref,
+        )?;
+        if keep_candidate(graph, context, id, &uses, &cardinality, &mut issues)? {
+            relationships.push(r);
+        }
+    }
+    reject_duplicates(
+        &entities,
+        |e| e.concept_ref.clone(),
+        |e| entity_id(project, &e.concept_ref),
+    )?;
+    reject_duplicates(
+        &attributes,
+        |a| (a.owner_concept_ref.clone(), a.concept_ref.clone()),
+        |a| attribute_id(project, &a.owner_concept_ref, &a.concept_ref),
+    )?;
+    reject_duplicates(
+        &relationships,
+        |r| {
+            (
+                r.concept_ref.clone(),
+                r.from_concept_ref.clone(),
+                r.to_concept_ref.clone(),
+            )
+        },
+        |r| {
+            relationship_id(
+                project,
+                &r.concept_ref,
+                &r.from_concept_ref,
+                &r.to_concept_ref,
+            )
+        },
+    )?;
+    Ok((
+        DomainOutput {
+            version: output.version,
+            entities,
+            attributes,
+            relationships,
+        },
+        issues,
+    ))
 }
 
 // ============================================================================ identity
@@ -1581,7 +1657,8 @@ pub fn analyze_domain(
     };
     let context = &request.context;
     let output = decoded_output(&request.request, inference.artifact)?;
-    validate_output(graph, context, &output)?;
+    let (output, dropped_issues) = validate_output(graph, context, output)?;
+    result.issues.extend(dropped_issues);
     if context.concepts.is_empty() {
         result
             .issues

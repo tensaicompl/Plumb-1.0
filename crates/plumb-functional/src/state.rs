@@ -511,6 +511,16 @@ pub enum LifecycleIssue {
         candidate_ref: Id,
         state_refs: Vec<Id>,
     },
+    /// One model-proposed candidate (`kind` state, transition or invariant) of this owner and
+    /// grounding failed a per-item check (owner, trigger, grounding, state token, expression
+    /// or a transition endpoint that is no known State) and was dropped; the other candidates
+    /// are still analyzed. `reason` is diagnostic only.
+    CandidateDropped {
+        kind: String,
+        owner_ref: Id,
+        grounding: LifecycleGrounding,
+        reason: String,
+    },
 }
 
 /// A deterministic conflict among existing States of one state-origin identity.
@@ -786,48 +796,76 @@ fn check_trigger(context: &LifecycleContext, trigger_ref: &Id) -> Result<(), Lif
     }
 }
 
-/// Steps 7-11 of the contract order: owners, triggers, groundings, keys/IDs, duplicates.
+/// The per-item checks of one candidate in contract order: owner, trigger, groundings,
+/// expression.
+fn check_candidate(
+    graph: &Graph,
+    context: &LifecycleContext,
+    owner_ref: &Id,
+    trigger_ref: Option<&Id>,
+    groundings: &[&LifecycleGrounding],
+    expression: Option<&str>,
+) -> Result<(), LifecycleError> {
+    check_owner(graph, context, owner_ref)?;
+    if let Some(trigger) = trigger_ref {
+        check_trigger(context, trigger)?;
+    }
+    for g in groundings {
+        grounded_text(context, g)?;
+    }
+    if let Some(expression) = expression {
+        validate_expression(expression)?;
+    }
+    Ok(())
+}
+
+/// A per-item failure of one model-proposed candidate becomes a CandidateDropped issue (the
+/// any-domain tolerance); every other error stays fatal for the whole analysis.
+fn dropped(
+    kind: &str,
+    owner_ref: &Id,
+    grounding: &LifecycleGrounding,
+    error: LifecycleError,
+) -> Result<LifecycleIssue, LifecycleError> {
+    match error {
+        LifecycleError::UnknownOwnerRef { .. }
+        | LifecycleError::InvalidOwner { .. }
+        | LifecycleError::InvalidTriggerRef { .. }
+        | LifecycleError::InvalidGrounding { .. }
+        | LifecycleError::InvalidExpression { .. }
+        | LifecycleError::UnknownStateCandidate { .. } => Ok(LifecycleIssue::CandidateDropped {
+            kind: kind.to_owned(),
+            owner_ref: owner_ref.clone(),
+            grounding: grounding.clone(),
+            reason: error.to_string(),
+        }),
+        other => Err(other),
+    }
+}
+
+/// Steps 7-11 of the contract order: owners, triggers, groundings, keys/IDs, duplicates. A
+/// candidate failing a per-item check is dropped with an issue; duplicates among the kept
+/// candidates stay fatal.
 fn validated_candidates(
     graph: &Graph,
     context: &LifecycleContext,
     output: LifecycleOutput,
-) -> Result<Candidates, LifecycleError> {
+) -> Result<(Candidates, Vec<LifecycleIssue>), LifecycleError> {
     let project = graph.project_id();
-    for owner in output
-        .states
-        .iter()
-        .map(|s| &s.stateful_ref)
-        .chain(output.transitions.iter().map(|t| &t.stateful_ref))
-        .chain(output.invariants.iter().map(|i| &i.scope_ref))
-    {
-        check_owner(graph, context, owner)?;
-    }
-    for t in &output.transitions {
-        if let Some(trigger) = &t.trigger_ref {
-            check_trigger(context, trigger)?;
-        }
-    }
-    for g in output
-        .states
-        .iter()
-        .map(|s| &s.grounding)
-        .chain(
-            output
-                .transitions
-                .iter()
-                .flat_map(|t| [&t.grounding, &t.from_state, &t.to_state]),
-        )
-        .chain(output.invariants.iter().map(|i| &i.grounding))
-    {
-        grounded_text(context, g)?;
-    }
-    for i in &output.invariants {
-        validate_expression(&i.expression)?;
-    }
+    let mut issues = Vec::new();
 
     let mut states = Vec::new();
     for s in output.states {
-        let key = state_key(context, &s.grounding)?;
+        let key =
+            match check_candidate(graph, context, &s.stateful_ref, None, &[&s.grounding], None)
+                .and_then(|()| state_key(context, &s.grounding))
+            {
+                Ok(key) => key,
+                Err(e) => {
+                    issues.push(dropped("state", &s.stateful_ref, &s.grounding, e)?);
+                    continue;
+                }
+            };
         states.push(StateCandidate {
             id: state_id(project, &s.stateful_ref, &key)?,
             stateful_ref: s.stateful_ref,
@@ -837,8 +875,27 @@ fn validated_candidates(
     }
     let mut transitions = Vec::new();
     for t in output.transitions {
-        let from_key = state_key(context, &t.from_state)?;
-        let to_key = state_key(context, &t.to_state)?;
+        let keys = check_candidate(
+            graph,
+            context,
+            &t.stateful_ref,
+            t.trigger_ref.as_ref(),
+            &[&t.grounding, &t.from_state, &t.to_state],
+            None,
+        )
+        .and_then(|()| {
+            Ok((
+                state_key(context, &t.from_state)?,
+                state_key(context, &t.to_state)?,
+            ))
+        });
+        let (from_key, to_key) = match keys {
+            Ok(keys) => keys,
+            Err(e) => {
+                issues.push(dropped("transition", &t.stateful_ref, &t.grounding, e)?);
+                continue;
+            }
+        };
         let from = state_id(project, &t.stateful_ref, &from_key)?;
         let to = state_id(project, &t.stateful_ref, &to_key)?;
         transitions.push(TransitionCandidate {
@@ -854,6 +911,17 @@ fn validated_candidates(
     }
     let mut invariants = Vec::new();
     for i in output.invariants {
+        if let Err(e) = check_candidate(
+            graph,
+            context,
+            &i.scope_ref,
+            None,
+            &[&i.grounding],
+            Some(&i.expression),
+        ) {
+            issues.push(dropped("invariant", &i.scope_ref, &i.grounding, e)?);
+            continue;
+        }
         invariants.push(InvariantCandidate {
             id: invariant_id(project, &i.scope_ref, &i.grounding)?,
             scope_ref: i.scope_ref,
@@ -875,11 +943,14 @@ fn validated_candidates(
             });
         }
     }
-    Ok(Candidates {
-        states,
-        transitions,
-        invariants,
-    })
+    Ok((
+        Candidates {
+            states,
+            transitions,
+            invariants,
+        },
+        issues,
+    ))
 }
 
 // ============================================================================ existing states
@@ -1327,24 +1398,38 @@ pub fn analyze_lifecycle(
     };
     let context = &request.context;
     let output = decoded_output(&request.request, inference.artifact)?;
-    let candidates = validated_candidates(graph, context, output)?;
+    let (mut candidates, dropped_issues) = validated_candidates(graph, context, output)?;
+    result.issues.extend(dropped_issues);
     if context.owners.is_empty() {
         result.issues.push(LifecycleIssue::StateOwnerUnavailable);
     }
 
-    // Endpoint resolution: same-output State candidates or existing active States.
+    // Endpoint resolution: same-output (kept) State candidates or existing active States; a
+    // transition naming any other State, e.g. one whose candidate was dropped, is dropped.
     let active = active_states(graph)?;
     let output_states: BTreeSet<&Id> = candidates.states.iter().map(|s| &s.id).collect();
-    for t in &candidates.transitions {
-        for (state_ref, key) in [&t.from, &t.to] {
-            if !output_states.contains(state_ref) && !active.contains_key(state_ref) {
-                return Err(LifecycleError::UnknownStateCandidate {
-                    state_ref: state_ref.clone(),
-                    state_key: key.clone(),
-                });
-            }
+    let mut transitions = Vec::new();
+    for t in std::mem::take(&mut candidates.transitions) {
+        let unknown = [&t.from, &t.to]
+            .into_iter()
+            .find(|(state_ref, _)| {
+                !output_states.contains(state_ref) && !active.contains_key(state_ref)
+            })
+            .cloned();
+        match unknown {
+            Some((state_ref, state_key)) => result.issues.push(dropped(
+                "transition",
+                &t.stateful_ref,
+                &t.grounding,
+                LifecycleError::UnknownStateCandidate {
+                    state_ref,
+                    state_key,
+                },
+            )?),
+            None => transitions.push(t),
         }
     }
+    candidates.transitions = transitions;
 
     // Governed trigger decisions for current candidates, bound both ways to their findings.
     let mut candidate_findings: BTreeMap<&Id, Id> = BTreeMap::new();

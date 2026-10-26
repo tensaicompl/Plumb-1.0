@@ -397,6 +397,39 @@ mod lifecycle_contract {
         analyze_with(graph, &request, &artifact)
     }
 
+    /// The (kind, reason) of each CandidateDropped issue of an analysis that must succeed.
+    fn dropped_of(
+        result: Result<LifecycleAnalysisResult, LifecycleError>,
+    ) -> Vec<(String, String)> {
+        let result = result.unwrap_or_else(|e| panic!("analysis failed: {e}"));
+        result
+            .issues
+            .iter()
+            .filter_map(|i| match i {
+                LifecycleIssue::CandidateDropped { kind, reason, .. } => {
+                    Some((kind.clone(), reason.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The analysis succeeds and drops exactly one `kind` candidate, for a reason naming
+    /// `needle`.
+    fn assert_dropped(
+        result: Result<LifecycleAnalysisResult, LifecycleError>,
+        kind: &str,
+        needle: &str,
+    ) {
+        let dropped = dropped_of(result);
+        assert_eq!(dropped.len(), 1, "{dropped:?}");
+        assert_eq!(dropped[0].0, kind, "{dropped:?}");
+        assert!(
+            dropped[0].1.contains(needle),
+            "{dropped:?} lacks {needle:?}"
+        );
+    }
+
     /// Applies proposals in TEST CODE, rebasing each patch onto the current graph.
     fn apply(graph: &Graph, proposals: &[Proposal]) -> Graph {
         let mut g = graph.clone();
@@ -826,14 +859,15 @@ mod lifecycle_contract {
         let result = analyze(&no_owner, empty_output()).unwrap();
         assert_eq!(result.issues, vec![LifecycleIssue::StateOwnerUnavailable]);
         assert!(result.proposals.is_empty() && result.findings.is_empty());
-        // Naming an owner outside the context is malformed inference, not a missing owner.
-        assert!(matches!(
+        // A candidate naming an owner outside the context is dropped, not a missing owner.
+        assert_dropped(
             analyze(
                 &no_owner,
-                output(vec![state_json(OWNER, r1("submitted"))], vec![], vec![])
+                output(vec![state_json(OWNER, r1("submitted"))], vec![], vec![]),
             ),
-            Err(LifecycleError::UnknownOwnerRef { .. })
-        ));
+            "state",
+            "unknown state owner entity:request",
+        );
     }
 
     // ------------------------------------------------------------------ inference validation
@@ -865,39 +899,47 @@ mod lifecycle_contract {
             run(json!({"version": 1, "states": []})),
             Err(LifecycleError::SchemaInvalid { .. })
         ));
-        // Owners: unknown, inactive, wrong category.
+        // Owners: unknown, inactive, wrong category. Each bad candidate is dropped.
         for owner in ["entity:ghost", "entity:gone"] {
-            assert!(matches!(
+            assert_dropped(
                 run(output(
                     vec![state_json(owner, r1("submitted"))],
                     vec![],
-                    vec![]
+                    vec![],
                 )),
-                Err(LifecycleError::UnknownOwnerRef { .. })
-            ));
+                "state",
+                &format!("unknown state owner {owner}"),
+            );
         }
         for owner in ["req:r1", OPERATION] {
-            assert!(matches!(
+            assert_dropped(
                 run(output(
                     vec![state_json(owner, r1("submitted"))],
                     vec![],
-                    vec![]
+                    vec![],
                 )),
-                Err(LifecycleError::InvalidOwner { .. })
-            ));
+                "state",
+                &format!("invalid state owner {owner}"),
+            );
         }
         let mut inv = invariant_json(EXPRESSION);
         inv["scope_ref"] = json!("req:r2");
-        assert!(matches!(
+        assert_dropped(
             run(output(vec![], vec![], vec![inv])),
-            Err(LifecycleError::InvalidOwner { .. })
-        ));
-        // Triggers: unknown and wrong type are malformed inference.
+            "invariant",
+            "invalid state owner req:r2",
+        );
+        // Triggers: an unknown or wrong-type trigger drops the transition; its states and the
+        // invariant are still proposed.
         for trigger in ["operation:ghost", OWNER] {
-            assert!(matches!(
-                run(full_output(json!(trigger))),
-                Err(LifecycleError::InvalidTriggerRef { .. })
-            ));
+            let result = run(full_output(json!(trigger))).unwrap();
+            assert_eq!(of_type(&result, NodeType::State).len(), 2);
+            assert_eq!(of_type(&result, NodeType::Invariant).len(), 1);
+            assert_dropped(
+                Ok(result),
+                "transition",
+                &format!("invalid trigger {trigger}"),
+            );
         }
         // Groundings.
         for grounding in [
@@ -907,17 +949,19 @@ mod lifecycle_contract {
             ground(R1, "req:r1", " submitted", 0),
             ground(R1, "req:r1", "submitted ", 0),
         ] {
-            assert!(matches!(
+            assert_dropped(
                 run(output(vec![state_json(OWNER, grounding)], vec![], vec![])),
-                Err(LifecycleError::InvalidGrounding { .. })
-            ));
+                "state",
+                "invalid grounding",
+            );
         }
         // Expressions: clean text only (empty is schema-invalid).
         for expression in [" x > 1", "x > 1 ", "x >\t1", "x\n> 1"] {
-            assert!(matches!(
+            assert_dropped(
                 run(output(vec![], vec![], vec![invariant_json(expression)])),
-                Err(LifecycleError::InvalidExpression { .. })
-            ));
+                "invariant",
+                "invalid invariant expression",
+            );
         }
         // Duplicate candidates.
         for duplicated in [
@@ -948,21 +992,24 @@ mod lifecycle_contract {
                 Err(LifecycleError::DuplicateCandidate { .. })
             ));
         }
-        // An endpoint that is not a state candidate is never invented.
+        // An endpoint that is not a state candidate is never invented: the transition is
+        // dropped.
         let mut t = transition_json(json!(OPERATION));
         t["to_state"] = r1("approval");
-        assert!(matches!(
+        assert_dropped(
             run(output(states(), vec![t], vec![])),
-            Err(LifecycleError::UnknownStateCandidate { state_key, .. }) if state_key == "approval"
-        ));
-        assert!(matches!(
+            "transition",
+            "(\"approval\") is not a known state candidate",
+        );
+        assert_dropped(
             run(output(
                 vec![],
                 vec![transition_json(json!(OPERATION))],
-                vec![]
+                vec![],
             )),
-            Err(LifecycleError::UnknownStateCandidate { .. })
-        ));
+            "transition",
+            "is not a known state candidate",
+        );
     }
 
     #[test]
@@ -977,10 +1024,11 @@ mod lifecycle_contract {
         });
         let start = accented.find("approuvé").unwrap();
         let split = json!({"requirement_ref": "req:r1", "start": start, "end": start + "approuv".len() + 1});
-        assert!(matches!(
+        assert_dropped(
             analyze(&g, output(vec![state_json(OWNER, split)], vec![], vec![])),
-            Err(LifecycleError::InvalidGrounding { .. })
-        ));
+            "state",
+            "not on UTF-8 character boundaries",
+        );
         let whole =
             json!({"requirement_ref": "req:r1", "start": start, "end": start + "approuvé".len()});
         let result = analyze(&g, output(vec![state_json(OWNER, whole)], vec![], vec![])).unwrap();
@@ -990,6 +1038,69 @@ mod lifecycle_contract {
                 name: "approuvé".into()
             })
         );
+    }
+
+    /// Any-domain tolerance: one State with an off-by-a-few grounding is dropped with an
+    /// issue, its valid sibling is still proposed, and a transition depending on the dropped
+    /// State is dropped too instead of failing the analysis or dangling.
+    #[test]
+    fn s2_state_invalid_candidate_dropped_siblings_kept() {
+        let g = base_graph();
+        let past_end = json!({"requirement_ref": "req:r1", "start": 0, "end": R1.len() + 3});
+        let result = analyze(
+            &g,
+            output(
+                vec![
+                    state_json(OWNER, r1("submitted")),
+                    state_json(OWNER, past_end.clone()),
+                ],
+                vec![],
+                vec![],
+            ),
+        )
+        .unwrap();
+        let proposed = of_type(&result, NodeType::State);
+        assert_eq!(proposed.len(), 1);
+        assert_eq!(added(proposed[0]).0.id, id(SUBMITTED));
+        assert_eq!(
+            result.issues,
+            vec![LifecycleIssue::CandidateDropped {
+                kind: "state".into(),
+                owner_ref: id(OWNER),
+                grounding: serde_json::from_value(past_end.clone()).unwrap(),
+                reason: format!(
+                    "invalid grounding req:r1 0..{}: not a non-empty range of the statement",
+                    R1.len() + 3
+                ),
+            }]
+        );
+
+        // The "approved" State is dropped, so the transition into it is dropped as well; the
+        // invariant and the valid State are still proposed.
+        let result = analyze(
+            &g,
+            output(
+                vec![
+                    state_json(OWNER, r1("submitted")),
+                    state_json(OWNER, past_end),
+                ],
+                vec![transition_json(json!(OPERATION))],
+                vec![invariant_json(EXPRESSION)],
+            ),
+        )
+        .unwrap();
+        assert_eq!(of_type(&result, NodeType::State).len(), 1);
+        assert_eq!(of_type(&result, NodeType::Invariant).len(), 1);
+        assert!(of_type(&result, NodeType::Transition).is_empty());
+        let mut sorted = result.issues.clone();
+        sorted.sort();
+        assert_eq!(result.issues, sorted);
+        let kinds: Vec<String> = dropped_of(Ok(result))
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect();
+        assert_eq!(kinds.len(), 2);
+        assert!(kinds.contains(&"state".to_owned()) && kinds.contains(&"transition".to_owned()));
     }
 
     // ------------------------------------------------------------------ states
