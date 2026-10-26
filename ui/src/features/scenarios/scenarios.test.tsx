@@ -213,6 +213,38 @@ describe("Scenario writes", () => {
     expect(h.writes()[0]).toMatchObject({ path: "/api/scenarios/scenario:contractor/correct", body: { then: ['{"decision_outputs":{"0":{"kind":"bool","value":true}}}'] } });
   });
 
+  it("waits for the reloaded scenario after a correction before it can be run", async () => {
+    let release: () => void = () => undefined;
+    const reloaded = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let corrected = false;
+    const slowReload = http.get("*/api/scenarios", async () => {
+      if (corrected) {
+        await reloaded;
+      }
+      return etagJson({ items: SCENARIOS, health: [], next_cursor: null });
+    });
+    const correct = http.post("*/api/scenarios/:id/correct", () => {
+      corrected = true;
+      return etagJson(WRITE_OK);
+    });
+    const { user } = await h.renderAt("/scenarios/scenario:submit", slowReload, correct, ...backend(), ok("*/api/scenarios/run"));
+    const inspector = await screen.findByRole("complementary", { name: "Scenario details" });
+    await user.click(await within(inspector).findByRole("button", { name: "Correct expected outcome" }));
+    const sheet = await screen.findByRole("dialog", { name: "Correct the expected outcome" });
+    await user.click(within(sheet).getByRole("button", { name: /Save/ }));
+    await waitFor(() => expect(h.writes()).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Correct the expected outcome" })).toBeNull());
+    // The correction moved the model on: Run waits for the reloaded scenario and its ETag.
+    await waitFor(() => expect((within(inspector).getByRole("button", { name: "Run this one" }) as HTMLButtonElement).disabled).toBe(true));
+    expect(h.writes()).toHaveLength(1);
+    act(() => release());
+    await waitFor(() => expect((within(inspector).getByRole("button", { name: "Run this one" }) as HTMLButtonElement).disabled).toBe(false));
+    await user.click(within(inspector).getByRole("button", { name: "Run this one" }));
+    await waitFor(() => expect(h.writes()).toHaveLength(2));
+  });
+
   it("corrects any other expected fact as its exact text", async () => {
     const { user } = await h.renderAt("/scenarios/scenario:submit", ...backend(), ok("*/api/scenarios/:id/correct"));
     const inspector = await screen.findByRole("complementary", { name: "Scenario details" });

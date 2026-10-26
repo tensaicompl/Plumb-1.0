@@ -259,7 +259,7 @@ export function ScenariosScreen() {
       inspector={selected === null || !label.ready ? null : <ScenarioDetail scenario={selected} verdict={verdictOf(selected)} label={label} rule={rules.data?.items.find((rule) => rule.id === tableOf(selected))} />}
       actions={
         selected === null || !canEdit ? undefined : (
-          <ScenarioActions scenario={selected} etag={query.data?.etag ?? null} running={run.isPending} onRun={() => runScope([selected.id])} rule={rules.data?.items.find((rule) => rule.id === tableOf(selected))} label={label} />
+          <ScenarioActions scenario={selected} etag={query.data?.etag ?? null} running={run.isPending} reloading={query.isRefetching} onRun={() => runScope([selected.id])} rule={rules.data?.items.find((rule) => rule.id === tableOf(selected))} label={label} />
         )
       }
     >
@@ -273,7 +273,7 @@ export function ScenariosScreen() {
               <Button variant="outline" size={34} onClick={() => (derived.length === 0 ? toast({ message: t("scenarios.confirmAll.none"), tone: "info" }) : setConfirmingAll(true))}>
                 {t("scenarios.confirmAll.open")}
               </Button>
-              <Button variant="primary" size={34} pending={run.isPending} icon={<Play size={14} strokeWidth={1.6} aria-hidden="true" />} onClick={runAll}>
+              <Button variant="primary" size={34} pending={run.isPending} disabled={query.isRefetching} icon={<Play size={14} strokeWidth={1.6} aria-hidden="true" />} onClick={runAll}>
                 {t("scenarios.runAll")}
               </Button>
             </>
@@ -469,7 +469,10 @@ function Trace({ run, label }: { run: ScenarioRun; label: Labels }) {
               <div className={cn("min-w-0 flex-1 pb-3.5 text-footnote", diverging && "-mt-1 mb-2 rounded-field bg-blocked-tint px-2.5 py-1.5")}>
                 {diverging && <span className="block text-eyebrow font-semibold uppercase tracking-eyebrow text-blocked-fg">{t("scenarios.trace.firstDifference")}</span>}
                 <span className={cn("block font-medium", diverging ? "text-blocked-fg" : "text-fg")}>{step.title}</span>
-                {step.detail !== null && step.detail !== "" && <span className="block break-words font-mono text-[11.5px] leading-relaxed text-fg-3">{step.detail}</span>}
+                {step.detail !== null && step.detail !== "" && (
+                  // On the blocked tint the muted text is below WCAG AA; the secondary text meets it.
+                  <span className={cn("block break-words font-mono text-[11.5px] leading-relaxed", diverging ? "text-fg-2" : "text-fg-3")}>{step.detail}</span>
+                )}
                 {expected !== null && expected !== undefined && (
                   <span className="mt-1 block font-mono text-[11.5px] text-blocked-fg">{tf("scenarios.trace.expectedActual", { expected: expected.expected, actual: expected.actual })}</span>
                 )}
@@ -486,6 +489,7 @@ function ScenarioActions({
   scenario,
   etag,
   running,
+  reloading,
   onRun,
   rule,
   label,
@@ -493,6 +497,8 @@ function ScenarioActions({
   scenario: Scenario;
   etag: string | null;
   running: boolean;
+  /** The scenarios are reloading (after a write): their ETag is about to change, so writes wait. */
+  reloading: boolean;
   onRun: () => void;
   rule: components["schemas"]["Rule"] | undefined;
   label: Labels;
@@ -510,6 +516,7 @@ function ScenarioActions({
           variant="outline"
           size={34}
           pending={confirm.isPending}
+          disabled={reloading}
           onClick={() =>
             confirm.mutate(undefined, {
               onSuccess: () => {
@@ -523,12 +530,12 @@ function ScenarioActions({
         </Button>
       )}
       {correctable(scenario) && (
-        <Button variant="outline" size={34} onClick={() => setCorrecting(true)}>
+        <Button variant="outline" size={34} disabled={reloading} onClick={() => setCorrecting(true)}>
           {t("scenarios.correct.open")}
         </Button>
       )}
       {runnable(scenario) ? (
-        <Button variant="outline" size={34} pending={running} onClick={onRun}>
+        <Button variant="outline" size={34} pending={running} disabled={reloading} onClick={onRun}>
           {t("scenarios.runOne")}
         </Button>
       ) : (

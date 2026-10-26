@@ -56,6 +56,9 @@ describe("trace steps", () => {
     expect(parseMissing("[]")).toBeNull();
     expect(parseDiff('{"actual":5,"expected":"state:a"}', label)).toEqual({ expected: "Draft", actual: "5" });
     expect(parseDiff("nope", label)).toBeNull();
+    // Typed decision values read as the Given/Then table writes them.
+    expect(parseDiff('{"actual":{"kind":"bool","value":false},"expected":{"kind":"bool","value":true}}', label)).toEqual({ expected: "Yes", actual: "No" });
+    expect(parseDiff('{"actual":{"kind":"enum","value":"Contractor"},"expected":{"kind":"enum","value":"Employee"}}', label)).toEqual({ expected: "Employee", actual: "Contractor" });
   });
 });
 

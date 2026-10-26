@@ -243,7 +243,13 @@ export function parseDiff(text: string, label: Label): { expected: string; actua
   if (value === null || !("expected" in value) || !("actual" in value)) {
     return null;
   }
-  const show = (v: unknown) => (typeof v === "string" ? (/^[a-z_]+:/.test(v) ? label(v) : v) : JSON.stringify(v));
+  const show = (v: unknown): string => {
+    if (typeof v === "string") {
+      return /^[a-z_]+:/.test(v) ? label(v) : v;
+    }
+    // A typed value ({"kind":"bool","value":true}) reads as the Given/Then table writes it.
+    return record(v)?.["kind"] !== undefined ? decisionValue(v) : JSON.stringify(v);
+  };
   return { expected: show(value["expected"]), actual: show(value["actual"]) };
 }
 
