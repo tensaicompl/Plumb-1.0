@@ -4,16 +4,23 @@
 # the real backend, starts the UI against it the supported way (npm run dev, see
 # docs/pilot/RUNNING-THE-UI.md) and runs every Playwright spec in ui/e2e/.
 #
-# Two databases, both built only by product operations:
-# - the finished pilot (every spec except tests tagged @inbox-db);
+# Five databases, all built only by product operations, each served in its own phase:
+# - the finished pilot (every untagged test);
 # - the Inbox database: the HR document imported and the Requirements step replayed, so its 32
-#   proposals wait for review (tests tagged @inbox-db, run after the backend switches to it).
+#   proposals wait for review (tests tagged @inbox-db);
+# - the triage database, a copy of the Inbox database for the flows that change it, served with
+#   the replay provider so a stale proposal's Refresh can run the step again (tagged @triage-db);
+# - the questions database: the pilot simulation stopped where the expert's questions are open,
+#   served with every execution the simulation recorded (tagged @questions-db);
+# - an empty project served with the replay provider over the recorded Requirements step, so the
+#   UI can run that step without an AI key (tagged @empty-db).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 API_PORT="${PLUMB_E2E_API_PORT:-8790}"
 UI_PORT="${PLUMB_E2E_UI_PORT:-5173}"
 export PLUMB_E2E_UI_PORT="$UI_PORT"
+export PLUMB_E2E_API_PORT="$API_PORT"
 # Stops a process and its descendants (npm run dev starts Vite as a grandchild).
 kill_tree() {
   local child
@@ -29,9 +36,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Serves the database $1 (with the pilot configuration) on the API port and waits for it.
+# Serves the database $1 (with the pilot configuration, and the global options $2…) on the API
+# port and waits for it.
 serve() {
-  "$ROOT/target/debug/plumb-cli" --db "$1" --config "$WORK/sim/plumb.json" \
+  local db="$1"
+  shift
+  "$ROOT/target/debug/plumb-cli" --db "$db" --config "$WORK/sim/plumb.json" "$@" \
     serve --listen "127.0.0.1:$API_PORT" >"$WORK/serve.log" 2>&1 &
   API_PID=$!
   for _ in $(seq 1 60); do
@@ -53,6 +63,14 @@ inbox_cli() { "$ROOT/target/debug/plumb-cli" --db "$INBOX_DB" --config "$WORK/si
 inbox_cli init --project project:hr
 inbox_cli import "$ROOT/fixtures/hr-leave/requirements.md" --media-type text/markdown --name requirements.md
 inbox_cli --provider replay --replay-fixtures "$WORK/sim/replay-extract.json" extract
+TRIAGE_DB="$WORK/triage/plumb.sqlite"
+mkdir -p "$WORK/triage"
+cp "$INBOX_DB" "$TRIAGE_DB"
+
+# The empty project: initialized, nothing imported.
+EMPTY_DB="$WORK/empty/plumb.sqlite"
+mkdir -p "$WORK/empty"
+"$ROOT/target/debug/plumb-cli" --db "$EMPTY_DB" --config "$WORK/sim/plumb.json" init --project project:hr >/dev/null
 
 serve "$WORK/sim/plumb.sqlite"
 cd "$ROOT/ui"
@@ -64,9 +82,18 @@ for _ in $(seq 1 60); do
   fi
   sleep 0.5
 done
-npx playwright test --grep-invert @inbox-db --workers=1 --reporter=list
+npx playwright test --grep-invert "@inbox-db|@triage-db|@questions-db|@empty-db" --workers=1 --reporter=list
 
-kill "$API_PID" 2>/dev/null || true
-wait "$API_PID" 2>/dev/null || true
-serve "$INBOX_DB"
-npx playwright test --grep @inbox-db --workers=1 --reporter=list
+# Each further phase switches the backend to its database and runs the tests tagged for it.
+phase() {
+  local tag="$1"
+  shift
+  kill "$API_PID" 2>/dev/null || true
+  wait "$API_PID" 2>/dev/null || true
+  serve "$@"
+  npx playwright test --grep "$tag" --workers=1 --reporter=list
+}
+phase @inbox-db "$INBOX_DB"
+phase @triage-db "$TRIAGE_DB" --provider replay --replay-fixtures "$WORK/sim/replay-extract.json"
+phase @questions-db "$WORK/sim/questions.sqlite" --provider replay --replay-fixtures "$WORK/sim/replay-all.json"
+phase @empty-db "$EMPTY_DB" --provider replay --replay-fixtures "$WORK/sim/replay-extract.json"

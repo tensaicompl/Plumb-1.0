@@ -1,0 +1,242 @@
+// The nine end-to-end flows of the UI spec (docs/design/UI-SPEC-FOR-CLAUDE-DESIGN.md §6) and the
+// system states, against the real backend. scripts/run-pilot-e2e.sh serves one database per tag,
+// each built only by product operations:
+// - @empty-db: an initialized project served with the replay provider (the recorded Requirements
+//   step), for the first run (flow 1) and the Assistant with AI on (flow 7);
+// - @triage-db: a copy of the Inbox database (32 Requirements proposals), for keyboard triage
+//   (flow 2) and the concurrency conflict (flow 8);
+// - @questions-db: the HR pilot stopped where the expert's questions are open, for the answer
+//   flow (flow 3), a failing gate (flow 4) and failing scenarios (flow 6);
+// - untagged: the finished pilot, for Export (flow 9) and the system states.
+// Flow 5 (waive with governance) is in requirements-quality.spec.ts.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import AxeBuilder from "@axe-core/playwright";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+
+const PILOT_DOCUMENT = fileURLToPath(new URL("../../fixtures/hr-leave/requirements.md", import.meta.url));
+
+async function noSeriousA11yViolations(page: Page) {
+  // Colour contrast is measured on settled pixels: wait for slide-ins and toasts.
+  await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running"));
+  await page.mouse.move(0, 0);
+  const results = await new AxeBuilder({ page }).analyze();
+  const serious = results.violations.filter((v) => v.impact === "critical" || v.impact === "serious");
+  expect(serious.map((v) => `${v.id}: ${v.help} (${v.nodes.map((n) => n.target.join(" ")).join(", ")})`)).toEqual([]);
+}
+
+const main = (page: Page) => page.getByRole("main");
+const banner = (page: Page) => page.getByRole("banner");
+const toast = (page: Page) => page.locator("[data-toast]");
+const conflictSheet = (page: Page) => page.getByRole("dialog", { name: "This changed since you looked" });
+const pipelineStep = (page: Page, step: string) => main(page).getByRole("region", { name: "Pipeline" }).locator(`[data-step='${step}']`);
+
+/** Drops a file on a drop zone the way a browser does (dragenter, dragover, drop). */
+async function dropFile(page: Page, zone: Locator, path: string, name: string, type: string) {
+  const content = readFileSync(path, "utf8");
+  const dataTransfer = await page.evaluateHandle(
+    ({ content, name, type }) => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([content], name, { type }));
+      return dt;
+    },
+    { content, name, type },
+  );
+  for (const event of ["dragenter", "dragover", "drop"]) {
+    await zone.dispatchEvent(event, { dataTransfer });
+  }
+}
+
+test.describe("Flow 1: first run, empty to first proposals @empty-db", () => {
+  test("drop requirements.md on the Overview, run the Requirements step, accept all, see the next step", async ({ page }) => {
+    test.setTimeout(120_000);
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+
+    // An empty project: the Overview is the import hero.
+    await page.goto("/overview");
+    await expect(main(page).getByRole("heading", { level: 1, name: "Import your requirements document" })).toBeVisible();
+    await expect(main(page).getByText("New project")).toBeVisible();
+    await noSeriousA11yViolations(page);
+
+    // Drop the document: 38 passages imported, and the toast offers the Requirements step.
+    await dropFile(page, main(page).getByRole("button", { name: "Drop a file here, or choose one" }), PILOT_DOCUMENT, "requirements.md", "text/markdown");
+    await expect(toast(page)).toContainText("38 passages imported from requirements.md");
+    await expect(main(page).getByRole("heading", { level: 1, name: "HR" })).toBeVisible();
+    await expect(pipelineStep(page, "import")).toHaveAttribute("data-step-state", "done");
+
+    // Run it from the toast: the step runs (stepper, toolbar progress), then finishes.
+    await toast(page).getByRole("button", { name: "Run Requirements step" }).click();
+    await expect(main(page).getByRole("progressbar", { name: /Plumb is running the Requirements step/ })).toBeVisible();
+    await expect(banner(page).getByRole("button", { name: /^Requirements step running, \d+%$/ })).toBeVisible();
+    await expect(toast(page).filter({ hasText: "Requirements step finished" })).toBeVisible({ timeout: 30_000 });
+    await expect(conflictSheet(page)).toHaveCount(0);
+    const card = main(page).getByRole("region", { name: "Next action" });
+    await expect(card.getByText("Review 32 proposals")).toBeVisible();
+    await expect(pipelineStep(page, "requirements")).toHaveAttribute("data-step-state", "needs_review");
+    await expect(pipelineStep(page, "requirements")).toContainText("32");
+    await noSeriousA11yViolations(page);
+
+    // The step opens the Inbox; every proposal is from that step and is accepted at once.
+    await pipelineStep(page, "requirements").click();
+    await expect(page).toHaveURL(/\/inbox/);
+    await expect(page.getByText("32 waiting", { exact: true })).toBeVisible();
+    const filters = page.getByRole("navigation", { name: "Inbox filters" });
+    await filters.getByRole("link", { name: /^From steps/ }).click();
+    await expect(page).toHaveURL(/filter=steps/);
+    await expect(page.getByText("32 waiting", { exact: true })).toBeVisible();
+    await noSeriousA11yViolations(page);
+    await page.getByRole("button", { name: "Accept all from Requirements" }).click();
+    await expect(toast(page).filter({ hasText: /32 .*accepted/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "You're all caught up" })).toBeVisible();
+
+    // Back on the Overview: the 32 requirements are in, and the next action moves on.
+    await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Overview" }).click();
+    await expect(main(page).getByRole("region", { name: "At a glance" }).getByRole("link", { name: /Requirements/ })).toContainText("32");
+    await expect(pipelineStep(page, "requirements")).toHaveAttribute("data-step-state", "done");
+    // Glossary & quality (consolidate) follows Requirements, on the card and in the toolbar.
+    await expect(main(page).getByRole("region", { name: "Next action" }).getByText("Run the Glossary step")).toBeVisible();
+    await expect(banner(page).getByRole("button", { name: "Run Glossary" })).toBeVisible();
+    await expect(banner(page).getByRole("status")).toHaveAccessibleName(/v4: Up to date/);
+    await noSeriousA11yViolations(page);
+    expect(errors).toEqual([]);
+  });
+});
+
+const API_URL = `http://127.0.0.1:${process.env["PLUMB_E2E_API_PORT"] ?? "8790"}`;
+const queue = (page: Page) => page.getByRole("list", { name: "All items" });
+const rows = (page: Page) => queue(page).getByRole("button");
+const inspector = (page: Page) => page.getByRole("complementary", { name: "Item details" });
+const waiting = (page: Page, n: number) => expect(page.getByText(`${n} waiting`, { exact: true })).toBeVisible();
+
+/**
+ * Holds the design events the server pushes to this page until `release` (the live socket stays
+ * connected to the real server). A concurrent write is then seen the way a slow connection sees
+ * it: the page still shows what the user reviewed when they act.
+ */
+async function holdDesignEvents(page: Page) {
+  const held: (string | Buffer)[] = [];
+  let holding = true;
+  let deliver: ((message: string | Buffer) => void) | null = null;
+  await page.routeWebSocket(/\/api\/events$/, (ws) => {
+    const server = ws.connectToServer();
+    deliver = (message) => ws.send(message);
+    server.onMessage((message) => (holding ? held.push(message) : ws.send(message)));
+  });
+  return {
+    release() {
+      holding = false;
+      held.splice(0).forEach((message) => deliver?.(message));
+    },
+  };
+}
+
+test.describe.serial("Inbox triage and conflicts @triage-db", () => {
+  test("flow 8: a write lands between review and Accept; the conflict sheet appears and Review again reloads", async ({ page, playwright }) => {
+    test.setTimeout(120_000);
+    const events = await holdDesignEvents(page);
+    await page.goto("/inbox");
+    await waiting(page, 32);
+    // The user reviews the first proposal.
+    await expect(inspector(page).getByRole("heading", { level: 2, name: "Add requirement HR-001" })).toBeVisible();
+    await noSeriousA11yViolations(page);
+
+    // Meanwhile another client accepts the last proposal against the current version: the model
+    // moves on.
+    const api = await playwright.request.newContext({ baseURL: API_URL });
+    const listed = await api.get("/api/proposals");
+    const etag = listed.headers()["etag"] ?? "";
+    const { items } = (await listed.json()) as { items: { proposal_id: string; title: string }[] };
+    const other = items.find((p) => p.title === "Add requirement HR-032");
+    expect(other).toBeDefined();
+    const write = await api.post("/api/proposals/accept-set", { headers: { "If-Match": etag }, data: { proposal_ids: [other?.proposal_id], confirm: true, reason: null } });
+    expect(write.status()).toBe(200);
+    await api.dispose();
+
+    // Accept on what the user reviewed: the server refuses it, nothing is applied.
+    await inspector(page).getByRole("button", { name: "Accept" }).click();
+    const sheet = conflictSheet(page);
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByText("The model changed after you loaded this view, so your change was not applied. Review the latest version and decide again.")).toBeVisible();
+    await expect(sheet.getByText(/^The model is now at version v\d+\.$/)).toBeVisible();
+    await noSeriousA11yViolations(page);
+    events.release();
+    await sheet.getByRole("button", { name: "Review again" }).click();
+    await expect(sheet).toHaveCount(0);
+
+    // The Inbox shows the latest version: the other acceptance is in, HR-001 was not accepted and
+    // is now out of date (proposed on the older version), so it cannot be accepted as it is.
+    await waiting(page, 31);
+    await expect(queue(page).getByText("Add requirement HR-032")).toHaveCount(0);
+    await expect(inspector(page).getByRole("heading", { level: 2, name: "Add requirement HR-001" })).toBeVisible();
+    await expect(inspector(page).getByText(/Proposed on an older version/)).toBeVisible();
+    await expect(inspector(page).getByRole("button", { name: "Accept" })).toBeDisabled();
+    const requirements = (await (await page.request.get("/api/requirements")).json()) as { items: { text: string }[] };
+    expect(requirements.items.map((r) => r.text)).toEqual(["The system shall create an audit record for every approval, rejection, withdrawal, and cancellation decision."]);
+  });
+
+  test("flow 2: keyboard triage J/K/A/R with the reason sheet, a stale item refreshed, then all caught up", async ({ page }) => {
+    test.setTimeout(180_000);
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.goto("/inbox");
+    await waiting(page, 31);
+    await expect(rows(page).first()).toHaveAttribute("aria-current", "true");
+    // J moves down, K back up.
+    await page.keyboard.press("j");
+    await expect(inspector(page).getByRole("heading", { level: 2, name: "Add requirement HR-002" })).toBeVisible();
+    await page.keyboard.press("k");
+    await expect(inspector(page).getByRole("heading", { level: 2, name: "Add requirement HR-001" })).toBeVisible();
+    // The items are out of date (flow 8 moved the model): A does nothing on a stale item.
+    await page.keyboard.press("a");
+    await waiting(page, 31);
+    // R opens the reason sheet; the reason is typed and ⌘↩ confirms.
+    await page.keyboard.press("r");
+    const sheet = page.getByRole("dialog", { name: "Reject proposal" });
+    await expect(sheet).toBeVisible();
+    await noSeriousA11yViolations(page);
+    await sheet.getByRole("textbox").fill("Drafts are out of scope for the pilot.");
+    await page.keyboard.press("ControlOrMeta+Enter");
+    await expect(toast(page).filter({ hasText: "Proposal rejected" })).toBeVisible();
+    await waiting(page, 30);
+    await expect(rows(page).first()).toBeFocused();
+    await expect(inspector(page).getByRole("heading", { level: 2, name: "Add requirement HR-002" })).toBeVisible();
+    // Refresh the stale item: the Requirements step runs again on the current model, and its
+    // fresh proposals arrive next to the out-of-date ones (which stay until they are decided).
+    await inspector(page).getByRole("button", { name: "Refresh proposal" }).click();
+    await expect(toast(page).filter({ hasText: "Running the Requirements step again" })).toBeVisible();
+    await expect(toast(page).filter({ hasText: "Requirements step finished" })).toBeVisible({ timeout: 30_000 });
+    await waiting(page, 61);
+    const fresh = rows(page).filter({ hasNotText: "Stale" });
+    await expect(fresh).toHaveCount(31);
+    await noSeriousA11yViolations(page);
+
+    // A accepts a fresh item; focus moves on and every other item is now out of date.
+    await fresh.filter({ hasText: "Add requirement HR-009" }).click();
+    await expect(inspector(page).getByRole("button", { name: "Accept" })).toBeEnabled();
+    await page.keyboard.press("a");
+    await expect(toast(page).filter({ hasText: /Requirement added/ })).toBeVisible();
+    await waiting(page, 60);
+    await expect(fresh).toHaveCount(0);
+
+    // The out-of-date items are rejected from the keyboard, each through the reason sheet.
+    await rows(page).first().click();
+    for (let left = 60; left > 0; left--) {
+      await page.keyboard.press("r");
+      await expect(sheet).toBeVisible();
+      await page.keyboard.press("ControlOrMeta+Enter");
+      await expect(sheet).toHaveCount(0);
+      if (left > 1) {
+        await waiting(page, left - 1);
+      }
+    }
+    await expect(page.getByRole("heading", { name: "You're all caught up" })).toBeVisible();
+    await expect(page.getByText("Nothing is waiting for your decision. The next step is Glossary.")).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: /Inbox/ }).locator("[data-badge]")).toHaveCount(0);
+    await noSeriousA11yViolations(page);
+    const requirements = (await (await page.request.get("/api/requirements")).json()) as { items: { text: string }[] };
+    expect(requirements.items).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+});

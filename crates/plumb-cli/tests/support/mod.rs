@@ -356,6 +356,7 @@ impl Sim {
         }
         let fixtures = self.dir.join(format!("replay-{recipe}.json"));
         std::fs::write(&fixtures, serde_json::to_vec(&calls).unwrap()).unwrap();
+        self.record_all(&calls);
         if let Some((file, true)) = &committed {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, serde_json::to_vec_pretty(&calls).unwrap()).unwrap();
@@ -369,6 +370,24 @@ impl Sim {
                 fixtures.to_str().unwrap(),
             ],
         )
+    }
+
+    /// Adds `calls` to `replay-all.json`, every execution recorded in this simulation (one per
+    /// request hash), so a server can replay any recorded stage (scripts/run-pilot-e2e.sh).
+    fn record_all(&self, calls: &[ProviderExecution]) {
+        let path = self.dir.join("replay-all.json");
+        let mut all: Vec<ProviderExecution> = std::fs::read(&path)
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+            .unwrap_or_default();
+        for call in calls {
+            if !all
+                .iter()
+                .any(|known| known.artifact.request_hash == call.artifact.request_hash)
+            {
+                all.push(call.clone());
+            }
+        }
+        std::fs::write(&path, serde_json::to_vec(&all).unwrap()).unwrap();
     }
 
     /// Replaces one top-level configuration value (what an analyst edits between runs).

@@ -691,6 +691,9 @@ fn hr_pilot_simulation() {
         ],
         &[],
     );
+    // The whole-application e2e run (scripts/run-pilot-e2e.sh) serves this state, with the
+    // expert's questions open, for the answer, failing-gate and failing-scenario flows.
+    std::fs::copy(&sim.db, sim.dir.join("questions.sqlite")).unwrap();
     // The HR expert answers every routed question (fixtures/hr-leave/expert-answers.yaml plus
     // the missing Withdraw trigger), choosing the answer by the question's answer schema.
     let withdraw = sim
