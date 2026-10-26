@@ -375,7 +375,10 @@ export function InboxScreen({ filter = "all", selectedId }: { filter?: InboxFilt
     return retired.data === undefined ? retired : accepted;
   }, wordingSuggestion?.etag);
 
-  const pending = acceptSet.isPending || reject.isPending || discard.isPending || waive.isPending || answer.isPending || refresh.isPending || editWording.isPending;
+  // While the queue reloads (after a write, or a change elsewhere) its ETag is about to change:
+  // a decision waits for what the server now has instead of being refused with 412.
+  const reloading = proposals.isRefetching || questions.isRefetching || findings.isRefetching;
+  const pending = reloading || acceptSet.isPending || reject.isPending || discard.isPending || waive.isPending || answer.isPending || refresh.isPending || editWording.isPending;
 
   // ---------------------------------------------------------------- actions
 
@@ -741,7 +744,7 @@ export function InboxScreen({ filter = "all", selectedId }: { filter?: InboxFilt
     inspector = <MultiPanel count={multiItems.length} acceptable={multiItems.filter((i) => i.acceptable).length} onAccept={acceptMulti} onClear={() => setMulti([])} pending={acceptSet.isPending} canDecide={canDecide} />;
   } else if (selected !== null) {
     const stale = selected.stale && selected.proposal !== undefined ? (
-      <StaleBanner baseRevision={selected.proposal.base_revision} refreshing={refresh.isPending} {...(refreshable(selected) ? { onRefresh: () => refreshItem(selected) } : {})} />
+      <StaleBanner baseRevision={selected.proposal.base_revision} refreshing={pending} {...(refreshable(selected) ? { onRefresh: () => refreshItem(selected) } : {})} />
     ) : null;
     const editText = editing?.id === selected.id ? (editing.text ?? wordingSuggestion?.suggestion ?? "") : null;
     switch (selected.type) {

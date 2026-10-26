@@ -568,6 +568,36 @@ describe("Accept and reject", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/model/processes"));
   });
 
+  it("waits for the reloaded queue after a write before the next decision, so it is made on what the server has", async () => {
+    let release: () => void = () => undefined;
+    const reloaded = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { user, backend } = renderAt("/inbox");
+    // After the first write the queue reloads slowly.
+    server.use(
+      http.get("*/api/proposals", async () => {
+        if (backend.writes.length > 0) {
+          await reloaded;
+        }
+        return etagJson({ items: backend.proposals }, undefined, ETAG);
+      }),
+    );
+    await ready();
+    await within(inspector()).findByRole("list", { name: "Facts" });
+    await user.keyboard("a");
+    await waitFor(() => expect(backend.writes).toHaveLength(1));
+    await waitFor(() => expect(within(inspector()).getByRole("heading", { level: 2, name: /Approve leave request/ })).toBeTruthy());
+    // While the queue reloads, the next item cannot be decided yet: A does nothing.
+    expect((within(inspector()).getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.keyboard("a");
+    expect(backend.writes).toHaveLength(1);
+    act(() => release());
+    await waitFor(() => expect((within(inspector()).getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(false));
+    await user.keyboard("a");
+    await waitFor(() => expect(backend.writes).toHaveLength(2));
+  });
+
   it("asks for the reason an accept requires", async () => {
     const { user, backend } = renderAt("/inbox/prop:withdraw");
     await ready();
