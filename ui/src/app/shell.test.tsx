@@ -392,7 +392,7 @@ describe("Toolbar", () => {
     expect(within(menu).getByText("Run a step")).toBeTruthy();
     expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual([
       "Requirements step",
-      "Model step",
+      "Glossary step",
       "Glossary & quality step",
       "Directory step",
       "Analysis step",

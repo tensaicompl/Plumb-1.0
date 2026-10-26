@@ -504,7 +504,7 @@
   "shell.connection.lost": "Live connection lost. Reconnecting… Your data refreshes when it's back.",
   "step.intake": "Import",
   "step.extract": "Requirements",
-  "step.consolidate": "Model",
+  "step.consolidate": "Glossary",
   "step.directory": "Directory",
   "step.lint": "Glossary & quality",
   "step.analyse": "Analysis",

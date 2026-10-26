@@ -122,7 +122,7 @@ describe("buildInboxItems", () => {
     expect(pick("prop:new")).toEqual({ type: "create", origin: "steps", originLabel: "Flows step", typeLabel: "New operation", acceptable: true });
     expect(pick("prop:event")).toMatchObject({ type: "create", typeLabel: "New event" });
     expect(pick("prop:old")).toEqual({ type: "link", origin: "steps", originLabel: "Flows step", typeLabel: "Link", acceptable: false });
-    expect(pick("prop:ears")).toEqual({ type: "wording", origin: "steps", originLabel: "Model step", typeLabel: "Wording", acceptable: true });
+    expect(pick("prop:ears")).toEqual({ type: "wording", origin: "steps", originLabel: "Glossary step", typeLabel: "Wording", acceptable: true });
     expect(pick("prop:answer")).toEqual({ type: "answer", origin: "questions", originLabel: "From a question", typeLabel: "Answer to confirm", acceptable: true });
     expect(pick("prop:session")).toEqual({ type: "create", origin: "assistant", originLabel: "From the Assistant", typeLabel: "New operation", acceptable: true });
     expect(pick("prop:intake")).toEqual({ type: "merge", origin: "steps", originLabel: "From an import", typeLabel: "Merge", acceptable: true });

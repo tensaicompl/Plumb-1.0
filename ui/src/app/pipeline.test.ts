@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { components } from "../api/schema";
-import { INFERENCE_STAGES, mergeJob, snapshotFromResponse, usesInference } from "./pipeline";
+import { INFERENCE_STAGES, mergeJob, RUNNABLE_STAGES, snapshotFromResponse, stageLabel, usesInference } from "./pipeline";
 
 type PipelineResponse = components["schemas"]["PipelineResponse"];
 type PipelineStepWire = components["schemas"]["PipelineStep"];
@@ -83,5 +83,15 @@ describe("usesInference", () => {
     expect(INFERENCE_STAGES).toEqual(["extract", "consolidate", "analyse", "flows", "calc", "scenarios", "tags"]);
     expect(usesInference("lint")).toBe(false);
     expect(usesInference("extract")).toBe(true);
+  });
+});
+
+describe("stageLabel", () => {
+  it("names each step after the Overview stepper item it belongs to", () => {
+    // Consolidate runs under "Glossary & quality" on the stepper, not under "Model" (analyse).
+    expect(stageLabel("consolidate")).toBe("Glossary");
+    expect(stageLabel("lint")).toBe("Glossary & quality");
+    expect(stageLabel("analyse")).toBe("Analysis");
+    expect(new Set(RUNNABLE_STAGES.map(stageLabel)).size).toBe(RUNNABLE_STAGES.length);
   });
 });

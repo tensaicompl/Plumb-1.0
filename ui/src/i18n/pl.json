@@ -504,7 +504,7 @@
   "shell.connection.lost": "Utracono połączenie na żywo. Ponowne łączenie… Dane odświeżą się, gdy wróci.",
   "step.intake": "Import",
   "step.extract": "Wymagania",
-  "step.consolidate": "Model",
+  "step.consolidate": "Słownik",
   "step.directory": "Katalog",
   "step.lint": "Słownik i jakość",
   "step.analyse": "Analiza",
