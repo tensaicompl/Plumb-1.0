@@ -902,138 +902,176 @@ mod operation_contract {
         );
     }
 
-    // ------------------------------------------------------------------ artifact errors
+    // ------------------------------------------------------------------ invalid items (dropped, analysis continues)
+
+    /// The reasons of every dropped item of a run (any-domain tolerance), sorted.
+    fn dropped_reasons(result: &OperationAnalysisResult) -> Vec<String> {
+        let mut out: Vec<String> = result
+            .issues
+            .iter()
+            .filter(|i| i.is_dropped_item())
+            .map(|i| match i {
+                OperationIssue::CandidateDropped { reason, .. }
+                | OperationIssue::RelationDropped { reason, .. }
+                | OperationIssue::ChildDropped { reason, .. } => reason.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+        out.sort();
+        out
+    }
 
     #[test]
-    fn operation_hard_artifact_errors() {
+    fn operation_invalid_items_are_dropped() {
         let g = base_graph();
         let s = full_scope();
-        let err = |c: Json| run(&g, &s, vec![c]).unwrap_err();
         let set = |field: &str, value: Json| {
             let mut c = candidate("Approve Order", "command");
             c[field] = value;
             c
         };
+        // Exactly one dropped item whose reason contains `needle`; the analysis continues.
+        let drop_in = |scope: &OperationScope, c: Json, needle: &str| {
+            let result = run(&g, scope, vec![c]).unwrap();
+            let reasons = dropped_reasons(&result);
+            assert_eq!(reasons.len(), 1, "{:?}", result.issues);
+            assert!(reasons[0].contains(needle), "{reasons:?} lacks {needle}");
+            result
+        };
+        let drop = |c: Json, needle: &str| drop_in(&s, c, needle);
+        let unknown = "does not exist";
+        let wrong = "has the wrong node type";
+        let out_of_scope = "is not in the operation scope";
+        // A relation with an unknown target is dropped; the Operation is still proposed.
+        let result = drop(set("reads", json!([gref("attr:ghost", "order")])), unknown);
+        assert_eq!(result.proposals.len(), 1);
+        let c = &result.candidates[0];
+        assert!(c.reads.is_empty());
         assert!(matches!(
-            err(set("reads", json!([gref("attr:ghost", "order")]))),
-            OperationError::UnknownSemanticRef { .. }
+            c.disposition,
+            OperationDisposition::Proposed { .. }
         ));
-        assert!(matches!(
-            err(set("performers", json!([gref("secrole:clerk", "clerk")]))),
-            OperationError::WrongTargetType { .. }
-        ));
-        assert!(matches!(
-            err(set("reads", json!([gref(CLERK, "clerk")]))),
-            OperationError::WrongTargetType { .. }
-        ));
-        assert!(matches!(
-            err(set("writes", json!([gref("rule:approval", "order")]))),
-            OperationError::WrongTargetType { .. }
-        ));
-        assert!(matches!(
-            err(set("governed_by", json!([gref("inv:positive", "order")]))),
-            OperationError::WrongTargetType { .. }
-        ));
-        assert!(matches!(
-            err(set(
+        assert!(c.issues.contains(&OperationIssue::RelationDropped {
+            operation_ref: c.operation_ref.clone(),
+            relation: "reads".into(),
+            target_ref: id("attr:ghost"),
+            reason: "reads target attr:ghost does not exist".into(),
+        }));
+        // Dropping the only performer leaves MissingPerformer: no proposal.
+        let result = drop(
+            set("performers", json!([gref("secrole:clerk", "clerk")])),
+            wrong,
+        );
+        assert!(result.proposals.is_empty());
+        assert!(result.candidates[0]
+            .issues
+            .iter()
+            .any(|i| matches!(i, OperationIssue::MissingPerformer { .. })));
+        drop(set("reads", json!([gref(CLERK, "clerk")])), wrong);
+        drop(
+            set("writes", json!([gref("rule:approval", "order")])),
+            wrong,
+        );
+        drop(
+            set("governed_by", json!([gref("inv:positive", "order")])),
+            wrong,
+        );
+        drop(
+            set(
                 "uses_calculation",
-                json!([gref("calculation:legacy", "order")])
-            )),
-            OperationError::OutOfScopeRef { .. }
-        ));
-        assert!(matches!(
-            run(
-                &g,
-                &golden_scope(),
-                vec![set("reads", json!([gref(AMOUNT, "order")]))]
-            )
-            .unwrap_err(),
-            OperationError::OutOfScopeRef { .. }
-        ));
-        assert!(matches!(
-            err(set(
+                json!([gref("calculation:legacy", "order")]),
+            ),
+            out_of_scope,
+        );
+        drop_in(
+            &golden_scope(),
+            set("reads", json!([gref(AMOUNT, "order")])),
+            out_of_scope,
+        );
+        // Every entry of a repeated target is dropped, order-independently.
+        let result = drop(
+            set(
                 "reads",
-                json!([gref(ORDER, "order"), gref(ORDER, "reading")])
-            )),
-            OperationError::DuplicateRelationTarget { .. }
-        ));
-        assert!(matches!(
-            err(set("input_schema", gref(ORDER, "order"))),
-            OperationError::WrongTargetType { .. }
-        ));
-        assert!(matches!(
-            err(set("output_schema", gref("schema:draft", "order"))),
-            OperationError::OutOfScopeRef { .. }
-        ));
-        assert!(matches!(
-            err(set(
+                json!([gref(ORDER, "order"), gref(ORDER, "reading")]),
+            ),
+            "duplicate reads target",
+        );
+        assert!(result.candidates[0].reads.is_empty());
+        assert_eq!(result.proposals.len(), 1);
+        drop(set("input_schema", gref(ORDER, "order")), wrong);
+        drop(
+            set("output_schema", gref("schema:draft", "order")),
+            out_of_scope,
+        );
+        drop(
+            set(
                 "produced_event_refs",
-                json!([gref(GOLDEN_OUTCOME_ID, "order")])
-            )),
-            OperationError::UnknownSemanticRef { .. }
-        ));
+                json!([gref(GOLDEN_OUTCOME_ID, "order")]),
+            ),
+            unknown,
+        );
         let event = |payload: &str| {
             set(
                 "new_produced_events",
                 json!([{"name": "Order Approved", "payload_schema_ref": payload, "evidence": [range("approved")]}]),
             )
         };
+        let result = drop(event(ORDER), wrong);
+        assert!(result.candidates[0].new_events.is_empty());
         assert!(matches!(
-            err(event(ORDER)),
-            OperationError::WrongTargetType { .. }
+            &result.issues[..],
+            [OperationIssue::ChildDropped { node_ref, .. }] if node_ref.as_str() == GOLDEN_EVENT_ID
         ));
-        assert!(matches!(
-            err(event("schema:draft")),
-            OperationError::OutOfScopeRef { .. }
-        ));
-        assert!(matches!(
-            err(event(AMOUNT)),
-            OperationError::OutOfScopeRef { .. }
-        ));
-        // Grounding.
+        drop(event("schema:draft"), out_of_scope);
+        drop(event(AMOUNT), out_of_scope);
+        // Grounding of the Operation itself drops the whole candidate.
         let bad = |r: Json| set("evidence", json!([r]));
-        assert!(matches!(
-            err(bad(
-                json!({"requirement_ref": "req:r9", "start": 0, "end": 3})
-            )),
-            OperationError::InvalidGrounding { .. }
-        ));
-        assert!(matches!(
-            err(bad(
-                json!({"requirement_ref": "req:r1", "start": 0, "end": 9999})
-            )),
-            OperationError::InvalidGrounding { .. }
-        ));
-        assert!(matches!(
-            err(bad(
-                json!({"requirement_ref": "req:r1", "start": 5, "end": 5})
-            )),
-            OperationError::InvalidGrounding { .. }
-        ));
-        assert!(matches!(
-            err(set("evidence", json!([range("clerk"), range("clerk")]))),
-            OperationError::InvalidGrounding { .. }
-        ));
-        // Identities.
-        assert!(matches!(
-            run(
-                &g,
-                &s,
-                vec![
-                    candidate("Approve Order", "command"),
-                    candidate("Approve Order", "query")
-                ]
-            )
-            .unwrap_err(),
-            OperationError::DuplicateCandidate { .. }
-        ));
+        let grounding = "invalid grounding";
+        for c in [
+            bad(json!({"requirement_ref": "req:r9", "start": 0, "end": 3})),
+            bad(json!({"requirement_ref": "req:r1", "start": 0, "end": 9999})),
+            bad(json!({"requirement_ref": "req:r1", "start": 5, "end": 5})),
+            set("evidence", json!([range("clerk"), range("clerk")])),
+        ] {
+            let result = drop(c, grounding);
+            assert!(result.candidates.is_empty() && result.proposals.is_empty());
+            assert!(matches!(
+                &result.issues[..],
+                [OperationIssue::CandidateDropped { .. }]
+            ));
+        }
+        // Grounding of a relation drops only that relation.
+        let mut off_by_a_few = gref(ORDER, "order");
+        off_by_a_few["evidence"][0]["end"] = json!(R1.len() + 3);
+        let result = drop(set("reads", json!([off_by_a_few])), grounding);
+        assert_eq!(result.proposals.len(), 1);
+        // Grounding of an Outcome drops only that Outcome.
+        let bad_outcome = json!({"name": "Done", "outcome_kind": "success",
+            "evidence": [{"requirement_ref": "req:r9", "start": 0, "end": 3}]});
+        let result = drop(set("outcomes", json!([bad_outcome])), grounding);
+        assert!(result.candidates[0].outcomes.is_empty());
+        assert_eq!(result.proposals.len(), 1);
+        // Identities: a repeated Operation identity drops every copy.
+        let result = run(
+            &g,
+            &s,
+            vec![
+                candidate("Approve Order", "command"),
+                candidate("Approve Order", "query"),
+            ],
+        )
+        .unwrap();
+        assert!(result.candidates.is_empty() && result.proposals.is_empty());
+        assert_eq!(dropped_reasons(&result).len(), 1);
+        assert!(dropped_reasons(&result)[0].contains("duplicate candidate identity"));
         let outcome =
             json!({"name": "Done", "outcome_kind": "success", "evidence": [range("approved")]});
-        assert!(matches!(
-            err(set("outcomes", json!([outcome, outcome]))),
-            OperationError::DuplicateCandidate { .. }
-        ));
-        // The same Event both selected and newly proposed is a duplicate produces target.
+        let result = drop(
+            set("outcomes", json!([outcome, outcome])),
+            "duplicate candidate identity",
+        );
+        assert!(result.candidates[0].outcomes.is_empty());
+        // The same Event both selected and newly proposed keeps the selected reference.
         let mut both = set(
             "produced_event_refs",
             json!([gref(GOLDEN_EVENT_ID, "order")]),
@@ -1047,16 +1085,78 @@ mod operation_contract {
         )]);
         let mut event_scope = full_scope();
         event_scope.event_refs.push(id(GOLDEN_EVENT_ID));
-        assert!(matches!(
-            run(&with_event, &event_scope, vec![both]).unwrap_err(),
-            OperationError::DuplicateRelationTarget { .. }
-        ));
+        let result = run(&with_event, &event_scope, vec![both]).unwrap();
+        assert_eq!(
+            dropped_reasons(&result),
+            vec![format!("duplicate produces target {GOLDEN_EVENT_ID}")]
+        );
+        assert_eq!(
+            result.candidates[0].produced_events,
+            vec![id(GOLDEN_EVENT_ID)]
+        );
+        assert!(result.candidates[0].new_events.is_empty());
         assert_eq!(
             plumb_functional::event_id(&id(PROJECT), "Order Approved")
                 .unwrap()
                 .as_str(),
             GOLDEN_EVENT_ID
         );
+    }
+
+    #[test]
+    fn operation_one_bad_candidate_does_not_fail_its_siblings() {
+        // The real-model failure: one candidate's grounding is off by a few bytes.
+        let g = base_graph();
+        let s = full_scope();
+        let mut bad = candidate("Reject Order", "command");
+        bad["evidence"] = json!([{"requirement_ref": "req:r1", "start": 0, "end": R1.len() + 3}]);
+        bad["outcomes"] =
+            json!([{"name": "Rejected", "outcome_kind": "success", "evidence": [range("order")]}]);
+        let good = candidate("Approve Order", "command");
+        let alone = run(&g, &s, vec![good.clone()]).unwrap();
+        let result = run(&g, &s, vec![bad.clone(), good.clone()]).unwrap();
+        // The valid sibling is unchanged.
+        assert_eq!(result.proposals, alone.proposals);
+        assert_eq!(result.proposals.len(), 1);
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].name, "Approve Order");
+        // The dropped candidate and its dependent Outcome are reported.
+        let bad_ref = result
+            .issues
+            .iter()
+            .find_map(|i| match i {
+                OperationIssue::CandidateDropped { candidate, reason } => {
+                    assert!(reason.contains("not a non-empty range of the statement"));
+                    Some(candidate.clone())
+                }
+                _ => None,
+            })
+            .expect("candidate dropped");
+        assert!(bad_ref.starts_with("operation:"));
+        assert!(result.issues.iter().any(|i| matches!(
+            i,
+            OperationIssue::ChildDropped { operation_ref, node_ref, .. }
+                if operation_ref.as_str() == bad_ref && node_ref.as_str().starts_with("outcome:")
+        )));
+        assert_eq!(result.issues.len(), 2);
+        // Deterministic regardless of candidate order.
+        let reversed = run(&g, &s, vec![good, bad]).unwrap();
+        assert_eq!(reversed.issues, result.issues);
+        assert_eq!(reversed.proposals, result.proposals);
+    }
+
+    // ------------------------------------------------------------------ artifact errors
+
+    #[test]
+    fn operation_hard_artifact_errors() {
+        let g = base_graph();
+        let s = full_scope();
+        let err = |c: Json| run(&g, &s, vec![c]).unwrap_err();
+        let set = |field: &str, value: Json| {
+            let mut c = candidate("Approve Order", "command");
+            c[field] = value;
+            c
+        };
         // Schema-level: kinds, unknown fields, bare IDs, version.
         let schema_invalid = |c: Json| matches!(err(c), OperationError::SchemaInvalid { .. });
         assert!(schema_invalid(set("operation_kind", json!("event"))));

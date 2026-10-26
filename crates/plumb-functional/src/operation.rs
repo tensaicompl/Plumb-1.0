@@ -3,10 +3,13 @@
 //!
 //! A supplied, already-acquired `operation_analysis` inference proposes Operations over an
 //! explicit, closed [`OperationScope`] of Accepted PSG nodes. Every proposed relation names a
-//! scope ID grounded in exact requirement byte ranges; unknown, out-of-scope or wrongly typed
-//! references are artifact errors and nothing is resolved by name. Plumb checks queries for
-//! writes, requires a performer, and verifies that the read set covers the Entity and
-//! Attribute inputs of every selected Calculation by replaying its S2.6 qualification. Eligible
+//! scope ID grounded in exact requirement byte ranges and nothing is resolved by name. An
+//! invalid model-proposed item (a relation with an unknown, out-of-scope, wrongly typed or
+//! duplicate target or an invalid grounding, an Outcome or new Event, or a whole candidate
+//! whose own grounding or identity is invalid) is dropped with a `*_dropped` issue and the
+//! analysis continues; schema, version and request-binding errors stay fatal. Plumb checks
+//! queries for writes, requires a performer, and verifies that the read set covers the Entity
+//! and Attribute inputs of every selected Calculation by replaying its S2.6 qualification. Eligible
 //! candidates become one HumanConfirm proposal each, holding the Operation, its new Outcomes
 //! and Events and canonical edges; `apply_patch` is used solely to dry-validate in memory.
 //! Nothing here emits findings, mutates a graph, calls a provider, reads a clock or persists.
@@ -157,9 +160,41 @@ pub enum OperationIssue {
         reason: String,
     },
     InferenceUnavailable,
+    /// A whole Operation candidate was dropped (its own grounding is invalid or its identity
+    /// is proposed more than once); its Outcomes and new Events are dropped with it.
+    CandidateDropped {
+        candidate: String,
+        reason: String,
+    },
+    /// One grounded relation of a candidate was dropped (invalid grounding, unknown,
+    /// out-of-scope or wrongly typed target, or a duplicate target); the candidate continues
+    /// without it.
+    RelationDropped {
+        operation_ref: Id,
+        relation: String,
+        target_ref: Id,
+        reason: String,
+    },
+    /// One Outcome or new Event of a candidate was dropped; the candidate continues without it.
+    ChildDropped {
+        operation_ref: Id,
+        node_ref: Id,
+        reason: String,
+    },
 }
 
 impl OperationIssue {
+    /// A dropped model-proposed item (any-domain tolerance). It is reported but does not by
+    /// itself make the remaining candidate ineligible.
+    pub fn is_dropped_item(&self) -> bool {
+        matches!(
+            self,
+            OperationIssue::CandidateDropped { .. }
+                | OperationIssue::RelationDropped { .. }
+                | OperationIssue::ChildDropped { .. }
+        )
+    }
+
     fn is_existing_conflict(&self) -> bool {
         matches!(
             self,
@@ -744,31 +779,66 @@ fn resolve(
     }
 }
 
-/// Validates one relation family: grounding, closed-scope targets and unique targets.
+/// The IDs that occur more than once in a sorted sequence.
+fn repeated<'a>(sorted: impl Iterator<Item = &'a Id>) -> BTreeSet<Id> {
+    let mut out = BTreeSet::new();
+    let mut previous: Option<&Id> = None;
+    for id in sorted {
+        if previous == Some(id) {
+            out.insert(id.clone());
+        }
+        previous = Some(id);
+    }
+    out
+}
+
+/// One relation family of one candidate.
+struct Family<'a> {
+    relation: &'a str,
+    list: &'a [Id],
+    allowed: &'a [NodeType],
+}
+
+/// Validates one relation family: grounding, closed-scope targets and unique targets. An
+/// invalid entry is dropped with a `RelationDropped` issue; every entry of a repeated target
+/// is dropped (order-independent).
 fn family(
     graph: &Graph,
     context: &OperationContext,
-    relation: &str,
+    operation_ref: &Id,
+    f: &Family<'_>,
     refs: &[OutputGroundedRef],
-    list: &[Id],
-    allowed: &[NodeType],
-) -> Result<Vec<Grounded>, OperationError> {
+    dropped: &mut Vec<OperationIssue>,
+) -> Vec<Grounded> {
     let mut out: Vec<Grounded> = Vec::new();
     for r in refs {
-        resolve(graph, relation, &[list], allowed, &r.target_ref)?;
-        out.push(Grounded {
-            target: r.target_ref.clone(),
-            evidence: grounded_evidence(context, &r.evidence)?,
-        });
+        let checked = resolve(graph, f.relation, &[f.list], f.allowed, &r.target_ref)
+            .and_then(|()| grounded_evidence(context, &r.evidence));
+        match checked {
+            Ok(evidence) => out.push(Grounded {
+                target: r.target_ref.clone(),
+                evidence,
+            }),
+            Err(e) => dropped.push(OperationIssue::RelationDropped {
+                operation_ref: operation_ref.clone(),
+                relation: f.relation.to_owned(),
+                target_ref: r.target_ref.clone(),
+                reason: e.to_string(),
+            }),
+        }
     }
     out.sort_by(|a, b| a.target.cmp(&b.target));
-    if let Some(pair) = out.windows(2).find(|p| p[0].target == p[1].target) {
-        return Err(OperationError::DuplicateRelationTarget {
-            relation: relation.to_owned(),
-            target_ref: pair[0].target.clone(),
+    let duplicates = repeated(out.iter().map(|g| &g.target));
+    for target in &duplicates {
+        dropped.push(OperationIssue::RelationDropped {
+            operation_ref: operation_ref.clone(),
+            relation: f.relation.to_owned(),
+            target_ref: target.clone(),
+            reason: format!("duplicate {} target {target}", f.relation),
         });
     }
-    Ok(out)
+    out.retain(|g| !duplicates.contains(&g.target));
+    out
 }
 
 fn targets(list: &[Grounded]) -> Vec<Id> {
@@ -1211,87 +1281,130 @@ pub fn analyze_operations(
     };
     let mut candidates = Vec::new();
     let mut proposals = Vec::new();
-    let mut seen = BTreeSet::new();
-    for c in decoded.operations {
-        // ------------------------------------------------ artifact contract (hard errors)
-        let evidence = grounded_evidence(&context, &c.evidence)?;
-        let operation_ref = operation_id(project, &c.name)?;
-        if !seen.insert(operation_ref.clone()) {
-            return Err(OperationError::DuplicateCandidate {
-                node_ref: operation_ref,
-            });
-        }
-        let performers = family(
-            graph,
-            &context,
+    // Analysis-level issues: whole candidates dropped with their children (any-domain
+    // tolerance: one invalid model-proposed item never fails the analysis).
+    let mut analysis_issues: Vec<OperationIssue> = Vec::new();
+    let operation_refs = decoded
+        .operations
+        .iter()
+        .map(|c| operation_id(project, &c.name))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut sorted_refs = operation_refs.clone();
+    sorted_refs.sort();
+    let duplicate_operations = repeated(sorted_refs.iter());
+    for (c, operation_ref) in decoded.operations.into_iter().zip(operation_refs) {
+        // ------------------------------------------------ whole-candidate contract
+        let evidence = if duplicate_operations.contains(&operation_ref) {
+            Err(format!("duplicate candidate identity {operation_ref}"))
+        } else {
+            grounded_evidence(&context, &c.evidence).map_err(|e| e.to_string())
+        };
+        let evidence = match evidence {
+            Ok(evidence) => evidence,
+            Err(reason) => {
+                analysis_issues.push(OperationIssue::CandidateDropped {
+                    candidate: operation_ref.to_string(),
+                    reason,
+                });
+                let children = c
+                    .outcomes
+                    .iter()
+                    .map(|o| outcome_id(project, &operation_ref, &o.name))
+                    .chain(
+                        c.new_produced_events
+                            .iter()
+                            .map(|e| event_id(project, &e.name)),
+                    );
+                for node_ref in children {
+                    analysis_issues.push(OperationIssue::ChildDropped {
+                        operation_ref: operation_ref.clone(),
+                        node_ref: node_ref?,
+                        reason: "its operation candidate was dropped".to_owned(),
+                    });
+                }
+                continue;
+            }
+        };
+        // ------------------------------------------------ per-item contract (dropped items)
+        let mut dropped: Vec<OperationIssue> = Vec::new();
+        let domain = [T::Entity, T::Attribute];
+        let fam = |relation: &str,
+                   refs: &[OutputGroundedRef],
+                   list: &[Id],
+                   allowed: &[NodeType],
+                   dropped: &mut Vec<OperationIssue>| {
+            family(
+                graph,
+                &context,
+                &operation_ref,
+                &Family {
+                    relation,
+                    list,
+                    allowed,
+                },
+                refs,
+                dropped,
+            )
+        };
+        let performers = fam(
             "performed_by",
             &c.performers,
             &scope.performer_refs,
             &[T::Actor, T::BusinessRole],
-        )?;
-        let domain = [T::Entity, T::Attribute];
-        let reads = family(
-            graph,
-            &context,
-            "reads",
-            &c.reads,
-            &scope.domain_refs,
-            &domain,
-        )?;
-        let writes = family(
-            graph,
-            &context,
+            &mut dropped,
+        );
+        let reads = fam("reads", &c.reads, &scope.domain_refs, &domain, &mut dropped);
+        let writes = fam(
             "writes",
             &c.writes,
             &scope.domain_refs,
             &domain,
-        )?;
-        let governed_by = family(
-            graph,
-            &context,
+            &mut dropped,
+        );
+        let governed_by = fam(
             "governed_by",
             &c.governed_by,
             &scope.governor_refs,
             &[T::Rule, T::DecisionTable],
-        )?;
-        let uses_calculation = family(
-            graph,
-            &context,
+            &mut dropped,
+        );
+        let uses_calculation = fam(
             "uses_calculation",
             &c.uses_calculation,
             &scope.calculation_refs,
             &[T::Calculation],
-        )?;
-        let produced_refs = family(
-            graph,
-            &context,
+            &mut dropped,
+        );
+        let produced_refs = fam(
             "produces",
             &c.produced_event_refs,
             &scope.event_refs,
             &[T::Event],
-        )?;
-        let consumed = family(
-            graph,
-            &context,
+            &mut dropped,
+        );
+        let consumed = fam(
             "consumes",
             &c.consumed_event_refs,
             &scope.event_refs,
             &[T::Event],
-        )?;
-        let schema = |relation: &str, r: &Option<OutputGroundedRef>| match r {
-            None => Ok(None),
-            Some(r) => family(
-                graph,
-                &context,
-                relation,
-                std::slice::from_ref(r),
-                &scope.data_schema_refs,
-                &[T::DataSchema],
-            )
-            .map(|mut v| v.pop()),
-        };
-        let input_schema = schema("input_schema", &c.input_schema)?;
-        let output_schema = schema("output_schema", &c.output_schema)?;
+            &mut dropped,
+        );
+        let input_schema = fam(
+            "input_schema",
+            c.input_schema.as_slice(),
+            &scope.data_schema_refs,
+            &[T::DataSchema],
+            &mut dropped,
+        )
+        .pop();
+        let output_schema = fam(
+            "output_schema",
+            c.output_schema.as_slice(),
+            &scope.data_schema_refs,
+            &[T::DataSchema],
+            &mut dropped,
+        )
+        .pop();
 
         let mut issues = Vec::new();
         if let Some(reason) = name_problem(&c.name) {
@@ -1300,79 +1413,99 @@ pub fn analyze_operations(
                 reason: reason.to_owned(),
             });
         }
+        let child_dropped = |node_ref: &Id, reason: String| OperationIssue::ChildDropped {
+            operation_ref: operation_ref.clone(),
+            node_ref: node_ref.clone(),
+            reason,
+        };
 
         let mut outcomes: Vec<(OperationOutcomeAnalysis, Vec<OperationGroundedRange>)> = Vec::new();
         for o in &c.outcomes {
-            let ranges = grounded_evidence(&context, &o.evidence)?;
             let outcome_ref = outcome_id(project, &operation_ref, &o.name)?;
+            match grounded_evidence(&context, &o.evidence) {
+                Err(e) => dropped.push(child_dropped(&outcome_ref, e.to_string())),
+                Ok(ranges) => outcomes.push((
+                    OperationOutcomeAnalysis {
+                        outcome_ref,
+                        name: o.name.clone(),
+                        outcome_kind: o.outcome_kind,
+                    },
+                    ranges,
+                )),
+            }
+        }
+        outcomes.sort_by(|a, b| a.0.outcome_ref.cmp(&b.0.outcome_ref));
+        let duplicates = repeated(outcomes.iter().map(|(o, _)| &o.outcome_ref));
+        for outcome_ref in &duplicates {
+            dropped.push(child_dropped(
+                outcome_ref,
+                format!("duplicate candidate identity {outcome_ref}"),
+            ));
+        }
+        outcomes.retain(|(o, _)| !duplicates.contains(&o.outcome_ref));
+        for (o, _) in &outcomes {
             if let Some(reason) = name_problem(&o.name) {
                 issues.push(OperationIssue::InvalidName {
-                    node_ref: outcome_ref.clone(),
+                    node_ref: o.outcome_ref.clone(),
                     reason: reason.to_owned(),
                 });
             }
-            outcomes.push((
-                OperationOutcomeAnalysis {
-                    outcome_ref,
-                    name: o.name.clone(),
-                    outcome_kind: o.outcome_kind,
-                },
-                ranges,
-            ));
-        }
-        outcomes.sort_by(|a, b| a.0.outcome_ref.cmp(&b.0.outcome_ref));
-        if let Some(pair) = outcomes
-            .windows(2)
-            .find(|p| p[0].0.outcome_ref == p[1].0.outcome_ref)
-        {
-            return Err(OperationError::DuplicateCandidate {
-                node_ref: pair[0].0.outcome_ref.clone(),
-            });
         }
 
         let mut new_events: Vec<(OperationEventAnalysis, Vec<OperationGroundedRange>)> = Vec::new();
         for e in &c.new_produced_events {
-            let ranges = grounded_evidence(&context, &e.evidence)?;
-            if let Some(payload) = &e.payload_schema_ref {
-                resolve(
-                    graph,
-                    "event_payload",
-                    &[&scope.data_schema_refs, &scope.event_payload_attribute_refs],
-                    &[T::DataSchema, T::Attribute],
-                    payload,
-                )?;
-            }
             let event_ref = event_id(project, &e.name)?;
-            if let Some(reason) = name_problem(&e.name) {
-                issues.push(OperationIssue::InvalidName {
-                    node_ref: event_ref.clone(),
-                    reason: reason.to_owned(),
-                });
+            let checked = e
+                .payload_schema_ref
+                .as_ref()
+                .map_or(Ok(()), |payload| {
+                    resolve(
+                        graph,
+                        "event_payload",
+                        &[&scope.data_schema_refs, &scope.event_payload_attribute_refs],
+                        &[T::DataSchema, T::Attribute],
+                        payload,
+                    )
+                })
+                .and_then(|()| grounded_evidence(&context, &e.evidence));
+            match checked {
+                Err(err) => dropped.push(child_dropped(&event_ref, err.to_string())),
+                Ok(ranges) => new_events.push((
+                    OperationEventAnalysis {
+                        event_ref,
+                        name: e.name.clone(),
+                        payload_schema_ref: e.payload_schema_ref.clone(),
+                        reused: false,
+                    },
+                    ranges,
+                )),
             }
-            new_events.push((
-                OperationEventAnalysis {
-                    event_ref,
-                    name: e.name.clone(),
-                    payload_schema_ref: e.payload_schema_ref.clone(),
-                    reused: false,
-                },
-                ranges,
-            ));
         }
         new_events.sort_by(|a, b| a.0.event_ref.cmp(&b.0.event_ref));
-        if let Some(pair) = new_events
-            .windows(2)
-            .find(|p| p[0].0.event_ref == p[1].0.event_ref)
-        {
-            return Err(OperationError::DuplicateCandidate {
-                node_ref: pair[0].0.event_ref.clone(),
-            });
+        let duplicates = repeated(new_events.iter().map(|(e, _)| &e.event_ref));
+        for event_ref in &duplicates {
+            dropped.push(child_dropped(
+                event_ref,
+                format!("duplicate candidate identity {event_ref}"),
+            ));
         }
+        new_events.retain(|(e, _)| !duplicates.contains(&e.event_ref));
+        // An Event both selected and newly proposed keeps the selected reference.
+        new_events.retain(|(e, _)| {
+            let selected = produced_refs.iter().any(|g| g.target == e.event_ref);
+            if selected {
+                dropped.push(child_dropped(
+                    &e.event_ref,
+                    format!("duplicate produces target {}", e.event_ref),
+                ));
+            }
+            !selected
+        });
         for (e, _) in &new_events {
-            if produced_refs.iter().any(|g| g.target == e.event_ref) {
-                return Err(OperationError::DuplicateRelationTarget {
-                    relation: "produces".into(),
-                    target_ref: e.event_ref.clone(),
+            if let Some(reason) = name_problem(&e.name) {
+                issues.push(OperationIssue::InvalidName {
+                    node_ref: e.event_ref.clone(),
+                    reason: reason.to_owned(),
                 });
             }
         }
@@ -1609,6 +1742,8 @@ pub fn analyze_operations(
         } else if issues.iter().any(OperationIssue::is_existing_conflict) {
             disposition = OperationDisposition::ExistingConflict;
         }
+        // Dropped items are reported with the candidate but never decide its disposition.
+        issues.extend(dropped);
         issues.sort();
         let mut produced_events: Vec<Id> = produced_refs
             .iter()
@@ -1640,8 +1775,11 @@ pub fn analyze_operations(
     candidates.sort_by(|a, b| a.operation_ref.cmp(&b.operation_ref));
     proposals.sort_by(|a, b| a.id.cmp(&b.id));
     // Every candidate issue is also a result issue, so a dropped candidate is reported (H0.5).
-    let mut issues: Vec<OperationIssue> =
-        candidates.iter().flat_map(|c| c.issues.clone()).collect();
+    let mut issues: Vec<OperationIssue> = candidates
+        .iter()
+        .flat_map(|c| c.issues.clone())
+        .chain(analysis_issues)
+        .collect();
     issues.sort();
     issues.dedup();
     Ok(OperationAnalysisResult {

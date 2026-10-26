@@ -930,6 +930,206 @@ mod process_contract {
         );
     }
 
+    // ------------------------------------------------------------------ invalid items
+
+    /// The dropped items of a run (any-domain tolerance) with their reasons, sorted.
+    fn dropped(result: &ProcessCompilationResult) -> Vec<(ProcessIssue, String)> {
+        let mut out: Vec<(ProcessIssue, String)> = result
+            .issues
+            .iter()
+            .filter(|i| i.is_dropped_item())
+            .map(|i| {
+                let reason = match i {
+                    ProcessIssue::CandidateDropped { reason, .. }
+                    | ProcessIssue::NodeDropped { reason, .. }
+                    | ProcessIssue::RelationDropped { reason, .. }
+                    | ProcessIssue::NextDropped { reason, .. } => reason.clone(),
+                    _ => unreachable!(),
+                };
+                (i.clone(), reason)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn process_invalid_items_are_dropped() {
+        let g = base_graph();
+        let process_ref = process_id(&id(PROJECT), NAME).unwrap();
+        // A whole Process whose own grounding is invalid is dropped; no candidate remains.
+        let whole = |p: Json, needle: &str| {
+            let r = run(&g, vec![p]).unwrap();
+            assert!(r.candidates.is_empty() && r.proposals.is_empty());
+            let d = dropped(&r);
+            assert_eq!(d.len(), 1, "{:?}", r.issues);
+            assert_eq!(
+                d[0].0,
+                ProcessIssue::CandidateDropped {
+                    candidate: process_ref.to_string(),
+                    reason: d[0].1.clone()
+                }
+            );
+            assert!(d[0].1.contains(needle), "{} lacks {needle}", d[0].1);
+        };
+        let mut unknown_req = golden_process();
+        unknown_req["evidence"] = json!([{"requirement_ref": "req:r9", "start": 0, "end": 3}]);
+        whole(unknown_req, "not a target requirement");
+        let mut out_of_range = golden_process();
+        out_of_range["evidence"] = json!([{"requirement_ref": "req:r1", "start": 0, "end": 9999}]);
+        whole(out_of_range, "not a non-empty range of the statement");
+        // A repeated Process identity drops every copy.
+        let r = run(&g, vec![golden_process(), golden_process()]).unwrap();
+        assert!(r.candidates.is_empty() && r.proposals.is_empty());
+        assert_eq!(dropped(&r).len(), 1);
+        assert!(dropped(&r)[0].1.contains("duplicate process candidate"));
+
+        // A node with an invalid operation reference is dropped with the flows touching it.
+        let node_drop = |p: Json, scope: &ProcessScope, key: &str, needle: &str| {
+            let r = run_out(&g, scope, &["req:r1", "req:r2"], output(vec![p])).unwrap();
+            assert_eq!(r.candidates.len(), 1);
+            let c = &r.candidates[0];
+            assert!(!c.node_refs.contains_key(key));
+            let d = dropped(&r);
+            let node: Vec<&String> = d
+                .iter()
+                .filter_map(|(i, reason)| match i {
+                    ProcessIssue::NodeDropped { node_key, .. } if node_key == key => Some(reason),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(node.len(), 1, "{d:?}");
+            assert!(node[0].contains(needle), "{} lacks {needle}", node[0]);
+            for (i, reason) in &d {
+                if let ProcessIssue::NextDropped {
+                    from_key, to_key, ..
+                } = i
+                {
+                    assert!(from_key == key || to_key == key);
+                    assert_eq!(reason, &format!("node key {key} was dropped"));
+                }
+            }
+            // The broken remainder is not proposed.
+            assert!(r.proposals.is_empty());
+            assert!(c.issues.iter().any(|i| !i.is_dropped_item()));
+        };
+        let with_op = |op: &str| linear_with(task("a", "service_task", op));
+        node_drop(
+            with_op("operation:ghost"),
+            &full_scope(),
+            "a",
+            "does not exist",
+        );
+        node_drop(
+            with_op("operation:draft"),
+            &full_scope(),
+            "a",
+            "is not Accepted",
+        );
+        node_drop(
+            with_op("event:received"),
+            &full_scope(),
+            "a",
+            "has the wrong node type",
+        );
+        node_drop(
+            with_op("operation:ship"),
+            &golden_scope(),
+            "a",
+            "is not in the process scope",
+        );
+        let mut bad_node = pnode("a", "service_task");
+        bad_node["evidence"] = json!([{"requirement_ref": "req:r9", "start": 0, "end": 3}]);
+        node_drop(
+            linear_with(bad_node),
+            &full_scope(),
+            "a",
+            "invalid grounding",
+        );
+        let dup_key = process(
+            NAME,
+            vec![pnode("start", "start"), pnode("start", "end")],
+            vec![],
+        );
+        node_drop(dup_key, &full_scope(), "start", "duplicate node key start");
+
+        // A wrongly typed performer is dropped; the node stays.
+        let mut security = pnode("review", "human_task");
+        security["performers"] = json!([gref("secrole:clerk", "clerk")]);
+        let r = run(&g, vec![linear_with(security)]).unwrap();
+        assert!(r.candidates[0].node_refs.contains_key("review"));
+        assert!(matches!(
+            &dropped(&r)[..],
+            [(ProcessIssue::RelationDropped { relation, target_ref, .. }, reason)]
+                if relation == "performed_by"
+                    && target_ref.as_str() == "secrole:clerk"
+                    && reason.contains("has the wrong node type")
+        ));
+        assert!(r.proposals.is_empty());
+
+        // An unknown or self flow is dropped and the valid golden Process is still proposed.
+        let golden = run(&g, vec![golden_process()]).unwrap();
+        for (extra, needle) in [
+            (
+                next("start", "ghost"),
+                "next references unknown node key ghost",
+            ),
+            (next("approve", "approve"), "self next on approve"),
+        ] {
+            let mut p = golden_process();
+            p["next"].as_array_mut().unwrap().push(extra);
+            let r = run(&g, vec![p]).unwrap();
+            let d = dropped(&r);
+            assert_eq!(d.len(), 1, "{d:?}");
+            assert!(matches!(d[0].0, ProcessIssue::NextDropped { .. }));
+            assert_eq!(d[0].1, needle);
+            assert_eq!(r.proposals, golden.proposals);
+        }
+        // A repeated flow drops every copy; the remainder is unreachable and not proposed.
+        let mut dup_next = golden_process();
+        dup_next["next"]
+            .as_array_mut()
+            .unwrap()
+            .push(next("start", "approve"));
+        let r = run(&g, vec![dup_next]).unwrap();
+        assert!(matches!(
+            &dropped(&r)[..],
+            [(ProcessIssue::NextDropped { from_key, to_key, .. }, reason)]
+                if from_key == "start" && to_key == "approve"
+                    && reason == "duplicate next start -> approve"
+        ));
+        assert!(r.proposals.is_empty());
+    }
+
+    #[test]
+    fn process_one_bad_candidate_does_not_fail_its_siblings() {
+        // The real-model failure: one candidate's grounding is off by a few bytes.
+        let g = base_graph();
+        let mut bad = golden_process();
+        bad["name"] = json!("Broken Process");
+        bad["evidence"] = json!([{"requirement_ref": "req:r1", "start": 0, "end": R1.len() + 3}]);
+        let alone = run(&g, vec![golden_process()]).unwrap();
+        let result = run(&g, vec![bad.clone(), golden_process()]).unwrap();
+        assert_eq!(result.proposals.len(), 1);
+        assert_eq!(result.proposals, alone.proposals);
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].name, NAME);
+        let broken = process_id(&id(PROJECT), "Broken Process").unwrap();
+        assert_eq!(
+            result.issues,
+            vec![ProcessIssue::CandidateDropped {
+                candidate: broken.to_string(),
+                reason: format!(
+                    "invalid grounding req:r1 0..{}: not a non-empty range of the statement",
+                    R1.len() + 3
+                ),
+            }]
+        );
+        let reversed = run(&g, vec![golden_process(), bad]).unwrap();
+        assert_eq!(reversed.issues, result.issues);
+        assert_eq!(reversed.proposals, result.proposals);
+    }
+
     // ------------------------------------------------------------------ artifact contract
 
     #[test]
@@ -969,84 +1169,6 @@ mod process_contract {
         let mut bare = golden_process();
         bare["nodes"][1]["operation"] = json!("operation:approve");
         assert!(schema(bare));
-        // Grounding.
-        let mut unknown_req = golden_process();
-        unknown_req["evidence"] = json!([{"requirement_ref": "req:r9", "start": 0, "end": 3}]);
-        assert!(matches!(
-            err(unknown_req),
-            ProcessError::InvalidGrounding { .. }
-        ));
-        let mut out_of_range = golden_process();
-        out_of_range["evidence"] = json!([{"requirement_ref": "req:r1", "start": 0, "end": 9999}]);
-        assert!(matches!(
-            err(out_of_range),
-            ProcessError::InvalidGrounding { .. }
-        ));
-        // Semantic refs.
-        let with_op = |op: &str| linear_with(task("a", "service_task", op));
-        assert!(matches!(
-            err(with_op("operation:ghost")),
-            ProcessError::UnknownSemanticRef { .. }
-        ));
-        assert!(matches!(
-            err(with_op("operation:draft")),
-            ProcessError::NonAcceptedSemanticRef { .. }
-        ));
-        assert!(matches!(
-            err(with_op("event:received")),
-            ProcessError::WrongSemanticRefType { .. }
-        ));
-        assert!(matches!(
-            run_out(
-                &g,
-                &golden_scope(),
-                &["req:r1"],
-                output(vec![with_op("operation:ship")])
-            )
-            .unwrap_err(),
-            ProcessError::OutOfScopeRef { .. }
-        ));
-        let mut security = pnode("review", "human_task");
-        security["performers"] = json!([gref("secrole:clerk", "clerk")]);
-        assert!(matches!(
-            err(linear_with(security)),
-            ProcessError::WrongSemanticRefType { .. }
-        ));
-        // Identities and flows.
-        assert!(matches!(
-            run(&g, vec![golden_process(), golden_process()]).unwrap_err(),
-            ProcessError::DuplicateProcess { .. }
-        ));
-        let dup_key = process(
-            NAME,
-            vec![pnode("start", "start"), pnode("start", "end")],
-            vec![],
-        );
-        assert!(matches!(
-            err(dup_key),
-            ProcessError::DuplicateNodeKey { .. }
-        ));
-        let mut dup_next = golden_process();
-        dup_next["next"]
-            .as_array_mut()
-            .unwrap()
-            .push(next("start", "approve"));
-        assert!(matches!(err(dup_next), ProcessError::DuplicateNext { .. }));
-        let mut unknown_next = golden_process();
-        unknown_next["next"]
-            .as_array_mut()
-            .unwrap()
-            .push(next("start", "ghost"));
-        assert!(matches!(
-            err(unknown_next),
-            ProcessError::UnknownNextKey { .. }
-        ));
-        let mut self_next = golden_process();
-        self_next["next"]
-            .as_array_mut()
-            .unwrap()
-            .push(next("approve", "approve"));
-        assert!(matches!(err(self_next), ProcessError::SelfNext { .. }));
         // Artifact bound to another request.
         let r = request(&g, &full_scope(), &["req:r1"]);
         let mut artifact = artifact_for(&r.request, output(vec![]));

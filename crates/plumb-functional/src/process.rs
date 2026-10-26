@@ -8,7 +8,11 @@
 //! `plumb_validation::process_analysis` kernel in ActiveOverlay mode; only fully qualified
 //! candidates become one HumanConfirm proposal each. Nodes never carry a condition, exclusive
 //! gateways, error events and subprocesses are never proposed, and nothing here emits findings,
-//! mutates a graph, calls a provider, reads a clock or persists anything.
+//! mutates a graph, calls a provider, reads a clock or persists anything. An invalid
+//! model-proposed item (a whole Process whose own grounding or identity is invalid, a node, a
+//! node relation or a `next` flow) is dropped with a `*_dropped` issue together with what
+//! depends on it, and the analysis continues; schema, version and request-binding errors stay
+//! fatal.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -194,6 +198,49 @@ pub enum ProcessIssue {
     InvalidProposal {
         reason: String,
     },
+    /// A whole Process candidate was dropped (its own grounding is invalid or its identity is
+    /// proposed more than once); its nodes and flows are dropped with it.
+    CandidateDropped {
+        candidate: String,
+        reason: String,
+    },
+    /// One ProcessNode candidate was dropped (invalid or duplicate node key, invalid grounding,
+    /// or an invalid operation or message reference); `next` flows touching it are dropped too.
+    NodeDropped {
+        process_ref: Id,
+        node_key: String,
+        reason: String,
+    },
+    /// One grounded `performed_by` or `produces` relation of a node was dropped.
+    RelationDropped {
+        node_ref: Id,
+        relation: String,
+        target_ref: Id,
+        reason: String,
+    },
+    /// One `next` flow candidate was dropped (unknown or dropped endpoint, self flow, duplicate
+    /// flow or invalid grounding).
+    NextDropped {
+        process_ref: Id,
+        from_key: String,
+        to_key: String,
+        reason: String,
+    },
+}
+
+impl ProcessIssue {
+    /// A dropped model-proposed item (any-domain tolerance). It is reported but does not by
+    /// itself make the remaining candidate ineligible; the structural qualification of what
+    /// remains still decides.
+    pub fn is_dropped_item(&self) -> bool {
+        matches!(
+            self,
+            ProcessIssue::CandidateDropped { .. }
+                | ProcessIssue::NodeDropped { .. }
+                | ProcessIssue::RelationDropped { .. }
+                | ProcessIssue::NextDropped { .. }
+        )
+    }
 }
 
 /// The typed issues of a structural analysis.
@@ -904,26 +951,59 @@ fn grounded_ref(
     })
 }
 
+/// The values that occur more than once in a sorted sequence.
+fn repeated<'a, T: Ord + Clone + 'a>(sorted: impl Iterator<Item = &'a T>) -> BTreeSet<T> {
+    let mut out = BTreeSet::new();
+    let mut previous: Option<&T> = None;
+    for value in sorted {
+        if previous == Some(value) {
+            out.insert(value.clone());
+        }
+        previous = Some(value);
+    }
+    out
+}
+
+/// One relation family of one node.
+struct Family<'a> {
+    relation: &'a str,
+    lists: &'a [&'a [Id]],
+    allowed: &'a [NodeType],
+}
+
+/// Validates one relation family of a node. An invalid entry is dropped with a
+/// `RelationDropped` issue; every entry of a repeated target is dropped (order-independent).
 fn grounded_family(
     graph: &Graph,
     context: &ProcessContext,
-    relation: &str,
+    node_ref: &Id,
+    f: &Family<'_>,
     refs: &[OutputGroundedRef],
-    lists: &[&[Id]],
-    allowed: &[NodeType],
-) -> Result<Vec<Grounded>, ProcessError> {
-    let mut out = refs
-        .iter()
-        .map(|r| grounded_ref(graph, context, relation, r, lists, allowed))
-        .collect::<Result<Vec<_>, _>>()?;
-    out.sort_by(|a, b| a.target.cmp(&b.target));
-    if let Some(pair) = out.windows(2).find(|p| p[0].target == p[1].target) {
-        return Err(ProcessError::DuplicateRelationTarget {
-            relation: relation.to_owned(),
-            target_ref: pair[0].target.clone(),
-        });
+    dropped: &mut Vec<ProcessIssue>,
+) -> Vec<Grounded> {
+    let relation_dropped = |target_ref: &Id, reason: String| ProcessIssue::RelationDropped {
+        node_ref: node_ref.clone(),
+        relation: f.relation.to_owned(),
+        target_ref: target_ref.clone(),
+        reason,
+    };
+    let mut out = Vec::new();
+    for r in refs {
+        match grounded_ref(graph, context, f.relation, r, f.lists, f.allowed) {
+            Ok(g) => out.push(g),
+            Err(e) => dropped.push(relation_dropped(&r.target_ref, e.to_string())),
+        }
     }
-    Ok(out)
+    out.sort_by(|a, b| a.target.cmp(&b.target));
+    let duplicates = repeated(out.iter().map(|g| &g.target));
+    for target in &duplicates {
+        dropped.push(relation_dropped(
+            target,
+            format!("duplicate {} target {target}", f.relation),
+        ));
+    }
+    out.retain(|g| !duplicates.contains(&g.target));
+    out
 }
 
 // ============================================================================ analysis
@@ -1171,80 +1251,137 @@ pub fn analyze_processes(
     let project = graph.project_id();
     let builder = Builder { graph, audit };
     let base = graph.semantic_hash()?;
-    let mut seen = BTreeSet::new();
     let mut candidates = Vec::new();
     let mut proposals = Vec::new();
-    for c in decoded.processes {
-        // ------------------------------------------------ artifact contract (hard errors)
-        let evidence = grounded_evidence(&context, &c.evidence)?;
-        let process_ref = process_id(project, &c.name)?;
-        if !seen.insert(process_ref.clone()) {
-            return Err(ProcessError::DuplicateProcess { process_ref });
-        }
+    // Analysis-level issues: whole candidates dropped (any-domain tolerance: one invalid
+    // model-proposed item never fails the analysis).
+    let mut dropped_candidates: Vec<ProcessIssue> = Vec::new();
+    let process_refs = decoded
+        .processes
+        .iter()
+        .map(|c| process_id(project, &c.name))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut sorted_refs = process_refs.clone();
+    sorted_refs.sort();
+    let duplicate_processes = repeated(sorted_refs.iter());
+    for (c, process_ref) in decoded.processes.into_iter().zip(process_refs) {
+        // ------------------------------------------------ whole-candidate contract
+        let evidence = if duplicate_processes.contains(&process_ref) {
+            Err(ProcessError::DuplicateProcess {
+                process_ref: process_ref.clone(),
+            }
+            .to_string())
+        } else {
+            grounded_evidence(&context, &c.evidence).map_err(|e| e.to_string())
+        };
+        let evidence = match evidence {
+            Ok(evidence) => evidence,
+            Err(reason) => {
+                dropped_candidates.push(ProcessIssue::CandidateDropped {
+                    candidate: process_ref.to_string(),
+                    reason,
+                });
+                continue;
+            }
+        };
+        // ------------------------------------------------ per-item contract (dropped items)
+        let mut dropped: Vec<ProcessIssue> = Vec::new();
+        let node_dropped = |node_key: &str, reason: String| ProcessIssue::NodeDropped {
+            process_ref: process_ref.clone(),
+            node_key: node_key.to_owned(),
+            reason,
+        };
+        let mut keys: Vec<&String> = c.nodes.iter().map(|n| &n.node_key).collect();
+        keys.sort();
+        let duplicate_keys = repeated(keys.into_iter());
+        let mut dropped_keys: BTreeSet<String> = BTreeSet::new();
         let mut node_refs: BTreeMap<String, Id> = BTreeMap::new();
         let mut planned_nodes: Vec<(Id, NodePayload, Vec<ProcessGroundedRange>, String)> =
             Vec::new();
         let mut planned_edges: Vec<PlannedEdge> = Vec::new();
         for n in &c.nodes {
-            if !valid_node_key(&n.node_key) {
-                return Err(ProcessError::InvalidNodeKey {
-                    node_key: n.node_key.clone(),
-                });
+            let node_key = || n.node_key.clone();
+            let key_problem = if !valid_node_key(&n.node_key) {
+                Some(ProcessError::InvalidNodeKey {
+                    node_key: node_key(),
+                })
+            } else if duplicate_keys.contains(&n.node_key) {
+                Some(ProcessError::DuplicateNodeKey {
+                    node_key: node_key(),
+                })
+            } else {
+                None
+            };
+            if let Some(e) = key_problem {
+                dropped_keys.insert(node_key());
+                dropped.push(node_dropped(&n.node_key, e.to_string()));
+                continue;
             }
             let node_ref = process_node_id(project, &process_ref, &n.node_key)?;
-            if node_refs
-                .insert(n.node_key.clone(), node_ref.clone())
-                .is_some()
-            {
-                return Err(ProcessError::DuplicateNodeKey {
-                    node_key: n.node_key.clone(),
-                });
-            }
-            let node_evidence = grounded_evidence(&context, &n.evidence)?;
-            let operation = n
-                .operation
-                .as_ref()
-                .map(|r| {
-                    grounded_ref(
-                        graph,
-                        &context,
-                        "operation",
-                        r,
-                        &[&scope.operation_refs],
-                        &[T::Operation],
-                    )
-                })
-                .transpose()?;
-            let message = n
-                .message_ref
-                .as_ref()
-                .map(|r| {
-                    grounded_ref(
-                        graph,
-                        &context,
-                        "message_ref",
-                        r,
-                        &[&scope.event_refs],
-                        &[T::Event],
-                    )
-                })
-                .transpose()?;
+            let checked = grounded_evidence(&context, &n.evidence).and_then(|node_evidence| {
+                let operation = n
+                    .operation
+                    .as_ref()
+                    .map(|r| {
+                        grounded_ref(
+                            graph,
+                            &context,
+                            "operation",
+                            r,
+                            &[&scope.operation_refs],
+                            &[T::Operation],
+                        )
+                    })
+                    .transpose()?;
+                let message = n
+                    .message_ref
+                    .as_ref()
+                    .map(|r| {
+                        grounded_ref(
+                            graph,
+                            &context,
+                            "message_ref",
+                            r,
+                            &[&scope.event_refs],
+                            &[T::Event],
+                        )
+                    })
+                    .transpose()?;
+                Ok((node_evidence, operation, message))
+            });
+            let (node_evidence, operation, message) = match checked {
+                Ok(checked) => checked,
+                Err(e) => {
+                    dropped_keys.insert(node_key());
+                    dropped.push(node_dropped(&n.node_key, e.to_string()));
+                    continue;
+                }
+            };
+            node_refs.insert(node_key(), node_ref.clone());
             let performers = grounded_family(
                 graph,
                 &context,
-                "performed_by",
+                &node_ref,
+                &Family {
+                    relation: "performed_by",
+                    lists: &[&scope.performer_refs],
+                    allowed: &[T::Actor, T::BusinessRole],
+                },
                 &n.performers,
-                &[&scope.performer_refs],
-                &[T::Actor, T::BusinessRole],
-            )?;
+                &mut dropped,
+            );
             let produces = grounded_family(
                 graph,
                 &context,
-                "produces",
+                &node_ref,
+                &Family {
+                    relation: "produces",
+                    lists: &[&scope.outcome_refs, &scope.event_refs],
+                    allowed: &[T::Outcome, T::Event],
+                },
                 &n.produces,
-                &[&scope.outcome_refs, &scope.event_refs],
-                &[T::Outcome, T::Event],
-            )?;
+                &mut dropped,
+            );
             let payload = NodePayload::ProcessNode(ProcessNode {
                 process_ref: process_ref.clone(),
                 node_kind: n.node_kind,
@@ -1276,32 +1413,51 @@ pub fn analyze_processes(
             }
             planned_nodes.push((node_ref, payload, node_evidence, n.node_key.clone()));
         }
-        let mut next_pairs = BTreeSet::new();
+        let mut pairs: Vec<(&String, &String)> =
+            c.next.iter().map(|e| (&e.from_key, &e.to_key)).collect();
+        pairs.sort();
+        let duplicate_next = repeated(pairs.iter());
         for e in &c.next {
-            for key in [&e.from_key, &e.to_key] {
-                if !node_refs.contains_key(key) {
-                    return Err(ProcessError::UnknownNextKey {
+            let unknown = [&e.from_key, &e.to_key]
+                .into_iter()
+                .find(|key| !node_refs.contains_key(*key));
+            let checked = if let Some(key) = unknown {
+                Err(if dropped_keys.contains(key) {
+                    format!("node key {key} was dropped")
+                } else {
+                    ProcessError::UnknownNextKey {
                         node_key: key.clone(),
-                    });
-                }
-            }
-            if e.from_key == e.to_key {
-                return Err(ProcessError::SelfNext {
+                    }
+                    .to_string()
+                })
+            } else if e.from_key == e.to_key {
+                Err(ProcessError::SelfNext {
                     node_key: e.from_key.clone(),
-                });
-            }
-            if !next_pairs.insert((e.from_key.clone(), e.to_key.clone())) {
-                return Err(ProcessError::DuplicateNext {
+                }
+                .to_string())
+            } else if duplicate_next.contains(&(&e.from_key, &e.to_key)) {
+                Err(ProcessError::DuplicateNext {
                     from_key: e.from_key.clone(),
                     to_key: e.to_key.clone(),
-                });
+                }
+                .to_string())
+            } else {
+                grounded_evidence(&context, &e.evidence).map_err(|e| e.to_string())
+            };
+            match checked {
+                Ok(evidence) => planned_edges.push(PlannedEdge {
+                    kind: RelationKind::Next,
+                    from: node_refs[&e.from_key].clone(),
+                    to: node_refs[&e.to_key].clone(),
+                    evidence,
+                }),
+                Err(reason) => dropped.push(ProcessIssue::NextDropped {
+                    process_ref: process_ref.clone(),
+                    from_key: e.from_key.clone(),
+                    to_key: e.to_key.clone(),
+                    reason,
+                }),
             }
-            planned_edges.push(PlannedEdge {
-                kind: RelationKind::Next,
-                from: node_refs[&e.from_key].clone(),
-                to: node_refs[&e.to_key].clone(),
-                evidence: grounded_evidence(&context, &e.evidence)?,
-            });
         }
 
         // ------------------------------------------------ qualification and reconciliation
@@ -1457,6 +1613,8 @@ pub fn analyze_processes(
                 }
             }
         }
+        // Dropped items are reported with the candidate but never decide its disposition.
+        issues.extend(dropped);
         issues.sort();
         issues.dedup();
         candidates.push(ProcessCandidateAnalysis {
@@ -1471,7 +1629,11 @@ pub fn analyze_processes(
     candidates.sort_by(|a, b| a.process_ref.cmp(&b.process_ref));
     proposals.sort_by(|a, b| a.id.cmp(&b.id));
     // Every candidate issue is also a result issue, so a dropped candidate is reported (H0.5).
-    let mut issues: Vec<ProcessIssue> = candidates.iter().flat_map(|c| c.issues.clone()).collect();
+    let mut issues: Vec<ProcessIssue> = candidates
+        .iter()
+        .flat_map(|c| c.issues.clone())
+        .chain(dropped_candidates)
+        .collect();
     issues.sort();
     issues.dedup();
     Ok(ProcessCompilationResult {
