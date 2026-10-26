@@ -2,8 +2,9 @@
 //!
 //! A supplied, already-acquired `domain_extraction` inference names Accepted Concept IDs with
 //! exact Requirement byte groundings. Plumb derives every Entity, Attribute and
-//! DomainRelationship name and type from those Accepted Concepts, validates the groundings with
-//! the S1.5 normalization, and returns grounded HUMAN_CONFIRM proposals of Proposed domain
+//! DomainRelationship name and type from those Accepted Concepts (an Attribute takes the
+//! model's proposed pilot primitive type instead when it validates deterministically),
+//! validates the groundings with the S1.5 normalization, and returns grounded HUMAN_CONFIRM proposals of Proposed domain
 //! nodes. Dependent proposals only reference Entities already present in the current graph, so
 //! extraction is iterative: the same request and artifact are replayed after Entity proposals
 //! are applied. A relationship whose endpoint cardinality is unresolved becomes
@@ -510,6 +511,9 @@ pub enum DomainIssue {
         candidate_ref: Id,
         concept_refs: Vec<Id>,
     },
+    /// The proposed primitive type is not a valid pilot expression type, so the Attribute
+    /// keeps its value_type Concept name; `reason` is diagnostic only.
+    PrimitiveTypeRejected { candidate_ref: Id, reason: String },
 }
 
 /// A deterministic conflict among existing domain nodes of one domain-origin identity.
@@ -605,6 +609,79 @@ struct OutputAttribute {
     owner_grounding: DomainGrounding,
     value_type: OutputValueType,
     nullable: OutputNullable,
+    #[serde(default)]
+    primitive_type: Option<OutputPrimitiveType>,
+}
+
+/// The model-proposed pilot primitive type of an Attribute, validated by [`primitive_type`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutputPrimitiveType {
+    #[serde(rename = "type")]
+    kind: String,
+    scale: Option<serde_json::Number>,
+    enum_values: Vec<String>,
+    unit: Option<String>,
+}
+
+/// The Attribute typing a valid primitive type yields.
+#[derive(Debug, PartialEq)]
+struct PrimitiveTyping {
+    value_type: String,
+    unit: Option<String>,
+    enum_values: Option<Vec<String>>,
+}
+
+/// Deterministically validates a proposed primitive type against the expression typer's
+/// pilot value types (`map_pilot_value_type`) and enum member symbols; `Err` is the reason it
+/// is rejected.
+fn primitive_type(
+    candidate: &OutputPrimitiveType,
+    candidate_ref: &Id,
+) -> Result<PrimitiveTyping, String> {
+    let value_type = match (candidate.kind.as_str(), &candidate.scale) {
+        ("Decimal", Some(scale)) => {
+            let scale = scale
+                .as_u64()
+                .filter(|s| *s <= u64::from(plumb_expr::MAX_DECIMAL_SCALE))
+                .ok_or_else(|| format!("Decimal scale {scale} is not in 0..=28"))?;
+            format!("Decimal({scale})")
+        }
+        ("Decimal", None) => return Err("Decimal without a scale".into()),
+        (kind, Some(_)) => return Err(format!("{kind} does not take a scale")),
+        (kind, None) => kind.to_owned(),
+    };
+    let is_enum = value_type == "Enum";
+    if !is_enum && !candidate.enum_values.is_empty() {
+        return Err(format!("{value_type} does not take enum_values"));
+    }
+    plumb_expr::map_pilot_value_type(
+        &value_type,
+        candidate.unit.as_deref(),
+        is_enum.then_some(candidate_ref),
+    )
+    .map_err(|e| e.to_string())?;
+    let enum_values = if is_enum {
+        if candidate.enum_values.is_empty() {
+            return Err("Enum without enum_values".into());
+        }
+        let mut seen = BTreeSet::new();
+        for member in &candidate.enum_values {
+            plumb_expr::Symbol::new(member)
+                .map_err(|_| format!("enum member {member:?} is not a symbol"))?;
+            if !seen.insert(member) {
+                return Err(format!("enum member {member:?} is repeated"));
+            }
+        }
+        Some(candidate.enum_values.clone())
+    } else {
+        None
+    };
+    Ok(PrimitiveTyping {
+        value_type,
+        unit: candidate.unit.clone(),
+        enum_values,
+    })
 }
 
 #[derive(Deserialize)]
@@ -1634,13 +1711,32 @@ pub fn analyze_domain(
                 continue;
             }
         };
+        // A valid proposed primitive type types the Attribute for expressions; otherwise (and
+        // when none is proposed) the value_type Concept name is kept.
+        let typing = match &a.primitive_type {
+            None => None,
+            Some(candidate) => match primitive_type(candidate, &id) {
+                Ok(typing) => Some(typing),
+                Err(reason) => {
+                    issues.insert(DomainIssue::PrimitiveTypeRejected {
+                        candidate_ref: id.clone(),
+                        reason,
+                    });
+                    None
+                }
+            },
+        };
+        let (value_type, unit, enum_values) = match typing {
+            Some(t) => (t.value_type, t.unit, t.enum_values),
+            None => (concept_name(context, &a.value_type.concept_ref), None, None),
+        };
         let payload = NodePayload::Attribute(Attribute {
             name: concept_name(context, &a.concept_ref),
-            value_type: concept_name(context, &a.value_type.concept_ref),
+            value_type,
             nullable: a.nullable.value,
-            unit: None,
+            unit,
             precision: None,
-            enum_values: None,
+            enum_values,
             data_classification: None,
         });
         let state = presence(

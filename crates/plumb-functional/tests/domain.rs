@@ -47,13 +47,13 @@ mod domain_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:90d64c24de16b6dca48cbfac7e53b7b6a65e22fac5dec65adfb98d47386dfedf";
+        "sha256:e91eea2279eb878d94db0ccdb57caee6a45b7af1c9d32864572311fd07768c36";
     const SCHEMA_HASH: &str =
-        "sha256:dce63d7466b24090a9e61e1033131538b12c808edb8a093a71c4e384297ab763";
+        "sha256:51eda28f8e738bdac22129e8a58de5d9f041c38e26e97b57918ee245ceb1bfcb";
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:b3ebb84070c0a58933d442b4ac883d447aa01c1d561fac25cbde9a93268e9ae6";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:9995d443231b862c72dc6cfd16b4765f60007012eea82294bb2df575032543f9";
+        "sha256:7ed13315b7b5210ab40599a7e0b1b3e7332bc458d18c66824142f876a50ebef1";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and
@@ -667,7 +667,8 @@ exactly one Employee, and an Employee may hold zero or more of them.";
             "0..1, 1, 0..*, 1..*",
             "Use null when an endpoint cardinality is not stated",
             "Do not guess missing cardinality",
-            "Do not infer aggregate roots, units, precision, enumeration values",
+            "Give every returned Attribute a primitive_type",
+            "Do not infer aggregate roots, data classification,",
             "states, transitions or invariants",
             "Return only JSON",
         ] {
@@ -1381,6 +1382,128 @@ exactly one Employee, and an Employee may hold zero or more of them.";
                 .count(),
             1
         );
+    }
+
+    fn primitive(kind: &str, scale: Value, enum_values: &[&str], unit: Value) -> Value {
+        json!({"type": kind, "scale": scale, "enum_values": enum_values, "unit": unit})
+    }
+
+    /// The Attribute payload and issues of one analysis of the start-date attribute carrying
+    /// `primitive_type` (`None` omits the key).
+    fn typed_attribute(primitive_type: Option<Value>) -> (plumb_psg::Attribute, Vec<DomainIssue>) {
+        let g = with_entities();
+        let mut attribute = attribute_json(false);
+        if let Some(p) = primitive_type {
+            attribute["primitive_type"] = p;
+        }
+        let result = analyze(&g, output(vec![], vec![attribute], vec![])).unwrap();
+        let attributes = proposal_of_type(&result, NodeType::Attribute);
+        assert_eq!(attributes.len(), 1);
+        let NodePayload::Attribute(a) = &added(attributes[0]).0.payload else {
+            panic!()
+        };
+        (a.clone(), result.issues)
+    }
+
+    /// Any-domain run: a valid model-proposed primitive type types the Attribute for
+    /// expressions (exact pilot value type, unit on numbers, enum members on Enum).
+    #[test]
+    fn domain_attribute_primitive_type_applied() {
+        let (a, issues) = typed_attribute(Some(primitive("Date", Value::Null, &[], Value::Null)));
+        assert_eq!(
+            (a.value_type.as_str(), a.unit, a.enum_values),
+            ("Date", None, None)
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+        let (a, issues) = typed_attribute(Some(primitive("Decimal", json!(2), &[], json!("eur"))));
+        assert_eq!(a.value_type, "Decimal(2)");
+        assert_eq!(a.unit.as_deref(), Some("eur"));
+        assert_eq!(a.enum_values, None);
+        assert_eq!(a.precision, None);
+        assert!(issues.is_empty(), "{issues:?}");
+        let (a, _) = typed_attribute(Some(primitive("Decimal", json!(0), &[], Value::Null)));
+        assert_eq!(a.value_type, "Decimal(0)");
+        let (a, _) = typed_attribute(Some(primitive("Int", Value::Null, &[], json!("month"))));
+        assert_eq!(
+            (a.value_type.as_str(), a.unit.as_deref()),
+            ("Int", Some("month"))
+        );
+        let (a, issues) = typed_attribute(Some(primitive(
+            "Enum",
+            Value::Null,
+            &["pending", "approved", "rejected"],
+            Value::Null,
+        )));
+        assert_eq!(a.value_type, "Enum");
+        assert_eq!(
+            a.enum_values,
+            Some(vec!["pending".into(), "approved".into(), "rejected".into()])
+        );
+        assert_eq!(a.unit, None);
+        assert!(issues.is_empty(), "{issues:?}");
+        for kind in ["String", "Bool", "DateTime"] {
+            let (a, _) = typed_attribute(Some(primitive(kind, Value::Null, &[], Value::Null)));
+            assert_eq!(a.value_type, kind);
+        }
+    }
+
+    /// An invalid primitive type never fails the stage: the Attribute keeps its value_type
+    /// Concept name and the rejection is reported as an issue.
+    #[test]
+    fn domain_attribute_invalid_primitive_type_falls_back() {
+        for invalid in [
+            primitive("Decimal", Value::Null, &[], Value::Null),
+            primitive("Decimal", json!(29), &[], Value::Null),
+            primitive("Decimal", json!(-1), &[], Value::Null),
+            primitive("Date", json!(2), &[], Value::Null),
+            primitive("Date", Value::Null, &[], json!("day")),
+            primitive("Int", Value::Null, &[], json!("EUR")),
+            primitive("String", Value::Null, &["a"], Value::Null),
+            primitive("Enum", Value::Null, &[], Value::Null),
+            primitive("Enum", Value::Null, &["pending approval"], Value::Null),
+            primitive("Enum", Value::Null, &["a", "a"], Value::Null),
+        ] {
+            let (a, issues) = typed_attribute(Some(invalid.clone()));
+            assert_eq!(a.value_type, "Date", "{invalid}");
+            assert_eq!((a.unit, a.enum_values), (None, None), "{invalid}");
+            assert!(
+                matches!(
+                    issues.as_slice(),
+                    [DomainIssue::PrimitiveTypeRejected { candidate_ref, .. }]
+                        if candidate_ref.as_str() == START_DATE_ATTRIBUTE
+                ),
+                "{invalid}: {issues:?}"
+            );
+        }
+    }
+
+    /// An absent or null primitive type is exactly the concept-name behaviour.
+    #[test]
+    fn domain_attribute_absent_primitive_type_unchanged() {
+        for primitive_type in [None, Some(Value::Null)] {
+            let (a, issues) = typed_attribute(primitive_type);
+            assert_eq!(a.value_type, "Date");
+            assert_eq!((a.unit, a.precision, a.enum_values), (None, None, None));
+            assert!(issues.is_empty(), "{issues:?}");
+        }
+        // The schema admits an omitted or null primitive type and rejects malformed shapes.
+        let s = schema();
+        let with = |p: Value| {
+            let mut v = full_output();
+            v["attributes"][0]["primitive_type"] = p;
+            v
+        };
+        assert!(s.is_valid(&with(Value::Null)));
+        assert!(s.is_valid(&with(primitive("Decimal", json!(2), &[], json!("eur")))));
+        assert!(!s.is_valid(&with(primitive("Money", Value::Null, &[], Value::Null))));
+        assert!(!s.is_valid(&with(primitive("date", Value::Null, &[], Value::Null))));
+        assert!(!s.is_valid(&with(json!("Date"))));
+        let mut extra = primitive("Date", Value::Null, &[], Value::Null);
+        extra["precision"] = json!(2);
+        assert!(!s.is_valid(&with(extra)));
+        let mut missing = primitive("Date", Value::Null, &[], Value::Null);
+        missing.as_object_mut().unwrap().remove("unit");
+        assert!(!s.is_valid(&with(missing)));
     }
 
     #[test]

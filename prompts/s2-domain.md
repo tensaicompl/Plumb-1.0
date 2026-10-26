@@ -29,7 +29,8 @@ The fields are:
 - entities: concept_ref and its grounding;
 - attributes: concept_ref and grounding, owner_concept_ref and
   owner_grounding, value_type as `{"concept_ref", "grounding"}` and
-  nullable as `{"value": true|false, "grounding"}`;
+  nullable as `{"value": true|false, "grounding"}`, and primitive_type
+  as `{"type", "scale", "enum_values", "unit"}` or null;
 - relationships: concept_ref and grounding, from_concept_ref and
   from_grounding, to_concept_ref and to_grounding, cardinality_from and
   cardinality_to.
@@ -49,8 +50,30 @@ cardinality_to the multiplicity at the to endpoint. Ground each returned
 cardinality. Use null when an endpoint cardinality is not stated.
 Do not guess missing cardinality.
 
-Do not infer aggregate roots, units, precision, enumeration values,
-data classification, states, transitions or invariants.
+Give every returned Attribute a primitive_type: the expression type its
+values have, judged from what the Requirements say the field holds.
+type is exactly one of String, Int, Bool, Date, DateTime, Decimal, Enum:
+- Date for calendar dates and DateTime for instants with a time of day;
+- Decimal for money, rates, percentages and other fractional amounts,
+  with scale the number of decimal places (an integer from 0 to 28; use
+  2 for money and percentages unless the Requirements state otherwise);
+- Int for counts and other whole numbers;
+- Bool for yes/no, true/false and flag fields;
+- Enum for a closed list of categories the Requirements enumerate, with
+  enum_values listing every member as a symbol (letters, digits and
+  underscores, starting with a letter or underscore, such as
+  `pending_approval`); never invent members the Requirements do not name;
+- String for free text, names, codes and identifiers.
+scale is null unless type is Decimal. enum_values is `[]` unless type is
+Enum. unit is null unless type is Int or Decimal and the Requirements
+state a unit; write it as a lower-case symbol of letters, digits and
+underscores, such as `day`, `month`, `hour` or `eur`. Use null for
+primitive_type only when the field's kind of value cannot be judged from
+the Requirements. Plumb validates primitive_type deterministically and
+ignores a malformed one.
+
+Do not infer aggregate roots, data classification,
+states, transitions or invariants.
 
 ## Output shape
 
@@ -71,7 +94,26 @@ Return exactly one JSON object `{"version": 1, "entities": [...],
       "owner_concept_ref": "concept:leave-request",
       "owner_grounding": {"requirement_ref": "req:HR-002", "start": 4, "end": 17},
       "value_type": {"concept_ref": "concept:date", "grounding": {"requirement_ref": "req:HR-002", "start": 37, "end": 41} },
-      "nullable": {"value": false, "grounding": {"requirement_ref": "req:HR-002", "start": 9, "end": 19} }
+      "nullable": {"value": false, "grounding": {"requirement_ref": "req:HR-002", "start": 9, "end": 19} },
+      "primitive_type": {"type": "Date", "scale": null, "enum_values": [], "unit": null}
+    },
+    {
+      "concept_ref": "concept:leave-balance",
+      "grounding": {"requirement_ref": "req:HR-003", "start": 4, "end": 17},
+      "owner_concept_ref": "concept:employee",
+      "owner_grounding": {"requirement_ref": "req:HR-003", "start": 21, "end": 29},
+      "value_type": {"concept_ref": "concept:days", "grounding": {"requirement_ref": "req:HR-003", "start": 40, "end": 44} },
+      "nullable": {"value": false, "grounding": {"requirement_ref": "req:HR-003", "start": 30, "end": 39} },
+      "primitive_type": {"type": "Decimal", "scale": 2, "enum_values": [], "unit": "day"}
+    },
+    {
+      "concept_ref": "concept:leave-status",
+      "grounding": {"requirement_ref": "req:HR-004", "start": 4, "end": 16},
+      "owner_concept_ref": "concept:leave-request",
+      "owner_grounding": {"requirement_ref": "req:HR-004", "start": 20, "end": 33},
+      "value_type": {"concept_ref": "concept:status", "grounding": {"requirement_ref": "req:HR-004", "start": 10, "end": 16} },
+      "nullable": {"value": false, "grounding": {"requirement_ref": "req:HR-004", "start": 34, "end": 44} },
+      "primitive_type": {"type": "Enum", "scale": null, "enum_values": ["pending", "approved", "rejected"], "unit": null}
     }
   ],
   "relationships": [
