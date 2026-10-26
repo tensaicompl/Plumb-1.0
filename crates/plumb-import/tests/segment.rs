@@ -710,60 +710,46 @@ mod segment_contract {
         evaluate_segmentation(&request, &fragments, Some(&artifact), &audit()).unwrap_err()
     }
 
+    /// The unassigned ranges a schema-valid inference left uncovered, as filled candidates.
+    fn filled_gaps(segments: Vec<Value>) -> Vec<(String, u64, u64)> {
+        let fragments = fixed_fragments();
+        let request = request_for(&fragments);
+        let artifact = artifact(&request, output(segments));
+        assert!(compiled_schema().is_valid(artifact.validated_output.as_value()));
+        let result =
+            evaluate_segmentation(&request, &fragments, Some(&artifact), &audit()).unwrap();
+        assert_eq!(result.mode, SegmentationMode::Inference);
+        assert_partition(&result, &fragments);
+        result
+            .candidates
+            .iter()
+            .filter(|c| c.flags == vec![SegmentFlag::UnassignedText])
+            .inspect(|c| assert_eq!(c.classification, SegmentClassification::NonRequirement))
+            .map(|c| (c.fragment_ref.to_string(), c.start, c.end))
+            .collect()
+    }
+
+    /// Any-domain run: bytes a schema-valid inference leaves uncovered become non_requirement
+    /// candidates flagged unassigned_text (as the fallback leaves unselected text), never an
+    /// E_INTAKE_UNCOVERED import failure.
     #[test]
-    fn segment_schema_valid_gap_is_intake_uncovered() {
-        let error = inference_error(vec![
-            segment(A, 0, 10, "requirement_candidate"),
-            segment(A, 20, 31, "requirement_candidate"),
-            segment(B, 0, 24, "requirement_candidate"),
-        ]);
-        assert_eq!(error.code(), Some("E_INTAKE_UNCOVERED"));
+    fn segment_schema_valid_gap_is_filled_as_unassigned_text() {
         assert_eq!(E_INTAKE_UNCOVERED, "E_INTAKE_UNCOVERED");
-        let SegmentationError::IntakeUncovered { gaps } = error else {
-            panic!("expected IntakeUncovered");
-        };
         assert_eq!(
-            gaps,
-            vec![
-                SegmentGap {
-                    fragment_ref: id(A),
-                    start: 10,
-                    end: 20
-                },
-                SegmentGap {
-                    fragment_ref: id(A),
-                    start: 31,
-                    end: 53
-                },
-            ]
+            filled_gaps(vec![
+                segment(A, 0, 10, "requirement_candidate"),
+                segment(A, 20, 31, "requirement_candidate"),
+                segment(B, 0, 24, "requirement_candidate"),
+            ]),
+            vec![(A.to_owned(), 10, 20), (A.to_owned(), 31, 53)]
         );
     }
 
     #[test]
-    fn segment_gap_reports_uncovered_fragments_sorted() {
-        let error = inference_error(vec![segment(A, 5, 53, "non_requirement")]);
-        let SegmentationError::IntakeUncovered { gaps } = error else {
-            panic!("expected IntakeUncovered");
-        };
-        assert_eq!(
-            gaps,
-            vec![
-                SegmentGap {
-                    fragment_ref: id(A),
-                    start: 0,
-                    end: 5
-                },
-                SegmentGap {
-                    fragment_ref: id(B),
-                    start: 0,
-                    end: 24
-                },
-            ]
-        );
-        assert!(matches!(
-            inference_error(vec![]),
-            SegmentationError::IntakeUncovered { gaps } if gaps.len() == 2
-        ));
+    fn segment_gap_fills_uncovered_fragments_sorted() {
+        let mut gaps = filled_gaps(vec![segment(A, 5, 53, "non_requirement")]);
+        gaps.sort();
+        assert_eq!(gaps, vec![(A.to_owned(), 0, 5), (B.to_owned(), 0, 24)]);
     }
 
     #[test]
@@ -829,14 +815,12 @@ mod segment_contract {
             &request,
             output(vec![segment(A, 0, 26, "requirement_candidate")]),
         );
-        assert!(matches!(
-            evaluate_segmentation(&request, &fragments, Some(&chars), &audit()),
-            Err(SegmentationError::IntakeUncovered { gaps }) if gaps == vec![SegmentGap {
-                fragment_ref: id(A),
-                start: 26,
-                end: 32,
-            }]
-        ));
+        // The bytes after a character-count end are left over and filled as unassigned text.
+        let filled = evaluate_segmentation(&request, &fragments, Some(&chars), &audit()).unwrap();
+        assert!(filled
+            .candidates
+            .iter()
+            .any(|c| (c.start, c.end) == (26, 32) && c.flags == vec![SegmentFlag::UnassignedText]));
         let whole = artifact(
             &request,
             output(vec![

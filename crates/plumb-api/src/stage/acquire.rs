@@ -43,7 +43,7 @@ fn bounded_text(text: &str) -> String {
 
 /// 502-class recipe failure `E_INFERENCE_FAILED` with the bounded typed detail of a failed
 /// acquisition of `request` (Fable #253): the provider or bundle error class, the request ID
-/// and task kind, the HTTP status and provider request ID of a remote error, the sorted
+/// and task kind, the HTTP status, provider request ID and message of a remote error, the sorted
 /// schema-validation errors of a schema-invalid answer and, when stored, `response_ref`, the
 /// InferenceResponse artifact of the rejected raw answer.
 fn inference_failed<E: std::fmt::Debug>(
@@ -59,11 +59,18 @@ fn inference_failed<E: std::fmt::Debug>(
     });
     match provider_error {
         Some(ProviderError::Remote {
-            status, request_id, ..
+            status,
+            request_id,
+            message,
+            ..
         }) => {
             details["http_status"] = json!(status);
             if let Some(id) = request_id {
                 details["provider_request_id"] = json!(bounded_text(id));
+            }
+            // The provider's own reason (bounded), so a refused request can be diagnosed.
+            if let Some(message) = message {
+                details["provider_message"] = json!(bounded_text(message));
             }
         }
         Some(ProviderError::SchemaInvalidOutput { errors }) => {

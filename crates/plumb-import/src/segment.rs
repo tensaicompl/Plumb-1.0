@@ -516,6 +516,45 @@ fn validate_partition(
     }
 }
 
+/// Covers each byte range of a known fragment that no model segment covers with a
+/// `non_requirement` candidate flagged `unassigned_text`, exactly as the fallback leaves text it
+/// does not select (goal-approach deviation, any-domain run: an unclassified stretch never fails
+/// the import). Overlapping or invalid model segments are left for [`validate_partition`].
+fn fill_gaps(
+    context: &SegmentationContext,
+    candidates: &mut Vec<SegmentCandidate>,
+) -> Result<(), SegmentationError> {
+    candidates.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
+    let mut filled = Vec::new();
+    for fragment in &context.fragments {
+        let mut covered = 0u64;
+        let len = fragment.text.len() as u64;
+        let mut ranges: Vec<(u64, u64)> = candidates
+            .iter()
+            .filter(|c| c.fragment_ref == fragment.fragment_ref)
+            .map(|c| (c.start, c.end))
+            .collect();
+        ranges.push((len, len));
+        for (start, end) in ranges {
+            if start > covered
+                && fragment.text.is_char_boundary(covered as usize)
+                && fragment.text.is_char_boundary(start as usize)
+            {
+                filled.push(SegmentCandidate::new(
+                    fragment.fragment_ref.clone(),
+                    covered,
+                    start,
+                    SegmentClassification::NonRequirement,
+                    vec![SegmentFlag::UnassignedText],
+                )?);
+            }
+            covered = covered.max(end);
+        }
+    }
+    candidates.extend(filled);
+    Ok(())
+}
+
 fn gap(fragment_ref: &Id, start: u64, end: u64) -> SegmentGap {
     SegmentGap {
         fragment_ref: fragment_ref.clone(),
@@ -681,6 +720,7 @@ pub fn evaluate_segmentation(
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            fill_gaps(context, &mut candidates)?;
             validate_partition(context, &mut candidates)?;
             Ok(SegmentationResult {
                 candidates,
