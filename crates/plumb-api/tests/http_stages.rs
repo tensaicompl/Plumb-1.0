@@ -830,9 +830,7 @@ mod http_stages {
         // Missing required configuration.
         for (stage, missing) in [
             ("lint", json!(["gates.f1"])),
-            ("calc", json!(["calculation_scope"])),
             ("flows", json!(["operation_scope", "process_scope"])),
-            ("scenarios", json!(["scenario_derivation"])),
             ("run", json!(["gates.f4"])),
         ] {
             let r = post(
@@ -4336,10 +4334,11 @@ mod http_stages {
         for (recipe, missing) in [
             ("extract", json!([])),
             ("lint", json!(["gates.f1"])),
-            ("directory", json!(["directory"])),
-            ("calc", json!(["calculation_scope"])),
+            // Inferred or derived from the graph when not configured (any-domain run).
+            ("directory", json!([])),
+            ("calc", json!([])),
             ("flows", json!(["operation_scope", "process_scope"])),
-            ("scenarios", json!(["scenario_derivation"])),
+            ("scenarios", json!([])),
             ("run", json!(["gates.f4"])),
             ("tags", json!([])),
         ] {
@@ -4539,15 +4538,17 @@ mod http_stages {
     /// pipeline reports it awaiting review.
     #[tokio::test]
     async fn directory_runs_as_a_stage_recipe_and_persists_pending_proposals() {
-        // Absent configuration is the typed missing-configuration conflict.
+        // An absent directory is inferred instead (any-domain run): it is never missing.
         let app = app(data_graph(&[]));
-        let r = run_stage(&app, "directory", Value::Null).await;
-        assert_eq!(
-            (r.status, r.code().as_str()),
-            (StatusCode::CONFLICT, "E_STAGE_CONFIG_MISSING")
-        );
-        assert_eq!(r.json()["details"]["missing"], json!(["directory"]));
-        assert_eq!(r.json()["details"]["recipe"], "directory");
+        let body = get(&app, "/api/pipeline").await.json();
+        let directory = body["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["recipe"] == "directory")
+            .unwrap()
+            .clone();
+        assert_eq!(directory["missing_config"], json!([]));
 
         let app = app_with(
             data_graph(&[]),

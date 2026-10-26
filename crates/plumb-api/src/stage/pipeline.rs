@@ -128,15 +128,16 @@ impl ApiState {
             .collect();
         // The pending proposals each job produced.
         let produced = |record: &StageRecipeJobRecord| -> Result<BTreeSet<Occurrence>, ApiError> {
-            let occurrences = if record.recipe == Recipe::Directory.as_str() {
-                self.directory_proposals(record)?
-            } else {
-                links
-                    .iter()
-                    .filter(|l| l.recipe_job_id == record.recipe_job_id)
-                    .map(|l| (l.proposal_id.clone(), l.base_revision_id.clone()))
-                    .collect()
-            };
+            // A configured directory records its proposals on its step; an inferred one links
+            // them like every child.
+            let mut occurrences: Vec<Occurrence> = links
+                .iter()
+                .filter(|l| l.recipe_job_id == record.recipe_job_id)
+                .map(|l| (l.proposal_id.clone(), l.base_revision_id.clone()))
+                .collect();
+            if record.recipe == Recipe::Directory.as_str() {
+                occurrences.extend(self.directory_proposals(record)?);
+            }
             Ok(occurrences
                 .into_iter()
                 .filter(|o| pending.contains(o))

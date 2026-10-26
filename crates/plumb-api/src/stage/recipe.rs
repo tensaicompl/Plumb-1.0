@@ -10,7 +10,6 @@ use serde_json::{json, Value};
 
 use crate::error::{echo, ApiError};
 use crate::openapi::StageName;
-use crate::runtime::ProviderMode;
 use crate::selector::Selections;
 use crate::stage::scenario_execution::runnable;
 use crate::state::{A03Runtime, A04Runtime};
@@ -38,6 +37,9 @@ pub enum Phase {
     Verification,
     /// The configured directory (B2): pending proposals only, no child.
     Directory,
+    /// The inferred directory (any-domain run): the directory drafted from the Accepted
+    /// requirements when none is configured, as a compiler child.
+    DirectoryDraft,
 }
 
 impl Phase {
@@ -59,6 +61,7 @@ impl Phase {
             Phase::Execute => "execute",
             Phase::Verification => "verification",
             Phase::Directory => "directory",
+            Phase::DirectoryDraft => "directory_draft",
         }
     }
 
@@ -75,7 +78,8 @@ impl Phase {
             | Phase::Analyse
             | Phase::Flows
             | Phase::Tags
-            | Phase::Directory => StageId::S2,
+            | Phase::Directory
+            | Phase::DirectoryDraft => StageId::S2,
             Phase::F4 | Phase::Scenarios | Phase::Execute | Phase::Verification => StageId::S4,
         }
     }
@@ -192,6 +196,15 @@ impl Recipe {
         }
     }
 
+    /// Whether the recipe has an inference phase (and therefore binds the provider) under
+    /// `a04`: the directory infers only when none is configured.
+    pub(crate) fn uses_inference_with(self, a04: &A04Runtime) -> bool {
+        match self {
+            Recipe::Directory => a04.directory.is_none(),
+            _ => self.uses_inference(),
+        }
+    }
+
     /// Whether the recipe has an inference phase (and therefore binds the provider).
     pub fn uses_inference(self) -> bool {
         matches!(
@@ -211,7 +224,6 @@ impl Recipe {
         let mut missing = Vec::new();
         match self {
             Recipe::Lint if a04.gates.f1.is_none() => missing.push("gates.f1"),
-            Recipe::Calc if a04.calculation_scope.is_none() => missing.push("calculation_scope"),
             Recipe::Flows => {
                 if a04.operation_scope.is_none() {
                     missing.push("operation_scope");
@@ -220,10 +232,6 @@ impl Recipe {
                     missing.push("process_scope");
                 }
             }
-            Recipe::Scenarios if a04.scenario_derivation.is_none() => {
-                missing.push("scenario_derivation")
-            }
-            Recipe::Directory if a04.directory.is_none() => missing.push("directory"),
             Recipe::Run => {
                 if a04.verification_applicability.is_none() {
                     missing.push("verification_applicability");
@@ -258,6 +266,12 @@ impl Recipe {
             }),
             Recipe::Extract | Recipe::Rules | Recipe::Tags => json!({}),
             // The directory production is bound to its draft and the runtime calendars.
+            // The inferred directory also draws on the question routing (its stakeholders).
+            Recipe::Directory if a04.directory.is_none() => json!({
+                "directory": Value::Null,
+                "calendars": v(&a04.calendars)?,
+                "question_routing": v(&a04.question_routing)?,
+            }),
             Recipe::Directory => json!({
                 "directory": v(&a04.directory)?,
                 "calendars": v(&a04.calendars)?,
@@ -335,11 +349,12 @@ fn v<T: Serialize>(value: &T) -> Result<Value, ApiError> {
 pub(crate) fn provider_projection(
     recipe: Recipe,
     a03: &A03Runtime,
-    mode: &ProviderMode,
+    a04: &A04Runtime,
 ) -> Result<Value, ApiError> {
-    if !recipe.uses_inference() {
+    if !recipe.uses_inference_with(a04) {
         return Ok(Value::Null);
     }
+    let mode = &a04.provider_mode;
     Ok(json!({
         "mode": mode.as_str(),
         "policy": serde_json::to_value(&a03.provider_policy)
@@ -358,7 +373,7 @@ pub(crate) fn recipe_config(
     Ok(json!({
         "version": RECIPE_VERSION,
         "recipe": recipe.as_str(),
-        "provider": provider_projection(recipe, a03, &a04.provider_mode)?,
+        "provider": provider_projection(recipe, a03, a04)?,
         "stage_actor_ref": a04.stage_actor_ref,
         "inputs": recipe.inputs(a03, a04, graph)?,
     }))

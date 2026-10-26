@@ -14,15 +14,17 @@ use plumb_functional::{
     analyze_authorization, analyze_calculations, analyze_data_classification, analyze_domain,
     analyze_lifecycle, analyze_operations, analyze_processes, analyze_requirement_duplicates,
     analyze_scenarios, analyze_vocabulary, build_calculation_request, build_data_class_request,
-    build_domain_request, build_ears_request, build_lifecycle_request, build_operation_request,
-    build_process_request, build_requirement_classification_request, build_scenario_request,
-    build_vocabulary_request, compile_requirement_candidates, compile_verification_obligations,
-    derive_scenarios, evaluate_ears_normalization, propose_scenario_run_updates,
-    AuthorizationAudit, DataClassInference, DomainAudit, DomainInference, EarsInference,
-    LifecycleAudit, LifecycleInference, OperationAudit, OperationInference, ProcessAudit,
-    ProcessInference, RequirementClassificationInference, RequirementCompilationAudit,
-    ScenarioAudit, ScenarioError, ScenarioInference, ScenarioRequest, VerificationAudit,
-    VocabularyAudit, VocabularyInference,
+    build_directory_draft_request, build_domain_request, build_ears_request,
+    build_lifecycle_request, build_operation_request, build_process_request,
+    build_requirement_classification_request, build_scenario_request, build_vocabulary_request,
+    compile_requirement_candidates, compile_verification_obligations, derive_scenarios,
+    draft_directory, evaluate_ears_normalization, produce_directory, propose_scenario_run_updates,
+    AuthorizationAudit, DataClassInference, DirectoryAudit, DirectoryCalendarBinding,
+    DirectoryDisposition, DirectoryDraftSeed, DirectoryDraftStakeholder, DomainAudit,
+    DomainInference, EarsInference, LifecycleAudit, LifecycleInference, OperationAudit,
+    OperationInference, ProcessAudit, ProcessInference, RequirementClassificationInference,
+    RequirementCompilationAudit, ScenarioAudit, ScenarioError, ScenarioInference, ScenarioRequest,
+    VerificationAudit, VocabularyAudit, VocabularyInference,
 };
 use plumb_import::{
     build_segmentation_request, evaluate_segmentation, FallbackReason, SegmentCandidate,
@@ -163,6 +165,10 @@ impl<'a> PhaseStage<'a> {
                 "vocabulary_policy": to_value(&a04.vocabulary_policy)?,
                 "duplicate_policy": to_value(&a04.duplicate_policy)?,
             }),
+            Phase::DirectoryDraft => json!({
+                "calendars": to_value(&a04.calendars)?,
+                "question_routing": to_value(&a04.question_routing)?,
+            }),
             Phase::Calc => {
                 selections.record("calculation_scope", a04.calculation_scope.as_ref());
                 json!({ "calculation_scope": to_value(&a04.calculation_scope_for(graph)?)? })
@@ -241,6 +247,35 @@ impl<'a> PhaseStage<'a> {
             .map_err(|e| plan_failed(phase, e))
     }
 
+    /// The configuration-supplied part of the inferred directory: every runtime calendar and
+    /// every routing stakeholder (its first role as the stakeholder kind, `business` without
+    /// one).
+    fn directory_seed(&self) -> DirectoryDraftSeed {
+        DirectoryDraftSeed {
+            calendar_refs: self
+                .a04
+                .calendars
+                .iter()
+                .map(|c| c.calendar_ref.clone())
+                .collect(),
+            stakeholders: self
+                .a04
+                .question_routing
+                .iter()
+                .flat_map(|routing| &routing.stakeholders)
+                .map(|s| DirectoryDraftStakeholder {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    stakeholder_kind: s
+                        .roles
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "business".into()),
+                })
+                .collect(),
+        }
+    }
+
     /// PLAN: the phase's inference requests with their exact material.
     pub(crate) fn plan_phase(&self, graph: &Graph) -> Result<StagePlan, ApiError> {
         let phase = self.phase;
@@ -248,6 +283,16 @@ impl<'a> PhaseStage<'a> {
         let m = |r: Result<plumb_inference::InferenceRequestMaterial, String>| r;
         let mut planned = Vec::new();
         match phase {
+            Phase::DirectoryDraft => {
+                let r =
+                    build_directory_draft_request(graph, self.policy()).map_err(|e| fail(&e))?;
+                planned.push(Self::planned(
+                    phase,
+                    &r.request,
+                    m(r.inference_material().map_err(|e| e.to_string())),
+                    InferenceAbsencePolicy::Fallback,
+                )?);
+            }
             Phase::Segmentation => {
                 let r = build_segmentation_request(&self.fragments(graph), self.policy())
                     .map_err(|e| fail(&e))?;
@@ -410,6 +455,41 @@ impl<'a> PhaseStage<'a> {
             }
         };
         match phase {
+            Phase::DirectoryDraft => {
+                let r =
+                    build_directory_draft_request(graph, self.policy()).map_err(|e| fail(&e))?;
+                // Without inference only the configuration-supplied elements are drafted.
+                let artifact = if artifacts.is_declared_absent(&r.request.id) {
+                    None
+                } else {
+                    Some(inference_of(artifacts, &r.request).map_err(|e| fail(&e))?.0)
+                };
+                let seed = self.directory_seed();
+                let drafted =
+                    draft_directory(graph, &r, artifact.as_ref(), &seed).map_err(|e| fail(&e))?;
+                report("directory", "issue", to_json(&drafted.issues));
+                let bindings: Vec<DirectoryCalendarBinding> = self
+                    .a04
+                    .calendars
+                    .iter()
+                    .map(|c| DirectoryCalendarBinding {
+                        calendar_ref: c.calendar_ref.clone(),
+                        weekend: c.weekend.clone(),
+                        coverage: c.coverage.clone(),
+                    })
+                    .collect();
+                let audit = DirectoryAudit {
+                    created_by: actor,
+                    created_at: at,
+                };
+                let produced = produce_directory(graph, &drafted.draft, &bindings, &audit)
+                    .map_err(|e| fail(&e))?;
+                for outcome in produced.outcomes {
+                    if let DirectoryDisposition::Proposed { proposal } = outcome.disposition {
+                        proposals.push(*proposal);
+                    }
+                }
+            }
             Phase::Segmentation => {
                 let fragments = self.fragments(graph);
                 let r: SegmentationRequest =

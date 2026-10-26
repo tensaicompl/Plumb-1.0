@@ -222,12 +222,7 @@ pub fn default_invariant_bindings(
         {
             continue;
         }
-        let symbol: String = attribute
-            .name
-            .to_lowercase()
-            .chars()
-            .map(|c| if c == ' ' || c == '-' { '_' } else { c })
-            .collect();
+        let symbol = default_symbol(&attribute.name);
         if Symbol::new(&symbol).is_ok() {
             by_symbol.entry(symbol).or_default().push(&candidate.id);
         }
@@ -250,6 +245,51 @@ pub fn default_invariant_bindings(
     }
     bindings.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
     Some(bindings)
+}
+
+/// The derived default calculation inputs of a project with no configured calculation scope
+/// (goal-approach deviation, any-domain run: the Attributes a project has are unknown before its
+/// stages run): every Accepted Attribute with an expression type as a root binding whose symbol
+/// is its name lower-cased with spaces and hyphens as underscores. A symbol two Attributes
+/// share, a reserved root (`reserved_roots`) and a name that is not a PlumbExpr symbol bind
+/// nothing. Sorted by symbol; a pure function of the graph.
+pub fn default_root_attribute_bindings(
+    graph: &Graph,
+    reserved_roots: &[&str],
+) -> Vec<ExpressionScopeBinding> {
+    let mut by_symbol: BTreeMap<String, Vec<&Id>> = BTreeMap::new();
+    for candidate in graph.nodes().values() {
+        let NodePayload::Attribute(attribute) = &candidate.payload else {
+            continue;
+        };
+        if !is_accepted(candidate) || attribute_expression_type(candidate).is_err() {
+            continue;
+        }
+        let symbol = default_symbol(&attribute.name);
+        if Symbol::new(&symbol).is_ok() && !reserved_roots.contains(&symbol.as_str()) {
+            by_symbol.entry(symbol).or_default().push(&candidate.id);
+        }
+    }
+    by_symbol
+        .into_iter()
+        .filter_map(|(symbol, attributes)| match attributes.as_slice() {
+            [attribute] => Some(ExpressionScopeBinding {
+                node_ref: (*attribute).clone(),
+                symbol,
+                exposure: ExpressionBindingExposure::Root,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An Attribute name as a default binding symbol: lower-cased, spaces and hyphens as
+/// underscores.
+fn default_symbol(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c == ' ' || c == '-' { '_' } else { c })
+        .collect()
 }
 
 /// Validates explicit bindings against the graph and builds their TypeEnv. Root bindings named

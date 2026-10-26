@@ -1033,7 +1033,7 @@ mod ears_contract {
                 Value::Null,
                 find(
                     s,
-                    "an application whose address is outside the\n  requested zone",
+                    "an application whose address is outside the requested zone",
                 ),
                 find(s, "reject"),
             )

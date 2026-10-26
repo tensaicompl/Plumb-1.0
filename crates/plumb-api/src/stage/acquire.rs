@@ -356,10 +356,11 @@ mod tests {
         "operation_analysis",
         "process_analysis",
     ];
-    const FALLBACK: [&str; 3] = [
+    const FALLBACK: [&str; 4] = [
         "requirement_segmentation",
         "scenario_values",
         "data_classification",
+        "directory_draft",
     ];
 
     fn listing() -> PlannedArtifact {

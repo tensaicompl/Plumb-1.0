@@ -223,11 +223,32 @@ impl Drop for InFlightTurn<'_> {
 /// The configured stage values resolved against one graph (422 `E_STAGE_CONFIG_UNRESOLVED`
 /// when a selector cannot be resolved). An explicit value is returned unchanged.
 impl A04Runtime {
+    /// The configured calculation scope, or, when none is configured, the scope derived from
+    /// the graph (goal-approach deviation, any-domain run): every Accepted typed Attribute as a
+    /// root input and every Accepted Calendar.
     pub(crate) fn calculation_scope_for(
         &self,
         graph: &Graph,
     ) -> Result<Option<CalculationScope>, ApiError> {
-        resolve_field("calculation_scope", self.calculation_scope.as_ref(), graph)
+        if self.calculation_scope.is_some() {
+            return resolve_field("calculation_scope", self.calculation_scope.as_ref(), graph);
+        }
+        let mut calendar_refs: Vec<_> = graph
+            .nodes()
+            .values()
+            .filter(|n| {
+                n.status == ElementStatus::Accepted && matches!(n.payload, NodePayload::Calendar(_))
+            })
+            .map(|n| n.id.clone())
+            .collect();
+        calendar_refs.sort();
+        Ok(Some(CalculationScope {
+            bindings: plumb_validation::expression_scope::default_root_attribute_bindings(
+                graph,
+                &[plumb_validation::calculation_analysis::CALCULATION_CALENDAR_SYMBOL],
+            ),
+            calendar_refs,
+        }))
     }
 
     pub(crate) fn operation_scope_for(
@@ -255,15 +276,44 @@ impl A04Runtime {
         )
     }
 
+    /// The configured scenario derivation, or, when none is configured, the inputs derived
+    /// from the graph (goal-approach deviation, any-domain run): every Accepted DecisionTable
+    /// with its persisted spec, and no boundaries.
     pub(crate) fn scenario_derivation_for(
         &self,
         graph: &Graph,
     ) -> Result<Option<ScenarioDerivationInputs>, ApiError> {
-        resolve_field(
-            "scenario_derivation",
-            self.scenario_derivation.as_ref(),
-            graph,
-        )
+        if self.scenario_derivation.is_some() {
+            return resolve_field(
+                "scenario_derivation",
+                self.scenario_derivation.as_ref(),
+                graph,
+            );
+        }
+        let mut decision_tables = Vec::new();
+        for node in graph.nodes().values() {
+            let NodePayload::DecisionTable(table) = &node.payload else {
+                continue;
+            };
+            if node.status != ElementStatus::Accepted {
+                continue;
+            }
+            let spec = plumb_functional::decode_decision_table(table).map_err(|e| {
+                ApiError::conflict(
+                    "E_DECISION_TABLE_ENCODING_INVALID",
+                    "the persisted decision table encoding is malformed",
+                )
+                .with_details(json!({ "decision_table": node.id, "reason": e.to_string() }))
+            })?;
+            decision_tables.push(plumb_functional::ScenarioDecisionTableInput {
+                decision_table_ref: node.id.clone(),
+                spec,
+            });
+        }
+        Ok(Some(ScenarioDerivationInputs::new(
+            decision_tables,
+            Vec::new(),
+        )))
     }
 
     /// The verification applicability; a resolved source listed twice is rejected exactly as

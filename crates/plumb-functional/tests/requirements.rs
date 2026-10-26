@@ -910,6 +910,20 @@ mod requirements_contract {
     }
 
     #[test]
+    fn requirements_wrapped_statement_reads_as_one_line() {
+        let result = compile_one(
+            "The desk shall reject an application outside the\n  requested zone.",
+            json!("functional"),
+            json!("system"),
+        );
+        let found = requirements(&result);
+        assert_eq!(
+            found[0].1.statement,
+            "The desk shall reject an application outside the requested zone."
+        );
+    }
+
+    #[test]
     fn requirements_classifier_modality_fills_missing_or_unsupported_wording() {
         let classified = |text: &str, modality: Value| {
             let (graph, candidates) = setup(&[text]);

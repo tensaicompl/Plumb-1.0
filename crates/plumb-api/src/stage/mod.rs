@@ -344,7 +344,7 @@ impl Run<'_> {
         let head = self.require_head(&base)?;
         let a03 = state.runtime("stage_runtime")?;
         let a04 = state.stage_runtime("stage_runtime")?;
-        let provider = provider_projection(self.recipe, a03, &a04.provider_mode)?;
+        let provider = provider_projection(self.recipe, a03, a04)?;
         let config = child_config(
             self.recipe,
             phase,
@@ -1042,7 +1042,10 @@ fn execute(run: &mut Run<'_>) -> Result<(), StepEnd> {
         Recipe::Intake => run.gate_step(Phase::I0, GateId::I0)?,
         Recipe::Lint => run.gate_step(Phase::F1, GateId::F1)?,
         Recipe::Rules => run.rules_step(&targets)?,
-        Recipe::Directory => run.directory_step()?,
+        Recipe::Directory if a04.directory.is_some() => run.directory_step()?,
+        Recipe::Directory => {
+            run.child_step(stage(Phase::DirectoryDraft, Scope::Project, Vec::new(), at))?;
+        }
         Recipe::Extract => {
             let output = run.child_step(stage(
                 Phase::Segmentation,

@@ -523,14 +523,21 @@ fn source_prefix() -> &'static Regex {
     })
 }
 
-/// Trims outer ASCII whitespace and strips a complete source metadata prefix, or nothing.
+/// `text` with every run of ASCII whitespace as one space (a wrapped source line reads as one
+/// line; goal-approach deviation, any-domain run).
+fn single_spaced(text: &str) -> String {
+    text.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Trims outer ASCII whitespace and strips a complete source metadata prefix, or nothing. Each
+/// inner run of ASCII whitespace in the statement reads as one space.
 pub(crate) fn parse_statement(source: &str) -> ParsedStatement {
     let trimmed = source.trim_matches(is_ascii_space);
     let Some(captures) = source_prefix().captures(trimmed) else {
         return ParsedStatement {
             source_identifier: None,
             explicit_kind: None,
-            statement: trimmed.to_owned(),
+            statement: single_spaced(trimmed),
         };
     };
     let token = captures
@@ -542,7 +549,7 @@ pub(crate) fn parse_statement(source: &str) -> ParsedStatement {
     ParsedStatement {
         source_identifier: token,
         explicit_kind: kind,
-        statement: remainder.trim_matches(is_ascii_space).to_owned(),
+        statement: single_spaced(remainder),
     }
 }
 

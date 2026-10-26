@@ -43,6 +43,7 @@ pub mod calculation;
 pub mod data_class;
 pub mod decision_table;
 pub mod directory;
+pub mod directory_draft;
 pub mod domain;
 pub mod duplicates;
 pub mod ears;
@@ -123,6 +124,11 @@ pub use directory::{
     DirectoryDecisionTableDraft, DirectoryDisposition, DirectoryDraft, DirectoryElement,
     DirectoryError, DirectoryEventDisposition, DirectoryOutcome, DirectoryOutcomeSelectionDraft,
     DirectoryResult, DirectoryStateDisposition,
+};
+pub use directory_draft::{
+    build_directory_draft_request, draft_directory, DirectoryDraftError, DirectoryDraftIssue,
+    DirectoryDraftRequest, DirectoryDraftResult, DirectoryDraftSeed, DirectoryDraftStakeholder,
+    DIRECTORY_DRAFT_TASK_KIND,
 };
 pub use domain::{
     analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,

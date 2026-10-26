@@ -29,7 +29,7 @@ mod prompts {
     }
 
     /// Every prompt in prompts/ with the schema its consumer requests it with.
-    const PAIRS: [(&str, &str, &str); 12] = [
+    const PAIRS: [(&str, &str, &str); 13] = [
         pair!("s1-classify-requirement", "s1-requirement-classification"),
         pair!("s1-ears", "s1-ears"),
         pair!("s1-segment-requirements", "s1-segmentation"),
@@ -42,6 +42,7 @@ mod prompts {
         pair!("s2-process", "s2-process"),
         pair!("s4-scenario", "s4-scenario"),
         pair!("session-turn", "session-turn"),
+        pair!("s2-directory-draft", "s2-directory-draft"),
     ];
 
     fn compile(source: &str) -> JSONSchema {
