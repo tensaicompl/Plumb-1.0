@@ -1000,9 +1000,25 @@ impl ApiState {
         Ok(cache[base].graph.clone())
     }
 
-    /// The stage recipe of a stage-origin view (`flows`, ...); `None` for other origins.
+    /// The stage recipe of a stage-origin view (`flows`, ...), `directory` for a proposal a
+    /// directory job recorded on its step; `None` for other origins.
     fn stage_of(&self, view: &PendingProposalView) -> Result<Option<String>, ApiError> {
         let Some(job) = &view.recipe_job_id else {
+            let directory = crate::stage::recipe::Recipe::Directory.as_str();
+            for record in self
+                .with_stage_store(|store| store.recipe_jobs_in_creation_order())?
+                .map_err(|e| ApiError::store(&e, "stage_store"))?
+                .iter()
+                .filter(|r| r.recipe == directory)
+            {
+                if self
+                    .directory_proposals(record)?
+                    .iter()
+                    .any(|(id, _)| id.to_string() == view.proposal_id)
+                {
+                    return Ok(Some(directory.to_owned()));
+                }
+            }
             return Ok(None);
         };
         let corrupt = || ApiError::workflow_corrupt(&format!("recipe job {job}"));

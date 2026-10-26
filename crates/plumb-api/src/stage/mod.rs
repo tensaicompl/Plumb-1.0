@@ -19,6 +19,7 @@ use plumb_compiler::{
     Scope, StageJob, StageJobStatus,
 };
 use plumb_core::{to_canonical_json, CanonicalJson, GateId, Hash, HashKind, Id, Timestamp};
+use plumb_functional::{seed_directory, DirectoryDraftSeed, DirectoryDraftStakeholder};
 use plumb_store::{
     LoadedRevision, NewStageRecipeJob, NewStageStep, RevisionId, StageRecipeJobRecord, StageStatus,
     WorkflowInsert,
@@ -324,7 +325,37 @@ impl Run<'_> {
         self.set_status(StageStatus::Evaluating)?;
         let current = self.current.clone();
         let ordinal = self.step(Phase::Directory, &current.revision.id)?;
-        let elements = self.state.persist_directory(&current)?;
+        let a04 = self.state.stage_runtime("directory")?;
+        let elements = match &a04.directory {
+            Some(_) => self.state.persist_directory(&current)?,
+            // Inferred directory (any-domain run): this step proposes the configuration-supplied
+            // Calendars and Stakeholders; the drafted elements are the `directory_draft` child's.
+            None => {
+                let seed = DirectoryDraftSeed {
+                    calendar_refs: a04
+                        .calendars
+                        .iter()
+                        .map(|c| c.calendar_ref.clone())
+                        .collect(),
+                    stakeholders: a04
+                        .question_routing
+                        .iter()
+                        .flat_map(|routing| &routing.stakeholders)
+                        .map(|s| DirectoryDraftStakeholder {
+                            id: s.id.clone(),
+                            name: s.name.clone(),
+                            stakeholder_kind: s
+                                .roles
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "business".to_owned()),
+                        })
+                        .collect(),
+                };
+                let draft = seed_directory(&current.graph, &seed);
+                self.state.persist_directory_draft(&current, &draft)?
+            }
+        };
         let bytes = to_canonical_json(&json!({ "elements": elements }))
             .map_err(|e| ApiError::internal_cause("directory_projection", &e))?;
         let hash = put_projection(self.state, &bytes)?;
@@ -1042,9 +1073,18 @@ fn execute(run: &mut Run<'_>) -> Result<(), StepEnd> {
         Recipe::Intake => run.gate_step(Phase::I0, GateId::I0)?,
         Recipe::Lint => run.gate_step(Phase::F1, GateId::F1)?,
         Recipe::Rules => run.rules_step(&targets)?,
-        Recipe::Directory if a04.directory.is_some() => run.directory_step()?,
         Recipe::Directory => {
-            run.child_step(stage(Phase::DirectoryDraft, Scope::Project, Vec::new(), at))?;
+            // The inferred directory drafts from the Accepted requirements, when there are any,
+            // before the configuration-supplied elements are proposed on the revision the draft
+            // leaves (so they are never stale on arrival).
+            let accepted = base.graph.nodes().values().any(|n| {
+                n.status == plumb_psg::ElementStatus::Accepted
+                    && matches!(n.payload, plumb_psg::NodePayload::Requirement(_))
+            });
+            if a04.directory.is_none() && accepted {
+                run.child_step(stage(Phase::DirectoryDraft, Scope::Project, Vec::new(), at))?;
+            }
+            run.directory_step()?;
         }
         Recipe::Extract => {
             let output = run.child_step(stage(

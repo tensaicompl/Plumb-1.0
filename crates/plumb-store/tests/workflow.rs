@@ -385,11 +385,11 @@ mod workflow {
     // ------------------------------------------------------------------ schema v4
 
     #[test]
-    fn workflow_fresh_database_is_created_at_v7() {
+    fn workflow_fresh_database_is_created_at_v8() {
         let db = Db::new();
         drop(db.workflow());
         assert_eq!(db.version(), vec![STORE_SCHEMA_VERSION]);
-        assert_eq!(STORE_SCHEMA_VERSION, 7);
+        assert_eq!(STORE_SCHEMA_VERSION, 8);
         for t in [
             "workflow_proposals",
             "workflow_sessions",
@@ -896,12 +896,12 @@ mod workflow {
     fn workflow_unknown_versions_and_unversioned_tables_are_rejected() {
         let db = Db::new();
         drop(db.workflow());
-        db.exec("UPDATE schema_meta SET version = 8;");
+        db.exec("UPDATE schema_meta SET version = 9;");
         assert!(matches!(
             SqliteWorkflowStore::open(&db.path).unwrap_err(),
-            StoreError::UnsupportedStoreSchemaVersion { found: 8 }
+            StoreError::UnsupportedStoreSchemaVersion { found: 9 }
         ));
-        assert_eq!(db.version(), vec![8]);
+        assert_eq!(db.version(), vec![9]);
 
         let db = Db::new();
         db.exec("CREATE TABLE workflow_proposals (proposal_id TEXT PRIMARY KEY);");

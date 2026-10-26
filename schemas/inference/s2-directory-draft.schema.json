@@ -137,54 +137,37 @@
           },
           "inputs": {
             "type": "array",
-            "minItems": 1,
             "items": {
               "type": "object",
               "additionalProperties": false,
               "required": [
                 "name",
-                "ty"
+                "type",
+                "members",
+                "scale"
               ],
               "properties": {
                 "name": {
-                  "type": "string",
-                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                  "type": "string"
                 },
-                "ty": {
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "type"
-                      ],
-                      "properties": {
-                        "type": {
-                          "const": "bool"
-                        }
-                      }
-                    },
-                    {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "type",
-                        "members"
-                      ],
-                      "properties": {
-                        "type": {
-                          "const": "enum"
-                        },
-                        "members": {
-                          "type": "array",
-                          "minItems": 1,
-                          "items": {
-                            "type": "string",
-                            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-                          }
-                        }
-                      }
-                    }
+                "type": {
+                  "enum": [
+                    "bool",
+                    "enum",
+                    "int",
+                    "decimal"
+                  ]
+                },
+                "members": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "scale": {
+                  "type": [
+                    "integer",
+                    "null"
                   ]
                 }
               }
@@ -192,84 +175,37 @@
           },
           "outputs": {
             "type": "array",
-            "minItems": 1,
             "items": {
               "type": "object",
               "additionalProperties": false,
               "required": [
                 "name",
-                "ty"
+                "type",
+                "members",
+                "scale"
               ],
               "properties": {
                 "name": {
-                  "type": "string",
-                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                  "type": "string"
                 },
-                "ty": {
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "type"
-                      ],
-                      "properties": {
-                        "type": {
-                          "const": "bool"
-                        }
-                      }
-                    },
-                    {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "type",
-                        "members"
-                      ],
-                      "properties": {
-                        "type": {
-                          "const": "enum"
-                        },
-                        "members": {
-                          "type": "array",
-                          "minItems": 1,
-                          "items": {
-                            "type": "string",
-                            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-                          }
-                        }
-                      }
-                    },
-                    {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "type"
-                      ],
-                      "properties": {
-                        "type": {
-                          "const": "int"
-                        }
-                      }
-                    },
-                    {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "type",
-                        "scale"
-                      ],
-                      "properties": {
-                        "type": {
-                          "const": "decimal"
-                        },
-                        "scale": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 28
-                        }
-                      }
-                    }
+                "type": {
+                  "enum": [
+                    "bool",
+                    "enum",
+                    "int",
+                    "decimal"
+                  ]
+                },
+                "members": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "scale": {
+                  "type": [
+                    "integer",
+                    "null"
                   ]
                 }
               }
@@ -277,7 +213,6 @@
           },
           "rows": {
             "type": "array",
-            "minItems": 1,
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -289,130 +224,58 @@
                 "inputs": {
                   "type": "array",
                   "items": {
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "cell"
-                        ],
-                        "properties": {
-                          "cell": {
-                            "const": "any"
-                          }
-                        }
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "cell",
+                      "value",
+                      "members"
+                    ],
+                    "properties": {
+                      "cell": {
+                        "enum": [
+                          "any",
+                          "bool",
+                          "enum_set"
+                        ]
                       },
-                      {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "cell",
-                          "value"
-                        ],
-                        "properties": {
-                          "cell": {
-                            "const": "bool"
-                          },
-                          "value": {
-                            "type": "boolean"
-                          }
-                        }
+                      "value": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
                       },
-                      {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "cell",
-                          "members"
-                        ],
-                        "properties": {
-                          "cell": {
-                            "const": "enum_set"
-                          },
-                          "members": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                              "type": "string",
-                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-                            }
-                          }
+                      "members": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
                         }
                       }
-                    ]
+                    }
                   }
                 },
                 "outputs": {
                   "type": "array",
                   "items": {
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "cell",
-                          "value"
-                        ],
-                        "properties": {
-                          "cell": {
-                            "const": "bool"
-                          },
-                          "value": {
-                            "type": "boolean"
-                          }
-                        }
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "cell",
+                      "value"
+                    ],
+                    "properties": {
+                      "cell": {
+                        "enum": [
+                          "bool",
+                          "enum",
+                          "int",
+                          "decimal"
+                        ]
                       },
-                      {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "cell",
-                          "member"
-                        ],
-                        "properties": {
-                          "cell": {
-                            "const": "enum"
-                          },
-                          "member": {
-                            "type": "string",
-                            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-                          }
-                        }
-                      },
-                      {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "cell",
-                          "value"
-                        ],
-                        "properties": {
-                          "cell": {
-                            "const": "int"
-                          },
-                          "value": {
-                            "type": "integer"
-                          }
-                        }
-                      },
-                      {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "cell",
-                          "value"
-                        ],
-                        "properties": {
-                          "cell": {
-                            "const": "decimal"
-                          },
-                          "value": {
-                            "type": "string",
-                            "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
-                          }
-                        }
+                      "value": {
+                        "type": "string"
                       }
-                    ]
+                    }
                   }
                 }
               }

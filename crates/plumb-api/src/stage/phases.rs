@@ -20,11 +20,10 @@ use plumb_functional::{
     compile_requirement_candidates, compile_verification_obligations, derive_scenarios,
     draft_directory, evaluate_ears_normalization, produce_directory, propose_scenario_run_updates,
     AuthorizationAudit, DataClassInference, DirectoryAudit, DirectoryCalendarBinding,
-    DirectoryDisposition, DirectoryDraftSeed, DirectoryDraftStakeholder, DomainAudit,
-    DomainInference, EarsInference, LifecycleAudit, LifecycleInference, OperationAudit,
-    OperationInference, ProcessAudit, ProcessInference, RequirementClassificationInference,
-    RequirementCompilationAudit, ScenarioAudit, ScenarioError, ScenarioInference, ScenarioRequest,
-    VerificationAudit, VocabularyAudit, VocabularyInference,
+    DirectoryDisposition, DomainAudit, DomainInference, EarsInference, LifecycleAudit,
+    LifecycleInference, OperationAudit, OperationInference, ProcessAudit, ProcessInference,
+    RequirementClassificationInference, RequirementCompilationAudit, ScenarioAudit, ScenarioError,
+    ScenarioInference, ScenarioRequest, VerificationAudit, VocabularyAudit, VocabularyInference,
 };
 use plumb_import::{
     build_segmentation_request, evaluate_segmentation, FallbackReason, SegmentCandidate,
@@ -165,10 +164,7 @@ impl<'a> PhaseStage<'a> {
                 "vocabulary_policy": to_value(&a04.vocabulary_policy)?,
                 "duplicate_policy": to_value(&a04.duplicate_policy)?,
             }),
-            Phase::DirectoryDraft => json!({
-                "calendars": to_value(&a04.calendars)?,
-                "question_routing": to_value(&a04.question_routing)?,
-            }),
+            Phase::DirectoryDraft => json!({ "calendars": to_value(&a04.calendars)? }),
             Phase::Calc => {
                 selections.record("calculation_scope", a04.calculation_scope.as_ref());
                 json!({ "calculation_scope": to_value(&a04.calculation_scope_for(graph)?)? })
@@ -245,35 +241,6 @@ impl<'a> PhaseStage<'a> {
         let material = material.map_err(|e| material_failed(phase, e))?;
         PlannedInferenceRequest::new(request.clone(), material, absence_policy)
             .map_err(|e| plan_failed(phase, e))
-    }
-
-    /// The configuration-supplied part of the inferred directory: every runtime calendar and
-    /// every routing stakeholder (its first role as the stakeholder kind, `business` without
-    /// one).
-    fn directory_seed(&self) -> DirectoryDraftSeed {
-        DirectoryDraftSeed {
-            calendar_refs: self
-                .a04
-                .calendars
-                .iter()
-                .map(|c| c.calendar_ref.clone())
-                .collect(),
-            stakeholders: self
-                .a04
-                .question_routing
-                .iter()
-                .flat_map(|routing| &routing.stakeholders)
-                .map(|s| DirectoryDraftStakeholder {
-                    id: s.id.clone(),
-                    name: s.name.clone(),
-                    stakeholder_kind: s
-                        .roles
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| "business".into()),
-                })
-                .collect(),
-        }
     }
 
     /// PLAN: the phase's inference requests with their exact material.
@@ -464,9 +431,8 @@ impl<'a> PhaseStage<'a> {
                 } else {
                     Some(inference_of(artifacts, &r.request).map_err(|e| fail(&e))?.0)
                 };
-                let seed = self.directory_seed();
                 let drafted =
-                    draft_directory(graph, &r, artifact.as_ref(), &seed).map_err(|e| fail(&e))?;
+                    draft_directory(graph, &r, artifact.as_ref()).map_err(|e| fail(&e))?;
                 report("directory", "issue", to_json(&drafted.issues));
                 let bindings: Vec<DirectoryCalendarBinding> = self
                     .a04

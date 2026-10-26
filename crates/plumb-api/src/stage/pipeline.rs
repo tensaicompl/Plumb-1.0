@@ -78,7 +78,7 @@ fn status_of(
 impl ApiState {
     /// The pending proposal occurrences a directory job persisted: the elements recorded by its
     /// `directory` step, on the job's base revision.
-    fn directory_proposals(
+    pub(crate) fn directory_proposals(
         &self,
         record: &StageRecipeJobRecord,
     ) -> Result<Vec<Occurrence>, ApiError> {

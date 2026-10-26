@@ -2047,12 +2047,23 @@ mod services {
             &self,
             loaded: &LoadedRevision,
         ) -> Result<Vec<DirectoryElementView>, ApiError> {
-            self.runtime("workflow_store")?;
             let a04 = self.stage_runtime("directory")?;
             let draft = a04
                 .directory
                 .as_ref()
                 .ok_or_else(|| config_missing("directory"))?;
+            self.persist_directory_draft(loaded, draft)
+        }
+
+        /// [`Self::persist_directory`] for an explicit draft (the configured directory, or the
+        /// configuration-supplied part of an inferred one).
+        pub fn persist_directory_draft(
+            &self,
+            loaded: &LoadedRevision,
+            draft: &plumb_functional::DirectoryDraft,
+        ) -> Result<Vec<DirectoryElementView>, ApiError> {
+            self.runtime("workflow_store")?;
+            let a04 = self.stage_runtime("directory")?;
             let created_at = self.now();
             let bindings: Vec<DirectoryCalendarBinding> = a04
                 .calendars

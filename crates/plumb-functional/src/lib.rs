@@ -126,9 +126,9 @@ pub use directory::{
     DirectoryResult, DirectoryStateDisposition,
 };
 pub use directory_draft::{
-    build_directory_draft_request, draft_directory, DirectoryDraftError, DirectoryDraftIssue,
-    DirectoryDraftRequest, DirectoryDraftResult, DirectoryDraftSeed, DirectoryDraftStakeholder,
-    DIRECTORY_DRAFT_TASK_KIND,
+    build_directory_draft_request, draft_directory, seed_directory, DirectoryDraftError,
+    DirectoryDraftIssue, DirectoryDraftRequest, DirectoryDraftResult, DirectoryDraftSeed,
+    DirectoryDraftStakeholder, DIRECTORY_DRAFT_TASK_KIND,
 };
 pub use domain::{
     analyze_domain, build_domain_request, DomainAnalysisResult, DomainAudit, DomainCardinality,

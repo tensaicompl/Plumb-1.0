@@ -18,9 +18,10 @@ use crate::StoreError;
 /// version 5 (H0.11, architecture §33.12) admits the terminal proposal state `abandoned`;
 /// version 6 (H0.3, architecture §33.3) adds the recipe-job `attempt`, `owner_id` and
 /// `lease_expires_at` columns and the `stage_recipe_job_attempts` history; version 7 (UI
-/// pipeline) admits the `directory` recipe and phase.
-/// Valid v1, v2, v3, v4, v5 and v6 stores are migrated transactionally.
-pub const STORE_SCHEMA_VERSION: i64 = 7;
+/// pipeline) admits the `directory` recipe and phase; version 8 (any-domain run) admits the
+/// `directory_draft` phase of the inferred directory.
+/// Valid v1, v2, v3, v4, v5, v6 and v7 stores are migrated transactionally.
+pub const STORE_SCHEMA_VERSION: i64 = 8;
 
 /// The earlier store schema versions that are migrated.
 const STORE_SCHEMA_VERSION_V1: i64 = 1;
@@ -29,6 +30,7 @@ const STORE_SCHEMA_VERSION_V3: i64 = 3;
 const STORE_SCHEMA_VERSION_V4: i64 = 4;
 const STORE_SCHEMA_VERSION_V5: i64 = 5;
 const STORE_SCHEMA_VERSION_V6: i64 = 6;
+const STORE_SCHEMA_VERSION_V7: i64 = 7;
 
 /// Version of the persisted PSG interpretation/validation contract a snapshot was written under
 /// (owned by `plumb-psg`, next to the serialized forms it versions).
@@ -337,7 +339,8 @@ CREATE TABLE {name} (
     )
 }
 
-/// The v7 `stage_recipe_job_steps` definition under `name` (v7 admits the `directory` phase).
+/// The current `stage_recipe_job_steps` definition under `name` (v7 admits the `directory`
+/// phase, v8 the `directory_draft` phase).
 fn create_stage_recipe_job_steps(name: &str) -> String {
     format!(
         "
@@ -346,7 +349,7 @@ CREATE TABLE {name} (
   ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
   phase TEXT NOT NULL CHECK (phase IN ('i0', 'f1', 'f2', 'f4', 'segmentation', 'classification',
     'consolidate', 'calc', 'rules', 'analyse', 'flows', 'scenarios', 'tags', 'execute',
-    'verification', 'directory')),
+    'verification', 'directory', 'directory_draft')),
   compiler_stage TEXT NOT NULL CHECK (compiler_stage IN ('S0', 'S1', 'S2', 'S3', 'S4')),
   input_revision_id TEXT NOT NULL,
   stage_job_id TEXT NULL,
@@ -444,9 +447,9 @@ fn create_stage_tables(tx: &Transaction<'_>) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The v6 -> v7 rebuild (UI pipeline): only the recipe and phase CHECKs change to admit
-/// `directory`, so every recipe job and step row is copied unchanged, column for column and in
-/// insertion order. The attempt history, stage links and gate reports keep referencing the
+/// The v6 -> v8 and v7 -> v8 rebuild (UI pipeline, any-domain run): only the recipe and phase
+/// CHECKs change to admit `directory` and `directory_draft`, so every recipe job and step row is
+/// copied unchanged, column for column and in insertion order. The attempt history, stage links and gate reports keep referencing the
 /// tables by name.
 fn migrate_directory_recipe(tx: &Transaction<'_>) -> Result<(), StoreError> {
     tx.execute_batch(&create_stage_recipe_jobs("stage_recipe_jobs_v7"))?;
@@ -568,18 +571,20 @@ pub(crate) fn durability_of(conn: &Connection) -> Result<Durability, StoreError>
 
 enum SchemaState {
     Fresh,
-    /// A valid version-1 store that must be migrated to version 7.
+    /// A valid version-1 store that must be migrated to version 8.
     V1,
-    /// A valid version-2 store that must be migrated to version 7.
+    /// A valid version-2 store that must be migrated to version 8.
     V2,
-    /// A valid version-3 store that must be migrated to version 7.
+    /// A valid version-3 store that must be migrated to version 8.
     V3,
-    /// A valid version-4 store that must be migrated to version 7.
+    /// A valid version-4 store that must be migrated to version 8.
     V4,
-    /// A valid version-5 store that must be migrated to version 7.
+    /// A valid version-5 store that must be migrated to version 8.
     V5,
-    /// A valid version-6 store that must be migrated to version 7.
+    /// A valid version-6 store that must be migrated to version 8.
     V6,
+    /// A valid version-7 store that must be migrated to version 8.
+    V7,
     Current,
 }
 
@@ -634,6 +639,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
         STORE_SCHEMA_VERSION_V4 => SchemaState::V4,
         STORE_SCHEMA_VERSION_V5 => SchemaState::V5,
         STORE_SCHEMA_VERSION_V6 => SchemaState::V6,
+        STORE_SCHEMA_VERSION_V7 => SchemaState::V7,
         found => return Err(StoreError::UnsupportedStoreSchemaVersion { found }),
     };
     let missing = missing_tables(&tables, &REQUIRED_V1_TABLES);
@@ -647,6 +653,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
     | SchemaState::V4
     | SchemaState::V5
     | SchemaState::V6
+    | SchemaState::V7
     | SchemaState::Current = state
     {
         let missing = missing_tables(&tables, &WORKFLOW_TABLES);
@@ -660,6 +667,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
     | SchemaState::V4
     | SchemaState::V5
     | SchemaState::V6
+    | SchemaState::V7
     | SchemaState::Current = state
     {
         let missing = missing_tables(&tables, &STAGE_TABLES);
@@ -669,7 +677,7 @@ fn classify(conn: &Connection) -> Result<SchemaState, StoreError> {
             });
         }
     }
-    if let SchemaState::V6 | SchemaState::Current = state {
+    if let SchemaState::V6 | SchemaState::V7 | SchemaState::Current = state {
         let missing = missing_tables(&tables, &ATTEMPT_TABLES);
         if !missing.is_empty() {
             return Err(StoreError::CorruptStoreSchema {
@@ -831,6 +839,11 @@ fn migrate(conn: &mut Connection, mode: StoreOpenMode) -> Result<(), StoreError>
             migrate_directory_recipe(&tx)?;
             require_foreign_keys(&tx)?;
             set_version(&tx, STORE_SCHEMA_VERSION_V6)?;
+        }
+        SchemaState::V7 => {
+            migrate_directory_recipe(&tx)?;
+            require_foreign_keys(&tx)?;
+            set_version(&tx, STORE_SCHEMA_VERSION_V7)?;
         }
         SchemaState::Current => {}
     }

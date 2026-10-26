@@ -20,9 +20,9 @@ mod directory_draft_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:8543152d553dc4b01e701def0fd9e54b94f1a551eb6e49b7cc7ba346e532259b";
+        "sha256:fe2c284b1031505fc3431d157a30c033d7f9bd132bcccddd9841e07096a03ebc";
     const SCHEMA_HASH: &str =
-        "sha256:d14b953078182fad866b33fb317e35ffab43d9d3492be7a53b4b043bc07b1be1";
+        "sha256:13f0260262ed0a6f374de5f0306be19f69516a2b4c933ed98ce6e050ed618e49";
     const CONTEXT_HASH: &str =
         "sha256:133de487f005a4814a42f38f69e522f6e768d3944dc94e67f3f81ac8a3f3718a";
 
@@ -143,17 +143,17 @@ mod directory_draft_contract {
             "name": name,
             "grounding_refs": [APPLY],
             "hit_policy": "UNIQUE",
-            "inputs": [{"name": "vehicle_kind", "ty": {"type": "enum", "members": ["Electric", "Combustion"]}}],
-            "outputs": [{"name": "discount_percent", "ty": {"type": "decimal", "scale": 2}}],
+            "inputs": [{"name": "vehicle_kind", "type": "enum", "members": ["Electric", "Combustion"], "scale": null}],
+            "outputs": [{"name": "discount_percent", "type": "decimal", "members": [], "scale": 2}],
             "rows": rows
         })
     }
 
     fn discount_rows() -> Value {
         json!([
-            {"inputs": [{"cell": "enum_set", "members": ["Electric"]}],
+            {"inputs": [{"cell": "enum_set", "value": null, "members": ["Electric"]}],
              "outputs": [{"cell": "decimal", "value": "50.00"}]},
-            {"inputs": [{"cell": "enum_set", "members": ["Combustion"]}],
+            {"inputs": [{"cell": "enum_set", "value": null, "members": ["Combustion"]}],
              "outputs": [{"cell": "decimal", "value": "0.00"}]}
         ])
     }
@@ -161,7 +161,7 @@ mod directory_draft_contract {
     fn draft(graph: &Graph, out: Option<Value>) -> DirectoryDraftResult {
         let request = build_directory_draft_request(graph, policy()).unwrap();
         let artifact = out.map(|o| artifact(&request.request, o));
-        draft_directory(graph, &request, artifact.as_ref(), &seed()).unwrap()
+        draft_directory(graph, &request, artifact.as_ref()).unwrap()
     }
 
     fn reasons(result: &DirectoryDraftResult) -> Vec<(String, String)> {
@@ -261,11 +261,7 @@ mod directory_draft_contract {
             ["rule:householdpermitlimit"]
         );
         assert_eq!(d.decision_tables[0].id, id("dt:emissiondiscount"));
-        // Configuration-supplied: one Calendar per runtime calendar, the routing stakeholder.
-        assert_eq!(d.calendars[0].id, id("calendar:city"));
-        assert_eq!(d.calendars[0].calendar_ref, id("cal:city"));
-        assert_eq!(d.calendars[0].time_zone, "UTC");
-        assert_eq!(d.stakeholders[0].id, id("stakeholder:owner"));
+        assert!(d.calendars.is_empty() && d.stakeholders.is_empty());
         let produced = produce_directory(
             &g,
             d,
@@ -281,7 +277,7 @@ mod directory_draft_contract {
         )
         .unwrap();
         let types: BTreeSet<NodeType> = produced.outcomes.iter().map(|o| o.node_type).collect();
-        assert_eq!(produced.outcomes.len(), 7);
+        assert_eq!(produced.outcomes.len(), 5);
         assert!(types.contains(&NodeType::DecisionTable));
         for outcome in produced.outcomes {
             assert!(matches!(
@@ -302,12 +298,12 @@ mod directory_draft_contract {
             ElementStatus::Accepted,
         )]);
         let overlapping = json!([
-            {"inputs": [{"cell": "any"}], "outputs": [{"cell": "decimal", "value": "50.00"}]},
-            {"inputs": [{"cell": "enum_set", "members": ["Combustion"]}],
+            {"inputs": [{"cell": "any", "value": null, "members": []}], "outputs": [{"cell": "decimal", "value": "50.00"}]},
+            {"inputs": [{"cell": "enum_set", "value": null, "members": ["Combustion"]}],
              "outputs": [{"cell": "decimal", "value": "0.00"}]}
         ]);
         let unknown_member = json!([
-            {"inputs": [{"cell": "enum_set", "members": ["Diesel"]}],
+            {"inputs": [{"cell": "enum_set", "value": null, "members": ["Diesel"]}],
              "outputs": [{"cell": "decimal", "value": "0.00"}]}
         ]);
         let result = draft(
@@ -355,12 +351,35 @@ mod directory_draft_contract {
     }
 
     #[test]
-    fn directory_draft_without_inference_drafts_only_the_configured_elements() {
+    fn directory_draft_without_inference_drafts_nothing() {
         let result = draft(&graph(Vec::new()), None);
         assert!(result.issues.is_empty());
         assert!(result.draft.actors.is_empty() && result.draft.decision_tables.is_empty());
-        assert_eq!(result.draft.calendars.len(), 1);
-        assert_eq!(result.draft.stakeholders.len(), 1);
+    }
+
+    #[test]
+    fn seed_directory_proposes_the_configured_calendars_and_stakeholders() {
+        let d = seed_directory(&graph(Vec::new()), &seed());
+        assert_eq!(d.calendars[0].id, id("calendar:city"));
+        assert_eq!(d.calendars[0].calendar_ref, id("cal:city"));
+        assert_eq!(d.calendars[0].time_zone, "UTC");
+        assert_eq!(d.stakeholders[0].id, id("stakeholder:owner"));
+        assert!(d.actors.is_empty() && d.rules.is_empty());
+        let produced = produce_directory(
+            &graph(Vec::new()),
+            &d,
+            &[DirectoryCalendarBinding {
+                calendar_ref: id("cal:city"),
+                weekend: vec!["saturday".to_owned(), "sunday".to_owned()],
+                coverage: None,
+            }],
+            &DirectoryAudit {
+                created_by: id("agent:compiler"),
+                created_at: ts(AT),
+            },
+        )
+        .unwrap();
+        assert_eq!(produced.outcomes.len(), 2);
     }
 
     #[test]
@@ -369,7 +388,7 @@ mod directory_draft_contract {
         let request = build_directory_draft_request(&g, policy()).unwrap();
         let bad = artifact(&request.request, json!({"version": 1, "actors": []}));
         assert!(matches!(
-            draft_directory(&g, &request, Some(&bad), &seed()),
+            draft_directory(&g, &request, Some(&bad)),
             Err(DirectoryDraftError::SchemaInvalid { .. })
         ));
         let other = build_directory_draft_request(
@@ -386,12 +405,12 @@ mod directory_draft_contract {
             output(json!([]), json!([]), json!([]), json!([])),
         );
         assert!(matches!(
-            draft_directory(&g, &request, Some(&misbound), &seed()),
+            draft_directory(&g, &request, Some(&misbound)),
             Err(DirectoryDraftError::InvalidInferenceArtifact { .. })
         ));
         // A request built on another graph is never evaluated against this one.
         assert!(matches!(
-            draft_directory(&g, &other, None, &seed()),
+            draft_directory(&g, &other, None),
             Err(DirectoryDraftError::InvalidInput { .. })
         ));
     }
@@ -409,8 +428,8 @@ mod directory_draft_contract {
             }),
             ElementStatus::Accepted,
         )]);
-        let result = draft(&g, None);
-        assert!(result.draft.stakeholders.is_empty());
-        assert_eq!(result.draft.calendars.len(), 1);
+        let d = seed_directory(&g, &seed());
+        assert!(d.stakeholders.is_empty());
+        assert_eq!(d.calendars.len(), 1);
     }
 }

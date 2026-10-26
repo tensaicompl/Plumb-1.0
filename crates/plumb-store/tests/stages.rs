@@ -364,7 +364,7 @@ mod stages {
     fn stages_attempts_are_durable_and_leased() {
         let db = Db::new();
         let mut store = db.store();
-        assert_eq!(STORE_SCHEMA_VERSION, 7);
+        assert_eq!(STORE_SCHEMA_VERSION, 8);
         let mut job = db.recipe("1");
         job.lease = Some(lease("own:aaaaaaaaaaaaaaaa", T2));
         let queued = inserted(store.insert_recipe_job(&job).unwrap());
@@ -1117,27 +1117,37 @@ mod stages {
         }
     }
 
-    /// The pipeline (UI backend gap): store schema v7 admits the `directory` recipe and phase,
-    /// so the configured directory runs as an ordinary recipe job.
+    /// The pipeline (UI backend gap): the store admits the `directory` recipe and phase (v7) and
+    /// the `directory_draft` phase (v8), so the directory runs as an ordinary recipe job.
     #[test]
-    fn stages_v7_admits_the_directory_recipe_and_phase() {
-        assert_eq!(STORE_SCHEMA_VERSION, 7);
+    fn stages_v8_admits_the_directory_recipe_and_phases() {
+        assert_eq!(STORE_SCHEMA_VERSION, 8);
         let db = Db::new();
         let mut store = db.store();
         let job = inserted(store.insert_recipe_job(&directory_job(&db, "7")).unwrap());
         assert_eq!(job.recipe, "directory");
         store.insert_step(&directory_step(&db, "7")).unwrap();
         assert_eq!(store.steps(&generic("7")).unwrap()[0].phase, "directory");
+        let mut draft = directory_step(&db, "7");
+        draft.ordinal = 1;
+        draft.phase = "directory_draft".to_owned();
+        store.insert_step(&draft).unwrap();
         // Anything else is still refused.
         let mut other = directory_job(&db, "8");
         other.recipe = "nope".to_owned();
         assert!(store.insert_recipe_job(&other).is_err());
     }
 
-    /// A v6 store (no `directory` recipe or phase) migrates in place to v7: every recipe job and
-    /// step keeps its row, the schema equals a fresh one and `directory` is admitted.
+    /// A v6 store (no `directory` recipe or phase) and a v7 store (no `directory_draft` phase)
+    /// migrate in place to v8: every recipe job and step keeps its row, the schema equals a
+    /// fresh one and both are admitted.
     #[test]
-    fn stages_v6_store_migrates_to_v7_admitting_directory() {
+    fn stages_v6_and_v7_stores_migrate_to_v8_admitting_directory() {
+        migrates_to_current(6, &[", 'directory_draft'", ", 'directory'"]);
+        migrates_to_current(7, &[", 'directory_draft'"]);
+    }
+
+    fn migrates_to_current(from: i64, strip: &[&str]) {
         let fresh = Db::new();
         let db = Db::new();
         let mut store = db.store();
@@ -1179,19 +1189,27 @@ mod stages {
                 .unwrap();
             rows
         };
-        // Rebuild the exact v6 shape: the recipe and phase CHECKs without `directory`.
+        // Rebuild the exact earlier shape: the recipe and phase CHECKs without what it lacked.
         let conn = db.raw();
         let ddl = |table: &str| -> String {
-            conn.query_row(
-                "SELECT sql FROM sqlite_master WHERE name = ?1",
-                [table],
-                |r| r.get::<_, String>(0),
-            )
-            .unwrap()
-            .replace(", 'directory'", "")
+            let mut sql = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = ?1",
+                    [table],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap();
+            for name in strip {
+                sql = sql.replace(name, "");
+            }
+            sql
         };
         let (jobs, steps) = (ddl("stage_recipe_jobs"), ddl("stage_recipe_job_steps"));
-        assert!(!jobs.contains("directory") && !steps.contains("directory"));
+        assert!(!steps.contains("directory_draft"));
+        assert_eq!(
+            from == 6,
+            !jobs.contains("directory") && !steps.contains("directory")
+        );
         conn.execute_batch(&format!(
             "PRAGMA foreign_keys = OFF; \
              CREATE TABLE jobs_v6 AS SELECT * FROM stage_recipe_jobs; \
@@ -1201,13 +1219,15 @@ mod stages {
              INSERT INTO stage_recipe_jobs SELECT * FROM jobs_v6; \
              INSERT INTO stage_recipe_job_steps SELECT * FROM steps_v6; \
              DROP TABLE jobs_v6; DROP TABLE steps_v6; \
-             UPDATE schema_meta SET version = 6;"
+             UPDATE schema_meta SET version = {from};"
         ))
         .unwrap();
         drop(conn);
-        assert!(db.exec_err(
-            "UPDATE stage_recipe_jobs SET recipe = 'directory' WHERE recipe_job_id LIKE 'sha256:1%'"
-        ));
+        if from == 6 {
+            assert!(db.exec_err(
+                "UPDATE stage_recipe_jobs SET recipe = 'directory' WHERE recipe_job_id LIKE 'sha256:1%'"
+            ));
+        }
         let jobs_before = rows(
             &db,
             "SELECT recipe_job_id || recipe || status || attempt FROM stage_recipe_jobs \
@@ -1243,6 +1263,10 @@ mod stages {
         assert_eq!(schema(&db), schema(&fresh));
         inserted(store.insert_recipe_job(&directory_job(&db, "7")).unwrap());
         store.insert_step(&directory_step(&db, "7")).unwrap();
+        let mut draft = directory_step(&db, "7");
+        draft.ordinal = 1;
+        draft.phase = "directory_draft".to_owned();
+        store.insert_step(&draft).unwrap();
     }
 
     /// The pipeline's "latest job of a recipe": recipe jobs in insertion order, independent of

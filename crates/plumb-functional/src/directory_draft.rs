@@ -295,28 +295,38 @@ struct TableOutput {
     rows: Vec<RowOutput>,
 }
 
+/// A column as the flat schema carries it (one object shape keeps the API grammar small).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ColumnOutput {
     name: String,
-    ty: DecisionType,
+    #[serde(rename = "type")]
+    ty: String,
+    members: Vec<String>,
+    scale: Option<u32>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RowOutput {
-    inputs: Vec<DecisionInputCell>,
-    outputs: Vec<OutputCell>,
+    inputs: Vec<InputCellOutput>,
+    outputs: Vec<OutputCellOutput>,
 }
 
-/// An output cell as the schema carries it: decimals are strings.
 #[derive(Deserialize)]
-#[serde(tag = "cell", rename_all = "snake_case", deny_unknown_fields)]
-enum OutputCell {
-    Bool { value: bool },
-    Enum { member: String },
-    Int { value: i64 },
-    Decimal { value: String },
+#[serde(deny_unknown_fields)]
+struct InputCellOutput {
+    cell: String,
+    value: Option<bool>,
+    members: Vec<String>,
+}
+
+/// An output cell: the value is text in the column's type.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutputCellOutput {
+    cell: String,
+    value: String,
 }
 
 fn compile_schema() -> Result<JSONSchema, DirectoryDraftError> {
@@ -444,60 +454,101 @@ impl Drafting<'_> {
     }
 }
 
-fn decimal_cell(value: &str) -> Option<DecisionOutputCell> {
-    value
-        .parse::<Decimal>()
-        .ok()
-        .map(|value| DecisionOutputCell::Decimal { value })
+/// Enum members are a set: sorted and unique in the typed spec.
+fn member_set(members: &[String]) -> Vec<String> {
+    let set: BTreeSet<&String> = members.iter().collect();
+    set.into_iter().cloned().collect()
+}
+
+/// The typed column of a flat one: bool and enum inputs, any of the four output types.
+fn typed_column(c: &ColumnOutput, input: bool) -> Result<DecisionColumn, String> {
+    let ty = match (c.ty.as_str(), input) {
+        ("bool", _) => DecisionType::Bool,
+        ("enum", _) if !c.members.is_empty() => DecisionType::Enum {
+            members: member_set(&c.members),
+        },
+        ("int", false) => DecisionType::Int,
+        ("decimal", false) => DecisionType::Decimal {
+            scale: c
+                .scale
+                .filter(|s| *s <= 28)
+                .ok_or_else(|| format!("column {} has no decimal scale", c.name))?,
+        },
+        _ => return Err(format!("column {} has an unsupported type", c.name)),
+    };
+    Ok(DecisionColumn {
+        name: c.name.clone(),
+        ty,
+        domain: None,
+    })
+}
+
+fn input_cell(cell: &InputCellOutput) -> Result<DecisionInputCell, String> {
+    match (cell.cell.as_str(), cell.value) {
+        ("any", _) => Ok(DecisionInputCell::Any),
+        ("bool", Some(value)) => Ok(DecisionInputCell::Bool { value }),
+        ("enum_set", _) => Ok(DecisionInputCell::EnumSet {
+            members: member_set(&cell.members),
+        }),
+        _ => Err(format!("input cell {} has no value", cell.cell)),
+    }
+}
+
+fn output_cell(cell: &OutputCellOutput) -> Result<DecisionOutputCell, String> {
+    let text = cell.value.trim();
+    let bad = || format!("{text} is not a {} value", cell.cell);
+    Ok(match cell.cell.as_str() {
+        "bool" => DecisionOutputCell::Bool {
+            value: text.parse().map_err(|_| bad())?,
+        },
+        "enum" => DecisionOutputCell::Enum {
+            member: text.to_owned(),
+        },
+        "int" => DecisionOutputCell::Int {
+            value: text.parse().map_err(|_| bad())?,
+        },
+        "decimal" => DecisionOutputCell::Decimal {
+            value: text.parse::<Decimal>().map_err(|_| bad())?,
+        },
+        _ => return Err(bad()),
+    })
 }
 
 /// The typed spec of one drafted table, or why it is unusable.
 fn table_spec(table: &TableOutput) -> Result<DecisionTableSpec, String> {
-    // Enum members are a set: sorted and unique in the typed spec.
-    let members = |members: &[String]| {
-        let set: BTreeSet<&String> = members.iter().collect();
-        set.into_iter().cloned().collect::<Vec<_>>()
-    };
-    let column = |c: &ColumnOutput| DecisionColumn {
-        name: c.name.clone(),
-        ty: match &c.ty {
-            DecisionType::Enum { members: m } => DecisionType::Enum {
-                members: members(m),
-            },
-            ty => ty.clone(),
-        },
-        domain: None,
-    };
     let mut rows = Vec::with_capacity(table.rows.len());
     for (index, row) in table.rows.iter().enumerate() {
-        let mut outputs = Vec::with_capacity(row.outputs.len());
-        for cell in &row.outputs {
-            outputs.push(match cell {
-                OutputCell::Bool { value } => DecisionOutputCell::Bool { value: *value },
-                OutputCell::Enum { member } => DecisionOutputCell::Enum {
-                    member: member.clone(),
-                },
-                OutputCell::Int { value } => DecisionOutputCell::Int { value: *value },
-                OutputCell::Decimal { value } => decimal_cell(value)
-                    .ok_or_else(|| format!("row {index}: {value} is not a decimal"))?,
-            });
-        }
-        let inputs = row
-            .inputs
-            .iter()
-            .map(|cell| match cell {
-                DecisionInputCell::EnumSet { members: m } => DecisionInputCell::EnumSet {
-                    members: members(m),
-                },
-                cell => cell.clone(),
-            })
-            .collect();
-        rows.push(DecisionRow { inputs, outputs });
+        let at = |e: String| format!("row {index}: {e}");
+        rows.push(DecisionRow {
+            inputs: row
+                .inputs
+                .iter()
+                .map(input_cell)
+                .collect::<Result<_, _>>()
+                .map_err(at)?,
+            outputs: row
+                .outputs
+                .iter()
+                .map(output_cell)
+                .collect::<Result<_, _>>()
+                .map_err(at)?,
+        });
+    }
+    if table.inputs.is_empty() || table.outputs.is_empty() || rows.is_empty() {
+        return Err("a table needs input and output columns and rows".to_owned());
     }
     let spec = DecisionTableSpec {
         hit_policy: table.hit_policy.clone(),
-        inputs: table.inputs.iter().map(column).collect(),
-        outputs: table.outputs.iter().map(column).collect(),
+        inputs: table
+            .inputs
+            .iter()
+            .map(|c| typed_column(c, true))
+            .collect::<Result<_, _>>()?,
+        outputs: table
+            .outputs
+            .iter()
+            .map(|c| typed_column(c, false))
+            .collect::<Result<_, _>>()?,
         rows,
         default_output: None,
     };
@@ -512,43 +563,11 @@ fn table_spec(table: &TableOutput) -> Result<DecisionTableSpec, String> {
     Ok(spec)
 }
 
-/// Drafts the directory of `request`'s graph: the configuration-supplied Calendars and
-/// Stakeholders not yet in the graph, then, when `artifact` is supplied, the validated drafted
-/// Actors, BusinessRoles, Rules and DecisionTables. Issues are sorted.
-pub fn draft_directory(
-    graph: &Graph,
-    request: &DirectoryDraftRequest,
-    artifact: Option<&InferenceArtifact>,
-    seed: &DirectoryDraftSeed,
-) -> Result<DirectoryDraftResult, DirectoryDraftError> {
-    if directory_draft_context(graph)? != request.context {
-        return Err(invalid_input(
-            "graph does not match the directory-draft request context",
-        ));
-    }
-    let mut draft = DirectoryDraft {
-        stakeholders: Vec::new(),
-        actors: Vec::new(),
-        business_roles: Vec::new(),
-        calendars: Vec::new(),
-        rules: Vec::new(),
-        decision_tables: Vec::new(),
-        event_dispositions: Vec::new(),
-        state_dispositions: Vec::new(),
-        outcome_selections: Vec::new(),
-    };
-    let mut drafting = Drafting {
-        graph,
-        known: request
-            .context
-            .requirements
-            .iter()
-            .map(|r| &r.requirement_ref)
-            .collect(),
-        taken: BTreeSet::new(),
-        issues: Vec::new(),
-    };
-    // Configuration-supplied elements: unique IDs from the configuration itself.
+/// The configuration-supplied directory of `graph`: one Calendar per runtime calendar and one
+/// Stakeholder per routing stakeholder, each unless the graph already holds it. No inference.
+pub fn seed_directory(graph: &Graph, seed: &DirectoryDraftSeed) -> DirectoryDraft {
+    let mut draft = empty_draft();
+    let mut taken = BTreeSet::new();
     let calendar_covered: BTreeSet<&str> = graph
         .nodes()
         .values()
@@ -563,7 +582,7 @@ pub fn draft_directory(
         let Ok(id) = format!("calendar:{local}").parse::<Id>() else {
             continue;
         };
-        if calendar_covered.contains(id.as_str()) || !drafting.taken.insert(id.clone()) {
+        if calendar_covered.contains(id.as_str()) || !taken.insert(id.clone()) {
             continue;
         }
         draft.calendars.push(DirectoryCalendarDraft {
@@ -576,7 +595,7 @@ pub fn draft_directory(
         });
     }
     for stakeholder in &seed.stakeholders {
-        if graph.node(&stakeholder.id).is_some() || !drafting.taken.insert(stakeholder.id.clone()) {
+        if graph.node(&stakeholder.id).is_some() || !taken.insert(stakeholder.id.clone()) {
             continue;
         }
         draft.stakeholders.push(DirectoryElement {
@@ -591,6 +610,48 @@ pub fn draft_directory(
             grounding_refs: Vec::new(),
         });
     }
+    draft
+}
+
+fn empty_draft() -> DirectoryDraft {
+    DirectoryDraft {
+        stakeholders: Vec::new(),
+        actors: Vec::new(),
+        business_roles: Vec::new(),
+        calendars: Vec::new(),
+        rules: Vec::new(),
+        decision_tables: Vec::new(),
+        event_dispositions: Vec::new(),
+        state_dispositions: Vec::new(),
+        outcome_selections: Vec::new(),
+    }
+}
+
+/// Drafts the inferred directory of `request`'s graph: the validated Actors, BusinessRoles,
+/// Rules and DecisionTables of `artifact` (nothing without it). Issues are sorted. The
+/// configuration-supplied elements are [`seed_directory`]'s.
+pub fn draft_directory(
+    graph: &Graph,
+    request: &DirectoryDraftRequest,
+    artifact: Option<&InferenceArtifact>,
+) -> Result<DirectoryDraftResult, DirectoryDraftError> {
+    if directory_draft_context(graph)? != request.context {
+        return Err(invalid_input(
+            "graph does not match the directory-draft request context",
+        ));
+    }
+    let mut draft = empty_draft();
+    let mut drafting = Drafting {
+        graph,
+        known: request
+            .context
+            .requirements
+            .iter()
+            .map(|r| &r.requirement_ref)
+            .collect(),
+        taken: BTreeSet::new(),
+        issues: Vec::new(),
+    };
     if let Some(artifact) = artifact {
         let output = validated_output(request, artifact)?;
         let existing: BTreeSet<(String, String)> = request

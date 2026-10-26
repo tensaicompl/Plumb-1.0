@@ -113,8 +113,11 @@ function proposalOrigin(p: PendingProposal): { origin: InboxOrigin; label: strin
     case "session":
       return { origin: "assistant", label: t("inbox.origin.assistant") };
     case "intake":
-      return { origin: "steps", label: t("inbox.origin.intake") };
     case "stage": {
+      // A directory job's configuration-supplied elements are intake proposals of a step.
+      if (p.origin === "intake" && (p.stage ?? null) === null) {
+        return { origin: "steps", label: t("inbox.origin.intake") };
+      }
       const stage = asStage(p.stage);
       return { origin: "steps", label: stage === null ? t("inbox.origin.step") : tf("inbox.origin.stage", { step: stageLabel(stage) }) };
     }
@@ -131,7 +134,7 @@ function proposalItem(p: PendingProposal): InboxItem {
     typeLabel: type === "create" ? tf("inbox.type.create", { kind: elementKindLabel(p.element_kind) }) : t(TYPE_LABEL[type]),
     origin: origin.origin,
     originLabel: origin.label,
-    stage: p.origin === "stage" ? asStage(p.stage) : null,
+    stage: p.origin === "stage" || p.origin === "intake" ? asStage(p.stage) : null,
     createdAt: p.created_at,
     stale: p.stale,
     acceptable: !p.stale,

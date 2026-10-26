@@ -31,18 +31,18 @@ statements support it, at least one, each listed once.
   - name in UpperCamelCase;
   - hit_policy UNIQUE (exactly one row matches every input combination) or FIRST (the first
     matching row wins);
-  - inputs: one or more columns, each a name (a symbol: letters, digits and underscores, not
-    starting with a digit) and a ty of {"type": "bool"} or
-    {"type": "enum", "members": [...]} (members are symbols);
-  - outputs: one or more columns with a symbol name and a ty of {"type": "bool"},
-    {"type": "enum", "members": [...]}, {"type": "int"} or {"type": "decimal", "scale": N}
-    (N decimal places, 0 to 28);
+  - inputs: one or more columns. A column is {"name", "type", "members", "scale"}: name is a
+    symbol (letters, digits and underscores, not starting with a digit); an input column has
+    type bool or enum; members lists the categories of an enum column (symbols) and is empty
+    otherwise; scale is null.
+  - outputs: one or more columns of the same shape with type bool, enum, int or decimal; scale
+    is the number of decimal places (0 to 28) of a decimal column and null otherwise.
   - rows: one or more rows, each with one input cell per input column and one output cell per
-    output column, in column order. An input cell is {"cell": "any"},
-    {"cell": "bool", "value": true or false} or {"cell": "enum_set", "members": [...]}
-    (members of that column). An output cell is {"cell": "bool", "value": true or false},
-    {"cell": "enum", "member": ...}, {"cell": "int", "value": N} or
-    {"cell": "decimal", "value": "N.NN"} (a decimal string).
+    output column, in column order. An input cell is {"cell", "value", "members"}: cell any
+    (matches every value; value null, members empty), bool (value true or false, members
+    empty) or enum_set (value null, members the matching categories of that column). An output
+    cell is {"cell", "value"}: cell bool, enum, int or decimal like its column, and value the
+    text of the result ("true", a category, "3", "50.00").
   With hit_policy UNIQUE the rows must not overlap and should cover every input combination.
 
 Return an empty list for any family the requirements do not support. Do not output IDs:
@@ -79,27 +79,27 @@ invented, never copy them):
       "grounding_refs": ["req:0123456789abcdef"],
       "hit_policy": "UNIQUE",
       "inputs": [
-        {"name": "member_category", "ty": {"type": "enum", "members": ["Student", "Adult"] } },
-        {"name": "off_peak", "ty": {"type": "bool"} }
+        {"name": "member_category", "type": "enum", "members": ["Adult", "Student"], "scale": null},
+        {"name": "off_peak", "type": "bool", "members": [], "scale": null}
       ],
       "outputs": [
-        {"name": "discount_percent", "ty": {"type": "decimal", "scale": 2} },
-        {"name": "eligible", "ty": {"type": "bool"} },
-        {"name": "tier", "ty": {"type": "enum", "members": ["Basic", "Plus"] } },
-        {"name": "free_hours", "ty": {"type": "int"} }
+        {"name": "discount_percent", "type": "decimal", "members": [], "scale": 2},
+        {"name": "eligible", "type": "bool", "members": [], "scale": null},
+        {"name": "tier", "type": "enum", "members": ["Basic", "Plus"], "scale": null},
+        {"name": "free_hours", "type": "int", "members": [], "scale": null}
       ],
       "rows": [
         {
-          "inputs": [{"cell": "enum_set", "members": ["Student"]}, {"cell": "any"}],
-          "outputs": [{"cell": "decimal", "value": "50.00"}, {"cell": "bool", "value": true}, {"cell": "enum", "member": "Plus"}, {"cell": "int", "value": 2}]
+          "inputs": [{"cell": "enum_set", "value": null, "members": ["Student"]}, {"cell": "any", "value": null, "members": []}],
+          "outputs": [{"cell": "decimal", "value": "50.00"}, {"cell": "bool", "value": "true"}, {"cell": "enum", "value": "Plus"}, {"cell": "int", "value": "2"}]
         },
         {
-          "inputs": [{"cell": "enum_set", "members": ["Adult"]}, {"cell": "bool", "value": true}],
-          "outputs": [{"cell": "decimal", "value": "10.00"}, {"cell": "bool", "value": true}, {"cell": "enum", "member": "Basic"}, {"cell": "int", "value": 0}]
+          "inputs": [{"cell": "enum_set", "value": null, "members": ["Adult"]}, {"cell": "bool", "value": true, "members": []}],
+          "outputs": [{"cell": "decimal", "value": "10.00"}, {"cell": "bool", "value": "true"}, {"cell": "enum", "value": "Basic"}, {"cell": "int", "value": "0"}]
         },
         {
-          "inputs": [{"cell": "enum_set", "members": ["Adult"]}, {"cell": "bool", "value": false}],
-          "outputs": [{"cell": "decimal", "value": "0.00"}, {"cell": "bool", "value": false}, {"cell": "enum", "member": "Basic"}, {"cell": "int", "value": 0}]
+          "inputs": [{"cell": "enum_set", "value": null, "members": ["Adult"]}, {"cell": "bool", "value": false, "members": []}],
+          "outputs": [{"cell": "decimal", "value": "0.00"}, {"cell": "bool", "value": "false"}, {"cell": "enum", "value": "Basic"}, {"cell": "int", "value": "0"}]
         }
       ]
     }

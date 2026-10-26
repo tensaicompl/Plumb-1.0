@@ -1668,10 +1668,10 @@ mod cli {
             "{error}"
         );
         assert!(err.contains("the extract recipe ended failed"), "{err}");
-        // calc without its configuration is E_STAGE_CONFIG_MISSING.
-        let (code, _, err) = env.run(&["calc"]);
-        assert_eq!(code, 1);
-        assert!(err.contains("E_STAGE_CONFIG_MISSING"), "{err}");
+        // calc without a configured scope derives it from the graph (any-domain run), so it is
+        // never E_STAGE_CONFIG_MISSING.
+        let (_, _, err) = env.run(&["calc"]);
+        assert!(!err.contains("E_STAGE_CONFIG_MISSING"), "{err}");
     }
 
     /// H0.3 (§33.3): `retry <JOB_ID>` re-runs a Failed recipe job as its next attempt under the
