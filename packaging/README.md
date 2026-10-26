@@ -31,48 +31,33 @@ The example configuration describes the HR leave pilot: its actors, roles, calen
 expert-question routing. For another document, edit the `directory`, `calendars` and
 `question_routing` sections first.
 
-## 2. Import a document and run the stages
+## 2. Import a document and run the steps (in the browser)
 
-Leave `start.sh` running and use a second terminal window. `plumb.sh` runs one Plumb command
-for a project:
+On the **Overview**, drop your document (`.md`, `.txt` or `.docx`; try
+`examples/hr-leave-requirements.md`) and press **Run next step**. The Overview shows the nine
+steps in order and always offers the next one. Steps that need the AI are offered only when the
+API key is present.
+
+## 3. Review in the browser
+
+Steps never change the model on their own. Everything a step finds waits in the **Inbox**:
+accept, reject or answer each item, or use **Accept all from <step>** (keyboard: J/K to move,
+A to accept, R to reject). Expert questions are answered in the Inbox too. Then look at
+**Requirements**, **Model**, **Scenarios** and **Quality**; when every gate passes, the Overview
+offers **Export**.
+
+The same steps also run from a terminal, with `start.sh` still running in another window:
 
 ```bash
 ./plumb.sh ~/plumb-projects/hr-leave import examples/hr-leave-requirements.md
 ./plumb.sh ~/plumb-projects/hr-leave extract
-```
-
-Run the stages in this order. After each one, review and accept its proposals (step 3) before
-running the next.
-
-| Order | Command | What it does |
-|---|---|---|
-| 1 | `extract` | finds the requirements and classifies them |
-| 2 | `consolidate` | builds the glossary and suggests EARS rewordings |
-| 3 | `lint` | checks requirement quality (gate F1) |
-| 4 | `directory` | adds the configured actors, roles, calendar and rules |
-| 5 | `analyse` | entities, attributes, states and invariants (gate F2) |
-| 6 | `flows` | operations and events (run `analyse` and `flows` again once they are accepted) |
-| 7 | `calc`, `rules`, `scenarios`, `tags`, `run` | calculations, decision tables, test scenarios and their simulation (gate F4) |
-| 8 | `ask` | turns open ambiguities into expert questions |
-| 9 | `ready` | evaluates all gates |
-| 10 | `report --out <folder>` | writes the specification files |
-
-`./plumb.sh <folder> help` lists every command.
-
-## 3. Review in the browser
-
-Stages never change the model on their own. Everything a stage finds is a *proposal* you
-accept, reject or discard on the **Proposals** screen. Then review:
-- the requirements, glossary and model screens;
-- the questions, which you answer on the **Questions** screen;
-- the gates, which show whether the specification is complete.
-
-To accept everything a stage proposed from the terminal instead:
-
-```bash
 ./plumb.sh ~/plumb-projects/hr-leave proposals        # list pending proposals
 ./plumb.sh ~/plumb-projects/hr-leave accept-set <proposal-id>=<action> ... --reason "Reviewed"
 ```
+
+The step order is `extract`, `consolidate`, `lint`, `directory`, `analyse`, `flows`, then
+`calc`, `rules`, `scenarios`, `tags`, `run`, `ask`, `ready` and `report --out <folder>`.
+`./plumb.sh <folder> help` lists every command.
 
 ## Notes
 

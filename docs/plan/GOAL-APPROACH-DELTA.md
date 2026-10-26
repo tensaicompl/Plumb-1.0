@@ -95,6 +95,16 @@ architecture text, so the plan can be updated when it is picked up again.
 | Prompts | s1-classify: no need intents without supplied stakeholders. s2-lifecycle: each distinct state once per owner. s2-domain: an obligation that a record shall identify/include/record a field grounds nullable false. |
 | Opt-in real run | `PLUMB_REAL_KEY_FILE=<file> cargo test -p plumb-cli --features llm --test sim_hr hr_pilot_real_model -- --ignored --nocapture` writes `real-report.json`. |
 
+## UI rebuild (TensAI design handoff) adjudications
+
+| Item | Contract on this branch |
+|---|---|
+| Design source | `docs/design/handoff/` (Claude Design), from `docs/design/UI-SPEC-FOR-CLAUDE-DESIGN.md`. The old pages are replaced; the URL structure is spec §3. |
+| API additions | Operations 77–79 (B1: proposal detail, accept-set with confirm, confirm), 80–84 (B2: pipeline, job retry, generate questions, materialize findings, source list), 85 (S2: refresh a stale answer proposal), 86 (S4: element labels). `get_me` reports the project; spans carry text and the requirements they became; requirements carry `source_identifier` and linked labels; gate rules carry the profile title; calculations carry `status`; rules carry `outputs`; `set_rule_cell` accepts `uncovered:<witness>:output:0`. |
+| Accepting a whole step | Proposals are not rebased: accepting one moves the head and the step's other proposals turn stale. "Accept all from <step>" (accept-set) is the way to accept a step at once. |
+| Contrast | Where the handoff's grey text failed WCAG AA (axe), the darker `fg-3` tokens are used. |
+| Data the API lacks | Readiness, glossary definitions, rule row sources, per-gate prose summaries and actor display names are not invented; the screens show honest empty states. |
+
 ## Plan tasks: status on this branch
 
 | Task | Status |

@@ -80,12 +80,12 @@ Production output asserted against `fixtures/hr-leave/fixture-contract.yaml`:
 
 | Command | Result |
 |---|---|
-| `cargo test --workspace` | 1,748+ tests, 0 failures (includes the HR pilot, oracle and reference outputs) |
+| `cargo test --workspace` | 1,993 tests, 0 failures, 4 ignored (includes the HR pilot, oracle and reference outputs) |
 | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` | clean |
-| `cd ui && npm run typecheck && npm run lint && npm test` | clean; 131 tests |
+| `cd ui && npm run typecheck && npm run lint && npm test` | clean; 283 tests (`npm run test:coverage`: 91.0% statements, 83.2% branches) |
 | `make openapi` | committed contract equals the generated one; UI client matches |
 | `make placeholders` | no placeholder markers in production source |
-| `make e2e` (`scripts/run-pilot-e2e.sh`) | 6/6 Playwright pilot tests against the real backend; axe on every route with no serious or critical violations |
+| `make e2e` (`scripts/run-pilot-e2e.sh`) | 35/35 Playwright tests against the real backend over five databases (finished pilot, Inbox, triage, open questions, empty project); every screen and the nine UI-SPEC §6 flows; axe with no serious or critical violations, in light and dark |
 | `make cov` | see Coverage |
 
 ## Coverage
@@ -159,6 +159,33 @@ The fixes this run required are listed in `docs/plan/GOAL-APPROACH-DELTA.md` (Re
 
 Model output is not deterministic, so these counts vary between runs.
 
+## UI (TensAI design handoff)
+
+The UI implements the Claude Design handoff in `docs/design/handoff/` (spec
+`docs/design/UI-SPEC-FOR-CLAUDE-DESIGN.md`; screen map `ui/src/README-SCREENS.md`): Overview,
+Inbox, Requirements, Model (Glossary, Entities, Rules, Calculations, Processes), Scenarios,
+Quality (Gates, Issues, History), Sources, the Assistant panel, Settings, the ⌘K palette, dark
+mode and the "This changed since you looked" conflict sheet. The API grew to 86 operations for
+it (77–86: proposal detail, accept-set, confirm, pipeline, retry, generate questions,
+materialize findings, source list, proposal refresh, element labels).
+
+`ui/e2e/flows.spec.ts` covers the nine §6 flows against the real backend (steps run with the
+replay provider): first run from an empty project, keyboard triage to "All caught up", an expert
+answer that changes a calculation, fixing a blocked F2 gate, waiving a finding, a failing
+scenario corrected and rerun, the Assistant (its failure state; see below), a 412 conflict, and
+Export.
+
+Known UI gaps (the backend does not provide the data or behaviour yet):
+- readiness is never calculated, so rings and sub-scores show "—";
+- glossary terms have no definition text; rules have no per-row source requirement;
+- rerunning a stage leaves its stale proposals pending next to the fresh ones (answer
+  proposals retire the stale copy); this needs a product decision;
+- the replay provider cannot serve an Assistant turn, so e2e covers only its failure state;
+- question text contains raw element IDs; search does not index requirement IDs (the palette
+  matches them in the UI);
+- the finished pilot reports the Directory step as not started (the simulation runs it outside
+  a recipe), so the Overview offers it before "Ready — Export".
+
 ## Not done / known limitations
 
 - Real-model coverage gaps: operations, events, processes and invariants are produced only partly (see Real-model run).
@@ -168,4 +195,3 @@ Model output is not deterministic, so these counts vary between runs.
 - H0.2–H0.4, H0.7–H0.9, H0.11 not implemented.
 - Graph-dependent stage configuration (operation, process and calculation scopes, F4 in-scope
   scenarios) still names generated IDs in the JSON configuration.
-- Mutation testing (`cargo mutants`) is not run; UI coverage is not measured.

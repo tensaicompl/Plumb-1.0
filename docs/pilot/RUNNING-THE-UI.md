@@ -20,8 +20,12 @@ Open <http://127.0.0.1:5173>. `npm run build` type-checks and produces a static 
 `plumb serve` writes one tracing record per request (method, matched route, status, latency) and
 the cause of every internal failure to stderr; `RUST_LOG` overrides the default `info` filter.
 
-`scripts/run-pilot-e2e.sh` (E0.3) uses exactly this setup: it builds the HR pilot database, starts
-`plumb serve`, starts the UI with `npm run dev` against it and runs the Playwright pilot workflow.
+`scripts/run-pilot-e2e.sh` (E0.3) uses exactly this setup: it builds the HR pilot databases, starts
+`plumb serve`, starts the UI with `npm run dev` against it and runs every Playwright spec in
+`ui/e2e/` with one worker. Five databases, each served in its own phase and selected by tag: the
+finished pilot (untagged), `@inbox-db`, `@triage-db`, `@questions-db` and `@empty-db`; the last
+three are served with `--provider replay` so the UI can run steps without an API key.
+`PLUMB_E2E_API_PORT` and `PLUMB_E2E_UI_PORT` choose the ports (default 8790 and 5173).
 
 ## Local install (built UI served by `plumb serve`)
 
