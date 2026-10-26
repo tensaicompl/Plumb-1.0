@@ -514,6 +514,9 @@ pub enum DomainIssue {
     /// The proposed primitive type is not a valid pilot expression type, so the Attribute
     /// keeps its value_type Concept name; `reason` is diagnostic only.
     PrimitiveTypeRejected { candidate_ref: Id, reason: String },
+    /// The Requirements do not state the Attribute's nullability: it is proposed as optional
+    /// (nullable) for review (goal-approach deviation, any-domain run).
+    NullabilityNotStated { candidate_ref: Id },
     /// One model-proposed candidate failed a per-item check (an unknown, non-Accepted or
     /// wrong-kind Concept, an invalid grounding or a grounding that does not name its Concept)
     /// and was dropped; the other candidates are still analyzed. `reason` is diagnostic only.
@@ -600,8 +603,16 @@ struct OutputValueType {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OutputNullable {
-    value: bool,
-    grounding: DomainGrounding,
+    /// `None` (with no grounding) when the Requirements do not state nullability.
+    value: Option<bool>,
+    grounding: Option<DomainGrounding>,
+}
+
+impl OutputNullable {
+    /// The stated nullability: a value with its grounding (a value without one is not stated).
+    fn stated(&self) -> Option<bool> {
+        self.value.filter(|_| self.grounding.is_some())
+    }
 }
 
 #[derive(Deserialize)]
@@ -951,7 +962,7 @@ fn validate_output(
             context,
             id,
             &uses,
-            &[&a.nullable.grounding],
+            &a.nullable.grounding.iter().collect::<Vec<_>>(),
             &mut issues,
         )? {
             attributes.push(a);
@@ -1810,7 +1821,7 @@ pub fn analyze_domain(
         let payload = NodePayload::Attribute(Attribute {
             name: concept_name(context, &a.concept_ref),
             value_type,
-            nullable: a.nullable.value,
+            nullable: a.nullable.stated().unwrap_or(true),
             unit,
             precision: None,
             enum_values,
@@ -1828,11 +1839,18 @@ pub fn analyze_domain(
         if !matches!(state, Presence::Absent) {
             continue;
         }
+        if a.nullable.stated().is_none() {
+            issues.insert(DomainIssue::NullabilityNotStated {
+                candidate_ref: id.clone(),
+            });
+        }
+        // An unstated nullability is grounded at the Attribute mention itself.
+        let nullable_grounding = a.nullable.grounding.as_ref().unwrap_or(&a.grounding);
         let evidence = builder.evidence(&[
             &a.grounding,
             &a.owner_grounding,
             &a.value_type.grounding,
-            &a.nullable.grounding,
+            nullable_grounding,
         ]);
         let origin = DomainOrigin::Attribute {
             concept_ref: a.concept_ref.clone(),
@@ -1841,7 +1859,7 @@ pub fn analyze_domain(
             owner_grounding: a.owner_grounding.clone(),
             value_type_concept_ref: a.value_type.concept_ref.clone(),
             value_type_grounding: a.value_type.grounding.clone(),
-            nullable_grounding: a.nullable.grounding.clone(),
+            nullable_grounding: nullable_grounding.clone(),
         };
         let node = builder.node(id.clone(), payload, &evidence, &origin)?;
         let mut edges = vec![

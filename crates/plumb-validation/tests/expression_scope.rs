@@ -168,7 +168,7 @@ mod expression_scope_contract {
                 Accepted,
                 NodePayload::Invariant(Invariant {
                     scope_ref: id("entity:order"),
-                    expression: "amount >= 0".into(),
+                    expression: "self.amount >= 0".into(),
                 }),
             ),
         ]
@@ -286,6 +286,33 @@ mod expression_scope_contract {
                 field("attr:start", "entity:leave", "start_date")
             ]
         );
+        // An expression naming a field the Entity lacks gets no default (any-domain run): the
+        // run reports the missing scope instead of failing its build. Prose keeps its scope.
+        let with = |expression: &str| {
+            let mut nodes = n.clone();
+            nodes.push(node(
+                "inv:other",
+                Accepted,
+                NodePayload::Invariant(Invariant {
+                    scope_ref: id("entity:leave"),
+                    expression: expression.into(),
+                }),
+            ));
+            let edges = ["attr:start", "attr:end", "attr:end2"]
+                .iter()
+                .map(|a| edge(RelationKind::HasAttribute, "entity:leave", a))
+                .collect();
+            let g = Graph::new(
+                id("project:pilot"),
+                id("profile:plumb-software-2026.1"),
+                nodes,
+                edges,
+            )
+            .unwrap();
+            default_invariant_bindings(&g, &id("inv:other"))
+        };
+        assert_eq!(with("self.active_permits <= 2"), None);
+        assert!(with("At most two permits are active at once.").is_some());
         // Not an Accepted Invariant: no default.
         assert_eq!(default_invariant_bindings(&g, &id("inv:unknown")), None);
         assert_eq!(default_invariant_bindings(&g, &id("attr:start")), None);

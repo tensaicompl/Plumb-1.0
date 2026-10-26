@@ -47,13 +47,13 @@ mod domain_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:e91eea2279eb878d94db0ccdb57caee6a45b7af1c9d32864572311fd07768c36";
+        "sha256:86a5dd399f542a8d2ce8da7d412307d14baeee36bd459c406fcfa18031b44b33";
     const SCHEMA_HASH: &str =
-        "sha256:51eda28f8e738bdac22129e8a58de5d9f041c38e26e97b57918ee245ceb1bfcb";
+        "sha256:3d537516260d51612fa1918bb5e9e41179b8f735b1e532c41efbe5704fc01f5e";
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:b3ebb84070c0a58933d442b4ac883d447aa01c1d561fac25cbde9a93268e9ae6";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:7ed13315b7b5210ab40599a7e0b1b3e7332bc458d18c66824142f876a50ebef1";
+        "sha256:5920504c82240eaa7610c9a216120f6a26bd1bc71a566b67697344ee458364a1";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and
@@ -590,7 +590,8 @@ exactly one Employee, and an Employee may hold zero or more of them.";
             v["attributes"][0][field] = Value::Null;
             assert!(!valid(&v), "null {field}");
         }
-        assert!(!valid(&with(
+        // An unstated nullability is null (any-domain run).
+        assert!(valid(&with(
             &["attributes", "0", "nullable"],
             "value",
             Value::Null
@@ -683,7 +684,7 @@ exactly one Employee, and an Employee may hold zero or more of them.";
             "fact_type",
             "value_type",
             "UTF-8 byte offsets",
-            "Do not default nullable",
+            "Do not guess nullable",
             "0..1, 1, 0..*, 1..*",
             "Use null when an endpoint cardinality is not stated",
             "Do not guess missing cardinality",
@@ -3069,5 +3070,30 @@ exactly one Employee, and an Employee may hold zero or more of them.";
         assert!(!source.contains("RemoveEdge"));
         assert!(!source.contains("ReplaceEdge"));
         assert!(!source.contains("RemoveNode"));
+    }
+
+    /// Any-domain run: an Attribute whose nullability the Requirements do not state is proposed
+    /// as optional with a `nullability_not_stated` issue instead of being omitted.
+    #[test]
+    fn domain_attribute_unstated_nullability_is_optional_for_review() {
+        let g = with_entities();
+        for nullable in [
+            json!({"value": null, "grounding": null}),
+            json!({"value": false, "grounding": null}),
+        ] {
+            let mut attribute = attribute_json(false);
+            attribute["nullable"] = nullable;
+            let result = analyze(&g, output(vec![], vec![attribute], vec![])).unwrap();
+            let attributes = proposal_of_type(&result, NodeType::Attribute);
+            assert_eq!(attributes.len(), 1);
+            let NodePayload::Attribute(a) = &added(attributes[0]).0.payload else {
+                panic!()
+            };
+            assert!(a.nullable);
+            assert!(result
+                .issues
+                .iter()
+                .any(|i| matches!(i, DomainIssue::NullabilityNotStated { .. })));
+        }
     }
 }

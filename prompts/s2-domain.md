@@ -29,16 +29,17 @@ The fields are:
 - entities: concept_ref and its grounding;
 - attributes: concept_ref and grounding, owner_concept_ref and
   owner_grounding, value_type as `{"concept_ref", "grounding"}` and
-  nullable as `{"value": true|false, "grounding"}`, and primitive_type
+  nullable as `{"value": true|false|null, "grounding"}`, and primitive_type
   as `{"type", "scale", "enum_values", "unit"}` or null;
 - relationships: concept_ref and grounding, from_concept_ref and
   from_grounding, to_concept_ref and to_grounding, cardinality_from and
   cardinality_to.
 
-Return an Attribute only when its owner, its value type and its
-nullable semantics are all grounded in the supplied Requirements.
-Do not default nullable. When nullability is not stated, omit the
-Attribute instead. An obligation that a record shall identify, include or record a field states that the field is required
+Return an Attribute only when its owner and its value type are grounded
+in the supplied Requirements. Do not guess nullable. When nullability is
+not stated, return `{"value": null, "grounding": null}`: Plumb proposes
+the Attribute as optional and reports that nullability is not stated, for
+review. An obligation that a record shall identify, include or record a field states that the field is required
 (nullable false); ground that nullable value at the obligation wording
 (such as "shall identify").
 

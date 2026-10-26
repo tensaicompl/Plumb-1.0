@@ -244,6 +244,15 @@ pub fn default_invariant_bindings(
         }
     }
     bindings.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
+    // A parsed expression that does not type-check as Bool under the derived scope (it names a
+    // field the Entity does not have) gets no default scope: the run then reports the missing
+    // scope instead of failing the build. Prose keeps its scope and runs as unsupported.
+    if let Ok(ast) = plumb_expr::parse(&invariant.expression) {
+        let validated = validate_expression_bindings(graph, &bindings, &["calendar"]).ok()?;
+        if !matches!(plumb_expr::typecheck(&ast, &validated.env), Ok(Ty::Bool)) {
+            return None;
+        }
+    }
     Some(bindings)
 }
 
