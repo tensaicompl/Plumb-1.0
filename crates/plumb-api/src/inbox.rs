@@ -1005,8 +1005,12 @@ impl ApiState {
     fn stage_of(&self, view: &PendingProposalView) -> Result<Option<String>, ApiError> {
         let Some(job) = &view.recipe_job_id else {
             let directory = crate::stage::recipe::Recipe::Directory.as_str();
-            for record in self
-                .with_stage_store(|store| store.recipe_jobs_in_creation_order())?
+            // Without stage orchestration no job can have recorded the proposal.
+            let Ok(jobs) = self.with_stage_store(|store| store.recipe_jobs_in_creation_order())
+            else {
+                return Ok(None);
+            };
+            for record in jobs
                 .map_err(|e| ApiError::store(&e, "stage_store"))?
                 .iter()
                 .filter(|r| r.recipe == directory)

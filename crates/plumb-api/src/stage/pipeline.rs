@@ -75,7 +75,52 @@ fn status_of(
     }
 }
 
+/// The Accepted element types a recipe builds on that its own proposals can add: the domain
+/// analysis derives attributes and lifecycles only for Accepted Entities, flows derives
+/// processes only from Accepted Operations, Events and Outcomes.
+fn grown_input_types(recipe: Recipe) -> &'static [NodeType] {
+    match recipe {
+        Recipe::Analyse => &[NodeType::Entity],
+        Recipe::Flows => &[NodeType::Operation, NodeType::Event, NodeType::Outcome],
+        _ => &[],
+    }
+}
+
 impl ApiState {
+    /// Whether the head holds an Accepted element of the recipe's input types that its latest
+    /// job's base did not (goal-approach deviation, any-domain run): accepting the entities a
+    /// Model step proposed makes the step outdated, so the pipeline offers the pass that adds
+    /// their attributes and states instead of moving on.
+    fn inputs_grew(
+        &self,
+        recipe: Recipe,
+        record: &StageRecipeJobRecord,
+        head: &LoadedRevision,
+    ) -> Result<bool, ApiError> {
+        let types = grown_input_types(recipe);
+        if types.is_empty() || record.base_revision_id == head.revision.id {
+            return Ok(false);
+        }
+        let accepted = |graph: &plumb_psg::Graph| -> BTreeSet<Id> {
+            types
+                .iter()
+                .flat_map(|t| graph.node_ids_by_type(*t).iter())
+                .filter(|id| {
+                    graph
+                        .node(id)
+                        .is_some_and(|n| n.status == plumb_psg::ElementStatus::Accepted)
+                })
+                .cloned()
+                .collect()
+        };
+        let now = accepted(&head.graph);
+        if now.is_empty() {
+            return Ok(false);
+        }
+        let before = accepted(&self.load_revision(&record.base_revision_id)?.graph);
+        Ok(!now.is_subset(&before))
+    }
+
     /// The pending proposal occurrences a directory job persisted: the elements recorded by its
     /// `directory` step, on the job's base revision.
     pub(crate) fn directory_proposals(
@@ -170,7 +215,14 @@ impl ApiState {
                 },
                 Some((record, mine)) => PipelineStep {
                     recipe: stage_name(recipe),
-                    status: status_of(record, mine, head),
+                    status: match status_of(record, mine, head) {
+                        PipelineStepStatus::Done
+                            if self.inputs_grew(recipe, record, &loaded)? =>
+                        {
+                            PipelineStepStatus::Stale
+                        }
+                        status => status,
+                    },
                     job_id: Some(record.recipe_job_id.to_string()),
                     progress: Some(progress(record.status)),
                     pending_proposals: of_recipe.len() as u64,
