@@ -528,7 +528,7 @@ describe("Inbox layout", () => {
     const { user, backend } = renderAt("/inbox", newBackend({ proposals: [], questions: [], findings: [] }));
     expect(await screen.findByRole("heading", { name: "You're all caught up" })).toBeTruthy();
     expect(screen.getByText("Nothing is waiting for your decision. The next step is Directory.")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Run Directory" }));
+    await user.click(within(screen.getByRole("main")).getByRole("button", { name: "Run Directory" }));
     await waitFor(() => expect(backend.writes.map((w) => w.path)).toEqual(["run:directory"]));
     expect(backend.writes[0]?.ifMatch).toBe(ETAG);
   });
@@ -903,7 +903,7 @@ describe("Item cards", () => {
     await waitFor(() => expect(backend.writes.map((w) => w.path)).toEqual(["materialize", "waive:fnd:new"]));
     expect(backend.writes[0]?.ifMatch).toBe(ETAG);
     expect(backend.writes[1]?.ifMatch).toBe('"rev:43:materialized00000"');
-    expect(await screen.findByRole("button", { name: "Run Directory" })).toBeTruthy();
+    expect(await within(screen.getByRole("main")).findByRole("button", { name: "Run Directory" })).toBeTruthy();
   });
 
   it("toggles the evidence with Space and clears the selection with ⌘.", async () => {

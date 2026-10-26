@@ -111,6 +111,18 @@ export function computeNextAction({ job, pipeline, proposals, openQuestions, gat
       target: { type: "route", to: "/sources" },
     };
   }
+  // A step still to run comes before an outdated gate: running the steps re-evaluates the gates.
+  if (pipeline?.next !== undefined && pipeline.next !== null && (inferenceAvailable || !usesInference(pipeline.next))) {
+    const step = stageLabel(pipeline.next);
+    return {
+      kind: "step",
+      title: tf("next.step.title", { step }),
+      short: tf("next.step.short", { step }),
+      description: t("next.step.description"),
+      cta: t("next.step.cta"),
+      target: { type: "run", stage: pipeline.next },
+    };
+  }
   const byGate = new Map(gates.map((status) => [status.gate, status]));
   // An outdated gate first, then one that was never evaluated (absent from the response).
   const outdated =
@@ -129,17 +141,6 @@ export function computeNextAction({ job, pipeline, proposals, openQuestions, gat
       description: t("next.staleGate.description"),
       cta: t("next.staleGate.cta"),
       target: gateTarget(outdated),
-    };
-  }
-  if (pipeline?.next !== undefined && pipeline.next !== null && (inferenceAvailable || !usesInference(pipeline.next))) {
-    const step = stageLabel(pipeline.next);
-    return {
-      kind: "step",
-      title: tf("next.step.title", { step }),
-      short: tf("next.step.short", { step }),
-      description: t("next.step.description"),
-      cta: t("next.step.cta"),
-      target: { type: "run", stage: pipeline.next },
     };
   }
   const blocked = PILOT_GATES.find((g) => byGate.get(g)?.passed === false);
