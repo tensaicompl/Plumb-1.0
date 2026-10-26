@@ -298,4 +298,110 @@ test.describe.serial("Questions, gates and scenarios @questions-db", () => {
     await noSeriousA11yViolations(page);
     expect(errors).toEqual([]);
   });
+
+  test("flow 4: the Model gate is blocked; Show affected, fix it by answering, Re-check, it passes", async ({ page }) => {
+    test.setTimeout(180_000);
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    // The Overview shows the Model gate blocked.
+    await page.goto("/overview");
+    const gates = main(page).getByRole("region", { name: "Quality gates" });
+    await expect(gates.getByRole("link", { name: /^Model F2 Blocked · 2 blocking issues/ })).toBeVisible();
+    await gates.getByRole("link", { name: /^Model F2/ }).click();
+    await expect(page).toHaveURL(/\/quality\/F2$/);
+    const model = main(page).getByRole("region", { name: "Model F2" });
+    await expect(model.getByText("State transitions are complete")).toBeVisible();
+    await expect(model.getByText(/Produced material events have a consumer/)).toBeVisible();
+    await noSeriousA11yViolations(page);
+
+    // Show affected: the requirements behind the incomplete transition.
+    await model.getByRole("button", { name: "Show affected" }).click();
+    await expect(page).toHaveURL(/\/requirements\?affected=/);
+    const affected = main(page).getByTestId("requirement-row");
+    await expect(affected).toHaveCount(2);
+    await expect(affected.filter({ hasText: "HR-017" })).toHaveCount(1);
+    await expect(affected.filter({ hasText: "HR-018" })).toHaveCount(1);
+    await noSeriousA11yViolations(page);
+
+    // Fix: the expert names the trigger of the transition, and answers the round's other questions.
+    await page.goto("/inbox?filter=questions");
+    const questions = page.getByRole("list", { name: "Questions" });
+    const answer = async (question: RegExp, fill: () => Promise<void>, rationale: string) => {
+      await questions.getByRole("button", { name: question }).click();
+      await expect(inspector(page).getByRole("heading", { level: 2, name: question })).toBeVisible();
+      await fill();
+      await inspector(page).getByRole("textbox", { name: /Rationale/ }).fill(rationale);
+      await inspector(page).getByRole("button", { name: "Answer" }).click();
+      await expect(toast(page).filter({ hasText: "Answer recorded" })).toBeVisible();
+      await page.goto("/inbox?filter=questions");
+    };
+    await answer(
+      /triggers transition/,
+      async () => {
+        const choices = inspector(page).getByRole("radiogroup", { name: "Answer" });
+        await inspector(page).getByRole("searchbox", { name: "Filter choices" }).fill("withdraw");
+        // The choices are named: the Withdraw operation and the event it produces.
+        await expect(choices.getByRole("radio")).toHaveCount(2);
+        await expect(choices.getByRole("radio", { name: /^Leave withdrawn Event event:/ })).toBeVisible();
+        await noSeriousA11yViolations(page);
+        await choices.getByRole("radio", { name: /^Withdraw leave request Operation operation:/ }).click();
+      },
+      "HR-017 lets the employee withdraw a Submitted request.",
+    );
+    await answer(/configured holiday never consumes a working day/, () => inspector(page).getByRole("radio", { name: /calendar:office/ }).click(), "A configured public holiday consumes 0 working days.");
+    await answer(
+      /fractional input/,
+      async () => {
+        await inspector(page).getByRole("textbox", { name: "decimal" }).fill("0.5");
+        await inspector(page).getByRole("textbox", { name: "unit" }).fill("working_day");
+      },
+      "A half day consumes 0.5 working day.",
+    );
+
+    // The three answers wait for confirmation. Each acceptance moves the model on, so the answers
+    // left are out of date: each is refreshed against the current model before it is accepted.
+    await page.goto("/inbox?filter=fromq");
+    const answers = page.getByRole("list", { name: "From questions" }).getByRole("button");
+    await expect(answers).toHaveCount(3);
+    for (let left = 3; left > 0; left--) {
+      await answers.first().click();
+      const accept = inspector(page).getByRole("button", { name: "Accept" });
+      if (left < 3) {
+        await expect(answers.filter({ hasText: "Stale" })).toHaveCount(left);
+        await expect(accept).toBeDisabled();
+        await inspector(page).getByRole("button", { name: "Refresh proposal" }).click();
+        await expect(toast(page).filter({ hasText: "Proposal refreshed against the current model" })).toBeVisible();
+        await expect(answers.filter({ hasText: "Stale" })).toHaveCount(left - 1);
+        await expect(inspector(page).getByRole("button", { name: "Refresh proposal" })).toHaveCount(0);
+      }
+      await expect(accept).toBeEnabled();
+      await accept.click();
+      await page.getByRole("dialog", { name: "Accept proposal" }).getByRole("textbox", { name: "Reason (required)" }).fill("Expert answer.");
+      await page.keyboard.press("ControlOrMeta+Enter");
+      await expect(answers).toHaveCount(left - 1);
+    }
+    await expect(conflictSheet(page)).toHaveCount(0);
+
+    // Re-check: the Model gate's step (Analysis) runs again on the fixed model, and the gate passes.
+    await page.goto("/quality/F2");
+    await main(page).getByRole("region", { name: "Model F2" }).getByRole("button", { name: "Re-check" }).click();
+    await expect(toast(page).filter({ hasText: "Analysis step finished" })).toBeVisible({ timeout: 30_000 });
+    await expect(main(page).getByRole("heading", { level: 2, name: /^Model F2 Passes 0 blockers failed/ })).toBeVisible();
+    await expect(model.getByText("State transitions are complete")).toBeVisible();
+    await noSeriousA11yViolations(page);
+
+    // The analysis proposes the missing transition the answer named; once it is accepted the
+    // answer is reflected in the model and the Decisions gate passes too.
+    await expect(main(page).getByRole("heading", { level: 2, name: /^Decisions F3 Blocked/ })).toBeVisible();
+    await toast(page).getByRole("button", { name: "Review" }).click();
+    await expect(page).toHaveURL(/\/inbox/);
+    await expect(inspector(page).getByRole("heading", { level: 2, name: "Add transition submitted → withdrawn" })).toBeVisible();
+    await inspector(page).getByRole("button", { name: "Accept" }).click();
+    await expect(toast(page).filter({ hasText: /added to the model/ })).toBeVisible();
+    await page.goto("/quality");
+    for (const gate of ["Evidence I0", "Requirements F1", "Model F2", "Decisions F3", "Behaviour F4"]) {
+      await expect(main(page).getByRole("heading", { level: 2, name: new RegExp(`^${gate} Passes`) })).toBeVisible();
+    }
+    expect(errors).toEqual([]);
+  });
 });
