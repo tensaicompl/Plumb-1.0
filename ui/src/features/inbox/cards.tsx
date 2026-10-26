@@ -9,7 +9,8 @@ import { Button, cn, DiffLines, EvidenceQuote, Eyebrow, gateName, KINDS, Skeleto
 import { ReadFailure } from "../../components/ReadFailure";
 import { t, tf, type MessageKey } from "../../i18n";
 import { AnswerControl } from "./AnswerControl";
-import { type AnswerValue } from "./answerSchema";
+import { useLabels } from "../model/labels";
+import { parseAnswerSchema, type AnswerValue } from "./answerSchema";
 import { utf8RangeToUtf16 as utf8Range, type InboxItem } from "./model";
 import { proposalDetailQuery, requirementIdentifier, requirementQuery, sentencesQuery, sourceNamesQuery } from "./queries";
 import { earsPattern, modalityOf, wordDiff } from "./wording";
@@ -422,6 +423,9 @@ export function QuestionCard({ item, value, rationale, onValue, onRationale, can
   const question = item.question;
   const answerId = useId();
   const rationaleId = useId();
+  // The elements the question links and its choices reference, named in plain language.
+  const choices = (parseAnswerSchema(question?.answer_schema) ?? []).flatMap((field) => (field.type === "enum" || field.type === "enum-set" ? field.choices : []));
+  const labels = useLabels([...(question?.context_refs ?? []), ...choices]);
   if (question === undefined) {
     return null;
   }
@@ -430,11 +434,19 @@ export function QuestionCard({ item, value, rationale, onValue, onRationale, can
       <CardHeader item={item} />
       {question.context_refs.length > 0 && (
         <ul aria-label={t("inbox.question.linked")} className="m-0 flex list-none flex-wrap gap-1.5 p-0">
-          {question.context_refs.map((ref) => (
-            <li key={ref} className="inline-flex h-6 items-center rounded-pill border border-line bg-surface px-2.5 font-mono text-caption font-medium text-fg-2">
-              {ref}
-            </li>
-          ))}
+          {question.context_refs.map((ref) => {
+            const name = labels(ref);
+            const named = name !== "" && name !== ref;
+            return (
+              <li
+                key={ref}
+                title={ref}
+                className={cn("inline-flex h-6 items-center rounded-pill border border-line bg-surface px-2.5 text-caption font-medium text-fg-2", !named && "font-mono")}
+              >
+                {named ? name : ref}
+              </li>
+            );
+          })}
         </ul>
       )}
       {canAnswer && (
@@ -443,7 +455,7 @@ export function QuestionCard({ item, value, rationale, onValue, onRationale, can
             <p id={answerId} className="m-0 mb-2 text-caption font-semibold text-fg-2">
               {t("inbox.question.answer")}
             </p>
-            <AnswerControl question={question} value={value} onChange={onValue} labelledBy={answerId} />
+            <AnswerControl question={question} value={value} onChange={onValue} labelledBy={answerId} labels={labels} />
           </div>
           <div>
             <label htmlFor={rationaleId} className="mb-2 block text-caption font-semibold text-fg-2">

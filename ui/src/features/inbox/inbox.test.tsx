@@ -306,6 +306,11 @@ function handlers(backend: Backend) {
     http.get("*/api/gates", () => etagJson(backend.gates, undefined, ETAG)),
     http.get("*/api/pipeline", () => etagJson({ steps: [], next: backend.pipelineNext, open_questions: 0, sources: 1 }, undefined, ETAG)),
     http.get("*/api/requirements/:id", ({ params }) => etagJson(REQUIREMENTS[String(params["id"])] ?? {}, undefined, ETAG)),
+    http.get("*/api/model/labels", ({ request }) => {
+      const ids = (new URL(request.url).searchParams.get("ids") ?? "").split(",");
+      const known: Record<string, { kind: string; label: string }> = { "calculation:days": { kind: "calculation", label: "requested leave duration" }, "req:hr005": { kind: "requirement", label: "HR-005" } };
+      return HttpResponse.json({ items: ids.filter((id) => known[id] !== undefined).map((id) => ({ id, ...known[id] })) });
+    }),
     http.get("*/api/model/sentences", () => etagJson({ items: SENTENCES, next_cursor: null }, undefined, ETAG)),
     http.get("*/api/sources", () =>
       etagJson({ items: [{ id: "src:req", hash: "sha256:0", media_type: "text/markdown", source_kind: "markdown", name: "requirements.md", imported_at: ago(60), spans_count: 38 }] }, undefined, ETAG),
@@ -714,7 +719,10 @@ describe("Item cards", () => {
     await ready();
     const panel = inspector();
     expect(within(panel).getByText("Question · Questions step")).toBeTruthy();
-    expect(within(panel).getByText("calculation:days")).toBeTruthy();
+    // Linked items are named in plain language; the ID stays available as the item's title.
+    const linked = within(panel).getByRole("list", { name: "Linked items" });
+    expect(await within(linked).findByText("Requested leave duration")).toBeTruthy();
+    expect(within(linked).getByText("Requested leave duration").closest("li")?.getAttribute("title")).toBe("calculation:days");
     expect(within(panel).getByText("Routed to stakeholder:hr")).toBeTruthy();
     const answer = within(panel).getByRole("button", { name: "Answer" }) as HTMLButtonElement;
     expect(answer.disabled).toBe(true);

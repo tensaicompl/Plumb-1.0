@@ -23,12 +23,12 @@ function object(properties: Record<string, unknown>) {
   return { type: "object", additionalProperties: false, properties, required: Object.keys(properties) };
 }
 
-function Harness({ question, initial = {} }: { question: Pick<Question, "id" | "kind" | "answer_schema">; initial?: AnswerValue }) {
+function Harness({ question, initial = {}, labels }: { question: Pick<Question, "id" | "kind" | "answer_schema">; initial?: AnswerValue; labels?: (id: string) => string }) {
   const [value, setValue] = useState<AnswerValue>(initial);
   return (
     <div>
       <p id="answer-label">Answer</p>
-      <AnswerControl question={question} value={value} onChange={setValue} labelledBy="answer-label" />
+      <AnswerControl question={question} value={value} onChange={setValue} labelledBy="answer-label" {...(labels === undefined ? {} : { labels })} />
       <output data-testid="value">{JSON.stringify(value)}</output>
       <output data-testid="complete">{String(isAnswerComplete(question.answer_schema, value))}</output>
     </div>
@@ -79,6 +79,24 @@ describe("AnswerControl", () => {
     await user.clear(filter);
     await user.type(filter, "nothing");
     expect(screen.getByText("No choice matches.")).toBeTruthy();
+  });
+
+  it("names referenced elements in plain language, keeping the kind and ID second, and filters by name", async () => {
+    const user = userEvent.setup();
+    const refs = ["event:4f49", "event:6c1c", "event:d8b3", "operation:30e3", "operation:58a5", "operation:6c54", "operation:f463"];
+    const names: Record<string, string> = { "event:4f49": "Leave approved", "operation:30e3": "Submit leave request", "operation:f463": "Withdraw leave request" };
+    render(<Harness question={q("PickOne", object({ trigger_ref: { type: "string", enum: refs } }))} labels={(id) => names[id] ?? id} />);
+    const group = screen.getByRole("radiogroup", { name: "Answer" });
+    const withdraw = within(group).getByRole("radio", { name: /^Withdraw leave request/ });
+    expect(withdraw.textContent).toContain("Operation");
+    expect(withdraw.textContent).toContain("operation:f463");
+    // An element without a name keeps its kind first.
+    expect(within(group).getByRole("radio", { name: /^Event event:6c1c/ })).toBeTruthy();
+    await user.type(screen.getByRole("searchbox", { name: "Filter choices" }), "withdraw");
+    expect(within(group).getAllByRole("radio")).toHaveLength(1);
+    await user.click(within(group).getByRole("radio", { name: /^Withdraw leave request/ }));
+    expect(value()).toEqual({ trigger_ref: "operation:f463" });
+    expect(await axeViolations()).toEqual([]);
   });
 
   it("picks many, in schema order, and requires the minimum", async () => {

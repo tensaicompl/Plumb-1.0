@@ -38,12 +38,37 @@ function FieldLabel({ id, children }: { id: string; children: ReactNode }) {
   );
 }
 
-/** A vertical radio list (radio tiles with roving focus); references show their kind and mono ID. */
-function ChoiceList({ choices, value, onChange, labelledBy }: { choices: readonly string[]; value: unknown; onChange: (next: string) => void; labelledBy: string }) {
+/** The plain-language name of a referenced element, or its ID when it has none. */
+export type ReferenceLabels = (id: string) => string;
+
+/** The named part of a reference: its name, else its kind ("Operation"). */
+function referenceName(id: string, labels: ReferenceLabels | undefined): string | null {
+  const name = labels?.(id) ?? "";
+  return name === "" || name === id ? null : name;
+}
+
+/**
+ * A vertical radio list (radio tiles with roving focus); a reference shows its plain-language
+ * name first, then its kind and mono ID (its kind first when it has no name).
+ */
+function ChoiceList({
+  choices,
+  value,
+  onChange,
+  labelledBy,
+  labels,
+}: {
+  choices: readonly string[];
+  value: unknown;
+  onChange: (next: string) => void;
+  labelledBy: string;
+  labels: ReferenceLabels | undefined;
+}) {
   const [query, setQuery] = useState("");
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const references = choices.every((c) => REFERENCE.test(c));
-  const visible = query === "" ? choices : choices.filter((c) => c.toLowerCase().includes(query.trim().toLowerCase()));
+  const needle = query.trim().toLowerCase();
+  const visible = needle === "" ? choices : choices.filter((c) => c.toLowerCase().includes(needle) || (references && (referenceName(c, labels) ?? "").toLowerCase().includes(needle)));
   const checkedIndex = visible.findIndex((c) => c === value);
   const move = (event: KeyboardEvent<HTMLButtonElement>, from: number) => {
     const delta = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
@@ -85,7 +110,12 @@ function ChoiceList({ choices, value, onChange, labelledBy }: { choices: readonl
             >
               {references ? (
                 <>
-                  <span>{referenceKind(choice)}</span>
+                  <span>{referenceName(choice, labels) ?? referenceKind(choice)}</span>{" "}
+                  {referenceName(choice, labels) !== null && (
+                    <>
+                      <span className="text-caption font-normal text-fg-3">{referenceKind(choice)}</span>{" "}
+                    </>
+                  )}
                   <span className="select-text font-mono text-caption font-normal text-fg-3">{choice}</span>
                 </>
               ) : (
@@ -149,18 +179,20 @@ function FieldControl({
   value,
   onChange,
   labelledBy,
+  labels,
 }: {
   field: AnswerField;
   multiline: boolean;
   value: unknown;
   onChange: (next: unknown) => void;
   labelledBy: string;
+  labels: ReferenceLabels | undefined;
 }) {
   switch (field.type) {
     case "boolean":
       return <YesNo value={value} onChange={onChange} labelledBy={labelledBy} />;
     case "enum":
-      return <ChoiceList choices={field.choices} value={value} onChange={onChange} labelledBy={labelledBy} />;
+      return <ChoiceList choices={field.choices} value={value} onChange={onChange} labelledBy={labelledBy} labels={labels} />;
     case "enum-set":
       return <CheckList choices={field.choices} value={value} onChange={onChange} labelledBy={labelledBy} />;
     case "string":
@@ -217,12 +249,15 @@ export function AnswerControl({
   value,
   onChange,
   labelledBy,
+  labels,
 }: {
   question: Pick<Question, "id" | "kind" | "answer_schema">;
   value: AnswerValue;
   onChange: (next: AnswerValue) => void;
   /** The ID of the "Answer" heading that names a single-field control. */
   labelledBy: string;
+  /** The names of the elements its choices reference (`useLabels`). */
+  labels?: ReferenceLabels;
 }) {
   const baseId = useId();
   const fields = parseAnswerSchema(question.answer_schema);
@@ -251,7 +286,7 @@ export function AnswerControl({
     return (
       <div key={field.name} data-field={field.name}>
         {!named && <FieldLabel id={labelId}>{fieldLabel(field.name)}</FieldLabel>}
-        <FieldControl field={field} multiline={multiline} value={value[field.name]} onChange={(next) => setField(field.name, next)} labelledBy={named ? labelledBy : labelId} />
+        <FieldControl field={field} multiline={multiline} value={value[field.name]} onChange={(next) => setField(field.name, next)} labelledBy={named ? labelledBy : labelId} labels={labels} />
       </div>
     );
   };
@@ -263,7 +298,7 @@ export function AnswerControl({
         {[amount, unit].map((field, index) => (
           <div key={field.name}>
             <FieldLabel id={baseId + "-" + String(index)}>{fieldLabel(field.name)}</FieldLabel>
-            <FieldControl field={field} multiline={false} value={value[field.name]} onChange={(next) => setField(field.name, next)} labelledBy={baseId + "-" + String(index)} />
+            <FieldControl field={field} multiline={false} value={value[field.name]} onChange={(next) => setField(field.name, next)} labelledBy={baseId + "-" + String(index)} labels={labels} />
           </div>
         ))}
       </div>
