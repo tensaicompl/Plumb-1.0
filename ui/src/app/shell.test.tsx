@@ -528,6 +528,38 @@ describe("Command palette", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull());
   });
 
+  it("finds a requirement by its document ID, as the hint suggests", async () => {
+    const { user, router } = renderAt("/overview");
+    server.use(
+      http.get("*/api/search", () =>
+        etagJson({ items: [{ id: "evd:9", kind: "evidence", path: null, score: 5, snippet: "12. **HR-009** [functional] Submitting a valid leave request shall change its status." }], next_cursor: null }),
+      ),
+      http.get("*/api/requirements", () =>
+        etagJson({
+          items: [
+            { id: "req:8", text: "A request shall have a type.", class: "functional", status: "Accepted", smells: [], coverage: { operations: [], scenarios: [] }, readiness: null, lint_current: true, source_identifier: "HR-008" },
+            { id: "req:9", text: "Submitting a valid leave request shall change its status.", class: "functional", status: "Accepted", smells: [], coverage: { operations: [], scenarios: [] }, readiness: null, lint_current: true, source_identifier: "HR-009" },
+          ],
+          health: [],
+          next_cursor: null,
+        }),
+      ),
+    );
+    await screen.findByRole("banner");
+    await user.keyboard("{Meta>}k{/Meta}");
+    const dialog = await screen.findByRole("dialog", { name: "Command palette" });
+    await user.type(within(dialog).getByRole("combobox"), "hr-009");
+    const requirements = await within(dialog).findByRole("group", { name: "Requirements" });
+    const option = within(requirements).getByRole("option");
+    expect(option.getAttribute("data-label")).toBe("HR-009");
+    expect(option.textContent).toContain("Submitting a valid leave request shall change its status.");
+    // The evidence hit is grouped under a plain name, not the raw kind.
+    expect(within(dialog).getByRole("group", { name: "Evidence" })).toBeTruthy();
+    // The requirement is first: Enter opens it.
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(router.state.location.pathname).toBe("/requirements/req:9"));
+  });
+
   it("says when nothing matches and runs commands such as switching appearance", async () => {
     const { user } = renderAt("/overview");
     await screen.findByRole("banner");

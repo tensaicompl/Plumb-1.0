@@ -22,6 +22,7 @@ import { apiClient, readData } from "../../api/client";
 import type { components } from "../../api/schema";
 import { cn, Eyebrow, Kbd, modKey } from "../../components/ui";
 import { t, tf, type MessageKey } from "../../i18n";
+import { ALL_PAGE_SIZE, readAllPages } from "../../features/sources/queries";
 import { DESTINATIONS } from "../nav";
 import { RUNNABLE_STAGES, stageLabel, usePipeline } from "../pipeline";
 import { isDarkAppearance, useAppearanceStore, useRecentStore, useShellStore, type RecentItem } from "../preferences";
@@ -69,7 +70,11 @@ const KIND_GROUP: Readonly<Record<string, { key: string; label: MessageKey; icon
   scenario: { key: "scenario", label: "palette.kind.scenario", icon: FlaskConical },
   finding: { key: "finding", label: "palette.kind.finding", icon: ShieldCheck },
   question: { key: "question", label: "palette.kind.question", icon: CircleHelp },
+  evidence: { key: "evidence", label: "palette.kind.evidence", icon: FileText },
 };
+
+/** A requirement's document ID as a reader types it ("HR-009"). */
+const DOCUMENT_ID = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 
 function kindGroup(kind: string): { key: string; label: string; icon: LucideIcon } {
   const known = KIND_GROUP[kind];
@@ -127,6 +132,14 @@ function PaletteBody({ close }: { close: () => void }) {
     queryKey: ["search", debounced],
     queryFn: () => readData(apiClient.GET("/api/search", { params: { query: { q: debounced } } })),
     enabled: debounced !== "",
+  });
+  // Search indexes statements, not document IDs: a requirement ID ("HR-009") is matched against
+  // the requirements' source identifiers.
+  const byDocumentId = DOCUMENT_ID.test(debounced);
+  const requirements = useQuery({
+    queryKey: ["palette", "requirements"],
+    queryFn: () => readAllPages((cursor) => apiClient.GET("/api/requirements", { params: { query: { limit: ALL_PAGE_SIZE, ...(cursor === undefined ? {} : { cursor }) } } })),
+    enabled: byDocumentId,
   });
 
   const dark = isDarkAppearance(appearance);
@@ -226,7 +239,19 @@ function PaletteBody({ close }: { close: () => void }) {
       });
     }
   } else if (debounced === trimmed && search.data !== undefined) {
-    for (const hit of search.data.items) {
+    const identified = byDocumentId ? (requirements.data ?? []).filter((r) => r.source_identifier?.toLowerCase() === debounced.toLowerCase()) : [];
+    if (identified.length > 0) {
+      const group = kindGroup("requirement");
+      groups.push({
+        key: "kind-" + group.key,
+        label: group.label,
+        options: identified.map((r) => {
+          const href = buildHref("/requirements/$id", { id: r.id });
+          return { id: "hit-requirement-" + r.id, label: r.source_identifier ?? r.id, sub: r.text, icon: icon(group.icon), run: openHit({ id: r.source_identifier ?? r.id, kind: "requirement", snippet: r.text, href }) };
+        }),
+      });
+    }
+    for (const hit of search.data.items.filter((h) => !identified.some((r) => r.id === h.id))) {
       const group = kindGroup(hit.kind);
       const href = hitHref(hit);
       const option: PaletteOption = {
@@ -246,7 +271,7 @@ function PaletteBody({ close }: { close: () => void }) {
     }
   }
   const flat = groups.flatMap((g) => g.options);
-  const searching = trimmed !== "" && (debounced !== trimmed || search.isFetching);
+  const searching = trimmed !== "" && (debounced !== trimmed || search.isFetching || (byDocumentId && requirements.isFetching));
   const nothing = trimmed !== "" && !searching && flat.length === 0 && !search.isError;
   const activeIndex = Math.min(active, Math.max(0, flat.length - 1));
   const optionId = (index: number) => listId + "-option-" + String(index);
