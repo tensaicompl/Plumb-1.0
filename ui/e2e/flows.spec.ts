@@ -13,13 +13,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Download, type Locator, type Page } from "@playwright/test";
 
 const PILOT_DOCUMENT = fileURLToPath(new URL("../../fixtures/hr-leave/requirements.md", import.meta.url));
 
 async function noSeriousA11yViolations(page: Page) {
   // Colour contrast is measured on settled pixels: wait for slide-ins and toasts.
-  await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running"));
+  // (Endless ones, such as a loading shimmer, never settle and are left out.)
+  await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running" || a.effect?.getTiming().iterations === Infinity));
   await page.mouse.move(0, 0);
   const results = await new AxeBuilder({ page }).analyze();
   const serious = results.violations.filter((v) => v.impact === "critical" || v.impact === "serious");
@@ -450,6 +451,176 @@ test.describe.serial("Questions, gates and scenarios @questions-db", () => {
     await expect(page.getByText(/^1 scenario ran · 1 pass$/)).toBeVisible({ timeout: 30_000 });
     await expect(details.getByText(/^Pass · /)).toBeVisible();
     await expect(trace.getByText("Compared the outcome")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe("Flow 9: Export", () => {
+  test("flow 9: the Overview's last step leads to Ready — Export; the chosen artifacts download", async ({ page }) => {
+    test.setTimeout(120_000);
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.goto("/overview");
+    const card = main(page).getByRole("region", { name: "Next action" });
+    // The pilot never ran the Directory step as a recipe: it is the one step left.
+    await expect(card.getByText("Run the Directory step")).toBeVisible();
+    await card.getByRole("button", { name: "Run step" }).click();
+    await expect(toast(page).filter({ hasText: "Directory step finished" })).toBeVisible({ timeout: 30_000 });
+    await expect(card.getByText("Your specification is ready")).toBeVisible();
+    await expect(card.getByText("All five gates pass. Export the functional model, glossary, scenarios and reports.")).toBeVisible();
+    await expect(banner(page).getByRole("button", { name: "Export" })).toBeVisible();
+    await noSeriousA11yViolations(page);
+
+    // The export sheet: the six artifacts, all chosen; one is left out.
+    await card.getByRole("button", { name: "Export" }).click();
+    const sheet = page.getByRole("dialog", { name: "Export specification" });
+    await expect(sheet.getByRole("checkbox")).toHaveCount(6);
+    await noSeriousA11yViolations(page);
+    await sheet.getByRole("checkbox", { name: "Decisions" }).click();
+    await expect(sheet.getByRole("checkbox", { name: "Decisions" })).not.toBeChecked();
+    const downloads: Download[] = [];
+    page.on("download", (download) => downloads.push(download));
+    await sheet.getByRole("button", { name: /^Download/ }).click();
+    await expect(toast(page).filter({ hasText: "5 files downloaded" })).toBeVisible();
+    await expect(sheet).toHaveCount(0);
+    await expect.poll(() => downloads.length).toBe(5);
+    expect(downloads.map((d) => d.suggestedFilename()).sort()).toEqual(["functional-model.yaml", "gate-report.json", "glossary.md", "report.md", "scenarios.yaml"]);
+    for (const download of downloads) {
+      expect(await download.failure()).toBeNull();
+      const path = await download.path();
+      const content = readFileSync(path, "utf8");
+      expect(content.length, download.suggestedFilename()).toBeGreaterThan(0);
+      if (download.suggestedFilename() === "gate-report.json") {
+        const gates = JSON.parse(content) as unknown;
+        expect(JSON.stringify(gates)).toContain("F4");
+      }
+      if (download.suggestedFilename() === "glossary.md") {
+        expect(content).toContain("leave request");
+      }
+    }
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe("System states", () => {
+  test("the ⌘K palette finds a requirement and runs commands", async ({ page }) => {
+    await page.goto("/overview");
+    await expect(main(page).getByRole("heading", { level: 1, name: "HR" })).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+k");
+    const palette = page.getByRole("dialog", { name: "Command palette" });
+    await expect(palette).toBeVisible();
+    await expect(palette.getByRole("option", { name: /Export specification/ })).toBeVisible();
+    await noSeriousA11yViolations(page);
+    await palette.getByRole("combobox", { name: "Command palette" }).fill("HR-009");
+    const hit = palette.getByRole("group", { name: "Requirements" }).getByRole("option", { name: /^HR-009 Submitting a valid leave request/ });
+    await expect(hit).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(palette).toHaveCount(0);
+    await expect(page).toHaveURL(/\/requirements\/req:/);
+    await expect(page.getByRole("complementary", { name: "Requirement details" })).toContainText("Submitting a valid leave request shall change its status from Draft to Submitted.");
+    // A command: go to Scenarios.
+    await page.keyboard.press("ControlOrMeta+k");
+    await palette.getByRole("combobox", { name: "Command palette" }).fill("Go to Scenarios");
+    await palette.getByRole("option", { name: /Go to Scenarios/ }).click();
+    await expect(page).toHaveURL(/\/scenarios$/);
+    // Esc closes it.
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(palette).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(palette).toHaveCount(0);
+  });
+
+  test("Settings switches to the dark appearance; screens stay accessible in dark", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/overview");
+    await page.getByRole("complementary").getByRole("button", { name: "Settings" }).first().click();
+    const settings = page.getByRole("dialog", { name: "Settings" });
+    await expect(settings.getByTestId("settings-project")).toHaveText(/^HR · project:hr · v\d+$/);
+    await expect(settings.getByText("Signed in")).toBeVisible();
+    await noSeriousA11yViolations(page);
+    await settings.getByRole("radio", { name: "Dark" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-appearance", "dark");
+    await settings.getByRole("button", { name: "Close Settings" }).click();
+    await expect(settings).toHaveCount(0);
+    for (const route of ["/overview", "/inbox", "/requirements", "/model/entities", "/scenarios", "/quality/F1", "/sources"]) {
+      await page.goto(route);
+      await page.waitForLoadState("networkidle");
+      // The choice is remembered across navigations.
+      await expect(page.locator("html")).toHaveAttribute("data-appearance", "dark");
+      await noSeriousA11yViolations(page);
+    }
+    // Back to light through the palette command.
+    await page.keyboard.press("ControlOrMeta+k");
+    await page.getByRole("dialog", { name: "Command palette" }).getByRole("option", { name: /Switch to light appearance/ }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-appearance", "light");
+  });
+
+  test("when the API goes away the connection banner shows, reads fail with Retry, and it recovers", async ({ page }) => {
+    test.setTimeout(90_000);
+    // The only route mocks of the suite: the server becomes unreachable, then comes back.
+    let down = false;
+    await page.routeWebSocket(/\/api\/events$/, (ws) => {
+      if (down) {
+        ws.close();
+      } else {
+        ws.connectToServer();
+      }
+    });
+    await page.route(
+      (url) => url.pathname.startsWith("/api/"),
+      (route) => (down ? route.abort("connectionrefused") : route.continue()),
+    );
+    await page.goto("/requirements");
+    await expect(main(page).getByTestId("requirement-row")).toHaveCount(32);
+    const lost = page.getByRole("status").filter({ hasText: "Live connection lost. Reconnecting… Your data refreshes when it's back." });
+    await expect(lost).toHaveCount(0);
+
+    down = true;
+    await page.reload();
+    await expect(lost).toBeVisible({ timeout: 15_000 });
+    await expect(main(page).getByRole("alert")).toContainText("The requirements could not be loaded. The server could not be reached.");
+    await noSeriousA11yViolations(page);
+
+    // Retry while the server is still away fails the same honest way.
+    await main(page).getByRole("button", { name: "Retry" }).click();
+    await expect(main(page).getByRole("alert")).toContainText("The server could not be reached.");
+
+    // The server is back: the socket reconnects, the banner goes and the data refreshes by itself.
+    down = false;
+    await expect(lost).toHaveCount(0, { timeout: 45_000 });
+    await expect(main(page).getByTestId("requirement-row")).toHaveCount(32);
+    await expect(banner(page).getByRole("button", { name: /^HR/ })).toBeVisible();
+  });
+});
+
+// The replay provider answers only recorded requests, keyed by their request hash. An Assistant
+// turn's request names its new session and the conversation, so no recording can match it: with
+// AI on (the replay provider), the turn fails honestly and nothing is proposed. The read-only
+// state with AI off is in s1-overview-sources.spec.ts.
+test.describe("Flow 7: the Assistant @empty-db", () => {
+  test("with AI on but no answer available, the turn fails in plain language and nothing is proposed", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.goto("/overview");
+    const waitingBefore = ((await (await page.request.get("/api/proposals")).json()) as { items: unknown[] }).items.length;
+    await banner(page).getByRole("button", { name: "Assistant" }).click();
+    const panel = page.getByRole("complementary", { name: "Assistant" });
+    await expect(panel.getByText("Scope · Project")).toBeVisible();
+    const box = panel.getByRole("textbox", { name: "Message the Assistant" });
+    await expect(box).toBeEnabled();
+    await noSeriousA11yViolations(page);
+    await box.fill("Which requirements mention approval?");
+    await expect(panel.getByRole("button", { name: "Send" })).toBeEnabled();
+    await page.keyboard.press("Enter");
+    await expect(panel.getByText("Which requirements mention approval?")).toBeVisible();
+    await expect(panel.getByRole("alert")).toContainText("The AI model could not answer. Try again in a moment.");
+    await expect(panel.getByRole("alert")).toContainText("E_INFERENCE_FAILED");
+    await noSeriousA11yViolations(page);
+    // Nothing was proposed: the Inbox does not grow.
+    const waitingAfter = ((await (await page.request.get("/api/proposals")).json()) as { items: unknown[] }).items.length;
+    expect(waitingAfter).toBe(waitingBefore);
+    await panel.getByRole("button", { name: "Close the Assistant" }).click();
+    await expect(panel).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 });

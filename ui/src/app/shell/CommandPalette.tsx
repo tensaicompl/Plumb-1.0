@@ -238,7 +238,7 @@ function PaletteBody({ close }: { close: () => void }) {
         options: recent.map((item) => ({ id: "recent-" + item.id, label: item.id, sub: item.snippet, icon: icon(kindGroup(item.kind).icon), run: openHit(item) })),
       });
     }
-  } else if (debounced === trimmed && search.data !== undefined) {
+  } else if (debounced === trimmed && search.data !== undefined && (!byDocumentId || requirements.data !== undefined || requirements.isError)) {
     const identified = byDocumentId ? (requirements.data ?? []).filter((r) => r.source_identifier?.toLowerCase() === debounced.toLowerCase()) : [];
     if (identified.length > 0) {
       const group = kindGroup("requirement");
