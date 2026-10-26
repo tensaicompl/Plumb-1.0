@@ -807,44 +807,96 @@ mod vocabulary_contract {
         let req = request(&graph, &ids);
         let r = &ids[0];
         let at = |start: usize, end: usize| json!({"requirement_ref": r, "start": start, "end": end, "concept_kind": null, "definition": null});
+        // Any-domain tolerance: an invalid mention is dropped with an issue, never fatal.
+        let dropped = |mentions: Vec<Value>| {
+            let result = analyze(&graph, &req, mentions).unwrap();
+            assert!(result.candidates.is_empty() && result.proposals.is_empty());
+            result
+                .issues
+                .iter()
+                .map(|i| match i {
+                    VocabularyIssue::MentionDropped {
+                        start, end, reason, ..
+                    } => (*start, *end, reason.clone()),
+                    other => panic!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
         let unknown = json!({"requirement_ref": "req:00000000000000ff", "start": 0, "end": 3, "concept_kind": null, "definition": null});
-        assert!(matches!(
-            analyze(&graph, &req, vec![unknown]),
-            Err(VocabularyError::UnknownRequirement { .. })
-        ));
-        assert!(
-            matches!(
-                analyze(&graph, &req, vec![at(0, 3)]),
-                Err(VocabularyError::InvalidMention { .. })
-            ),
+        assert_eq!(
+            dropped(vec![unknown]),
+            [(0, 3, "unknown requirement".to_owned())]
+        );
+        let invalid_range = "not a valid UTF-8 range of the statement".to_owned();
+        assert_eq!(
+            dropped(vec![at(0, 3)]),
+            [(0, 3, invalid_range.clone())],
             "cuts ż"
         );
-        assert!(matches!(
-            analyze(&graph, &req, vec![at(5, 5 + 999)]),
-            Err(VocabularyError::InvalidMention { .. })
-        ));
+        assert_eq!(dropped(vec![at(5, 5 + 999)]), [(5, 5 + 999, invalid_range)]);
         let dash = s.find(' ').unwrap();
-        assert!(
-            matches!(
-                analyze(&graph, &req, vec![at(dash, dash + 1)]),
-                Err(VocabularyError::InvalidMention { .. })
-            ),
+        assert_eq!(
+            dropped(vec![at(dash, dash + 1)]),
+            [(
+                dash as u64,
+                dash as u64 + 1,
+                "the selected text has no vocabulary token".to_owned()
+            )],
             "whitespace only"
         );
         let e = s.find("employee").unwrap();
-        assert!(matches!(
-            analyze(&graph, &req, vec![at(e, e + 8), at(e, e + 8)]),
-            Err(VocabularyError::DuplicateMention { .. })
-        ));
-        assert!(matches!(
-            analyze(&graph, &req, vec![at(e, e + 8), at(e + 4, e + 12)]),
-            Err(VocabularyError::OverlappingMention { .. })
-        ));
+        let (eu, eu8) = (e as u64, e as u64 + 8);
+        // Every participant of a duplicate or an overlap is dropped (order-independent).
+        assert_eq!(
+            dropped(vec![at(e, e + 8), at(e, e + 8)]),
+            [
+                (eu, eu8, "duplicate mention".to_owned()),
+                (eu, eu8, "duplicate mention".to_owned())
+            ]
+        );
+        assert_eq!(
+            dropped(vec![at(e + 4, e + 12), at(e, e + 8)]),
+            [
+                (eu, eu8, "overlaps another mention".to_owned()),
+                (eu + 4, eu + 12, "overlaps another mention".to_owned())
+            ]
+        );
         let ok = analyze(&graph, &req, vec![at(e, e + 4), at(e + 4, e + 8)]).unwrap();
         assert_eq!(ok.candidates.len(), 2, "adjacent ranges are allowed");
         let zazolc = s.find(' ').unwrap();
         let multibyte = analyze(&graph, &req, vec![at(0, zazolc)]).unwrap();
         assert_eq!(multibyte.candidates[0].surface_forms, ["Zażółć"]);
+    }
+
+    #[test]
+    fn vocabulary_bad_mention_is_dropped_and_valid_sibling_proposed() {
+        let s = "The employee shall submit a leave request.";
+        let (graph, ids) = setup(&[s]);
+        let req = request(&graph, &ids);
+        let bad = json!({"requirement_ref": ids[0], "start": 54, "end": 105, "concept_kind": null, "definition": null});
+        let result = analyze(
+            &graph,
+            &req,
+            vec![bad, mention(&graph, &ids[0], "employee")],
+        )
+        .unwrap();
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].normalized_key, "employee");
+        assert_eq!(result.proposals.len(), 1);
+        assert_eq!(terms(&result)[0].1.term, "employee");
+        assert_eq!(
+            result.issues,
+            [VocabularyIssue::MentionDropped {
+                requirement_ref: ids[0].clone(),
+                start: 54,
+                end: 105,
+                reason: "not a valid UTF-8 range of the statement".to_owned(),
+            }]
+        );
+        // The valid sibling yields exactly what it yields alone.
+        let alone = analyze(&graph, &req, vec![mention(&graph, &ids[0], "employee")]).unwrap();
+        assert_eq!(alone.proposals, result.proposals);
+        assert!(alone.issues.is_empty());
     }
 
     #[test]
@@ -907,23 +959,41 @@ mod vocabulary_contract {
         let result = analyze(&graph, &req, vec![mention(&graph, &ids[0], "contractor")]).unwrap();
         assert_eq!(terms(&result).len(), 1);
         assert!(concepts(&result).is_empty());
-        // Padded or empty definition ranges are rejected, never trimmed.
+        // Padded or empty definition ranges are never trimmed: the definition is dropped with
+        // an issue, the mention and kind stay, and the Concept is grounded in the statement.
         let padded = grounding(&graph, &ids[0], " a worker");
-        assert!(matches!(
-            analyze(
+        let foreign = json!({"requirement_ref": "req:00000000000000ff", "start": 0, "end": 3});
+        for (bad, reason) in [
+            (
+                padded,
+                "definition text is empty, padded or contains control characters",
+            ),
+            (foreign, "unknown requirement"),
+        ] {
+            let result = analyze(
                 &graph,
                 &req,
-                vec![typed(&graph, &ids[0], "contractor", "role", padded)]
-            ),
-            Err(VocabularyError::InvalidDefinitionGrounding { .. })
-        ));
-        let foreign = json!({"requirement_ref": "req:00000000000000ff", "start": 0, "end": 3});
-        assert!(analyze(
-            &graph,
-            &req,
-            vec![typed(&graph, &ids[0], "contractor", "role", foreign)]
-        )
-        .is_err());
+                vec![typed(&graph, &ids[0], "contractor", "role", bad.clone())],
+            )
+            .unwrap();
+            assert_eq!(terms(&result).len(), 1);
+            let c = concepts(&result);
+            assert_eq!(c.len(), 1);
+            assert_eq!(c[0].1.concept_kind, Role);
+            assert_eq!(c[0].1.definition, statement);
+            assert_eq!(result.candidates[0].mentions[0].definition, None);
+            let start = s.find("contractor").unwrap() as u64;
+            assert_eq!(
+                result.issues,
+                [VocabularyIssue::DefinitionDropped {
+                    requirement_ref: ids[0].clone(),
+                    start,
+                    end: start + "contractor".len() as u64,
+                    definition: serde_json::from_value(bad).unwrap(),
+                    reason: reason.to_owned(),
+                }]
+            );
+        }
     }
 
     // ------------------------------------------------------------------ statistics
@@ -1105,14 +1175,21 @@ mod vocabulary_contract {
             vec![concept_node(TERM_ID, Proposed, "squatter", Role)],
         );
         let req3 = request(&squatter, &ids);
-        assert!(matches!(
-            analyze(
-                &squatter,
-                &req3,
-                vec![mention(&squatter, &ids[2], "leave request")]
-            ),
-            Err(VocabularyError::ExistingVocabularyCandidateConflict { .. })
-        ));
+        let result = analyze(
+            &squatter,
+            &req3,
+            vec![mention(&squatter, &ids[2], "leave request")],
+        )
+        .unwrap();
+        assert!(result.proposals.is_empty());
+        assert_eq!(
+            result.issues,
+            [VocabularyIssue::CandidateDropped {
+                normalized_key: "leave request".to_owned(),
+                node_ref: id(TERM_ID),
+                reason: "conflicts with the existing node at its ID".to_owned(),
+            }]
+        );
         // A canonical surface is not repeated as an alias.
         let single = analyze(
             &graph,
@@ -1173,10 +1250,17 @@ mod vocabulary_contract {
         if let NodePayload::Term(t) = &mut renamed.payload {
             t.term = "absence request".to_owned();
         }
+        // The conflicting candidate is dropped with an issue; the other key is still proposed.
+        let result = rerun(renamed).unwrap();
         assert!(matches!(
-            rerun(renamed),
-            Err(VocabularyError::ExistingVocabularyCandidateConflict { .. })
+            result.issues.as_slice(),
+            [VocabularyIssue::CandidateDropped { node_ref, .. }] if node_ref.as_str() == TERM_ID
         ));
+        let names: Vec<&str> = terms(&result)
+            .iter()
+            .map(|(_, t)| t.term.as_str())
+            .collect();
+        assert_eq!(names, ["employee"]);
         // A differing Proposed candidate: per-key disposition, the batch continues.
         let mut differing = leave.clone();
         if let NodePayload::Term(t) = &mut differing.payload {

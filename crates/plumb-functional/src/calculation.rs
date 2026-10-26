@@ -50,7 +50,9 @@ const CALCULATION_STAGE: StageId = StageId::S2;
 // ============================================================================ errors and issues
 
 /// Why calculation analysis could not run. Malformed supplied inference and invalid
-/// requests are errors; semantic problems of a candidate are [`CalculationIssue`]s.
+/// requests are errors; semantic problems of a candidate are [`CalculationIssue`]s, and a
+/// candidate whose groundings, calendar or identity break the artifact contract is dropped
+/// with an issue while its valid siblings are still analysed (any-domain tolerance).
 #[derive(Debug, Error)]
 pub enum CalculationError {
     #[error("invalid calculation input: {reason}")]
@@ -67,17 +69,6 @@ pub enum CalculationError {
     SchemaCompilation { reason: String },
     #[error("calculation output is schema-invalid: {reason}")]
     SchemaInvalid { reason: String },
-    #[error("invalid grounding {requirement_ref} {start}..{end}: {reason}")]
-    InvalidGrounding {
-        requirement_ref: Id,
-        start: u64,
-        end: u64,
-        reason: String,
-    },
-    #[error("calendar {calendar_ref} is not an allowed calendar of the request")]
-    CalendarNotAllowed { calendar_ref: Id },
-    #[error("duplicate calculation candidate {calculation_ref}")]
-    DuplicateCandidate { calculation_ref: Id },
     #[error("invalid proposal: {reason}")]
     InvalidProposal { reason: String },
     #[error(transparent)]
@@ -590,26 +581,26 @@ fn compile_schema() -> Result<JSONSchema, CalculationError> {
         })
 }
 
+fn grounding_issue(g: &CalculationGroundedRange, reason: &str) -> CalculationIssue {
+    CalculationIssue::InvalidGrounding {
+        reason: format!("{} {}..{}: {reason}", g.requirement_ref, g.start, g.end),
+    }
+}
+
 fn grounded<'c>(
     context: &'c CalculationContext,
     g: &CalculationGroundedRange,
-) -> Result<&'c str, CalculationError> {
-    let invalid = |reason: &str| CalculationError::InvalidGrounding {
-        requirement_ref: g.requirement_ref.clone(),
-        start: g.start,
-        end: g.end,
-        reason: reason.to_owned(),
-    };
+) -> Result<&'c str, CalculationIssue> {
     let requirement = context
         .requirement(&g.requirement_ref)
-        .ok_or_else(|| invalid("not a target requirement"))?;
+        .ok_or_else(|| grounding_issue(g, "not a target requirement"))?;
     let text = &requirement.statement;
     let (s, e) = match (usize::try_from(g.start), usize::try_from(g.end)) {
         (Ok(s), Ok(e)) if s < e && e <= text.len() => (s, e),
-        _ => return Err(invalid("not a non-empty range of the statement")),
+        _ => return Err(grounding_issue(g, "not a non-empty range of the statement")),
     };
     if !text.is_char_boundary(s) || !text.is_char_boundary(e) {
-        return Err(invalid("not on UTF-8 character boundaries"));
+        return Err(grounding_issue(g, "not on UTF-8 character boundaries"));
     }
     Ok(&text[s..e])
 }
@@ -620,17 +611,47 @@ fn grounded<'c>(
 fn grounded_name<'c>(
     context: &'c CalculationContext,
     g: &CalculationGroundedRange,
-) -> Result<&'c str, CalculationError> {
+) -> Result<&'c str, CalculationIssue> {
     let slice = grounded(context, g)?;
     if slice.trim() != slice || slice.chars().any(char::is_control) {
-        return Err(CalculationError::InvalidGrounding {
-            requirement_ref: g.requirement_ref.clone(),
-            start: g.start,
-            end: g.end,
-            reason: "slice has surrounding whitespace or control characters".to_owned(),
-        });
+        return Err(grounding_issue(
+            g,
+            "slice has surrounding whitespace or control characters",
+        ));
     }
     Ok(slice)
+}
+
+/// The per-candidate artifact contract (any-domain tolerance): a grounded name, grounded
+/// expression evidence (an exact duplicate range is ignored with an issue) and an allowed
+/// calendar. A violation drops only this candidate, reported as the returned issue.
+fn validated_candidate(
+    context: &CalculationContext,
+    scope: &CalculationScope,
+    candidate: &OutputCalculation,
+    issues: &mut Vec<CalculationIssue>,
+) -> Result<(String, Vec<CalculationGroundedRange>), CalculationIssue> {
+    let name = grounded_name(context, &candidate.name_range)?.to_owned();
+    let mut evidence = candidate.expression_evidence.clone();
+    for range in &evidence {
+        grounded(context, range)?;
+    }
+    evidence.sort();
+    let before = evidence.len();
+    evidence.dedup();
+    if evidence.len() != before {
+        issues.push(CalculationIssue::InvalidGrounding {
+            reason: format!("calculation {name:?}: duplicate expression evidence range ignored"),
+        });
+    }
+    if let Some(calendar) = &candidate.calendar_ref {
+        if !scope.calendar_refs.contains(calendar) {
+            return Err(CalculationIssue::CalendarUnresolved {
+                calendar_ref: calendar.clone(),
+            });
+        }
+    }
+    Ok((name, evidence))
 }
 
 /// `calculation:<16 hex of SHA-256(RFC 8785 {project_id, name, node_type: calculation})>`.
@@ -705,33 +726,26 @@ pub fn analyze_calculations(
         .map_err(invalid_proposal)?;
     let mut candidates = Vec::new();
     let mut proposals = Vec::new();
+    let mut issues = Vec::new();
     let mut seen = BTreeSet::new();
     for candidate in decoded.calculations {
-        // Grounding and calendar selection are part of the artifact contract.
-        let name = grounded_name(&context, &candidate.name_range)?.to_owned();
-        let mut evidence = candidate.expression_evidence.clone();
-        for range in &evidence {
-            grounded(&context, range)?;
-        }
-        evidence.sort();
-        if evidence.windows(2).any(|p| p[0] == p[1]) {
-            return Err(CalculationError::InvalidGrounding {
-                requirement_ref: evidence[0].requirement_ref.clone(),
-                start: evidence[0].start,
-                end: evidence[0].end,
-                reason: "duplicate expression evidence range".into(),
-            });
-        }
-        if let Some(calendar) = &candidate.calendar_ref {
-            if !scope.calendar_refs.contains(calendar) {
-                return Err(CalculationError::CalendarNotAllowed {
-                    calendar_ref: calendar.clone(),
-                });
+        // Grounding and calendar selection are part of the artifact contract; a candidate
+        // that breaks it is dropped with an issue and its siblings continue.
+        let (name, evidence) = match validated_candidate(&context, &scope, &candidate, &mut issues)
+        {
+            Ok(valid) => valid,
+            Err(issue) => {
+                issues.push(issue);
+                continue;
             }
-        }
+        };
         let calculation_ref = calculation_id(graph.project_id(), &name)?;
+        // The first candidate of an identity is analysed; a later one is dropped.
         if !seen.insert(calculation_ref.clone()) {
-            return Err(CalculationError::DuplicateCandidate { calculation_ref });
+            issues.push(CalculationIssue::InvalidName {
+                reason: format!("duplicate calculation candidate {calculation_ref} dropped"),
+            });
+            continue;
         }
         let draft = CalculationDraft {
             expression: &candidate.expression,
@@ -852,10 +866,12 @@ pub fn analyze_calculations(
     }
     candidates.sort_by(|a, b| a.calculation_ref.cmp(&b.calculation_ref));
     proposals.sort_by(|a, b| a.id.cmp(&b.id));
+    issues.sort();
+    issues.dedup();
     Ok(CalculationAnalysisResult {
         candidates,
         proposals,
-        issues: Vec::new(),
+        issues,
     })
 }
 

@@ -1278,34 +1278,59 @@ mod calculation_contract {
             run(&g, &hr_scope(), vec![with_inputs]),
             Err(CalculationError::SchemaInvalid { .. })
         ));
+        // Any-domain tolerance: a candidate breaking the per-item artifact contract is
+        // dropped with an issue; the analysis itself still succeeds.
+        let dropped = |c: Json| {
+            let result = run(&g, &hr_scope(), vec![c]).unwrap();
+            assert!(result.candidates.is_empty() && result.proposals.is_empty());
+            assert_eq!(result.issues.len(), 1, "{:?}", result.issues);
+            result.issues[0].clone()
+        };
+        let grounding = |issue: &CalculationIssue, needle: &str| match issue {
+            CalculationIssue::InvalidGrounding { reason } => {
+                assert!(reason.contains(needle), "{reason}")
+            }
+            other => panic!("{other:?}"),
+        };
         let mut out_of_range = half_day();
         out_of_range["name_range"] = json!({"requirement_ref": "req:r1", "start": 0, "end": 9999});
-        assert!(matches!(
-            run(&g, &hr_scope(), vec![out_of_range]),
-            Err(CalculationError::InvalidGrounding { .. })
-        ));
+        grounding(
+            &dropped(out_of_range),
+            "req:r1 0..9999: not a non-empty range of the statement",
+        );
         let mut unknown_req = half_day();
         unknown_req["name_range"] = json!({"requirement_ref": "req:r9", "start": 0, "end": 3});
-        assert!(matches!(
-            run(&g, &hr_scope(), vec![unknown_req]),
-            Err(CalculationError::InvalidGrounding { .. })
-        ));
+        grounding(&dropped(unknown_req), "not a target requirement");
+        let mut bad_evidence = half_day();
+        bad_evidence["expression_evidence"] =
+            json!([range("day fraction"), {"requirement_ref": "req:r1", "start": 5, "end": 5}]);
+        grounding(&dropped(bad_evidence), "not a non-empty range");
+        // An exact duplicate evidence range is ignored (reported), never fatal.
         let mut duplicate_evidence = half_day();
         duplicate_evidence["expression_evidence"] =
             json!([range("day fraction"), range("day fraction")]);
-        assert!(matches!(
-            run(&g, &hr_scope(), vec![duplicate_evidence]),
-            Err(CalculationError::InvalidGrounding { .. })
-        ));
+        let result = run(&g, &hr_scope(), vec![duplicate_evidence]).unwrap();
+        assert_eq!(result.proposals.len(), 1);
+        assert_eq!(result.issues.len(), 1);
+        grounding(
+            &result.issues[0],
+            "duplicate expression evidence range ignored",
+        );
         let mut not_allowed = half_day();
         not_allowed["calendar_ref"] = json!("cal:draft");
+        assert_eq!(
+            dropped(not_allowed),
+            CalculationIssue::CalendarUnresolved {
+                calendar_ref: id("cal:draft")
+            }
+        );
+        // The first candidate of an identity is analysed; a later duplicate is dropped.
+        let result = run(&g, &hr_scope(), vec![half_day(), half_day()]).unwrap();
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.proposals.len(), 1);
         assert!(matches!(
-            run(&g, &hr_scope(), vec![not_allowed]),
-            Err(CalculationError::CalendarNotAllowed { .. })
-        ));
-        assert!(matches!(
-            run(&g, &hr_scope(), vec![half_day(), half_day()]),
-            Err(CalculationError::DuplicateCandidate { .. })
+            result.issues.as_slice(),
+            [CalculationIssue::InvalidName { reason }] if reason.contains("duplicate calculation candidate")
         ));
         // H0.10 [Fable #109]: a blank or padded grounded name is rejected exactly like the
         // state and domain producers, never trimmed into a different identity.
@@ -1318,17 +1343,36 @@ mod calculation_contract {
         ] {
             let mut padded = half_day();
             padded["name_range"] = json!({"requirement_ref": "req:r1", "start": start, "end": end});
-            assert!(
-                matches!(
-                    run(&g, &hr_scope(), vec![padded]),
-                    Err(CalculationError::InvalidGrounding { .. })
-                ),
-                "{start}..{end}"
-            );
+            grounding(&dropped(padded), "");
         }
         // A stale graph is rejected.
         let changed = set_status(&g, "attr:start-date", Rejected);
         assert!(analyze_calculations(&changed, &r, None, &audit()).is_err());
+    }
+
+    #[test]
+    fn calculation_bad_candidate_is_dropped_and_valid_sibling_proposed() {
+        let g = base_graph(vec![], vec![]);
+        let mut bad = half_day();
+        bad["name_range"] = json!({"requirement_ref": "req:r1", "start": 54, "end": 105000});
+        let result = run(&g, &hr_scope(), vec![bad, half_day()]).unwrap();
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].name, "Requested Working Days");
+        assert!(matches!(
+            result.candidates[0].disposition,
+            CalculationDisposition::Proposed { .. }
+        ));
+        assert_eq!(result.proposals.len(), 1);
+        assert_eq!(
+            result.issues,
+            vec![CalculationIssue::InvalidGrounding {
+                reason: "req:r1 54..105000: not a non-empty range of the statement".to_owned()
+            }]
+        );
+        // The valid sibling's proposal is exactly the one it yields alone.
+        let alone = run(&g, &hr_scope(), vec![half_day()]).unwrap();
+        assert_eq!(alone.proposals, result.proposals);
+        assert!(alone.issues.is_empty());
     }
 
     #[test]

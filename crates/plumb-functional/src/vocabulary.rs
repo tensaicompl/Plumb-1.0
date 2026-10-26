@@ -61,7 +61,8 @@ vocabulary interpretation before treating the term as resolved.";
 // ============================================================================ errors
 
 /// Why vocabulary analysis could not run. Malformed supplied inference is an error, never
-/// treated as absent inference.
+/// treated as absent inference; an invalid single mention, definition or vocabulary node
+/// candidate is dropped as a [`VocabularyIssue`] instead (any-domain tolerance).
 #[derive(Debug, Error)]
 pub enum VocabularyError {
     #[error("invalid vocabulary input: {reason}")]
@@ -78,41 +79,6 @@ pub enum VocabularyError {
     SchemaCompilation { reason: String },
     #[error("vocabulary output is schema-invalid: {reason}")]
     SchemaInvalid { reason: String },
-    #[error("mention references unknown requirement {requirement_ref}")]
-    UnknownRequirement { requirement_ref: Id },
-    #[error("invalid mention {requirement_ref} {start}..{end}: {reason}")]
-    InvalidMention {
-        requirement_ref: Id,
-        start: u64,
-        end: u64,
-        reason: String,
-    },
-    #[error("duplicate mention {requirement_ref} {start}..{end}")]
-    DuplicateMention {
-        requirement_ref: Id,
-        start: u64,
-        end: u64,
-    },
-    #[error("overlapping mentions in {requirement_ref}: {first_start}..{first_end} and {second_start}..{second_end}")]
-    OverlappingMention {
-        requirement_ref: Id,
-        first_start: u64,
-        first_end: u64,
-        second_start: u64,
-        second_end: u64,
-    },
-    #[error("invalid definition grounding {requirement_ref} {start}..{end}: {reason}")]
-    InvalidDefinitionGrounding {
-        requirement_ref: Id,
-        start: u64,
-        end: u64,
-        reason: String,
-    },
-    #[error("existing node {node_ref} conflicts with the vocabulary candidate {normalized_key:?}")]
-    ExistingVocabularyCandidateConflict {
-        node_ref: Id,
-        normalized_key: String,
-    },
     #[error("invalid proposal: {reason}")]
     InvalidProposal { reason: String },
     #[error("validation profile: {reason}")]
@@ -572,11 +538,37 @@ impl VocabularyConflict {
 }
 
 /// A deterministic, non-conflict outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "issue", rename_all = "snake_case")]
 pub enum VocabularyIssue {
     /// No vocabulary inference was supplied; there is no fallback.
     InferenceUnavailable,
+    /// One model-proposed mention was dropped (unknown requirement, invalid range, no
+    /// vocabulary token, or a duplicate of / overlap with another mention, in which case every
+    /// participant is dropped); the other mentions are still analysed.
+    MentionDropped {
+        requirement_ref: Id,
+        start: u64,
+        end: u64,
+        reason: String,
+    },
+    /// The grounded definition of one mention was dropped; the mention and its concept kind
+    /// are kept, so a Concept is grounded in the using statement instead.
+    DefinitionDropped {
+        requirement_ref: Id,
+        start: u64,
+        end: u64,
+        definition: VocabularyGroundedRange,
+        reason: String,
+    },
+    /// One vocabulary node candidate (a Term or Concept of a key) was dropped because it
+    /// conflicts with the node at its deterministic ID or is not a valid node; the other
+    /// candidates, including the other node of the same key, are still proposed.
+    CandidateDropped {
+        normalized_key: String,
+        node_ref: Id,
+        reason: String,
+    },
 }
 
 /// One per-key disposition of a vocabulary rerun (architecture 33.5).
@@ -661,12 +653,14 @@ fn bounds(text: &str, start: u64, end: u64) -> Option<(usize, usize)> {
         .then_some((s, e))
 }
 
-/// Validates the supplied artifact in the contract order and returns the mentions sorted by
-/// requirement, start and end, with their grounded definition texts.
+/// Validates the supplied artifact in the contract order and returns the valid mentions sorted
+/// by requirement, start and end, with their grounded definition texts. Whole-output contract
+/// violations are errors; an invalid mention or definition is dropped into `issues`.
 fn validated_mentions(
     context: &VocabularyContext,
     request: &InferenceRequest,
     artifact: &InferenceArtifact,
+    issues: &mut Vec<VocabularyIssue>,
 ) -> Result<Vec<(VocabularyMention, Option<String>)>, VocabularyError> {
     artifact
         .validate_for(request)
@@ -693,83 +687,90 @@ fn validated_mentions(
     mentions.sort_by(|a, b| {
         (&a.requirement_ref, a.start, a.end).cmp(&(&b.requirement_ref, b.start, b.end))
     });
-    for m in &mentions {
-        if context.requirement(&m.requirement_ref).is_none() {
-            return Err(VocabularyError::UnknownRequirement {
-                requirement_ref: m.requirement_ref.clone(),
-            });
-        }
-        if m.concept_kind.is_none() && m.definition.is_some() {
-            return Err(schema_invalid("a definition requires a concept kind"));
-        }
+    if mentions
+        .iter()
+        .any(|m| m.concept_kind.is_none() && m.definition.is_some())
+    {
+        return Err(schema_invalid("a definition requires a concept kind"));
     }
+    let dropped = |m: &OutputMention, reason: &str| VocabularyIssue::MentionDropped {
+        requirement_ref: m.requirement_ref.clone(),
+        start: m.start,
+        end: m.end,
+        reason: reason.to_owned(),
+    };
+    // Per-mention grounding: an invalid mention is dropped, its siblings continue.
     let mut keyed = Vec::new();
-    for m in &mentions {
+    for m in mentions {
         let Some(target) = context.requirement(&m.requirement_ref) else {
-            return Err(VocabularyError::UnknownRequirement {
-                requirement_ref: m.requirement_ref.clone(),
-            });
+            issues.push(dropped(&m, "unknown requirement"));
+            continue;
         };
         let statement = &target.statement;
-        let invalid = |reason: &str| VocabularyError::InvalidMention {
-            requirement_ref: m.requirement_ref.clone(),
-            start: m.start,
-            end: m.end,
-            reason: reason.to_owned(),
-        };
-        let (s, e) = bounds(statement, m.start, m.end)
-            .ok_or_else(|| invalid("not a valid UTF-8 range of the statement"))?;
-        let surface = &statement[s..e];
-        let key = normalize_vocabulary_term(surface)
-            .ok_or_else(|| invalid("the selected text has no vocabulary token"))?;
-        keyed.push((surface.to_owned(), key));
-    }
-    for pair in mentions.windows(2) {
-        let (a, b) = (&pair[0], &pair[1]);
-        if a.requirement_ref != b.requirement_ref {
+        let Some((s, e)) = bounds(statement, m.start, m.end) else {
+            issues.push(dropped(&m, "not a valid UTF-8 range of the statement"));
             continue;
-        }
-        if (a.start, a.end) == (b.start, b.end) {
-            return Err(VocabularyError::DuplicateMention {
-                requirement_ref: a.requirement_ref.clone(),
-                start: a.start,
-                end: a.end,
-            });
-        }
-        if b.start < a.end {
-            return Err(VocabularyError::OverlappingMention {
-                requirement_ref: a.requirement_ref.clone(),
-                first_start: a.start,
-                first_end: a.end,
-                second_start: b.start,
-                second_end: b.end,
-            });
+        };
+        let surface = &statement[s..e];
+        let Some(key) = normalize_vocabulary_term(surface) else {
+            issues.push(dropped(&m, "the selected text has no vocabulary token"));
+            continue;
+        };
+        keyed.push((m, surface.to_owned(), key));
+    }
+    // Duplicate or overlapping mentions are ambiguous: every participant is dropped, so the
+    // outcome does not depend on the output order.
+    let mut ambiguous: BTreeMap<usize, &str> = BTreeMap::new();
+    for (i, (a, _, _)) in keyed.iter().enumerate() {
+        for (j, (b, _, _)) in keyed.iter().enumerate().skip(i + 1) {
+            if a.requirement_ref != b.requirement_ref || b.start >= a.end {
+                break;
+            }
+            let reason = if (a.start, a.end) == (b.start, b.end) {
+                "duplicate mention"
+            } else {
+                "overlaps another mention"
+            };
+            for k in [i, j] {
+                let entry = ambiguous.entry(k).or_insert(reason);
+                if reason == "duplicate mention" {
+                    *entry = reason;
+                }
+            }
         }
     }
     let mut out = Vec::new();
-    for (m, (surface, normalized_key)) in mentions.into_iter().zip(keyed) {
-        let definition_text = match &m.definition {
-            None => None,
-            Some(range) => {
-                let invalid = |reason: &str| VocabularyError::InvalidDefinitionGrounding {
-                    requirement_ref: range.requirement_ref.clone(),
-                    start: range.start,
-                    end: range.end,
-                    reason: reason.to_owned(),
-                };
-                let target = context
-                    .requirement(&range.requirement_ref)
-                    .ok_or_else(|| invalid("unknown requirement"))?;
-                let (s, e) = bounds(&target.statement, range.start, range.end)
-                    .ok_or_else(|| invalid("not a valid UTF-8 range of the statement"))?;
-                let text = &target.statement[s..e];
-                if !is_clean(text) {
-                    return Err(invalid(
-                        "definition text is empty, padded or contains control characters",
-                    ));
-                }
-                Some(text.to_owned())
+    for (i, (m, surface, normalized_key)) in keyed.into_iter().enumerate() {
+        if let Some(reason) = ambiguous.get(&i) {
+            issues.push(dropped(&m, reason));
+            continue;
+        }
+        let grounded = m.definition.as_ref().map(|range| {
+            let target = context
+                .requirement(&range.requirement_ref)
+                .ok_or("unknown requirement")?;
+            let (s, e) = bounds(&target.statement, range.start, range.end)
+                .ok_or("not a valid UTF-8 range of the statement")?;
+            let text = &target.statement[s..e];
+            if is_clean(text) {
+                Ok(text.to_owned())
+            } else {
+                Err("definition text is empty, padded or contains control characters")
             }
+        });
+        let (definition, definition_text) = match (m.definition, grounded) {
+            (Some(range), Some(Ok(text))) => (Some(range), Some(text)),
+            (Some(range), Some(Err(reason))) => {
+                issues.push(VocabularyIssue::DefinitionDropped {
+                    requirement_ref: m.requirement_ref.clone(),
+                    start: m.start,
+                    end: m.end,
+                    definition: range,
+                    reason: reason.to_owned(),
+                });
+                (None, None)
+            }
+            _ => (None, None),
         };
         out.push((
             VocabularyMention {
@@ -781,7 +782,7 @@ fn validated_mentions(
                 surface,
                 normalized_key,
                 concept_kind: m.concept_kind,
-                definition: m.definition,
+                definition,
             },
             definition_text,
         ));
@@ -888,6 +889,8 @@ enum Presence {
     /// The node at the ID is this producer's own output (possibly enriched): nothing to do.
     Existing,
     Disposition(VocabularyKeyDisposition),
+    /// The candidate is dropped (it conflicts with the node at its ID or is invalid).
+    Dropped(VocabularyIssue),
 }
 
 /// Term: `term`, `language`; Concept: `name`, `concept_kind` (architecture 33.5).
@@ -935,14 +938,20 @@ fn propose_vocabulary_node(
         )
         .map_err(invalid_proposal)?,
     };
-    node.validate().map_err(invalid_proposal)?;
-    if let Some(existing) = context.graph.node(&id) {
-        let conflict = || VocabularyError::ExistingVocabularyCandidateConflict {
-            node_ref: id.clone(),
+    let dropped = |reason: String| {
+        Ok(Presence::Dropped(VocabularyIssue::CandidateDropped {
             normalized_key: key.to_owned(),
-        };
+            node_ref: id.clone(),
+            reason,
+        }))
+    };
+    if let Err(e) = node.validate() {
+        return dropped(format!("invalid node: {e}"));
+    }
+    if let Some(existing) = context.graph.node(&id) {
+        let conflict = || dropped("conflicts with the existing node at its ID".to_owned());
         if existing.payload.node_type() != node.payload.node_type() {
-            return Err(conflict());
+            return conflict();
         }
         let disposition = |d: &str| {
             Ok(Presence::Disposition(VocabularyKeyDisposition {
@@ -956,7 +965,7 @@ fn propose_vocabulary_node(
             ElementStatus::Accepted if same_owned_fields(&existing.payload, &node.payload) => {
                 Ok(Presence::Existing)
             }
-            ElementStatus::Accepted => Err(conflict()),
+            ElementStatus::Accepted => conflict(),
             ElementStatus::Proposed
                 if existing.payload == node.payload
                     && existing.evidence == node.evidence
@@ -1055,7 +1064,13 @@ pub fn analyze_vocabulary(
             issues: vec![VocabularyIssue::InferenceUnavailable],
         });
     };
-    let mentions = validated_mentions(context, &vocabulary_request.request, inference.artifact)?;
+    let mut issues = Vec::new();
+    let mentions = validated_mentions(
+        context,
+        &vocabulary_request.request,
+        inference.artifact,
+        &mut issues,
+    )?;
     let accepted = accepted_vocabulary(graph);
 
     // Candidates and statistics.
@@ -1246,6 +1261,7 @@ pub fn analyze_vocabulary(
                 Presence::New(p) => proposals.push(*p),
                 Presence::Existing => {}
                 Presence::Disposition(d) => dispositions.push(d),
+                Presence::Dropped(issue) => issues.push(issue),
             }
         }
 
@@ -1311,6 +1327,7 @@ pub fn analyze_vocabulary(
                 Presence::New(p) => proposals.push(*p),
                 Presence::Existing => {}
                 Presence::Disposition(d) => dispositions.push(d),
+                Presence::Dropped(issue) => issues.push(issue),
             }
         }
         conflicts.extend(key_conflicts);
@@ -1360,6 +1377,7 @@ pub fn analyze_vocabulary(
 
     proposals.sort_by(|a, b| added_node_id(a).cmp(&added_node_id(b)));
     dispositions.sort_by(|a, b| a.node_ref.cmp(&b.node_ref));
+    issues.sort();
     Ok(VocabularyAnalysisResult {
         dispositions,
         candidates,
@@ -1368,7 +1386,7 @@ pub fn analyze_vocabulary(
         conflicts,
         findings: findings.into_values().collect(),
         proposals,
-        issues: Vec::new(),
+        issues,
     })
 }
 
