@@ -2333,7 +2333,7 @@
   },
   {
     "artifact": {
-      "request_hash": "sha256:0b381fbbb4ce141cb9f94532d52ffdbf6612c4f44744594c5d3b91b59158206d",
+      "request_hash": "sha256:c1e1371f48a488da15b908de160d33b51ccc13e646a5d0d833666c0f27b9e03c",
       "provider": "test",
       "model": "scripted-hr",
       "parameters": {},

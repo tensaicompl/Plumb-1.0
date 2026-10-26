@@ -19,8 +19,16 @@ For each classification:
   compliance, transition, constraint.
 - level is null or exactly one of:
   stakeholder, system, software, subsystem, component, interface.
-- Use null for requirement_kind or level when the evidence does not
-  support a reliable proposal.
+- modality is null or exactly one of: shall, shall_not, should, may.
+  It is the normative strength the statement expresses: shall for an
+  obligation or a business rule stated as fact ("Vehicles with zero
+  emissions get a 50% discount."), shall_not for a prohibition
+  ("never", "cannot", "is not allowed"), should for a recommendation,
+  may for a permission or an option ("can", "may"). Plumb reads shall,
+  shall not, should, may, must and must not from the wording itself;
+  your modality is used only when the wording has none of them.
+- Use null for requirement_kind, level or modality when the evidence
+  does not support a reliable proposal.
 - Do not invent a classification merely to avoid null.
 
 The source text may contain an explicit source identifier and bracketed
@@ -66,8 +74,8 @@ IDs are invented, never copy them):
 {
   "version": 1,
   "classifications": [
-    {"candidate_ref": "seg:0123456789abcdef", "requirement_kind": "functional", "level": "system"},
-    {"candidate_ref": "seg:fedcba9876543210", "requirement_kind": null, "level": null}
+    {"candidate_ref": "seg:0123456789abcdef", "requirement_kind": "functional", "level": "system", "modality": "shall"},
+    {"candidate_ref": "seg:fedcba9876543210", "requirement_kind": null, "level": null, "modality": null}
   ],
   "intents": [
     {"candidate_ref": "seg:0123456789abcdef", "intent_kind": "goal"},

@@ -37,15 +37,15 @@ mod requirements_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:59abbb13ed4240796f52c1dc26f86959b2fc66530b7baa47f78afed9834f82b6";
+        "sha256:a72473f7d276d11eca3b52273507131d8b7d9e9ba8a65582e246cdecb11d39f5";
     const SCHEMA_HASH: &str =
-        "sha256:16abf2288daac76199316fd44c1db682347fcda50d0b24e6cce5345b3e869101";
+        "sha256:569f72cfc4ae0de7b2887f2a22357494eaa8f1bf0f2523a84109a8b2c6dc2158";
     const GOLDEN_CANDIDATE: &str = "seg:31d8789f008efd04";
     const GOLDEN_FRAGMENT: &str = "evd:58386a9177fc2196";
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:fbe4e912ae613c1ec09b4f6c5f63c275a9bd88a1cdb99d5ba0bb9f7d282e9978";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:48620c2c221d65f0cc5b60c30b68c786277171d7fead0736dad06c1f2f5e11a9";
+        "sha256:060cbf38dcc9b10d7f6841ee7082fd6df0673c5999953bd3c2cc55c7800cfaff";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and
@@ -369,7 +369,7 @@ mod requirements_contract {
             vec![classification(&id(SEG), Value::Null, Value::Null)],
             vec![]
         )));
-        for field in ["confidence", "probability", "score", "modality"] {
+        for field in ["confidence", "probability", "score"] {
             assert!(!SCHEMA.contains(field), "{field}");
         }
     }
@@ -902,16 +902,58 @@ mod requirements_contract {
             ),
             ("The system shall-not-log.", Modality::Shall),
             ("The system shall, not later, log.", Modality::Shall),
+            ("The system must log.", Modality::Shall),
+            ("The system MUST NOT log.", Modality::ShallNot),
         ] {
             assert_eq!(modality_of(text), Ok(modality), "{text}");
         }
     }
 
     #[test]
+    fn requirements_classifier_modality_fills_missing_or_unsupported_wording() {
+        let classified = |text: &str, modality: Value| {
+            let (graph, candidates) = setup(&[text]);
+            let request = request_for(&graph, &candidates);
+            let mut entry = classification(
+                &request.context.candidates[0].candidate_ref,
+                json!("functional"),
+                json!("system"),
+            );
+            entry["modality"] = modality;
+            let result = compile(
+                &graph,
+                &candidates,
+                &request,
+                Some(output(vec![entry], vec![])),
+            )
+            .unwrap();
+            let found = requirements(&result).first().map(|(_, r)| r.modality);
+            (found, issue_names(&result))
+        };
+        // A business rule stated as fact, and "can": the classifier's modality is used.
+        assert_eq!(
+            classified("Zero-emission vehicles get a 50% discount.", json!("shall")),
+            (Some(Modality::Shall), vec![])
+        );
+        assert_eq!(
+            classified("The user can log in.", json!("may")),
+            (Some(Modality::May), vec![])
+        );
+        // The wording's own modal verb always wins over the classifier.
+        assert_eq!(
+            classified("The system should log.", json!("shall")),
+            (Some(Modality::Should), vec![])
+        );
+        // Without either, the requirement stays unresolved.
+        assert_eq!(
+            classified("Zero-emission vehicles get a 50% discount.", json!(null)),
+            (None, vec!["missing_modality"])
+        );
+    }
+
+    #[test]
     fn requirements_unsupported_and_missing_modalities() {
         for (text, token) in [
-            ("The system must log.", "must"),
-            ("The system MUST NOT log.", "must not"),
             ("The user can log in.", "can"),
             ("The system should not log.", "should not"),
             ("The system May Not log.", "may not"),
@@ -1057,7 +1099,7 @@ mod requirements_contract {
         );
         assert!(result.proposals.is_empty());
         assert_eq!(issue_names(&result), ["requirement_level_unknown"]);
-        let result = compile_one("The user must log.", json!(null), json!(null));
+        let result = compile_one("The user can log.", json!(null), json!(null));
         assert_eq!(
             issue_names(&result),
             [

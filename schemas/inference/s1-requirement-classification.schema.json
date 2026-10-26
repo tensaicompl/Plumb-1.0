@@ -50,6 +50,15 @@
               "component",
               "interface"
             ]
+          },
+          "modality": {
+            "enum": [
+              null,
+              "shall",
+              "shall_not",
+              "should",
+              "may"
+            ]
           }
         }
       }

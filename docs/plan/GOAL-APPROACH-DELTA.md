@@ -105,6 +105,19 @@ architecture text, so the plan can be updated when it is picked up again.
 | Contrast | Where the handoff's grey text failed WCAG AA (axe), the darker `fg-3` tokens are used. |
 | Data the API lacks | Readiness, glossary definitions, rule row sources, per-gate prose summaries and actor display names are not invented; the screens show honest empty states. |
 
+## Any-domain run (non-HR high-level spec) adjudications
+
+A high-level spec in plain business language (fixtures/parking-permits) exposed rules that only
+held because the HR document is written in formal "shall" sentences, and configuration that only
+the HR example supplies.
+
+| Item | Contract on this branch |
+| --- | --- |
+| Starter configuration | `start.sh` copies the domain-neutral `examples/blank.json` (one calendar, one Product Owner stakeholder, no directory, calculation scope or scenario derivation); `PLUMB_EXAMPLE=hr-pilot` copies the HR example. |
+| Segmentation (S0.4 prompt) | A business rule, price, limit, deadline or validity period is requirement-like without a modal verb; a list marker or item number is its own non_requirement range. |
+| Modality (S1.1 items 2, 9, 11) | `must` reads as `shall` and `must not` as `shall_not` (the RFC 2119 equivalence). The classification schema gains an optional `modality` (null, shall, shall_not, should, may), used only when the wording has no supported modal verb (a rule stated as fact, `can`, `should not`, `may not`, several modals); the wording always wins, and null still leaves `missing_modality` / `unsupported_modality`. Every Requirement stays a HUMAN_CONFIRM proposal, so a model-read modality is reviewed like every other field. |
+| EARS groundings | A source range that spans a wrapped line reads each inner whitespace run as one space. An invalid suggestion (pattern, grounding or component) is dropped with a `suggestion_dropped` issue; the phase no longer fails for one requirement. |
+
 ## Plan tasks: status on this branch
 
 | Task | Status |

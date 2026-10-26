@@ -390,13 +390,17 @@ struct ClassificationEntry {
     candidate_ref: Id,
     requirement_kind: Option<RequirementKind>,
     level: Option<RequirementLevel>,
+    #[serde(default)]
+    modality: Option<Modality>,
 }
 
-/// The classifier's proposal for one candidate; `None` means it declined to guess.
+/// The classifier's proposal for one candidate; `None` means it declined to guess. The
+/// modality is used only when the statement's own wording has no supported modal verb.
 #[derive(Clone, Copy)]
 struct Classification {
     requirement_kind: Option<RequirementKind>,
     level: Option<RequirementLevel>,
+    modality: Option<Modality>,
 }
 
 /// Validated classification output, keyed by candidate ID.
@@ -472,6 +476,7 @@ fn validate_classification(
         let classification = Classification {
             requirement_kind: entry.requirement_kind,
             level: entry.level,
+            modality: entry.modality,
         };
         if classifications
             .insert(entry.candidate_ref.clone(), classification)
@@ -629,8 +634,8 @@ fn read_modality(statement: &str) -> ModalityReading {
             ("should", true) => ModalityReading::Unsupported("should not"),
             ("may", false) => ModalityReading::Modality(Modality::May),
             ("may", true) => ModalityReading::Unsupported("may not"),
-            ("must", false) => ModalityReading::Unsupported("must"),
-            ("must", true) => ModalityReading::Unsupported("must not"),
+            ("must", false) => ModalityReading::Modality(Modality::Shall),
+            ("must", true) => ModalityReading::Modality(Modality::ShallNot),
             _ => ModalityReading::Unsupported("can"),
         };
     }
@@ -896,6 +901,7 @@ pub fn compile_requirement_candidates(
         }
         let modality = match read_modality(&parsed.statement) {
             ModalityReading::Modality(modality) => Some(modality),
+            _ if classified.modality.is_some() => classified.modality,
             ModalityReading::Unsupported(token) => {
                 issues.push(RequirementCompilationIssue::UnsupportedModality {
                     candidate_ref: candidate_ref.clone(),
