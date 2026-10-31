@@ -78,7 +78,7 @@
   },
   {
     "artifact": {
-      "request_hash": "sha256:bfb5243eca767268e7660e70177ce56aa6e2f6ee9620901bc9443b3a66e4d2c9",
+      "request_hash": "sha256:e99f8d30400aac3269697e786bcad3ca205bf6f6dd9375b311a2f7d649657356",
       "provider": "test",
       "model": "scripted-hr",
       "parameters": {},

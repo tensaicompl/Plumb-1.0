@@ -36,7 +36,14 @@ The fields are:
   cardinality_to.
 
 Return an Attribute only when its owner and its value type are grounded
-in the supplied Requirements. Do not guess nullable. When nullability is
+in the supplied Requirements. Return one for every supplied value_type
+Concept that the Requirements attribute to an object_type, including the
+values a rule, limit, price, permission or calculation depends on or
+produces: a yes/no characteristic ("vehicles with zero emissions", "members
+of the premium plan" give a Bool Attribute of the vehicle or the member), a
+limit ("a course has a capacity") and a computed result ("the final grade",
+"the enrolment price"). The owner, the Attribute and its value type may be
+grounded in different supplied Requirements. Do not guess nullable. When nullability is
 not stated, return `{"value": null, "grounding": null}`: Plumb proposes
 the Attribute as optional and reports that nullability is not stated, for
 review. An obligation that a record shall identify, include or record a field states that the field is required

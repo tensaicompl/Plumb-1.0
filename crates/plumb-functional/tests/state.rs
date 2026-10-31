@@ -1988,17 +1988,24 @@ mod lifecycle_contract {
             .is_empty());
         }
         // The identity excludes the expression: a different expression for the same grounded
-        // invariant conflicts with the existing node instead of being duplicated.
+        // invariant keeps the existing node and is dropped with an issue, never duplicated.
         let applied = apply(
             &g,
             &analyze(&g, output(vec![], vec![], vec![invariant_json(EXPRESSION)]))
                 .unwrap()
                 .proposals,
         );
-        assert!(matches!(
-            analyze(&applied, output(vec![], vec![], vec![invariant_json("approved_amount < requested_amount")])),
-            Err(LifecycleError::ExistingCandidateConflict { node_ref }) if node_ref == id(INVARIANT)
-        ));
+        let rerun = analyze(
+            &applied,
+            output(vec![], vec![], vec![invariant_json("approved_amount < requested_amount")]),
+        )
+        .unwrap();
+        assert!(rerun.proposals.is_empty());
+        assert!(rerun.issues.iter().any(|issue| matches!(
+            issue,
+            LifecycleIssue::CandidateDropped { kind, reason, .. }
+                if kind == "invariant" && reason.contains("conflicts")
+        )));
     }
 
     // ------------------------------------------------------------------ reconciliation

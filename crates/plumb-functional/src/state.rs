@@ -1673,12 +1673,28 @@ pub fn analyze_lifecycle(
             grounding: i.grounding.clone(),
         })
         .map_err(invalid_proposal)?;
-        if existing_matches(graph, &i.id, &payload, INVARIANT_ORIGIN_EXTENSION, &origin)? {
-            existing.insert(LifecycleExisting {
-                candidate_ref: i.id.clone(),
-                node_ref: i.id.clone(),
-            });
-            continue;
+        // A re-run whose candidate differs from the element already at its ID (same owner and
+        // grounding, another expression) keeps that element and drops the candidate (the
+        // any-domain tolerance: a model-proposed expression is not stable across runs).
+        match existing_matches(graph, &i.id, &payload, INVARIANT_ORIGIN_EXTENSION, &origin) {
+            Ok(true) => {
+                existing.insert(LifecycleExisting {
+                    candidate_ref: i.id.clone(),
+                    node_ref: i.id.clone(),
+                });
+                continue;
+            }
+            Ok(false) => {}
+            Err(error @ LifecycleError::ExistingCandidateConflict { .. }) => {
+                issues.insert(LifecycleIssue::CandidateDropped {
+                    kind: "invariant".to_owned(),
+                    owner_ref: i.scope_ref.clone(),
+                    grounding: i.grounding.clone(),
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+            Err(error) => return Err(error),
         }
         let evidence = builder.evidence(&[&i.grounding]);
         let node = builder.node(
