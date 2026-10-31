@@ -126,6 +126,8 @@ the HR example supplies.
 | Derived invariant scopes | A derived default invariant scope is offered only when the invariant's parsed expression type-checks as Bool under it; otherwise the run reports the missing scope instead of failing its build. |
 | Pipeline passes | A done Model (analyse) or Flows step whose Accepted inputs (Entities; Operations, Events, Outcomes) grew since its latest job is reported stale, so the next step is another pass. |
 | Provider failures | `E_INFERENCE_FAILED` details carry the provider's own message (`provider_message`, bounded), e.g. an exhausted credit balance. |
+| Unscoped invariants in F2 (H0.7) | An Accepted Invariant whose derived default scope is withheld because its expression does not type-check (e.g. a model-proposed aggregate over related records such as `sum(self.assignments.weight) == 100`) is evaluated by F2 under the unguarded derived scope, so `PLUMB.F2.INVARIANT.EXPRESSIBLE` reports it on that Invariant instead of the gate failing with `E_GATE_INPUTS_MISSING`. Execution still gets no scope for it (a missing semantic, not a build error). |
+| EARS response base form (S1.2) | The rendered response puts its first word in base form after the modal: a leading `can`/`must`/`will`/`may` is dropped, a negated auxiliary is dropped only under `shall not` (otherwise the suggestion is dropped), and a leading third-person verb is de-inflected by a fixed spelling rule (`passes` → `pass`, `has` → `have`). No word is added. The prompt asks for a suggestion for every statement whose actor and response are stated, including plain business-rule sentences. |
 
 ## Plan tasks: status on this branch
 

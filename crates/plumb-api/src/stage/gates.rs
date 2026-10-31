@@ -814,12 +814,27 @@ fn f2_inputs(
     if !stale.is_empty() {
         return Err(external_stale(gate, "expression_scopes", &stale));
     }
-    let covered: BTreeSet<&Id> = invariants.iter().map(|i| &i.invariant_ref).collect();
-    let missing: BTreeSet<Id> = accepted_nodes(graph, NodeType::Invariant)
-        .into_iter()
-        .filter(|n| !covered.contains(&n.id))
-        .map(|n| n.id.clone())
-        .collect();
+    // An Accepted Invariant whose derived default scope was withheld because its expression
+    // does not type-check (goal-approach deviation, any-domain run: e.g. a model-proposed
+    // aggregate over related records) is checked under the unguarded derived scope, so
+    // `invariant_not_expressible` reports it on that Invariant instead of the gate failing.
+    let covered: BTreeSet<Id> = invariants.iter().map(|i| i.invariant_ref.clone()).collect();
+    let mut missing = BTreeSet::new();
+    for node in accepted_nodes(graph, NodeType::Invariant) {
+        if covered.contains(&node.id) {
+            continue;
+        }
+        match plumb_validation::expression_scope::derived_invariant_bindings(graph, &node.id) {
+            Some(bindings) => invariants.push(F2InvariantInput {
+                invariant_ref: node.id.clone(),
+                bindings,
+            }),
+            None => {
+                missing.insert(node.id.clone());
+            }
+        }
+    }
+    invariants.sort_by(|a, b| a.invariant_ref.cmp(&b.invariant_ref));
     if !missing.is_empty() {
         return Err(external_missing(gate, "expression_scopes", &missing));
     }

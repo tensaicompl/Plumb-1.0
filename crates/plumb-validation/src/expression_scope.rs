@@ -202,6 +202,29 @@ pub fn default_invariant_bindings(
     graph: &Graph,
     invariant_ref: &Id,
 ) -> Option<Vec<ExpressionScopeBinding>> {
+    let bindings = derived_invariant_bindings(graph, invariant_ref)?;
+    let NodePayload::Invariant(invariant) = &graph.node(invariant_ref)?.payload else {
+        return None;
+    };
+    // A parsed expression that does not type-check as Bool under the derived scope (it names a
+    // field the Entity does not have) gets no default scope: the run then reports the missing
+    // scope instead of failing the build. Prose keeps its scope and runs as unsupported.
+    if let Ok(ast) = plumb_expr::parse(&invariant.expression) {
+        let validated = validate_expression_bindings(graph, &bindings, &["calendar"]).ok()?;
+        if !matches!(plumb_expr::typecheck(&ast, &validated.env), Ok(Ty::Bool)) {
+            return None;
+        }
+    }
+    Some(bindings)
+}
+
+/// The derived scope of [`default_invariant_bindings`] without its type-check guard: the scope
+/// F2 checks an unconfigured Invariant under, so an expression that does not type-check is an
+/// `invariant_not_expressible` finding on that Invariant rather than a missing gate input.
+pub fn derived_invariant_bindings(
+    graph: &Graph,
+    invariant_ref: &Id,
+) -> Option<Vec<ExpressionScopeBinding>> {
     let node = graph.node(invariant_ref)?;
     let NodePayload::Invariant(invariant) = &node.payload else {
         return None;
@@ -244,15 +267,6 @@ pub fn default_invariant_bindings(
         }
     }
     bindings.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
-    // A parsed expression that does not type-check as Bool under the derived scope (it names a
-    // field the Entity does not have) gets no default scope: the run then reports the missing
-    // scope instead of failing the build. Prose keeps its scope and runs as unsupported.
-    if let Ok(ast) = plumb_expr::parse(&invariant.expression) {
-        let validated = validate_expression_bindings(graph, &bindings, &["calendar"]).ok()?;
-        if !matches!(plumb_expr::typecheck(&ast, &validated.env), Ok(Ty::Bool)) {
-            return None;
-        }
-    }
     Some(bindings)
 }
 

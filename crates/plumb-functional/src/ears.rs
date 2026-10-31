@@ -829,6 +829,7 @@ fn render_suggestion(
         check_component(id, lead_name, lead)?;
     }
     check_component(id, "response", &response)?;
+    let response = base_form_response(id, requirement.modality, &response)?;
     Ok(render(
         suggestion.pattern,
         &actor,
@@ -836,6 +837,96 @@ fn render_suggestion(
         requirement.modality,
         &response,
     ))
+}
+
+/// The response as it follows the rendered modal (goal-approach deviation, any-domain run:
+/// high-level specifications state behaviour in the present tense or with `can`/`must`, so an
+/// exact source range of the response rarely starts with a base-form verb). A leading `can`,
+/// `must`, `will` or `may` is dropped (the typed modality replaces it); a leading negative
+/// auxiliary is dropped only under `shall not` and otherwise rejects the suggestion; a leading
+/// third-person verb is put in its base form by a fixed spelling rule. Nothing is added: the
+/// rendered words stay those of the source.
+fn base_form_response(
+    requirement_ref: &Id,
+    modality: Modality,
+    response: &str,
+) -> Result<String, EarsError> {
+    let (first, rest) = match response.split_once(' ') {
+        Some((first, rest)) => (first, Some(rest)),
+        None => (response, None),
+    };
+    let lower = first.to_ascii_lowercase();
+    let negative = matches!(lower.as_str(), "cannot" | "can't" | "must" | "will" | "may")
+        && rest.is_some_and(|r| r.starts_with("not "))
+        || matches!(lower.as_str(), "cannot" | "can't");
+    if negative {
+        if modality != Modality::ShallNot {
+            return Err(EarsError::InvalidComponent {
+                requirement_ref: requirement_ref.clone(),
+                component: "response",
+                reason: "response is negated but the modality is not shall_not",
+            });
+        }
+        let after = match lower.as_str() {
+            "cannot" | "can't" => rest,
+            _ => rest.and_then(|r| r.strip_prefix("not ")),
+        };
+        return after
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned)
+            .ok_or(EarsError::InvalidComponent {
+                requirement_ref: requirement_ref.clone(),
+                component: "response",
+                reason: "response has no verb after its auxiliary",
+            });
+    }
+    if matches!(lower.as_str(), "can" | "must" | "will" | "may" | "shall" | "should") {
+        return rest
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned)
+            .ok_or(EarsError::InvalidComponent {
+                requirement_ref: requirement_ref.clone(),
+                component: "response",
+                reason: "response has no verb after its auxiliary",
+            });
+    }
+    let base = base_verb(first);
+    Ok(match rest {
+        Some(rest) => format!("{base} {rest}"),
+        None => base,
+    })
+}
+
+/// The base form of a lower-case third-person-singular present verb; any other word unchanged.
+fn base_verb(word: &str) -> String {
+    match word {
+        "is" | "are" => return "be".to_owned(),
+        "has" => return "have".to_owned(),
+        "does" => return "do".to_owned(),
+        _ => {}
+    }
+    let lowercase = word.chars().all(|c| c.is_ascii_lowercase());
+    if !lowercase || word.len() < 3 || !word.ends_with('s') {
+        return word.to_owned();
+    }
+    if ["ss", "us", "is"].iter().any(|e| word.ends_with(e)) {
+        return word.to_owned();
+    }
+    let consonant_before = |suffix: &str| {
+        word.strip_suffix(suffix)
+            .and_then(|stem| stem.chars().last())
+            .is_some_and(|c| !"aeiou".contains(c))
+    };
+    if word.ends_with("ies") && consonant_before("ies") {
+        return format!("{}y", &word[..word.len() - 3]);
+    }
+    if ["sses", "shes", "ches", "xes", "zes", "oes"]
+        .iter()
+        .any(|e| word.ends_with(e))
+    {
+        return word[..word.len() - 2].to_owned();
+    }
+    word[..word.len() - 1].to_owned()
 }
 
 // ============================================================================ evaluation
@@ -1012,4 +1103,30 @@ pub fn evaluate_ears_normalization(
     issues
         .sort_by(|a, b| (a.requirement_ref(), a.as_str()).cmp(&(b.requirement_ref(), b.as_str())));
     Ok(EarsNormalizationResult { proposals, issues })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base_verb;
+
+    #[test]
+    fn base_verb_spelling() {
+        for (word, base) in [
+            ("passes", "pass"),
+            ("has", "have"),
+            ("is", "be"),
+            ("receives", "receive"),
+            ("loses", "lose"),
+            ("applies", "apply"),
+            ("pays", "pay"),
+            ("approaches", "approach"),
+            ("goes", "go"),
+            ("keep", "keep"),
+            ("access", "access"),
+            ("status", "status"),
+            ("Sends", "Sends"),
+        ] {
+            assert_eq!(base_verb(word), base, "{word}");
+        }
+    }
 }

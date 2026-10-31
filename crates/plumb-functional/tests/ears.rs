@@ -34,13 +34,13 @@ mod ears_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:56965bc8c27127b88fc66e027db3a4a81ed3200deb12252170d03d1a01bea628";
+        "sha256:65df8fe2b49070493dda90b5d2c5fbdf986fd0159c6393004ef53e421f09325f";
     const SCHEMA_HASH: &str =
         "sha256:0b56132d51dd3f048fd06af0bdc7fa66e54d367f9ffe72866db146fcad154c86";
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:169b7456fbe16ed0c9b06b539cbb41dcde29b679ea341512107e8fa7c2dcf94b";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:e3c5d5b8c759acda5d4f25941dc8d270784e3e82bb04bb87b29417a82cf7730a";
+        "sha256:f12508687f8d2316fc736cc5b15f1af0ee3a4975f979df339177b6e73412b625";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and
@@ -949,6 +949,22 @@ mod ears_contract {
         );
         let ubiquitous_text = normalize(text, |s| ubiquitous(s, "the clerk", "pack the order"));
         assert_eq!(ubiquitous_text.unwrap(), "the clerk shall pack the order.");
+    }
+
+    #[test]
+    fn ears_response_verb_takes_its_base_form() {
+        // A leading auxiliary is replaced by the typed modality.
+        let text = "Always, the clerk must pack the order.";
+        let must = normalize(text, |s| ubiquitous(s, "the clerk", "must pack the order"));
+        assert_eq!(must.unwrap(), "the clerk shall pack the order.");
+        // A negated auxiliary is dropped under shall not.
+        let text = "Always, the clerk must not ship the order.";
+        let not = normalize(text, |s| ubiquitous(s, "the clerk", "must not ship the order"));
+        assert_eq!(not.unwrap(), "the clerk shall not ship the order.");
+        // A negated auxiliary under a positive modality is dropped, never rendered.
+        let text = "Always, the clerk shall pack the order or cannot ship it.";
+        let negated = normalize(text, |s| ubiquitous(s, "the clerk", "cannot ship it"));
+        assert!(dropped(negated, "negated"));
     }
 
     #[test]

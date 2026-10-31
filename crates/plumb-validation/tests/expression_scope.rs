@@ -309,9 +309,16 @@ mod expression_scope_contract {
                 edges,
             )
             .unwrap();
-            default_invariant_bindings(&g, &id("inv:other"))
+            (
+                default_invariant_bindings(&g, &id("inv:other")),
+                derived_invariant_bindings(&g, &id("inv:other")),
+            )
         };
-        assert_eq!(with("self.active_permits <= 2"), None);
+        // F2 still checks the ill-typed Invariant, under the unguarded derived scope.
+        let (default, derived) = with("self.active_permits <= 2");
+        assert_eq!(default, None);
+        assert_eq!(derived.unwrap().first().unwrap().symbol, "self");
+        let with = |expression: &str| with(expression).0;
         assert!(with("At most two permits are active at once.").is_some());
         // Not an Accepted Invariant: no default.
         assert_eq!(default_invariant_bindings(&g, &id("inv:unknown")), None);

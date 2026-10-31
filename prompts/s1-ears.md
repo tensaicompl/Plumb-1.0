@@ -39,6 +39,23 @@ thresholds, units, dates, durations, names, identifiers or constraints.
 
 Do not propose modality. Plumb preserves the existing Requirement modality.
 
+Plumb renders `<actor> <modality> <response>.` and puts the first word of the
+response in its base form, so the response range may start with the verb
+exactly as the source states it: a present-tense verb ("passes the course",
+"has a capacity"), or `can`, `must`, `will` or `may` followed by the verb
+("can be enrolled in at most five active courses", "must be refused"). Plumb
+drops that auxiliary because the modality replaces it; under a shall_not
+modality the response may also start with "cannot" or "must not". The
+response begins with the verb and runs to the end of the clause it governs.
+
+Return a suggestion for every requirement whose actor and response are both
+stated (in the source or in the catalog), including plain business-rule
+sentences without a modal verb ("A learner passes the course with a final
+grade of 60 or more." has actor "A learner" and response "passes the course
+with a final grade of 60 or more"). Return null only when no actor or no
+response can be grounded, or when the statement joins several independent
+obligations that one pattern cannot express.
+
 For source_range grounding, start/end are zero-based UTF-8 byte offsets into
 source_statement and end is exclusive.
 
