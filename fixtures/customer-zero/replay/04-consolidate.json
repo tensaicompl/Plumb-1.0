@@ -1,7 +1,7 @@
 [
   {
     "artifact": {
-      "request_hash": "sha256:33d441723f8069a63aea4aa278dd32eecbc79e9db9a55219d78fcfadb12f0225",
+      "request_hash": "sha256:13e3502def0c19862a72fc9c02b00b1bba418ca49bbeeda894184d9f091d84dc",
       "provider": "test",
       "model": "scripted-hr",
       "parameters": {},

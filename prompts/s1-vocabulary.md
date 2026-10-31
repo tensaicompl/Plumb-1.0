@@ -30,11 +30,15 @@ Do not generate a free-text Concept definition.
 Plumb derives all text from the selected ranges and performs normalization.
 
 Concept kinds:
-- object_type
-- fact_type
-- value_type
-- role
-- other
+- object_type: a kind of thing the system keeps records of (a permit, a
+  course, a household);
+- fact_type: a relationship between things (a learner is enrolled in a
+  course);
+- value_type: a value a thing has, including money, dates, counts,
+  statuses, and a yes/no characteristic that a rule, price or permission
+  depends on (zero emissions, premium plan membership, being logged in);
+- role: a part a person or organisation plays (resident, instructor);
+- other: anything else (screens, documents, general words).
 
 Use null for concept_kind when the evidence does not support a reliable
 type proposal.
