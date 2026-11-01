@@ -800,6 +800,7 @@
   "next.import.cta": "Importuj",
   "shell.run.meta.needsAi": "Wymaga AI",
   "shell.run.meta.notConfigured": "Nieskonfigurowany",
+  "shell.run.meta.needsDocument": "Najpierw zaimportuj dokument",
   "settings.ai.availableModel": "Dostępne · {model}",
   "overview.eyebrow": "Przegląd",
   "overview.updated": "Zaktualizowano {when} przez {who}",

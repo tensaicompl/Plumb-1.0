@@ -159,6 +159,10 @@ function RunStepButton({ compact }: { compact: boolean }) {
   const me = useMe();
   const aiOff = me.data?.inference_available === false;
   const { run, starting } = useRunStage();
+  const go = useGo();
+  // Without an imported document no step has anything to work on: running one would finish
+  // empty and look done.
+  const noDocument = pipeline.sources === 0;
   const menuOpen = useShellStore((state) => state.runMenuOpen);
   const setMenuOpen = useShellStore((state) => state.setRunMenuOpen);
   const activeJob = job !== null && isJobActive(job) ? job : null;
@@ -168,8 +172,13 @@ function RunStepButton({ compact }: { compact: boolean }) {
   const items: MenuItem[] = RUNNABLE_STAGES.map((stage) => {
     const step = pipeline.steps.find((s) => s.stage === stage);
     // A step that cannot run says why instead of failing when chosen.
-    const blocked: MessageKey | undefined =
-      aiOff && usesInference(stage) ? "shell.run.meta.needsAi" : (step?.missingConfig?.length ?? 0) > 0 ? "shell.run.meta.notConfigured" : undefined;
+    const blocked: MessageKey | undefined = noDocument
+      ? "shell.run.meta.needsDocument"
+      : aiOff && usesInference(stage)
+        ? "shell.run.meta.needsAi"
+        : (step?.missingConfig?.length ?? 0) > 0
+          ? "shell.run.meta.notConfigured"
+          : undefined;
     const meta = blocked ?? (step === undefined ? undefined : STEP_META[step.state]);
     return {
       id: stage,
@@ -182,6 +191,10 @@ function RunStepButton({ compact }: { compact: boolean }) {
   const primaryLabel = activeJob === null ? t("shell.run.next") : tf("shell.run.runningLabel", { step: stageLabel(activeJob.stage), pct });
   const onPrimary = () => {
     if (busy) {
+      return;
+    }
+    if (noDocument) {
+      go(buildHref("/sources"));
       return;
     }
     if (pipeline.next !== null && !(aiOff && usesInference(pipeline.next))) {

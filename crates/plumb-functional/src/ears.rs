@@ -871,24 +871,25 @@ fn base_form_response(
             "cannot" | "can't" => rest,
             _ => rest.and_then(|r| r.strip_prefix("not ")),
         };
-        return after
-            .filter(|a| !a.is_empty())
-            .map(str::to_owned)
-            .ok_or(EarsError::InvalidComponent {
+        return after.filter(|a| !a.is_empty()).map(str::to_owned).ok_or(
+            EarsError::InvalidComponent {
                 requirement_ref: requirement_ref.clone(),
                 component: "response",
                 reason: "response has no verb after its auxiliary",
-            });
+            },
+        );
     }
-    if matches!(lower.as_str(), "can" | "must" | "will" | "may" | "shall" | "should") {
-        return rest
-            .filter(|a| !a.is_empty())
-            .map(str::to_owned)
-            .ok_or(EarsError::InvalidComponent {
+    if matches!(
+        lower.as_str(),
+        "can" | "must" | "will" | "may" | "shall" | "should"
+    ) {
+        return rest.filter(|a| !a.is_empty()).map(str::to_owned).ok_or(
+            EarsError::InvalidComponent {
                 requirement_ref: requirement_ref.clone(),
                 component: "response",
                 reason: "response has no verb after its auxiliary",
-            });
+            },
+        );
     }
     let base = base_verb(first);
     Ok(match rest {

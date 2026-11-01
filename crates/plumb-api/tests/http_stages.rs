@@ -4346,7 +4346,8 @@ mod http_stages {
         }
         assert_eq!(body["sources"], 0);
         assert_eq!(body["open_questions"], 0);
-        assert_eq!(body["next"], "extract");
+        // Without an imported document no step is offered (it would finish empty).
+        assert_eq!(body["next"], Value::Null);
 
         // A captured job that has not started is queued.
         let queued = app.state.run_stage(Recipe::Extract, None, None).unwrap();
@@ -4355,7 +4356,7 @@ mod http_stages {
         assert_eq!(extract["status"], "queued");
         assert_eq!(extract["job_id"], queued.job_id.as_str());
         assert_eq!(extract["progress"], 0.0);
-        assert_eq!(body["next"], "extract");
+        assert_eq!(body["next"], Value::Null);
         // An extract without evidence finishes without proposals: done; next moves on.
         app.state.execute_recipe_job(&queued.job_id).unwrap();
         let body = pipeline(&app).await;
@@ -4363,7 +4364,7 @@ mod http_stages {
         assert_eq!(extract["status"], "done");
         assert_eq!(extract["progress"], 1.0);
         assert_eq!(extract["updated_at"], NOW);
-        assert_eq!(body["next"], "consolidate");
+        assert_eq!(body["next"], Value::Null);
 
         // A ready job with pending proposals of that job needs review.
         let tags = run_inline(&app, Recipe::Tags, None);
@@ -4397,7 +4398,43 @@ mod http_stages {
         assert_eq!(t["job_id"], failed.as_str());
         assert_eq!(t["error"]["code"], "E_INFERENCE_FAILED");
         assert!(!t["error"]["message"].as_str().unwrap().is_empty(), "{t}");
+        assert_eq!(body["next"], Value::Null);
+    }
+
+    /// A document imported after Extract ran makes Extract outdated, so the pipeline offers
+    /// it again instead of moving on over a model that never saw the document.
+    #[tokio::test]
+    async fn pipeline_offers_extract_again_for_a_document_imported_after_it() {
+        let app = app(data_graph(&["Email"]));
+        let queued = app.state.run_stage(Recipe::Extract, None, None).unwrap();
+        app.state.execute_recipe_job(&queued.job_id).unwrap();
+        assert_eq!(step(&pipeline(&app).await, "extract")["status"], "done");
+        let source = imported().source;
+        commit_patch(&app, move |_| SemanticPatch::AddNode {
+            node: source.clone(),
+        });
+        let body = pipeline(&app).await;
+        assert_eq!(body["sources"], 1);
+        assert_eq!(step(&body, "extract")["status"], "stale");
         assert_eq!(body["next"], "extract");
+        // A later step that ran over an empty model is outdated once Requirements exist.
+        let queued = app
+            .state
+            .run_stage(Recipe::Consolidate, None, None)
+            .unwrap();
+        app.state.execute_recipe_job(&queued.job_id).unwrap();
+        assert_eq!(step(&pipeline(&app).await, "consolidate")["status"], "done");
+        commit_patch(&app, |_| SemanticPatch::AddNode {
+            node: requirement(
+                "req:new",
+                "Accepted",
+                "The service shall export the report.",
+            ),
+        });
+        assert_eq!(
+            step(&pipeline(&app).await, "consolidate")["status"],
+            "stale"
+        );
     }
 
     /// `get_pipeline` counts the imported sources.

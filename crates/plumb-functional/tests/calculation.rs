@@ -1062,10 +1062,28 @@ mod calculation_contract {
             |i| matches!(i, CalculationIssue::ResultTypeMismatch { .. }),
         );
         // A declared rounding to the declared scale satisfies it; a coarser one does not.
-        ok(q("day_fraction * 1.5", "Decimal(2)", None, Some("half_up(2)"), None));
-        ok(q("day_fraction / 3", "Decimal(2)", None, Some("to_step(0.05)"), None));
+        ok(q(
+            "day_fraction * 1.5",
+            "Decimal(2)",
+            None,
+            Some("half_up(2)"),
+            None,
+        ));
+        ok(q(
+            "day_fraction / 3",
+            "Decimal(2)",
+            None,
+            Some("to_step(0.05)"),
+            None,
+        ));
         has(
-            q("day_fraction * 1.5", "Decimal(2)", None, Some("half_up(3)"), None),
+            q(
+                "day_fraction * 1.5",
+                "Decimal(2)",
+                None,
+                Some("half_up(3)"),
+                None,
+            ),
             |i| matches!(i, CalculationIssue::ResultTypeMismatch { .. }),
         );
         has(q("count_days", "Bool", None, None, None), |i| {

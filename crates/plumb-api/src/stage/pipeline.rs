@@ -81,8 +81,20 @@ fn status_of(
 /// Events and Outcomes.
 fn grown_input_types(recipe: Recipe) -> &'static [NodeType] {
     match recipe {
+        // A document imported after Extract ran has never been segmented; each later step is
+        // outdated once the elements it reads grew (a step that ran over an empty model is not
+        // done once that model exists).
+        Recipe::Extract => &[NodeType::SourceArtifact],
+        Recipe::Consolidate | Recipe::Directory | Recipe::Tags => &[NodeType::Requirement],
         Recipe::Analyse => &[NodeType::Entity, NodeType::Operation, NodeType::Event],
         Recipe::Flows => &[NodeType::Operation, NodeType::Event, NodeType::Outcome],
+        Recipe::Calc => &[NodeType::Attribute],
+        Recipe::Scenarios => &[
+            NodeType::DecisionTable,
+            NodeType::Transition,
+            NodeType::Operation,
+            NodeType::Calculation,
+        ],
         _ => &[],
     }
 }
@@ -240,14 +252,17 @@ impl ApiState {
             };
             steps.push(step);
         }
-        let next = steps
-            .iter()
-            .find(|s| s.status != PipelineStepStatus::Done && s.missing_config.is_empty())
-            .map(|s| s.recipe);
         let sources = loaded
             .graph
             .node_ids_by_type(NodeType::SourceArtifact)
             .len() as u64;
+        // Without a document no step has anything to work on (it would finish empty and read
+        // as done), so none is offered until one is imported.
+        let next = steps
+            .iter()
+            .find(|s| s.status != PipelineStepStatus::Done && s.missing_config.is_empty())
+            .map(|s| s.recipe)
+            .filter(|_| sources > 0);
         let open_questions = self
             .question_items(&loaded)
             .into_iter()

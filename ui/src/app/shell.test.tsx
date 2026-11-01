@@ -469,6 +469,24 @@ describe("Toolbar", () => {
     expect(item("Directory step").getAttribute("aria-disabled")).toBeNull();
   });
 
+  it("runs nothing before a document is imported: Run next step goes to Sources, every step says why", async () => {
+    const backend = newBackend({
+      proposals: [],
+      questions: [],
+      pipeline: { steps: [pipelineStep("extract", "not_started")], sources: 0, open_questions: 0, next: "extract" },
+    });
+    const { user, router } = renderAt("/overview", backend);
+    await within(await screen.findByRole("banner")).findByRole("button", { name: /Import/ });
+    await user.click(within(toolbar()).getByRole("button", { name: "Run next step" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/sources"));
+    expect(backend.runs).toEqual([]);
+    await user.click(within(toolbar()).getByRole("button", { name: "Choose a step to run" }));
+    const menu = await screen.findByRole("menu");
+    const extract = within(menu).getByRole("menuitem", { name: /^Requirements step/ });
+    expect(extract.getAttribute("aria-disabled")).toBe("true");
+    expect(extract.textContent).toContain("Import a document first");
+  });
+
   it("is compact below 1280 px: icon-only search and run, the version pill without its status text", async () => {
     compact = true;
     renderAt("/overview");

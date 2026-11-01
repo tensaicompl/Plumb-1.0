@@ -959,7 +959,9 @@ mod ears_contract {
         assert_eq!(must.unwrap(), "the clerk shall pack the order.");
         // A negated auxiliary is dropped under shall not.
         let text = "Always, the clerk must not ship the order.";
-        let not = normalize(text, |s| ubiquitous(s, "the clerk", "must not ship the order"));
+        let not = normalize(text, |s| {
+            ubiquitous(s, "the clerk", "must not ship the order")
+        });
         assert_eq!(not.unwrap(), "the clerk shall not ship the order.");
         // A negated auxiliary under a positive modality is dropped, never rendered.
         let text = "Always, the clerk shall pack the order or cannot ship it.";

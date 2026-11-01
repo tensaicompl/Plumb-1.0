@@ -1997,7 +1997,11 @@ mod lifecycle_contract {
         );
         let rerun = analyze(
             &applied,
-            output(vec![], vec![], vec![invariant_json("approved_amount < requested_amount")]),
+            output(
+                vec![],
+                vec![],
+                vec![invariant_json("approved_amount < requested_amount")],
+            ),
         )
         .unwrap();
         assert!(rerun.proposals.is_empty());
