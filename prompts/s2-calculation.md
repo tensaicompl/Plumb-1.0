@@ -36,6 +36,12 @@ with `if <condition> then <value> else <value>` (such as
 such Requirement range is listed in expression_evidence. An adjustment
 whose condition has no available input is left out of the expression.
 
+Multiplying Decimals adds their scales and division gives scale 28, so
+when the expression can have more decimal places than the declared
+Decimal(n) result (`annual_price * 0.5` has 3 when annual_price has 2),
+set rounding to `half_up(n)` with the same n, or to the rounding the
+Requirements state.
+
 An input with a unit is an amount of that unit: it adds to, subtracts
 from and compares with amounts of the same unit and multiplies or divides
 by plain numbers, but it never becomes a plain number, so a factor such

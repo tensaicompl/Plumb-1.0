@@ -386,8 +386,26 @@ fn used_bindings(
     (used.into_iter().collect(), undefined.into_iter().collect())
 }
 
-/// Whether the actual type satisfies the declared result type and unit.
-fn result_compatibility(expected: &Ty, actual: &Ty) -> Option<CalculationIssue> {
+/// The fractional scale a declared rounding leaves.
+fn rounded_scale(rounding: &RoundingSpec) -> u32 {
+    match rounding {
+        RoundingSpec::HalfUp { scale }
+        | RoundingSpec::HalfEven { scale }
+        | RoundingSpec::Floor { scale }
+        | RoundingSpec::Ceil { scale } => u32::from(*scale),
+        RoundingSpec::ToStep { step } => step.scale(),
+    }
+}
+
+/// Whether the actual type satisfies the declared result type and unit. A Decimal of a larger
+/// scale satisfies a declared Decimal(n) when the declared rounding leaves at most n places
+/// (architecture: "a division followed by the declared business rounding can satisfy its
+/// declared scale"; the evaluation still rounds, then checks the scale).
+fn result_compatibility(
+    expected: &Ty,
+    actual: &Ty,
+    rounding: Option<&RoundingSpec>,
+) -> Option<CalculationIssue> {
     let mismatch = || CalculationIssue::ResultTypeMismatch {
         expected: format!("{expected:?}"),
         actual: format!("{actual:?}"),
@@ -401,7 +419,11 @@ fn result_compatibility(expected: &Ty, actual: &Ty) -> Option<CalculationIssue> 
         (Ty::Quantity(_), _) | (_, Ty::Quantity(_)) | (_, Ty::Duration(_)) => Some(unit_mismatch()),
         (Ty::Int, Ty::Int) => None,
         (Ty::Decimal(_), Ty::Int) => None,
-        (Ty::Decimal(n), Ty::Decimal(m)) if m <= n => None,
+        (Ty::Decimal(n), Ty::Decimal(m))
+            if m <= n || rounding.is_some_and(|r| rounded_scale(r) <= u32::from(*n)) =>
+        {
+            None
+        }
         (Ty::String, Ty::String)
         | (Ty::Bool, Ty::Bool)
         | (Ty::Date, Ty::Date)
@@ -521,22 +543,6 @@ pub fn qualify_calculation(
         }
     };
     qualification.expected_ty = expected.clone();
-    if qualification.undefined_inputs.is_empty() {
-        match typecheck(&ast, &scope.env) {
-            Ok(actual) => {
-                if let Some(issue) = expected
-                    .as_ref()
-                    .and_then(|e| result_compatibility(e, &actual))
-                {
-                    issues.push(issue);
-                }
-                qualification.actual_ty = Some(actual);
-            }
-            Err(e) => issues.push(CalculationIssue::TypeCheckError {
-                reason: e.to_string(),
-            }),
-        }
-    }
     let rounding = match draft.rounding {
         None => None,
         Some(text) => match text.parse::<RoundingSpec>() {
@@ -556,6 +562,22 @@ pub fn qualify_calculation(
             }
         },
     };
+    if qualification.undefined_inputs.is_empty() {
+        match typecheck(&ast, &scope.env) {
+            Ok(actual) => {
+                if let Some(issue) = expected
+                    .as_ref()
+                    .and_then(|e| result_compatibility(e, &actual, rounding.as_ref()))
+                {
+                    issues.push(issue);
+                }
+                qualification.actual_ty = Some(actual);
+            }
+            Err(e) => issues.push(CalculationIssue::TypeCheckError {
+                reason: e.to_string(),
+            }),
+        }
+    }
     issues.sort();
     issues.dedup();
     qualification.issues = issues;

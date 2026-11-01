@@ -38,13 +38,13 @@ mod calculation_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:445614be07d54349ad83c770b97800ae5576cfb7bca19a9520a171068c929f05";
+        "sha256:8152451806bd819c08819ad2051dc2baec541f09a04a8d3cfb8dd00214aa3232";
     const SCHEMA_HASH: &str =
         "sha256:b45f4f50c334aa0328078b68c03bc2f8dd7cda7076bf59459774bcc31dea6bee";
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:370d119628f0aa8aac79656940cf3da034592d6b0eba05ae776cd0787fa49bc7";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:53fb65d2ba66346404301b074e38cc2e2aa1dd41712b8ebc498a27aa1820bf4e";
+        "sha256:e3966a6b159753736ab99bcf016404c2abff4871eb39deeaee75b1d4716f16a2";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and
@@ -1059,6 +1059,13 @@ mod calculation_contract {
         // Result type and unit mismatches.
         has(
             q("day_fraction * 1.5", "Decimal(2)", None, None, None),
+            |i| matches!(i, CalculationIssue::ResultTypeMismatch { .. }),
+        );
+        // A declared rounding to the declared scale satisfies it; a coarser one does not.
+        ok(q("day_fraction * 1.5", "Decimal(2)", None, Some("half_up(2)"), None));
+        ok(q("day_fraction / 3", "Decimal(2)", None, Some("to_step(0.05)"), None));
+        has(
+            q("day_fraction * 1.5", "Decimal(2)", None, Some("half_up(3)"), None),
             |i| matches!(i, CalculationIssue::ResultTypeMismatch { .. }),
         );
         has(q("count_days", "Bool", None, None, None), |i| {
