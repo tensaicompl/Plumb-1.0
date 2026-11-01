@@ -749,6 +749,13 @@ impl InferenceProvider for AnthropicProvider {
                 )),
             }
         }
+        // Streaming (goal-approach deviation, any-domain run): a long generation over one idle
+        // non-streaming connection was cut off by the network (`Transport` after ~10 min). The
+        // stream is a transport detail, not a generation parameter; its events are folded
+        // back into the Message object a non-streaming call returns (see `fold_stream`).
+        if let Ordered::Object(members) = &mut body {
+            members.push(("stream".to_owned(), Ordered::Bool(true)));
+        }
         let body = serde_json::to_vec(&body).map_err(|e| config_error(e.to_string()))?;
 
         let client = Client::builder()
@@ -781,6 +788,40 @@ impl InferenceProvider for AnthropicProvider {
             let retry_after = header("retry-after");
             let content_type = header("content-type");
             let raw = response.bytes().map_err(transport_error)?.to_vec();
+            let streamed = content_type.as_deref().is_some_and(|t| {
+                t.trim()
+                    .to_ascii_lowercase()
+                    .starts_with("text/event-stream")
+            });
+            if status.is_success() && streamed {
+                match fold_stream(&raw) {
+                    Ok(message) => break (message, Some(JSON_MEDIA_TYPE.to_owned())),
+                    // An `error` event inside a 200 stream (e.g. overloaded) is a remote
+                    // failure of that status class, retried like the HTTP status.
+                    Err(StreamFailure::Remote { status, body }) => {
+                        let error = remote_error(status, header_request_id, &body);
+                        match is_transient(status)
+                            .then(|| self.retry.delay(attempt, None))
+                            .flatten()
+                        {
+                            Some(wait) => {
+                                std::thread::sleep(wait);
+                                continue;
+                            }
+                            None => return Err(error.into()),
+                        }
+                    }
+                    Err(StreamFailure::Malformed(reason)) => {
+                        return Err(ProviderFailure {
+                            error: malformed(reason),
+                            rejected_response: Some(Box::new(RejectedResponse {
+                                media_type: "text/event-stream".to_owned(),
+                                bytes: raw,
+                            })),
+                        })
+                    }
+                }
+            }
             if status.is_success() {
                 break (raw, content_type);
             }
@@ -884,4 +925,173 @@ impl InferenceProvider for AnthropicProvider {
         };
         inspect().map_err(rejected)
     }
+}
+
+/// Why a streamed answer could not be folded into a Message.
+#[derive(Debug)]
+enum StreamFailure {
+    /// An `error` event: the HTTP status its error type maps to and the event's JSON.
+    Remote {
+        status: u16,
+        body: Vec<u8>,
+    },
+    Malformed(String),
+}
+
+/// The HTTP status of a streamed `error` event's type (the Messages API error table).
+fn stream_error_status(kind: &str) -> u16 {
+    match kind {
+        "invalid_request_error" => 400,
+        "authentication_error" => 401,
+        "permission_error" => 403,
+        "not_found_error" => 404,
+        "request_too_large" => 413,
+        "rate_limit_error" => 429,
+        "overloaded_error" => 529,
+        _ => 500,
+    }
+}
+
+/// Folds a Messages API event stream into the Message JSON a non-streaming call returns:
+/// `message_start` gives the message, `content_block_start`/`content_block_delta` build each
+/// block (text, thinking and signature deltas append; `input_json_delta` builds a tool input),
+/// `message_delta` sets the stop reason and usage. A stream without `message_stop` is
+/// incomplete (malformed); an `error` event is a remote failure.
+fn fold_stream(raw: &[u8]) -> Result<Vec<u8>, StreamFailure> {
+    let malformed = |reason: &str| StreamFailure::Malformed(format!("event stream: {reason}"));
+    let text = std::str::from_utf8(raw).map_err(|_| malformed("not UTF-8"))?;
+    let mut message: Option<Value> = None;
+    let mut blocks: Vec<Value> = Vec::new();
+    let mut partial_json: Vec<String> = Vec::new();
+    let mut stopped = false;
+    for event in text.split("\n\n") {
+        let data: String = event
+            .lines()
+            .filter_map(|l| l.strip_prefix("data:"))
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() {
+            continue;
+        }
+        let value: Value =
+            serde_json::from_str(&data).map_err(|_| malformed("data is not JSON"))?;
+        let index = || {
+            value
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|i| usize::try_from(i).ok())
+        };
+        match value.get("type").and_then(Value::as_str) {
+            Some("message_start") => {
+                message = Some(
+                    value
+                        .get("message")
+                        .cloned()
+                        .ok_or_else(|| malformed("message_start without message"))?,
+                );
+            }
+            Some("content_block_start") => {
+                let i = index().ok_or_else(|| malformed("block without index"))?;
+                let block = value
+                    .get("content_block")
+                    .cloned()
+                    .ok_or_else(|| malformed("content_block_start without block"))?;
+                if i != blocks.len() {
+                    return Err(malformed("block index out of order"));
+                }
+                blocks.push(block);
+                partial_json.push(String::new());
+            }
+            Some("content_block_delta") => {
+                let i = index()
+                    .filter(|i| *i < blocks.len())
+                    .ok_or_else(|| malformed("delta for an unknown block"))?;
+                let delta = value
+                    .get("delta")
+                    .ok_or_else(|| malformed("delta missing"))?;
+                let append = |block: &mut Value, field: &str, piece: Option<&str>| {
+                    if let (Some(piece), Some(obj)) = (piece, block.as_object_mut()) {
+                        let current = obj
+                            .get(field)
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned();
+                        obj.insert(field.to_owned(), Value::String(current + piece));
+                    }
+                };
+                match delta.get("type").and_then(Value::as_str) {
+                    Some("text_delta") => append(
+                        &mut blocks[i],
+                        "text",
+                        delta.get("text").and_then(Value::as_str),
+                    ),
+                    Some("thinking_delta") => append(
+                        &mut blocks[i],
+                        "thinking",
+                        delta.get("thinking").and_then(Value::as_str),
+                    ),
+                    Some("signature_delta") => append(
+                        &mut blocks[i],
+                        "signature",
+                        delta.get("signature").and_then(Value::as_str),
+                    ),
+                    Some("input_json_delta") => {
+                        if let Some(piece) = delta.get("partial_json").and_then(Value::as_str) {
+                            partial_json[i].push_str(piece);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("content_block_stop") => {
+                let i = index()
+                    .filter(|i| *i < blocks.len())
+                    .ok_or_else(|| malformed("stop for an unknown block"))?;
+                if !partial_json[i].is_empty() {
+                    let input: Value = serde_json::from_str(&partial_json[i])
+                        .map_err(|_| malformed("tool input is not JSON"))?;
+                    if let Some(obj) = blocks[i].as_object_mut() {
+                        obj.insert("input".to_owned(), input);
+                    }
+                }
+            }
+            Some("message_delta") => {
+                let m = message
+                    .as_mut()
+                    .ok_or_else(|| malformed("message_delta before message_start"))?;
+                if let (Some(delta), Some(obj)) = (
+                    value.get("delta").and_then(Value::as_object),
+                    m.as_object_mut(),
+                ) {
+                    for (k, v) in delta {
+                        obj.insert(k.clone(), v.clone());
+                    }
+                }
+                if let (Some(usage), Some(obj)) = (value.get("usage"), m.as_object_mut()) {
+                    obj.insert("usage".to_owned(), usage.clone());
+                }
+            }
+            Some("message_stop") => stopped = true,
+            Some("error") => {
+                let kind = value
+                    .pointer("/error/type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("api_error");
+                return Err(StreamFailure::Remote {
+                    status: stream_error_status(kind),
+                    body: data.into_bytes(),
+                });
+            }
+            _ => {} // ping and future event types
+        }
+    }
+    let mut message = message.ok_or_else(|| malformed("no message_start"))?;
+    if !stopped {
+        return Err(malformed("stream ended before message_stop"));
+    }
+    if let Some(obj) = message.as_object_mut() {
+        obj.insert("content".to_owned(), Value::Array(blocks));
+    }
+    serde_json::to_vec(&message).map_err(|_| malformed("message is not serializable"))
 }

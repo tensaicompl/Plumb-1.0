@@ -612,6 +612,7 @@ mod provider_contract {
             sent_parameters.remove("system");
             sent_parameters.remove("messages");
             sent_parameters.remove("output_config");
+            sent_parameters.remove("stream");
             assert_eq!(&Value::Object(sent_parameters), a.parameters.as_value());
             let schema: Value = serde_json::from_str(SCHEMA).unwrap();
             let context: Value = serde_json::from_slice(&context_bytes()).unwrap();
@@ -629,6 +630,8 @@ mod provider_contract {
                     // Structured outputs: the bound output schema (already part of the request
                     // identity) constrains decoding; it is not a generation parameter.
                     "output_config": {"format": {"type": "json_schema", "schema": schema}},
+                    // The answer is streamed (a transport detail, not a generation parameter).
+                    "stream": true,
                 })
             );
             // The secret is confined to the x-api-key header.
@@ -638,6 +641,97 @@ mod provider_contract {
             assert!(!format!("{request:?}").contains(KEY));
             assert!(!format!("{execution:?}").contains(KEY));
             assert_eq!(sent.headers.values().filter(|v| v.contains(KEY)).count(), 1);
+        }
+
+        /// A Messages event stream of one text block, split across deltas, after a thinking
+        /// block.
+        fn event_stream(model: &str, stop_reason: &str, text: &str) -> Vec<u8> {
+            let (head, tail) = text.split_at(text.len() / 2);
+            let events = [
+                json!({"type": "message_start", "message": {"id": "msg_local_1", "type": "message", "role": "assistant", "model": model, "content": [], "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 10, "output_tokens": 1}}}),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "considering"}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "ping"}),
+                json!({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
+                json!({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": head}}),
+                json!({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": tail}}),
+                json!({"type": "content_block_stop", "index": 1}),
+                json!({"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": null}, "usage": {"output_tokens": 5}}),
+                json!({"type": "message_stop"}),
+            ];
+            events
+                .iter()
+                .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap()))
+                .collect::<String>()
+                .into_bytes()
+        }
+
+        #[test]
+        fn a_streamed_answer_is_folded_into_its_message() {
+            let body = event_stream("test-model-returned", "end_turn", r#"{"answer":"yes"}"#);
+            let server = serve("200 OK", &[("content-type", "text/event-stream")], &body);
+            let (request, material) = standard("anthropic");
+            let execution = provider(&server).execute(&request, &material).unwrap();
+            execution.validate_for(&request).unwrap();
+            assert_eq!(execution.artifact.model, "test-model-returned");
+            assert_eq!(
+                execution.artifact.validated_output.as_value(),
+                &json!({"answer": "yes"})
+            );
+            assert_eq!(execution.raw_response_media_type, "application/json");
+            let folded: Value = serde_json::from_slice(&execution.raw_response).unwrap();
+            assert_eq!(folded["stop_reason"], "end_turn");
+            assert_eq!(folded["usage"]["output_tokens"], 5);
+            assert_eq!(
+                folded["content"],
+                json!([
+                    {"type": "thinking", "thinking": "considering", "signature": "sig"},
+                    {"type": "text", "text": r#"{"answer":"yes"}"#},
+                ])
+            );
+            // A stream that stops at max_tokens is incomplete, as a non-streamed one.
+            let body = event_stream("m", "max_tokens", r#"{"answer":"yes"}"#);
+            let server = serve("200 OK", &[("content-type", "text/event-stream")], &body);
+            assert!(matches!(
+                provider(&server).execute(&request, &material),
+                Err(ProviderError::IncompleteOutput)
+            ));
+        }
+
+        #[test]
+        fn a_cut_or_failing_stream_is_typed() {
+            let (request, material) = standard("anthropic");
+            // Cut before message_stop: malformed, never a partial answer.
+            let full = event_stream("m", "end_turn", r#"{"answer":"yes"}"#);
+            let text = String::from_utf8(full).unwrap();
+            let cut = &text[..text.find("event: message_delta").unwrap()];
+            let server = serve(
+                "200 OK",
+                &[("content-type", "text/event-stream")],
+                cut.as_bytes(),
+            );
+            let err = provider(&server).execute(&request, &material).unwrap_err();
+            assert!(
+                matches!(&err, ProviderError::MalformedResponse { reason } if reason.contains("message_stop")),
+                "{err:?}"
+            );
+            // An overloaded error event is transient and retried; the next stream answers.
+            let overloaded = b"event: error\ndata: {\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"Overloaded\"}}\n\n";
+            let ok = event_stream("m", "end_turn", r#"{"answer":"yes"}"#);
+            let stream = [("content-type", "text/event-stream")];
+            let server =
+                serve_sequence(&[("200 OK", &stream, overloaded), ("200 OK", &stream, &ok)]);
+            let execution = eager(&server).execute(&request, &material).unwrap();
+            assert_eq!(
+                execution.artifact.validated_output.as_value(),
+                &json!({"answer": "yes"})
+            );
+            assert_eq!(
+                server.connections.load(std::sync::atomic::Ordering::SeqCst),
+                2
+            );
         }
 
         /// The API accepts a JSON Schema subset for structured outputs (measured against the
