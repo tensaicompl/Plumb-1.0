@@ -89,6 +89,8 @@ fn grown_input_types(recipe: Recipe) -> &'static [NodeType] {
         Recipe::Analyse => &[NodeType::Entity, NodeType::Operation, NodeType::Event],
         Recipe::Flows => &[NodeType::Operation, NodeType::Event, NodeType::Outcome],
         Recipe::Calc => &[NodeType::Attribute],
+        Recipe::Rules => &[NodeType::DecisionTable, NodeType::Rule],
+        Recipe::Run => &[NodeType::Scenario],
         Recipe::Scenarios => &[
             NodeType::DecisionTable,
             NodeType::Transition,
