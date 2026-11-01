@@ -38,13 +38,13 @@ mod calculation_contract {
 
     // Independently computed goldens (Python hashlib + canonical JSON).
     const PROMPT_HASH: &str =
-        "sha256:a9d17c74bfe6868f98c537b9b8a76624d67048491bbfa13d2df81dd874d20ffc";
+        "sha256:445614be07d54349ad83c770b97800ae5576cfb7bca19a9520a171068c929f05";
     const SCHEMA_HASH: &str =
         "sha256:b45f4f50c334aa0328078b68c03bc2f8dd7cda7076bf59459774bcc31dea6bee";
     const GOLDEN_CONTEXT_HASH: &str =
         "sha256:370d119628f0aa8aac79656940cf3da034592d6b0eba05ae776cd0787fa49bc7";
     const GOLDEN_REQUEST_ID: &str =
-        "sha256:8ed29f113ec7d983f9c156f17f3d73617e9177b6284217dacc9822e2b8cec781";
+        "sha256:53fb65d2ba66346404301b074e38cc2e2aa1dd41712b8ebc498a27aa1820bf4e";
 
     /// Hotfix 066: the owner's exact acquisition material is bound to the golden request,
     /// built from the committed prompt and schema bytes and the RFC 8785 context, and

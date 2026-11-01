@@ -28,6 +28,20 @@ For each calculation return exactly these fields:
 Use only the symbols supplied in available_inputs. Do not derive
 variable names from PSG names. Do not invent aliases.
 
+A calculation's expression applies every adjustment the Requirements
+state for it when its inputs are available: a discount, surcharge,
+exemption or cap conditioned on a yes/no or category input is written
+with `if <condition> then <value> else <value>` (such as
+`if zero_emission then annual_price * 0.5 else annual_price`), and each
+such Requirement range is listed in expression_evidence. An adjustment
+whose condition has no available input is left out of the expression.
+
+An input with a unit is an amount of that unit: it adds to, subtracts
+from and compares with amounts of the same unit and multiplies or divides
+by plain numbers, but it never becomes a plain number, so a factor such
+as `1 - 0.10 * late_days` cannot use a unit-bearing input. Return no
+calculation that needs that.
+
 If calendar_ref is selected, refer to that calculation calendar in
 PlumbExpr using the exact reserved root symbol `calendar`. Do not use
 `calendar` unless a calendar_ref is selected. Select calendar_ref only
