@@ -195,3 +195,36 @@ Known UI gaps (the backend does not provide the data or behaviour yet):
 - H0.2–H0.4, H0.7–H0.9, H0.11 not implemented.
 - Graph-dependent stage configuration (operation, process and calculation scopes, F4 in-scope
   scenarios) still names generated IDs in the JSON configuration.
+
+## Any-domain run (real model, non-HR specs)
+
+Two plain-language high-level specs, `fixtures/parking-permits/requirements.md` (24
+requirements) and `fixtures/course-enrolment/requirements.md` (19), were run from an empty
+project with `examples/blank.json` (no domain configuration) against `claude-opus-5-5`,
+driving the real UI: import, Run next step, Accept all from each step, for all nine steps.
+Both reach Run on a fresh project and export all six artifacts.
+
+| | Parking permits | Course enrolment |
+|---|---|---|
+| Steps | all nine done | all nine done |
+| I0 / F3 / F4 | pass | pass |
+| F1 | one blocker: an open lint finding (to fix or waive) | one blocker: two open lint findings |
+| F2 | blockers: two lifecycle transitions without a trigger | pass |
+| Accepted calculation | `permit fee = if zero_emission then annual_price * 0.5 else annual_price`, `half_up(2)` | `enrolment price = course_list_price` |
+| Questions generated for the expert | 7 (transition triggers, invariant predicates, a calculation fraction) | 3 |
+
+The remaining blockers are the reviewer's work in the methodology (the HR pilot also waives a
+lint finding), reached through Quality → Issues and Generate questions. The non-blocking
+`LINEAGE` and `CRITERIA_FOR_BEHAVIOR` errors fail in the HR pilot too.
+
+Known limits seen in these runs:
+- A 25% second-permit surcharge and the premium plan's free enrolment are not in the
+  calculations: no Attribute states "second permit of the household" or plan membership.
+- Aggregates over related records (`sum(self.assignments.weight) == 100`, a weighted final
+  grade) are not expressible; such invariants are F2 `INVARIANT.EXPRESSIBLE` findings.
+- A rate per unit-bearing input (10% per late day) is not expressible under the frozen unit
+  rules (no cancellation); the calculation is not proposed.
+- Compound sentences ("A course starts as a draft, is published …, and is archived …") keep
+  their wording and fail `MODALITY_EXPLICIT` until a reviewer splits them.
+
+The adjudications this needed are in `docs/plan/GOAL-APPROACH-DELTA.md`, "Any-domain run".
