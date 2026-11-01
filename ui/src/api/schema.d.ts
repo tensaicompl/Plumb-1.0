@@ -1908,6 +1908,11 @@ export interface components {
         JobResponse: {
             /** @description The branch revision the job captured. */
             base_revision: string;
+            /**
+             * Format: int64
+             * @description Seconds this server has been executing the job; null when it is not executing here.
+             */
+            elapsed_seconds?: number | null;
             error?: string | null;
             /** Format: double */
             progress: number;
@@ -2071,6 +2076,11 @@ export interface components {
         };
         /** @description One stage recipe of the pipeline, from its latest recipe job. */
         PipelineStep: {
+            /**
+             * Format: int64
+             * @description Seconds this server has been executing the latest job; null when it is not running here.
+             */
+            elapsed_seconds?: number | null;
             error?: null | components["schemas"]["PipelineError"];
             /** @description The latest recipe job of this recipe; null when it never ran. */
             job_id?: string | null;
@@ -2086,7 +2096,7 @@ export interface components {
             pending_proposals: number;
             /**
              * Format: double
-             * @description The latest job's status-derived progress; null when it never ran.
+             * @description The latest job's progress; null when it never ran.
              */
             progress?: number | null;
             recipe: components["schemas"]["StageName"];

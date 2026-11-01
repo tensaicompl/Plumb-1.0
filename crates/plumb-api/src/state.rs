@@ -537,12 +537,39 @@ struct Inner {
     runtime: Option<A03Runtime>,
     stage: Option<A04Runtime>,
     mode: OpenMode,
+    /// When this process began executing each recipe job (wall-clock elapsed for progress).
+    job_started: Mutex<BTreeMap<Hash, std::time::Instant>>,
 }
 
 /// Cheaply cloneable shared state of the pilot HTTP API.
 #[derive(Clone)]
 pub struct ApiState {
     inner: Arc<Inner>,
+}
+
+impl ApiState {
+    /// Records that this process began executing `job`.
+    pub(crate) fn mark_job_started(&self, job: &Hash) {
+        if let Ok(mut started) = self.inner.job_started.lock() {
+            started.insert(job.clone(), std::time::Instant::now());
+        }
+    }
+
+    /// Forgets the start of a job that is no longer executing.
+    pub(crate) fn mark_job_finished(&self, job: &Hash) {
+        if let Ok(mut started) = self.inner.job_started.lock() {
+            started.remove(job);
+        }
+    }
+
+    /// How long this process has been executing `job`; `None` when it is not executing here.
+    pub(crate) fn job_elapsed(&self, job: &Hash) -> Option<std::time::Duration> {
+        self.inner
+            .job_started
+            .lock()
+            .ok()
+            .and_then(|started| started.get(job).map(std::time::Instant::elapsed))
+    }
 }
 
 impl ApiState {
@@ -700,6 +727,7 @@ impl ApiState {
                 runtime,
                 stage: None,
                 mode: OpenMode::Interactive,
+                job_started: Mutex::new(BTreeMap::new()),
             }),
         })
     }

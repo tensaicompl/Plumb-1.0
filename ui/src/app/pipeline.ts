@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { apiClient, readData } from "../api/client";
 import type { components } from "../api/schema";
-import { t, type MessageKey } from "../i18n";
+import { t, tf, type MessageKey } from "../i18n";
 import { useRunStore, type RunJob } from "./run";
 
 /** A pipeline stage the server can run (`run_stage`). */
@@ -56,6 +56,8 @@ export interface PipelineStep {
   readonly state: StepState;
   /** 0–1 while running. */
   readonly progress?: number;
+  /** Seconds the server has been running it, when it runs on this server. */
+  readonly elapsedSeconds?: number;
   /** Items waiting for review, when `needs_review`. */
   readonly reviewCount?: number;
   /** The plain failure, when `failed`. */
@@ -95,7 +97,9 @@ export function jobStep(job: RunJob): PipelineStep {
   if (job.status === "stale") {
     return { stage: job.stage, state: "stale", jobId: job.id };
   }
-  return isJobActive(job) ? { stage: job.stage, state: "running", progress: job.progress, jobId: job.id } : { stage: job.stage, state: "done", jobId: job.id };
+  return isJobActive(job)
+    ? { stage: job.stage, state: "running", progress: job.progress, ...(job.elapsedSeconds === undefined ? {} : { elapsedSeconds: job.elapsedSeconds }), jobId: job.id }
+    : { stage: job.stage, state: "done", jobId: job.id };
 }
 
 const WIRE_STATE: Readonly<Record<PipelineStepStatus, StepState>> = {
@@ -115,6 +119,7 @@ export function snapshotFromResponse(response: PipelineResponse): PipelineSnapsh
       stage: step.recipe,
       state: WIRE_STATE[step.status],
       ...(step.progress === null || step.progress === undefined ? {} : { progress: step.progress }),
+      ...(step.elapsed_seconds === null || step.elapsed_seconds === undefined ? {} : { elapsedSeconds: step.elapsed_seconds }),
       ...(step.pending_proposals > 0 ? { reviewCount: step.pending_proposals } : {}),
       ...(step.error === null || step.error === undefined ? {} : { error: step.error.message, errorCode: step.error.code }),
       jobId: step.job_id ?? null,
@@ -148,6 +153,23 @@ export function mergeJob(snapshot: PipelineSnapshot | undefined, job: RunJob | n
   return { ...base, steps: base.steps.map((s, i) => (i === index ? { ...s, ...local } : s)) };
 }
 
+/** How often the pipeline is re-read while a step runs. */
+export const PIPELINE_POLL_MS = 3000;
+
+/**
+ * "4 min" (or "under a minute", "1 h 5 min") for a running step's elapsed seconds.
+ */
+export function elapsedLabel(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) {
+    return t("shell.run.elapsed.underMinute");
+  }
+  if (minutes < 60) {
+    return tf("shell.run.elapsed.minutes", { min: String(minutes) });
+  }
+  return tf("shell.run.elapsed.hours", { h: String(Math.floor(minutes / 60)), min: String(minutes % 60) });
+}
+
 /** GET /api/pipeline. Key ["pipeline"] (design events refresh it). */
 export const pipelineQuery = {
   queryKey: ["pipeline"] as const,
@@ -162,7 +184,11 @@ export const pipelineQuery = {
  */
 export function usePipeline(): PipelineSnapshot {
   const job = useRunStore((state) => state.job);
-  const pipeline = useQuery(pipelineQuery);
+  // While a step runs (started here, elsewhere, or before a reload) its progress keeps moving.
+  const pipeline = useQuery({
+    ...pipelineQuery,
+    refetchInterval: (query) => (query.state.data?.steps.some((s) => s.state === "running") === true ? PIPELINE_POLL_MS : false),
+  });
   // The shell never breaks a screen: a failed or malformed read counts as not loaded.
   const data = Array.isArray(pipeline.data?.steps) ? pipeline.data : undefined;
   return mergeJob(data, job);

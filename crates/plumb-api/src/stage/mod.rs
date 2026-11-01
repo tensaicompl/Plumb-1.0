@@ -91,6 +91,22 @@ fn status_wire(status: StageStatus) -> JobStatus {
 }
 
 /// Status-derived progress (Hotfix 067).
+/// The progress of a job executing for `elapsed` (goal-approach deviation, UI journey): one
+/// model call can take many minutes, so a status-only value stood still at 25%. Running progress
+/// rises with wall-clock time towards 95% (half of it after about three minutes) and never
+/// reaches 100% before the job ends; a job not executing in this process keeps its
+/// status-derived value.
+pub fn running_progress(status: StageStatus, elapsed: Option<std::time::Duration>) -> f64 {
+    const HALF_LIFE_SECONDS: f64 = 180.0;
+    match (status, elapsed) {
+        (StageStatus::Acquiring | StageStatus::Evaluating, Some(elapsed)) => {
+            let rising = 1.0 - 0.5_f64.powf(elapsed.as_secs_f64() / HALF_LIFE_SECONDS);
+            (0.02 + 0.93 * rising).min(0.95)
+        }
+        _ => progress(status),
+    }
+}
+
 pub fn progress(status: StageStatus) -> f64 {
     match status {
         StageStatus::Queued => 0.0,
@@ -103,7 +119,10 @@ pub fn progress(status: StageStatus) -> f64 {
 }
 
 /// The public view of a stored recipe job.
-pub fn job_response(record: &StageRecipeJobRecord) -> JobResponse {
+pub fn job_response(
+    record: &StageRecipeJobRecord,
+    elapsed: Option<std::time::Duration>,
+) -> JobResponse {
     let result_version = match record.status {
         StageStatus::Ready | StageStatus::Committed => record
             .result_revision_id
@@ -117,7 +136,8 @@ pub fn job_response(record: &StageRecipeJobRecord) -> JobResponse {
     };
     JobResponse {
         status: status_wire(record.status),
-        progress: progress(record.status),
+        progress: running_progress(record.status, elapsed),
+        elapsed_seconds: elapsed.map(|e| e.as_secs()),
         base_revision: record.base_revision_id.to_string(),
         result_version,
         error,
@@ -835,6 +855,13 @@ impl ApiState {
         if !claimed {
             return Ok(());
         }
+        self.mark_job_started(id);
+        let result = self.execute_claimed_recipe_job(id);
+        self.mark_job_finished(id);
+        result
+    }
+
+    fn execute_claimed_recipe_job(&self, id: &Hash) -> Result<(), ApiError> {
         let record = self.recipe_record(id)?;
         let reuse =
             record.attempt > 1 && !self.previous_attempt_rejected_output(id, record.attempt)?;
@@ -933,7 +960,8 @@ impl ApiState {
             acceptance::mark_parent_stale(self, &hash)?;
             record = self.recipe_record(&hash)?;
         }
-        Ok((job_response(&record), loaded))
+        let elapsed = self.job_elapsed(&record.recipe_job_id);
+        Ok((job_response(&record, elapsed), loaded))
     }
 
     /// The gate results recorded by the steps of a recipe job: `(gate, "pass" | "fail")`.
@@ -1357,5 +1385,37 @@ mod tests {
         let legacy = artifacts_of(&state, &run(vec![])).unwrap();
         assert!(legacy.declared_absent_inference_requests.is_empty());
         assert_eq!(legacy, ArtifactSet::new(vec![], vec![], vec![]).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::{running_progress, StageStatus};
+    use std::time::Duration;
+
+    #[test]
+    fn running_progress_rises_with_time_and_stays_below_done() {
+        let at = |s: u64| running_progress(StageStatus::Acquiring, Some(Duration::from_secs(s)));
+        let points: Vec<f64> = [0, 30, 60, 180, 600, 3600, 36_000].map(at).to_vec();
+        assert!(
+            points.windows(2).all(|w| w[0] < w[1] || w[1] == 0.95),
+            "{points:?}"
+        );
+        assert!((at(0) - 0.02).abs() < 1e-9);
+        assert!(
+            (at(180) - 0.485).abs() < 1e-9,
+            "half of the rise after three minutes"
+        );
+        assert_eq!(at(36_000), 0.95);
+        // Not executing here, queued or finished: the status value.
+        assert_eq!(running_progress(StageStatus::Acquiring, None), 0.25);
+        assert_eq!(
+            running_progress(StageStatus::Queued, Some(Duration::from_secs(60))),
+            0.0
+        );
+        assert_eq!(
+            running_progress(StageStatus::Ready, Some(Duration::from_secs(60))),
+            1.0
+        );
     }
 }

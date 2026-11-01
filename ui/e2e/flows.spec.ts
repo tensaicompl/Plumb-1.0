@@ -70,7 +70,7 @@ test.describe("Flow 1: first run, empty to first proposals @empty-db", () => {
     // Run it from the toast: the step runs (stepper, toolbar progress), then finishes.
     await toast(page).getByRole("button", { name: "Run Requirements step" }).click();
     await expect(main(page).getByRole("progressbar", { name: /Plumb is running the Requirements step/ })).toBeVisible();
-    await expect(banner(page).getByRole("button", { name: /^Requirements step running, \d+%$/ })).toBeVisible();
+    await expect(banner(page).getByRole("button", { name: /^Requirements step running, \d+%(, .+)?$/ })).toBeVisible();
     await expect(toast(page).filter({ hasText: "Requirements step finished" })).toBeVisible({ timeout: 30_000 });
     await expect(conflictSheet(page)).toHaveCount(0);
     const card = main(page).getByRole("region", { name: "Next action" });

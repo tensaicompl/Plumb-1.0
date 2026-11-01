@@ -7,7 +7,7 @@ import { cn, IconButton, Kbd, Menu, modKey, Skeleton, type MenuItem } from "../.
 import { t, tf, type MessageKey } from "../../i18n";
 import { useMe, type Me } from "../auth";
 import { useNextAction, type NextAction } from "../nextAction";
-import { isJobActive, RUNNABLE_STAGES, stageLabel, usePipeline, usesInference, type StepState } from "../pipeline";
+import { elapsedLabel, isJobActive, RUNNABLE_STAGES, stageLabel, usePipeline, usesInference, type StepState } from "../pipeline";
 import { useIsCompact, useShellStore } from "../preferences";
 import { useRetryJob, useRunStage, useRunStore } from "../run";
 import { buildHref, useGo } from "./navigation";
@@ -165,7 +165,15 @@ function RunStepButton({ compact }: { compact: boolean }) {
   const noDocument = pipeline.sources === 0;
   const menuOpen = useShellStore((state) => state.runMenuOpen);
   const setMenuOpen = useShellStore((state) => state.setRunMenuOpen);
-  const activeJob = job !== null && isJobActive(job) ? job : null;
+  // The job this browser started, or a step the server reports running (started elsewhere or
+  // before a reload), so the button never offers a second run while one is in flight.
+  const runningStep = pipeline.steps.find((s) => s.state === "running");
+  const activeJob =
+    job !== null && isJobActive(job)
+      ? job
+      : runningStep === undefined
+        ? null
+        : { stage: runningStep.stage, progress: runningStep.progress ?? 0, elapsedSeconds: runningStep.elapsedSeconds };
   const running = activeJob !== null;
   const pct = activeJob === null ? 0 : Math.round(activeJob.progress * 100);
   const busy = running || starting;
@@ -188,7 +196,13 @@ function RunStepButton({ compact }: { compact: boolean }) {
       onSelect: () => run(stage),
     };
   });
-  const primaryLabel = activeJob === null ? t("shell.run.next") : tf("shell.run.runningLabel", { step: stageLabel(activeJob.stage), pct });
+  const elapsed = activeJob?.elapsedSeconds === undefined ? null : elapsedLabel(activeJob.elapsedSeconds);
+  const primaryLabel =
+    activeJob === null
+      ? t("shell.run.next")
+      : elapsed === null
+        ? tf("shell.run.runningLabel", { step: stageLabel(activeJob.stage), pct })
+        : tf("shell.run.runningLabelElapsed", { step: stageLabel(activeJob.stage), pct, elapsed });
   const onPrimary = () => {
     if (busy) {
       return;
@@ -226,7 +240,11 @@ function RunStepButton({ compact }: { compact: boolean }) {
         ) : (
           <Play size={14} strokeWidth={1.6} aria-hidden="true" />
         )}
-        {running ? <span aria-hidden="true">{tf("shell.run.percent", { pct })}</span> : !compact && t("shell.run.next")}
+        {running ? (
+          <span aria-hidden="true">{elapsed === null || compact ? tf("shell.run.percent", { pct }) : tf("shell.run.percentElapsed", { pct, elapsed })}</span>
+        ) : (
+          !compact && t("shell.run.next")
+        )}
       </button>
       <Menu
         title={t("shell.run.menuTitle")}

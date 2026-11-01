@@ -17,6 +17,8 @@ export interface OverviewStep {
   readonly state: StepState;
   /** 0–1 while running. */
   readonly progress?: number;
+  /** Seconds the server has been running it, when known. */
+  readonly elapsedSeconds?: number;
   /** Items waiting for review. */
   readonly reviewCount?: number;
   /** The plain failure, when failed. */
@@ -53,7 +55,7 @@ const LABEL: Readonly<Record<OverviewStepId, MessageKey>> = {
 const INBOX = "/inbox";
 const QUESTIONS = "/inbox?filter=questions";
 
-type Combined = Pick<OverviewStep, "state" | "progress" | "reviewCount" | "error" | "stage" | "jobId">;
+type Combined = Pick<OverviewStep, "state" | "progress" | "elapsedSeconds" | "reviewCount" | "error" | "stage" | "jobId">;
 
 /**
  * One state for the recipes of a step: running first, then failed, then needs review (counts
@@ -63,7 +65,12 @@ type Combined = Pick<OverviewStep, "state" | "progress" | "reviewCount" | "error
 export function combineSteps(steps: readonly PipelineStep[]): Combined {
   const running = steps.filter((s) => s.state === "running");
   if (running.length > 0) {
-    return { state: "running", progress: Math.min(...running.map((s) => s.progress ?? 0)) };
+    const elapsed = running.map((s) => s.elapsedSeconds).filter((e): e is number => e !== undefined);
+    return {
+      state: "running",
+      progress: Math.min(...running.map((s) => s.progress ?? 0)),
+      ...(elapsed.length === 0 ? {} : { elapsedSeconds: Math.max(...elapsed) }),
+    };
   }
   const failed = steps.find((s) => s.state === "failed");
   if (failed !== undefined) {

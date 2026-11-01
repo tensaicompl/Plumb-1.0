@@ -2107,7 +2107,7 @@ mod openapi {
         ),
         (
             "JobResponse",
-            r##"{"additionalProperties":false,"properties":{"base_revision":{"description":"The branch revision the job captured.","type":"string"},"error":{"type":["string","null"]},"progress":{"format":"double","maximum":1,"minimum":0,"type":"number"},"result_version":{"type":["string","null"]},"status":{"$ref":"#/components/schemas/JobStatus"}},"required":["status","progress","base_revision"],"type":"object"}"##,
+            r##"{"additionalProperties":false,"properties":{"base_revision":{"description":"The branch revision the job captured.","type":"string"},"elapsed_seconds":{"description":"Seconds this server has been executing the job; null when it is not executing here.","format":"int64","minimum":0,"type":["integer","null"]},"error":{"type":["string","null"]},"progress":{"format":"double","maximum":1,"minimum":0,"type":"number"},"result_version":{"type":["string","null"]},"status":{"$ref":"#/components/schemas/JobStatus"}},"required":["status","progress","base_revision"],"type":"object"}"##,
         ),
         (
             "CreateRoundRequest",

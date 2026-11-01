@@ -702,13 +702,6 @@ mod segment_contract {
         }
     }
 
-    fn inference_error(segments: Vec<Value>) -> SegmentationError {
-        let fragments = fixed_fragments();
-        let request = request_for(&fragments);
-        let artifact = artifact(&request, output(segments));
-        assert!(compiled_schema().is_valid(artifact.validated_output.as_value()));
-        evaluate_segmentation(&request, &fragments, Some(&artifact), &audit()).unwrap_err()
-    }
 
     /// The unassigned ranges a schema-valid inference left uncovered, as filled candidates.
     fn filled_gaps(segments: Vec<Value>) -> Vec<(String, u64, u64)> {
@@ -727,6 +720,51 @@ mod segment_contract {
             .inspect(|c| assert_eq!(c.classification, SegmentClassification::NonRequirement))
             .map(|c| (c.fragment_ref.to_string(), c.start, c.end))
             .collect()
+    }
+
+    /// Any-domain run: a model segment that cannot be used (unknown fragment, a range past the
+    /// text, empty, inside a UTF-8 character, or overlapping a kept segment) is dropped and its
+    /// bytes become unassigned_text; one bad range never fails the whole import.
+    #[test]
+    fn segment_unusable_model_segments_are_dropped_as_unassigned_text() {
+        let a_len = TEXT_A.len() as u64;
+        let b_len = TEXT_B.len() as u64;
+        // Unknown fragment and a range past the end of A: A and B stay whole-fragment candidates
+        // except the dropped range, which is unassigned.
+        assert_eq!(
+            filled_gaps(vec![
+                segment(A, 0, a_len + 1, "requirement_candidate"),
+                segment(B, 0, b_len, "requirement_candidate"),
+                segment("evd:00000000000000ff", 0, 3, "non_requirement"),
+            ]),
+            vec![(A.to_owned(), 0, a_len)]
+        );
+        // An empty range is dropped; the valid segments are kept.
+        assert_eq!(
+            filled_gaps(vec![
+                segment(A, 0, a_len, "requirement_candidate"),
+                segment(B, 5, 5, "requirement_candidate"),
+                segment(B, 0, b_len, "requirement_candidate"),
+            ]),
+            Vec::<(String, u64, u64)>::new()
+        );
+        // Overlap and exact duplicates: the first kept segment wins, the rest of A is filled.
+        assert_eq!(
+            filled_gaps(vec![
+                segment(A, 0, 31, "requirement_candidate"),
+                segment(A, 30, 40, "non_requirement"),
+                segment(B, 0, b_len, "requirement_candidate"),
+            ]),
+            vec![(A.to_owned(), 31, a_len)]
+        );
+        assert_eq!(
+            filled_gaps(vec![
+                segment(A, 0, a_len, "requirement_candidate"),
+                segment(A, 0, a_len, "non_requirement"),
+                segment(B, 0, b_len, "requirement_candidate"),
+            ]),
+            Vec::<(String, u64, u64)>::new()
+        );
     }
 
     /// Any-domain run: bytes a schema-valid inference leaves uncovered become non_requirement
@@ -750,150 +788,6 @@ mod segment_contract {
         let mut gaps = filled_gaps(vec![segment(A, 5, 53, "non_requirement")]);
         gaps.sort();
         assert_eq!(gaps, vec![(A.to_owned(), 0, 5), (B.to_owned(), 0, 24)]);
-    }
-
-    #[test]
-    fn segment_overlap_is_rejected() {
-        let error = inference_error(vec![
-            segment(A, 0, 31, "requirement_candidate"),
-            segment(A, 30, 53, "non_requirement"),
-            segment(B, 0, 24, "requirement_candidate"),
-        ]);
-        assert!(matches!(
-            error,
-            SegmentationError::Overlap {
-                first_start: 0,
-                first_end: 31,
-                second_start: 30,
-                second_end: 53,
-                ..
-            }
-        ));
-        assert_eq!(error.code(), None);
-    }
-
-    #[test]
-    fn segment_duplicate_segments_are_overlap() {
-        let error = inference_error(vec![
-            segment(A, 0, 53, "requirement_candidate"),
-            segment(A, 0, 53, "requirement_candidate"),
-            segment(B, 0, 24, "requirement_candidate"),
-        ]);
-        assert!(matches!(error, SegmentationError::Overlap { .. }));
-        let error = inference_error(vec![
-            segment(A, 0, 53, "requirement_candidate"),
-            segment(A, 0, 53, "non_requirement"),
-            segment(B, 0, 24, "requirement_candidate"),
-        ]);
-        assert!(matches!(error, SegmentationError::Overlap { .. }));
-    }
-
-    #[test]
-    fn segment_utf8_boundary_is_invalid_range() {
-        // "Zażółć" is 10 bytes: Z a ż(2) ó(2) ł(2) ć(2); byte 3 is inside "ż".
-        let text = "Zażółć żądanie shall pass.";
-        let fragments = [fragment(A, text, "paragraph")];
-        let request = request_for(&fragments);
-        let cut = artifact(
-            &request,
-            output(vec![
-                segment(A, 0, 3, "non_requirement"),
-                segment(A, 3, text.len() as u64, "requirement_candidate"),
-            ]),
-        );
-        assert!(matches!(
-            evaluate_segmentation(&request, &fragments, Some(&cut), &audit()),
-            Err(SegmentationError::InvalidRange {
-                start: 0,
-                end: 3,
-                ..
-            })
-        ));
-        // Character counts are not byte offsets: 26 characters, 32 bytes.
-        assert_eq!((text.chars().count(), text.len()), (26, 32));
-        let chars = artifact(
-            &request,
-            output(vec![segment(A, 0, 26, "requirement_candidate")]),
-        );
-        // The bytes after a character-count end are left over and filled as unassigned text.
-        let filled = evaluate_segmentation(&request, &fragments, Some(&chars), &audit()).unwrap();
-        assert!(filled
-            .candidates
-            .iter()
-            .any(|c| (c.start, c.end) == (26, 32) && c.flags == vec![SegmentFlag::UnassignedText]));
-        let whole = artifact(
-            &request,
-            output(vec![
-                segment(A, 0, 4, "non_requirement"),
-                segment(A, 4, text.len() as u64, "requirement_candidate"),
-            ]),
-        );
-        let result = evaluate_segmentation(&request, &fragments, Some(&whole), &audit()).unwrap();
-        assert_partition(&result, &fragments);
-    }
-
-    #[test]
-    fn segment_out_of_bounds_and_empty_ranges_are_invalid() {
-        assert!(matches!(
-            inference_error(vec![
-                segment(A, 0, 54, "requirement_candidate"),
-                segment(B, 0, 24, "requirement_candidate"),
-            ]),
-            SegmentationError::InvalidRange { end: 54, .. }
-        ));
-        assert!(matches!(
-            inference_error(vec![
-                segment(A, 0, 53, "requirement_candidate"),
-                segment(B, 5, 5, "requirement_candidate"),
-                segment(B, 0, 24, "requirement_candidate"),
-            ]),
-            SegmentationError::InvalidRange {
-                start: 5,
-                end: 5,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn segment_unknown_fragment_is_rejected() {
-        let error = inference_error(vec![
-            segment(A, 0, 53, "requirement_candidate"),
-            segment(B, 0, 24, "requirement_candidate"),
-            segment("evd:00000000000000ff", 0, 3, "non_requirement"),
-        ]);
-        assert!(matches!(
-            error,
-            SegmentationError::UnknownFragment { fragment_ref } if fragment_ref == id("evd:00000000000000ff")
-        ));
-    }
-
-    #[test]
-    fn segment_post_check_precedence() {
-        // Unknown fragment before an invalid range, invalid range before overlap,
-        // overlap before gap.
-        assert!(matches!(
-            inference_error(vec![
-                segment(A, 0, 99, "requirement_candidate"),
-                segment("evd:00000000000000ff", 0, 3, "non_requirement"),
-            ]),
-            SegmentationError::UnknownFragment { .. }
-        ));
-        assert!(matches!(
-            inference_error(vec![
-                segment(A, 0, 31, "requirement_candidate"),
-                segment(A, 30, 40, "non_requirement"),
-                segment(B, 0, 99, "requirement_candidate"),
-            ]),
-            SegmentationError::InvalidRange { .. }
-        ));
-        assert!(matches!(
-            inference_error(vec![
-                segment(A, 0, 31, "requirement_candidate"),
-                segment(A, 30, 40, "non_requirement"),
-            ]),
-            SegmentationError::Overlap { .. }
-        ));
     }
 
     #[test]

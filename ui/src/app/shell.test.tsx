@@ -469,6 +469,19 @@ describe("Toolbar", () => {
     expect(item("Directory step").getAttribute("aria-disabled")).toBeNull();
   });
 
+  it("shows a step the server reports running, with its moving progress and elapsed time, and runs no second one", async () => {
+    const backend = newBackend({
+      proposals: [],
+      questions: [],
+      pipeline: { steps: [pipelineStep("extract", "running", { job_id: "job:r", progress: 0.42, elapsed_seconds: 300 })], sources: 1, open_questions: 0, next: "extract" },
+    });
+    const { user } = renderAt("/overview", backend);
+    const run = await within(await screen.findByRole("banner")).findByRole("button", { name: "Requirements step running, 42%, 5 min" });
+    expect(run.textContent).toContain("42% · 5 min");
+    await user.click(run);
+    expect(backend.runs).toEqual([]);
+  });
+
   it("runs nothing before a document is imported: Run next step goes to Sources, every step says why", async () => {
     const backend = newBackend({
       proposals: [],

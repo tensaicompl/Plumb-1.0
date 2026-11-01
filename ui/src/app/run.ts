@@ -17,8 +17,10 @@ export interface RunJob {
   readonly id: string;
   readonly stage: StageName;
   readonly status: JobStatus;
-  /** 0–1 (status-derived on the server). */
+  /** 0–1 (time-based on the server while it runs). */
   readonly progress: number;
+  /** Seconds the server has been running it, when known. */
+  readonly elapsedSeconds?: number;
   readonly error: string | null;
 }
 
@@ -40,7 +42,7 @@ export const useRunStore = create<RunState>()((set, get) => ({
     }
     const next = { ...job, ...patch };
     // Unchanged reports keep the same object, so subscribers do not re-render.
-    if (next.status !== job.status || next.progress !== job.progress || next.error !== job.error) {
+    if (next.status !== job.status || next.progress !== job.progress || next.elapsedSeconds !== job.elapsedSeconds || next.error !== job.error) {
       set({ job: next });
     }
   },
@@ -78,7 +80,12 @@ export function useJobPolling(navigation: RunNavigation): void {
     if (data === undefined || job === null || !active) {
       return;
     }
-    update({ status: data.status, progress: data.progress, error: data.error ?? null });
+    update({
+      status: data.status,
+      progress: data.progress,
+      ...(data.elapsed_seconds === null || data.elapsed_seconds === undefined ? {} : { elapsedSeconds: data.elapsed_seconds }),
+      error: data.error ?? null,
+    });
     if (!TERMINAL.includes(data.status)) {
       return;
     }

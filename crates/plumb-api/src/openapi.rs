@@ -1298,6 +1298,8 @@ pub struct JobResponse {
     pub status: JobStatus,
     #[schema(minimum = 0.0, maximum = 1.0)]
     pub progress: f64,
+    /// Seconds this server has been executing the job; null when it is not executing here.
+    pub elapsed_seconds: Option<u64>,
     /// The branch revision the job captured.
     pub base_revision: String,
     pub result_version: Option<String>,
@@ -2604,9 +2606,11 @@ pub struct PipelineStep {
     pub status: PipelineStepStatus,
     /// The latest recipe job of this recipe; null when it never ran.
     pub job_id: Option<String>,
-    /// The latest job's status-derived progress; null when it never ran.
+    /// The latest job's progress; null when it never ran.
     #[schema(minimum = 0.0, maximum = 1.0)]
     pub progress: Option<f64>,
+    /// Seconds this server has been executing the latest job; null when it is not running here.
+    pub elapsed_seconds: Option<u64>,
     /// Pending workflow proposals produced by any job of this recipe (stale ones included).
     pub pending_proposals: u64,
     pub error: Option<PipelineError>,

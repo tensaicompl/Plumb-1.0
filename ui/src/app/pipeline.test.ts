@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { components } from "../api/schema";
-import { INFERENCE_STAGES, mergeJob, RUNNABLE_STAGES, snapshotFromResponse, stageLabel, usesInference } from "./pipeline";
+import { elapsedLabel, INFERENCE_STAGES, mergeJob, RUNNABLE_STAGES, snapshotFromResponse, stageLabel, usesInference } from "./pipeline";
 
 type PipelineResponse = components["schemas"]["PipelineResponse"];
 type PipelineStepWire = components["schemas"]["PipelineStep"];
@@ -51,6 +51,16 @@ describe("snapshotFromResponse", () => {
     expect(flows?.progress).toBe(0);
     expect(calc?.progress).toBe(0.4);
     expect(rules?.missingConfig).toEqual(["gates.f1"]);
+  });
+});
+
+describe("elapsed time", () => {
+  it("maps a running step's elapsed seconds and labels them in minutes and hours", () => {
+    const snapshot = snapshotFromResponse({ steps: [wire("extract", "running", { progress: 0.4, elapsed_seconds: 250 })], sources: 1, open_questions: 0, next: null });
+    expect(snapshot.steps[0]).toMatchObject({ state: "running", progress: 0.4, elapsedSeconds: 250 });
+    expect(elapsedLabel(20)).toBe("under a minute");
+    expect(elapsedLabel(250)).toBe("4 min");
+    expect(elapsedLabel(3900)).toBe("1 h 5 min");
   });
 });
 

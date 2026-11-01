@@ -1915,6 +1915,15 @@
             "description": "The branch revision the job captured.",
             "type": "string"
           },
+          "elapsed_seconds": {
+            "description": "Seconds this server has been executing the job; null when it is not executing here.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -2384,6 +2393,15 @@
         "additionalProperties": false,
         "description": "One stage recipe of the pipeline, from its latest recipe job.",
         "properties": {
+          "elapsed_seconds": {
+            "description": "Seconds this server has been executing the latest job; null when it is not running here.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "error": {
             "oneOf": [
               {
@@ -2415,7 +2433,7 @@
             "type": "integer"
           },
           "progress": {
-            "description": "The latest job's status-derived progress; null when it never ran.",
+            "description": "The latest job's progress; null when it never ran.",
             "format": "double",
             "maximum": 1,
             "minimum": 0,

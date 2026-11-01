@@ -8,7 +8,7 @@ import { useModelVersion } from "../../api/useVersionedMutation";
 import { useMe } from "../../app/auth";
 import { PILOT_GATES } from "../../app/nav";
 import { useNextAction, type NextAction } from "../../app/nextAction";
-import { usePipeline, type StepState } from "../../app/pipeline";
+import { elapsedLabel, usePipeline, type StepState } from "../../app/pipeline";
 import { useShellStore } from "../../app/preferences";
 import { buildHref, useGo } from "../../app/shell/navigation";
 import { useProject, useRunNextAction } from "../../app/shell/Toolbar";
@@ -322,7 +322,11 @@ function PipelineCard() {
                 <StepMark step={step} index={index} />
                 <span className="text-caption font-medium leading-tight text-fg">{t(step.label)}</span>
                 <span className={cn("text-eyebrow", STEP_META_TONE[step.state])}>
-                  {step.state === "running" ? tf("overview.stepState.percent", { pct: Math.round((step.progress ?? 0) * 100) }) : t(STEP_META[step.state])}
+                  {step.state === "running"
+                    ? step.elapsedSeconds === undefined
+                      ? tf("overview.stepState.percent", { pct: Math.round((step.progress ?? 0) * 100) })
+                      : tf("overview.stepState.percentElapsed", { pct: Math.round((step.progress ?? 0) * 100), elapsed: elapsedLabel(step.elapsedSeconds) })
+                    : t(STEP_META[step.state])}
                 </span>
               </AppLink>
             </li>

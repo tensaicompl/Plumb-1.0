@@ -15,7 +15,7 @@ use crate::error::ApiError;
 use crate::openapi::{
     PipelineError, PipelineResponse, PipelineStep, PipelineStepStatus, QuestionStatus, StageName,
 };
-use crate::stage::{progress, store_error, Phase, Recipe};
+use crate::stage::{running_progress, store_error, Phase, Recipe};
 use crate::state::ApiState;
 
 /// The pipeline order of the Overview stepper and the toolbar run control.
@@ -223,6 +223,7 @@ impl ApiState {
                     status: PipelineStepStatus::NotStarted,
                     job_id: None,
                     progress: None,
+                    elapsed_seconds: None,
                     pending_proposals: of_recipe.len() as u64,
                     error: None,
                     updated_at: None,
@@ -239,7 +240,11 @@ impl ApiState {
                         status => status,
                     },
                     job_id: Some(record.recipe_job_id.to_string()),
-                    progress: Some(progress(record.status)),
+                    progress: Some(running_progress(
+                        record.status,
+                        self.job_elapsed(&record.recipe_job_id),
+                    )),
+                    elapsed_seconds: self.job_elapsed(&record.recipe_job_id).map(|e| e.as_secs()),
                     pending_proposals: of_recipe.len() as u64,
                     error: match (record.status, &record.failure_code, &record.failure_message) {
                         (StageStatus::Failed, Some(code), Some(message)) => Some(PipelineError {

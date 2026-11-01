@@ -516,6 +516,30 @@ fn validate_partition(
     }
 }
 
+/// Drops the model segments that cannot be used (goal-approach deviation, any-domain run: one
+/// bad range among hundreds failed the whole import): a segment of an unknown fragment, one
+/// whose range is invalid for its fragment's text, and one overlapping an earlier kept segment
+/// of the same fragment. Their bytes become `unassigned_text` through [`fill_gaps`].
+fn drop_unusable(context: &SegmentationContext, candidates: &mut Vec<SegmentCandidate>) {
+    candidates.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
+    let mut kept: Vec<SegmentCandidate> = Vec::with_capacity(candidates.len());
+    for candidate in candidates.drain(..) {
+        let Some(text) = context.text_of(&candidate.fragment_ref) else {
+            continue;
+        };
+        if validate_range(text, &candidate).is_err() {
+            continue;
+        }
+        let overlaps = kept
+            .last()
+            .is_some_and(|k| k.fragment_ref == candidate.fragment_ref && candidate.start < k.end);
+        if !overlaps {
+            kept.push(candidate);
+        }
+    }
+    *candidates = kept;
+}
+
 /// Covers each byte range of a known fragment that no model segment covers with a
 /// `non_requirement` candidate flagged `unassigned_text`, exactly as the fallback leaves text it
 /// does not select (goal-approach deviation, any-domain run: an unclassified stretch never fails
@@ -720,6 +744,7 @@ pub fn evaluate_segmentation(
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            drop_unusable(context, &mut candidates);
             fill_gaps(context, &mut candidates)?;
             validate_partition(context, &mut candidates)?;
             Ok(SegmentationResult {
